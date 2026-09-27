@@ -162,6 +162,8 @@ export default defineConfig({
             { label: "Actions with a PAT", link: "/deployment-actions-pat/" },
             { label: "Azure", link: "/deployment-azure/" },
             { label: "Coolify", link: "/deployment-coolify/" },
+            { label: "Upstash Redis", link: "/deployment-upstash/" },
+            { label: "Managed Redis", link: "/deployment-managed-redis/" },
           ],
         },
         {

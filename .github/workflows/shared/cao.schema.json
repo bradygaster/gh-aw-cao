@@ -153,6 +153,7 @@
       "additionalProperties": false,
       "properties": {
         "experimental": { "type": "boolean" },
+        "host": { "$ref": "#/$defs/host" },
         "favicon": {
           "type": "string",
           "maxLength": 2048,
@@ -163,6 +164,101 @@
         }
       }
     },
+    "environmentVariable": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+    },
+    "redisTLS": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["auto", "required", "disabled"] },
+        "server-name-env": { "$ref": "#/$defs/environmentVariable" },
+        "ca-certificate-env": { "$ref": "#/$defs/environmentVariable" }
+      }
+    },
+    "redisModule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module"],
+      "properties": {
+        "module": {
+          "type": "string",
+          "enum": [
+            "generic", "local", "upstash", "aws-elasticache", "redis-cloud", "gcp-memorystore",
+            "railway", "render", "digitalocean"
+          ]
+        },
+        "url-env": { "$ref": "#/$defs/environmentVariable" },
+        "host-env": { "$ref": "#/$defs/environmentVariable" },
+        "port-env": { "$ref": "#/$defs/environmentVariable" },
+        "username-env": { "$ref": "#/$defs/environmentVariable" },
+        "password-env": { "$ref": "#/$defs/environmentVariable" },
+        "namespace-env": { "$ref": "#/$defs/environmentVariable" },
+        "session": { "type": "string", "enum": ["pooled", "serialized"] },
+        "isolate-process-namespace": { "type": "boolean" },
+        "single-replica": { "type": "boolean" },
+        "supports-collection": { "type": "boolean" },
+        "allow-private-plaintext": { "type": "boolean" },
+        "tls": { "$ref": "#/$defs/redisTLS" }
+      },
+      "allOf": [{
+        "if": { "properties": { "module": { "const": "generic" } } },
+        "else": {
+          "not": {
+            "anyOf": [
+              { "required": ["session"] },
+              { "required": ["isolate-process-namespace"] },
+              { "required": ["single-replica"] },
+              { "required": ["supports-collection"] }
+            ]
+          }
+        }
+      }]
+    },
+    "hostTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module"],
+      "properties": {
+        "module": {
+          "type": "string",
+          "enum": ["generic", "container", "azure-functions"]
+        },
+        "name": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "authentication": { "type": "string", "enum": ["github-oauth"] },
+        "listener": { "type": "string", "enum": ["process", "platform"] },
+        "require-https": { "type": "boolean" },
+        "trust-platform-proxy": { "type": "boolean" },
+        "supports-single-replica": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [{
+        "if": { "properties": { "module": { "const": "generic" } } },
+        "then": { "required": ["authentication", "listener"] },
+        "else": {
+          "not": {
+            "anyOf": [
+              { "required": ["authentication"] },
+              { "required": ["listener"] },
+              { "required": ["require-https"] },
+              { "required": ["trust-platform-proxy"] },
+              { "required": ["supports-single-replica"] }
+            ]
+          }
+        }
+      }]
+    },
+    "modularHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "redis"],
+      "properties": {
+        "target": { "$ref": "#/$defs/hostTarget" },
+        "redis": { "$ref": "#/$defs/redisModule" }
+      }
+    },
+    "host": { "$ref": "#/$defs/modularHost" },
     "defaults": {
       "type": "object",
       "additionalProperties": false,

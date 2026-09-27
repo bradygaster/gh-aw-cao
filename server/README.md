@@ -79,6 +79,28 @@ flowchart LR
 | Local Redis | `docker-compose.yml` | Runs plain Redis on `127.0.0.1:6379`. |
 | Coolify container profile | `Dockerfile`, `coolify/compose.yml` | Builds the dashboard and Go service into a non-root image and runs `serve-hosted` behind an explicitly trusted Coolify TLS proxy. |
 
+### Host capability profiles
+
+`internal/server/host_modules.go` independently resolves an app server target
+module and a declarative Redis provider module. Their capabilities compose into
+the profile validated by `internal/server/host_profile.go`. Target modules own
+authentication, listener, HTTPS, and proxy behavior; Redis modules own
+environment mappings, connection semantics, namespace isolation, replica
+constraints, and collection support.
+
+Hosted deployments normally declare these capabilities under
+`control-plane.web.host` in `.github/workflows/cao.json`. The declaration names
+environment variables for Redis connection and verified TLS inputs; secret
+values remain in the deployment environment. New hosting platforms add a target
+module without changing Redis providers; new Redis providers add declarative
+environment defaults without changing target modules. `server.New` validates the
+composed profile.
+Do not add provider-name branches to shared authentication, proxy, ingestion,
+or Redis enforcement. Startup rejects unsupported capability combinations, a
+serialized profile backed by a pooled Redis client, collection on an
+artifact-only profile, and process-listener settings on a platform-listener
+profile.
+
 ## Hosted service profile
 
 `serve-hosted` runs the same stateless Go service on a container, VM,
@@ -86,13 +108,20 @@ Kubernetes workload, or comparable host. It defaults to
 `127.0.0.1:8080`, where a same-host or same-pod HTTPS proxy may forward requests.
 A non-loopback listener is accepted only when `--cert` and `--key` configure
 TLS at the CAO service itself. It is not coupled to a Redis provider or cloud
-SDK. Configuration is supplied through:
+SDK. Set `CAO_POLICY_PATH` only when the policy is mounted somewhere other than
+`.github/workflows/cao.json`. See
+[`docs/deployment-managed-redis.md`](../docs/deployment-managed-redis.md) for
+the generic `REDIS_URL` and TLS contract and provider modules.
+
+Every hosted process requires `control-plane.web.host` in `cao.json`. Redis
+provider selection, TLS behavior, environment-variable names, namespace
+selection, connection semantics, and replica count come only from that policy.
+The selected environment variables hold secret values; they do not select or
+override host behavior. Other hosted service inputs remain process environment
+settings:
 
 | Variable | Purpose |
 | --- | --- |
-| `CAO_REDIS_URL` | Redis endpoint. `rediss://` is the hosted default and is always mandatory for Azure. |
-| `CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS` | Optional exact `true` opt-in for `redis://` to a private IP or single-label service name. Intended only for a Coolify-managed Redis connection on the private service network. |
-| `CAO_REDIS_NAMESPACE` | Optional deployment namespace; defaults to `hosted-dashboard`. |
 | `CAO_ALLOWED_HOSTS` | Required comma-separated trusted public host names. |
 | `CAO_TRUSTED_PROXY_CIDRS` | Required when a non-loopback `serve-hosted` listener relies on a TLS proxy. Only private CIDRs are accepted, and forwarded headers are rejected unless the direct peer is in one of them. |
 | `CAO_GITHUB_CLIENT_ID`, `CAO_GITHUB_CLIENT_SECRET`, `CAO_GITHUB_REDIRECT_URL` | GitHub OAuth application. |
@@ -110,6 +139,28 @@ Supply secrets through the deployment platform's secret manager (for example,
 Key Vault references, Kubernetes Secrets mounted into the process environment,
 or an equivalent managed facility), never command-line arguments or checked-in
 configuration.
+
+### Upstash Redis provider
+
+The `upstash` Redis module composes with the `container` target for Upstash
+Redis's per-TCP-session causal consistency. It serializes every command through
+one connection, never recycles that connection, disables transparent retries,
+and permanently fails closed after transport loss. A process restart is required
+to recover.
+
+Every start derives a random internal namespace from `REDIS_NAMESPACE`.
+This prevents state written through an earlier TCP session from reappearing
+after restart, and deliberately invalidates existing OAuth sessions. Superseded
+namespaces remain disposable data and consume capacity until an operator removes
+them while the application is stopped.
+
+This module requires exactly one application replica, a dedicated Upstash
+database, artifact ingestion through `CAO_SOURCE_DIRECTORY`, and verified TLS.
+Server-side collection and standalone collection roles are rejected. Policy
+validation requires `target.replicas: 1`, and operators must set the hosting
+platform itself to the same replica count. Do not configure the Upstash REST URL
+or REST token. For the operator procedure, see [Deploying the dashboard with Upstash
+Redis](https://github.com/githubnext/gh-aw-cao/blob/main/docs/deployment-upstash.md).
 
 ### Coolify container profile
 
@@ -155,9 +206,9 @@ not `0.0.0.0/0` or an entire RFC1918 range.
 
 Use `rediss://` whenever Coolify or an external provider offers TLS. A
 Coolify-managed Redis service may use plaintext only on the private service
-network, with `CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS=true` and a single-label service
-name or private IP. The opt-in does not affect Azure: Azure Functions continues
-to require `rediss://`.
+network when `control-plane.web.host.redis.allow-private-plaintext` is `true`
+and the endpoint uses a private service hostname or IP. This policy does not
+affect Azure: Azure Functions continues to require `rediss://`.
 
 The conventional `.github/workflows/coolify-deploy.yml` resolves published
 release tags to exact commits and checks out the exact event source. It refuses
@@ -729,7 +780,8 @@ the Function App itself never imports an Azure Monitor SDK.
   HTML, browser configuration, API payloads, or URLs.
 - Plaintext `redis://` URLs default to literal loopback IP addresses or
   `localhost`. Hosted mode additionally accepts a private IP or single-label
-  service hostname only with `CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS=true`.
+  service hostname only when the Redis module sets
+  `allow-private-plaintext: true`.
 - Every other remote Redis connection requires `rediss://`, standard
   certificate-chain and hostname verification, and TLS 1.2 or newer. Azure
   always requires this path. There is no insecure skip-verification option.
@@ -750,13 +802,13 @@ The local capability profile is not suitable for remote or multi-user
 deployment. The capability authorizes its holder to read the full active
 dashboard generation; it provides no user identity or per-source authorization.
 
-The Azure Functions profile is the experimental remote profile. It is
-enabled only by constructing the app with `HostingModeAzureFunctions` or by
-calling `NewAzureFunctionsHandlerFromEnv`; `serve` does not enable it. Azure
+The Azure Functions profile is the experimental remote profile. It is enabled
+by calling `NewAzureFunctionsHandlerFromEnv`; `serve` does not enable it. Azure
 mode fails closed unless all of the following are configured:
 
-- `CAO_REDIS_URL` with a `rediss://` URL;
-- a Redis namespace (`CAO_REDIS_NAMESPACE`, default `azure-dashboard`);
+- a readable `cao.json` with the `azure-functions` target and a Redis provider;
+- the policy-selected Redis URL environment variable with a `rediss://` URL;
+- the policy-selected Redis namespace environment variable;
 - `CAO_AZURE_ALLOWED_HOSTS` and HTTPS forwarded-protocol enforcement;
 - GitHub OAuth App client ID/secret and redirect URL;
 - at least 32 characters of `CAO_SESSION_SECRET`;

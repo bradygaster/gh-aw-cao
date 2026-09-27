@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
@@ -23,22 +26,31 @@ func NewHostedAppFromEnv(
 	databaseQueriesPath string,
 	logger *log.Logger,
 ) (*App, error) {
-	redisURL := strings.TrimSpace(os.Getenv("CAO_REDIS_URL"))
-	if redisURL == "" {
-		return nil, errors.New("CAO_REDIS_URL is required")
-	}
-	allowPrivatePlaintext, err := privatePlaintextRedisOptIn(os.Getenv("CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS"))
+	host, err := loadHostPolicyFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHostedRedisURL(redisURL, allowPrivatePlaintext); err != nil {
+	if err := validateHostedRedisURL(
+		host.RedisURL,
+		host.RedisOptions.AllowPrivatePlaintext,
+		host.RedisOptions.ForceTLS,
+	); err != nil {
 		return nil, err
 	}
-	client, err := redisx.NewWithOptions(redisURL, redisx.Options{AllowPrivatePlaintext: allowPrivatePlaintext})
+	revocationKeyPrefix, err := durableRevocationKeyPrefix(
+		host.Profile.IsolateProcessNamespace,
+		host.RedisNamespace,
+	)
 	if err != nil {
 		return nil, err
 	}
-	store, err := storeFromClient(ctx, client)
+	client, err := redisx.NewWithOptions(host.RedisURL, host.RedisOptions)
+	if err != nil {
+		return nil, err
+	}
+	store, err := storeFromClient(
+		ctx, client, host.RedisNamespace, host.Profile.IsolateProcessNamespace,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -71,20 +83,21 @@ func NewHostedAppFromEnv(
 		trustedProxyPrefixes = append(trustedProxyPrefixes, loopbackProxyPrefixes()...)
 	}
 	config := Config{
-		HostingMode:         HostingModeHosted,
-		Listen:              listen,
-		CertFile:            certFile,
-		KeyFile:             keyFile,
-		SiteDirectory:       siteDirectory,
-		DashboardQueries:    definitions,
-		DatabaseQueriesPath: databaseQueriesPath,
-		SourceDirectory:     sourceDirectory,
-		Collector:           collector,
-		WebhookSecret:       webhookSecret,
-		AdminUsers:          adminUsers,
+		HostProfile:            host.Profile,
+		SingleReplicaConfirmed: host.SingleReplicaConfirmed,
+		Listen:                 listen,
+		CertFile:               certFile,
+		KeyFile:                keyFile,
+		SiteDirectory:          siteDirectory,
+		DashboardQueries:       definitions,
+		DatabaseQueriesPath:    databaseQueriesPath,
+		SourceDirectory:        sourceDirectory,
+		Collector:              collector,
+		WebhookSecret:          webhookSecret,
+		AdminUsers:             adminUsers,
 		Proxy: ProxyPolicy{
 			AllowedHosts:         splitCSV(os.Getenv("CAO_ALLOWED_HOSTS")),
-			RequireHTTPS:         true,
+			RequireHTTPS:         host.Profile.RequiresHTTPS,
 			TrustForwarded:       trustForwarded,
 			TrustedProxyPrefixes: trustedProxyPrefixes,
 		},
@@ -96,18 +109,19 @@ func NewHostedAppFromEnv(
 			PreviousSessionSecret: os.Getenv("CAO_SESSION_SECRET_PREVIOUS"),
 			AllowedOrganizations:  splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_ORGS")),
 			AllowedTeams:          splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_TEAMS")),
+			RevocationKeyPrefix:   revocationKeyPrefix,
 		},
 		Logger: logger,
 	}
 	return New(store, config)
 }
 
-func validateHostedRedisURL(redisURL string, allowPrivatePlaintext bool) error {
+func validateHostedRedisURL(redisURL string, allowPrivatePlaintext, forceTLS bool) error {
 	parsed, err := url.Parse(strings.TrimSpace(redisURL))
 	if err != nil {
 		return errors.New("invalid hosted Redis URL")
 	}
-	if strings.EqualFold(parsed.Scheme, "rediss") {
+	if strings.EqualFold(parsed.Scheme, "rediss") || forceTLS {
 		return nil
 	}
 	if !strings.EqualFold(parsed.Scheme, "redis") || !allowPrivatePlaintext {
@@ -119,20 +133,22 @@ func validateHostedRedisURL(redisURL string, allowPrivatePlaintext bool) error {
 	return nil
 }
 
-func privatePlaintextRedisOptIn(value string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "false":
-		return false, nil
-	case "true":
-		return true, nil
-	default:
-		return false, errors.New("CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS must be true, false, or unset")
+func isUpstashRedisURL(redisURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(redisURL))
+	if err != nil {
+		return false
 	}
+	hostname := strings.ToLower(parsed.Hostname())
+	return hostname == "upstash.io" || strings.HasSuffix(hostname, ".upstash.io")
 }
 
 func privateRedisHostname(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 	if hostname == "" {
 		return false
+	}
+	if strings.HasSuffix(hostname, ".railway.internal") {
+		return true
 	}
 	if ip := net.ParseIP(hostname); ip != nil {
 		return ip.IsPrivate() || ip.IsLoopback()
@@ -179,26 +195,30 @@ func loopbackProxyPrefixes() []netip.Prefix {
 // collection roles reuse it so there is one definition of the hosted Redis
 // contract.
 func StoreFromEnv(ctx context.Context) (*redisx.Store, error) {
-	redisURL := strings.TrimSpace(os.Getenv("CAO_REDIS_URL"))
-	if redisURL == "" {
-		return nil, errors.New("CAO_REDIS_URL is required")
-	}
-	allowPrivatePlaintext, err := privatePlaintextRedisOptIn(os.Getenv("CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS"))
+	host, err := loadHostPolicyFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHostedRedisURL(redisURL, allowPrivatePlaintext); err != nil {
-		return nil, err
+	if !host.Profile.SupportsCollection || host.Profile.RedisSession == HostRedisSerialized {
+		return nil, fmt.Errorf(
+			"host profile %q is not supported by standalone collection roles",
+			host.Profile.Name,
+		)
 	}
-	client, err := redisx.NewWithOptions(redisURL, redisx.Options{AllowPrivatePlaintext: allowPrivatePlaintext})
+	client, err := redisx.NewWithOptions(host.RedisURL, host.RedisOptions)
 	if err != nil {
 		return nil, err
 	}
-	return storeFromClient(ctx, client)
+	return storeFromClient(ctx, client, host.RedisNamespace, false)
 }
 
-func storeFromClient(ctx context.Context, client *redisx.Client) (*redisx.Store, error) {
-	namespaceValue := strings.TrimSpace(os.Getenv("CAO_REDIS_NAMESPACE"))
+func storeFromClient(
+	ctx context.Context,
+	client *redisx.Client,
+	namespaceValue string,
+	isolateSession bool,
+) (*redisx.Store, error) {
+	namespaceValue = strings.TrimSpace(namespaceValue)
 	if namespaceValue == "" {
 		namespaceValue = "hosted-dashboard"
 	}
@@ -206,9 +226,34 @@ func storeFromClient(ctx context.Context, client *redisx.Client) (*redisx.Store,
 	if err != nil {
 		return nil, err
 	}
-	store := redisx.NewStore(client, namespace)
+	var store *redisx.Store
+	if isolateSession {
+		store, err = redisx.NewProcessIsolatedStore(client, namespace)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		store = redisx.NewStore(client, namespace)
+	}
 	if err := store.Ping(ctx); err != nil {
 		return nil, errors.New("redis is unavailable")
 	}
 	return store, nil
+}
+
+func durableRevocationKeyPrefix(isolateProcess bool, namespace string) (string, error) {
+	if !isolateProcess {
+		return "", nil
+	}
+	if strings.TrimSpace(namespace) == "" {
+		namespace = "hosted-dashboard"
+	}
+	normalized, err := redisx.NormalizeNamespace(namespace)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	// Preserve the original prefix so queued revocations survive migration from
+	// the provider-specific Upstash mode to a generic serialized host profile.
+	return "upstash-" + hex.EncodeToString(sum[:12]) + "-durable:", nil
 }

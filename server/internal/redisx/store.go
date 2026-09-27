@@ -2,6 +2,7 @@ package redisx
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -22,8 +23,9 @@ const redisWriteBatchSize = 100
 var ErrSourceUnavailable = errors.New("redis source is unavailable")
 
 type Store struct {
-	Client    CommandClient
-	namespace string
+	Client          CommandClient
+	namespace       string
+	processIsolated bool
 }
 
 type CommandClient interface {
@@ -50,6 +52,31 @@ func NewStore(client CommandClient, namespaces ...string) *Store {
 		panic(err)
 	}
 	return &Store{Client: client, namespace: normalized}
+}
+
+func NewProcessIsolatedStore(client CommandClient, namespace string) (*Store, error) {
+	normalized, err := NormalizeNamespace(namespace)
+	if err != nil {
+		return nil, err
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, errors.New("generate process-isolated Redis namespace")
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	isolated, err := NormalizeNamespace(
+		"process-" + hex.EncodeToString(sum[:6]) + "-" + hex.EncodeToString(nonce[:]),
+	)
+	if err != nil {
+		return nil, err
+	}
+	store := NewStore(client, isolated)
+	store.processIsolated = true
+	return store, nil
+}
+
+func (s *Store) ProcessIsolated() bool {
+	return s != nil && s.processIsolated
 }
 
 func (s *Store) Ping(ctx context.Context) error {

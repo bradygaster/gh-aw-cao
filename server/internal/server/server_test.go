@@ -54,17 +54,44 @@ func TestValidateHostedListenRequiresTLSOutsideLoopback(t *testing.T) {
 }
 
 func TestHostedRedisRequiresTLSUnlessPrivatePlaintextIsExplicit(t *testing.T) {
-	if err := validateHostedRedisURL("redis://redis:6379/0", false); err == nil {
+	if err := validateHostedRedisURL("redis://redis:6379/0", false, false); err == nil {
 		t.Fatal("hosted mode accepted plaintext Redis without opt-in")
 	}
-	if err := validateHostedRedisURL("redis://redis:6379/0", true); err != nil {
+	if err := validateHostedRedisURL("redis://redis:6379/0", true, false); err != nil {
 		t.Fatalf("hosted mode rejected explicitly allowed private Redis: %v", err)
 	}
-	if err := validateHostedRedisURL("redis://redis.example.com:6379/0", true); err == nil {
+	if err := validateHostedRedisURL("redis://redis.railway.internal:6379/0", true, false); err != nil {
+		t.Fatalf("hosted mode rejected explicitly allowed Railway private Redis: %v", err)
+	}
+	if err := validateHostedRedisURL("redis://redis.example.com:6379/0", true, false); err == nil {
 		t.Fatal("hosted mode accepted a public plaintext Redis hostname")
 	}
-	if err := validateHostedRedisURL("rediss://redis.example.com:6380/0", false); err != nil {
+	if err := validateHostedRedisURL("rediss://redis.example.com:6380/0", false, false); err != nil {
 		t.Fatalf("hosted mode rejected TLS Redis: %v", err)
+	}
+}
+
+func TestUpstashRevocationKeyPrefixIsStableAndModeSpecific(t *testing.T) {
+	first, err := durableRevocationKeyPrefix(true, "dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := durableRevocationKeyPrefix(true, " cao:DASHBOARD ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("upstash revocation prefix must be stable: %q, %q", first, second)
+	}
+	other, err := durableRevocationKeyPrefix(true, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == other {
+		t.Fatal("different configured namespaces shared an Upstash revocation prefix")
+	}
+	if value, err := durableRevocationKeyPrefix(false, "invalid namespace!"); err != nil || value != "" {
+		t.Fatalf("standard mode unexpectedly received a revocation prefix: %q", value)
 	}
 }
 
@@ -138,7 +165,7 @@ func TestHostedProxyHeadersAreTrustedOnlyOnLoopbackBoundary(t *testing.T) {
 	request.Header.Set("X-Forwarded-Proto", "https")
 
 	direct := ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}, RequireHTTPS: true}
-	if validAzureProxyRequest(request, direct) {
+	if validProxyRequest(request, direct) {
 		t.Fatal("direct hosted listener trusted caller-supplied forwarded headers")
 	}
 
@@ -146,11 +173,11 @@ func TestHostedProxyHeadersAreTrustedOnlyOnLoopbackBoundary(t *testing.T) {
 	loopbackProxy.TrustForwarded = true
 	loopbackProxy.TrustedProxyPrefixes = loopbackProxyPrefixes()
 	request.RemoteAddr = "127.0.0.1:12345"
-	if !validAzureProxyRequest(request, loopbackProxy) {
+	if !validProxyRequest(request, loopbackProxy) {
 		t.Fatal("loopback proxy boundary rejected trusted forwarded headers")
 	}
 	request.RemoteAddr = "203.0.113.10:12345"
-	if validAzureProxyRequest(request, loopbackProxy) {
+	if validProxyRequest(request, loopbackProxy) {
 		t.Fatal("hosted boundary trusted forwarded headers from an untrusted peer")
 	}
 }
@@ -170,25 +197,9 @@ func TestCoolifyProxyCIDRsFailClosed(t *testing.T) {
 	}
 }
 
-func TestPrivatePlaintextRedisOptInIsExplicit(t *testing.T) {
-	for _, value := range []string{"", "false", "FALSE"} {
-		allowed, err := privatePlaintextRedisOptIn(value)
-		if err != nil || allowed {
-			t.Fatalf("value %q unexpectedly enabled plaintext Redis: allowed=%t err=%v", value, allowed, err)
-		}
-	}
-	allowed, err := privatePlaintextRedisOptIn("true")
-	if err != nil || !allowed {
-		t.Fatalf("explicit opt-in was rejected: allowed=%t err=%v", allowed, err)
-	}
-	if _, err := privatePlaintextRedisOptIn("yes"); err == nil {
-		t.Fatal("ambiguous plaintext Redis opt-in was accepted")
-	}
-}
-
 func TestHostedModesCannotDisableHTTPS(t *testing.T) {
 	config := Config{
-		HostingMode: HostingModeHosted,
+		HostProfile: hostedHostProfile(),
 		Listen:      "127.0.0.1:8080",
 		Proxy:       ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}},
 		GitHubOAuth: validOAuthConfig("https://github.test"),
@@ -197,9 +208,9 @@ func TestHostedModesCannotDisableHTTPS(t *testing.T) {
 		t.Fatal("hosted mode accepted disabled HTTPS enforcement")
 	}
 
-	config.HostingMode = HostingModeAzureFunctions
+	config.HostProfile = azureFunctionsHostProfile()
 	config.Listen = ""
-	config.AzureProxy = AzureProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}}
+	config.Proxy = ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}}
 	if err := validateHostedMode(&redisx.Store{}, &config); err == nil {
 		t.Fatal("Azure Functions mode accepted disabled HTTPS enforcement")
 	}
@@ -334,6 +345,25 @@ func TestAzureFunctionsHandlerLogsTelemetryFailureOnceAndKeepsServing(t *testing
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "not-a-valid-key-value-list")
+	policyPath := t.TempDir() + "/cao.json"
+	if err := os.WriteFile(policyPath, []byte(`{
+		"control-plane": {
+			"web": {
+				"host": {
+					"target": {"module": "azure-functions"},
+					"redis": {
+						"module": "local",
+						"url-env": "CAO_REDIS_URL",
+						"allow-private-plaintext": true,
+						"tls": {"mode": "disabled"}
+					}
+				}
+			}
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CAO_POLICY_PATH", policyPath)
 	t.Setenv("CAO_REDIS_URL", "")
 
 	var logOutput strings.Builder

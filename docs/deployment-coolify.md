@@ -23,7 +23,7 @@ The Coolify deployment is an alternative to the Azure deployment. It doesn't rep
 | Coolify | A self-hosted Coolify instance that can run Docker Compose resources. Its proxy must terminate TLS for a public host name that you control. |
 | Container runtime | Docker on the Coolify server, with access to pull images from GitHub Container Registry (GHCR). |
 | Container image | `ghcr.io/OWNER/REPOSITORY/cao-dashboard@sha256:DIGEST`, built from `server/Dockerfile`. Always refer to the image by its digest. |
-| Redis | A Redis service on the Coolify private network, or an external Redis service that uses TLS. No Redis modules are required. Set the eviction policy to `noeviction`, and size memory for the number of data generations that you keep. |
+| Redis | A Redis service on the Coolify private network, or an external Redis service that uses TLS, such as [Upstash Redis](deployment-upstash.md). No Redis modules are required. Set the eviction policy to `noeviction`, and size memory for the number of data generations that you keep. |
 | Artifact volume | A named Docker volume, managed by Coolify, that contains a complete and verified dashboard payload. |
 | GitHub OAuth app | An OAuth app with the callback URL `https://PUBLIC-HOST/auth/callback`. |
 | Webhook secret | A secret of at least 32 characters. The server requires one even if you don't use webhooks. |
@@ -50,7 +50,27 @@ In the following steps, replace `PUBLIC-HOST` with the public host name of your 
    - **For hosted use,** choose an image that `coolify-deploy.yml` published. Always refer to it as `NAME@sha256:DIGEST`.
 
 1. Register a GitHub OAuth app. Set its **Authorization callback URL** to `https://PUBLIC-HOST/auth/callback`. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) in the GitHub documentation.
-1. Create a Redis service in Coolify on the same private network as the dashboard, or use an external `rediss://` endpoint.
+1. Create a Redis service in Coolify on the same private network as the dashboard, or use an external `rediss://` endpoint. To use Upstash, follow [Deploying the dashboard with Upstash Redis](deployment-upstash.md), select the `upstash` Redis module with `target.replicas: 1`, and keep the Coolify resource at exactly one replica.
+1. Add a modular `control-plane.web.host` declaration to
+   `.github/workflows/cao.json`. The Compose file mounts this reviewed policy and
+   startup fails when it is absent. For Coolify-managed Redis, use:
+
+   ```json
+   {
+     "target": { "module": "container", "name": "coolify" },
+     "redis": {
+       "module": "local",
+       "url-env": "REDIS_URL",
+       "namespace-env": "REDIS_NAMESPACE",
+       "allow-private-plaintext": true,
+       "tls": { "mode": "disabled" }
+     }
+   }
+   ```
+
+   Place this object at `control-plane.web.host`; don't replace the rest of the
+   control policy. For an external service, use the matching provider module
+   from [Managed Redis in one minute](deployment-managed-redis.md).
 1. Prepare the artifact volume.
 
    1. Create a new volume that isn't attached to any service.
@@ -112,9 +132,9 @@ The `server/coolify/compose.yml` file reads the following variables.
 | --- | --- | --- | --- |
 | `CAO_IMAGE` | Yes | No | Image reference by digest, in the form `ghcr.io/...@sha256:DIGEST`. |
 | `CAO_ARTIFACT_VOLUME` | Yes | No | Existing Coolify volume that contains the verified payload. It is mounted read-only at `/app/source`. |
-| `CAO_REDIS_URL` | Yes | Yes | Redis URL. Use `rediss://` when possible. |
-| `CAO_ALLOW_PRIVATE_PLAINTEXT_REDIS` | No. Defaults to `false`. | No | Set to `true` to allow `redis://` to a private IP address or a single-label service name on the private network. |
-| `CAO_REDIS_NAMESPACE` | No. Defaults to `coolify-dashboard`. | No | Prefix for Redis keys. |
+| `REDIS_URL` | Yes | Yes | Redis URL selected by `control-plane.web.host.redis.url-env`. Use `rediss://` when possible. |
+| `REDIS_NAMESPACE` | No. Defaults to `coolify-dashboard`. | No | Prefix selected by `control-plane.web.host.redis.namespace-env`. |
+| `CAO_POLICY_PATH` | Set by Compose. | No | Points at the read-only `cao.json` bind mount. |
 | `CAO_ALLOWED_HOSTS` | Yes | No | Comma-separated list of public host names. |
 | `CAO_TRUSTED_PROXY_CIDRS` | Yes | No | Exact private CIDR of the Coolify proxy network. |
 | `CAO_GITHUB_CLIENT_ID` | Yes | No | Client ID of the OAuth app. |
@@ -163,7 +183,7 @@ Container output appears in the Coolify log view. To turn on debug logs, set `DE
 
 ### Diagnostics
 
-To check Redis, dashboard data, and queries without changing anything, run the following command in the container. `CAO_REDIS_URL` must be set in the container's environment.
+To check Redis, dashboard data, and queries without changing anything, run the following command in the container. `REDIS_URL` must be set in the container's environment.
 
 ```bash
 /app/cao-dashboard doctor --redis-namespace coolify-dashboard
@@ -213,6 +233,7 @@ If you suspect an incident, see [Incident response](operations.md#incident-respo
 - [About deployment options](deployment.md)
 - [Deploying the dashboard with GitHub Actions](deployment-actions.md)
 - [Deploying the dashboard to Azure](deployment-azure.md)
+- [Deploying the dashboard with Upstash Redis](deployment-upstash.md)
 - [Data ingestion](dashboard-data-ingestion.md)
 - [Data model](dashboard-data-model.md)
 - [`server/README.md`](https://github.com/githubnext/gh-aw-cao/blob/main/server/README.md)
