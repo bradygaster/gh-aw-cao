@@ -50,6 +50,8 @@ test("landing page presents the product through real operational surfaces", () =
   assert.match(terminal, /--raw-field safe_output_mode="review"/);
   assert.match(hero, /See every campaign\. Focus where it diverges/);
   assert.match(hero, /Prove value before multiplying work/);
+  assert.match(hero, /class="wizard-launch-button" href="\/gh-aw-cao\/setup\/"/);
+  assert.match(hero, /Launch setup wizard/);
   assert.doesNotMatch(hero, /One operating picture|phone-caption/);
   assert.doesNotMatch(hero, /OpsWizard|Stand up a control plane in three steps/);
   assert.doesNotMatch(hero, /trust-section|Coordination without concentrated risk|section-actions/);
@@ -59,9 +61,12 @@ test("landing page presents the product through real operational surfaces", () =
 
 test("setup wizard lives on a dedicated page linked from the header", () => {
   assert.match(headerLinks, /\{ label: "Setup", href: "\/gh-aw-cao\/setup\/" \}/);
-  assert.match(setupPage, /<OpsWizard open \/>/);
-  assert.match(setupPage, /Stand up a control plane in three steps/);
+  assert.match(setupPage, /<OpsWizard \/>/);
+  assert.match(wizard, /Stand up a control plane in four steps/);
   assert.match(wizard, /Choose the first operation/);
+  assert.doesNotMatch(wizard, /<select/);
+  assert.match(wizard, /type="radio" name="host-target"/);
+  assert.match(wizard, /type="radio" name="redis-provider"/);
 });
 
 test("landing page uses a theme-aware blueprint background", () => {
@@ -123,6 +128,9 @@ test("landing wizard prompt references the raw setup skill", () => {
     wizard,
     /https:\/\/raw\.githubusercontent\.com\/githubnext\/gh-aw-cao\/main\/skills\/setup-cao\/SKILL\.md/,
   );
+  assert.match(wizard, /Treat installed campaign package sources as immutable/);
+  assert.match(wizard, /\.github\/cao\/<campaign-slug>\.md/);
+  assert.match(wizard, /optional `runtime-import`/);
 });
 
 test("landing wizard delegates setup decisions to the setup skill", () => {
