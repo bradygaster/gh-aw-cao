@@ -1316,7 +1316,7 @@ function* normalizedJsonlLines(payload) {
     records
   })}\n`;
   for (const collection of NORMALIZED_COLLECTIONS) {
-    for (const record of payload.batch[collection]) {
+    for (const record of payload.batch[collection] ?? []) {
       yield `${JSON.stringify({ kind: 'record', collection, record })}\n`;
     }
   }
@@ -2037,6 +2037,8 @@ async function hashActivityPayloads({
               runs: batch.runs,
               domains: [],
               tools: [],
+              skills: [],
+              friction: [],
               audits: [],
               issues: [],
               operationalValues: []
@@ -2052,6 +2054,8 @@ async function hashActivityPayloads({
               runs: [],
               domains: batch.domains,
               tools: batch.tools,
+              skills: batch.skills,
+              friction: batch.friction,
               audits: batch.audits.filter((audit) =>
                 String(audit.status ?? '').trim().toLowerCase() !== 'info'
               ),
@@ -2730,7 +2734,7 @@ async function runLegacyIngestion(contextPath, logDirectory) {
     const queries = createCanonicalQueries(indexedDB);
     const runs = await queries.runs.list();
     const records = (await Promise.all(
-      ['domains', 'tools', 'audits', 'issues'].map((collection) =>
+      ['domains', 'tools', 'skills', 'friction', 'audits', 'issues'].map((collection) =>
         Promise.all(runs.map((run) => queries[collection].forRun(String(run.id)))))
     )).flat(2);
     return { result, runs, records };
