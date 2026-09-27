@@ -628,14 +628,28 @@ export function renderChartWidget(chartType, points, series, pieSummary = null, 
       const barSize = Math.max(0, value);
       const label = chartPointLabel(point, unit);
       const category = formatCategory(point.x);
+      const fullCategory = point.section ? `${point.section}:${point.x}` : point.x;
+      const categoryText = h('bdi', {
+        className: 'horizontal-bar-chart-label-text',
+        dir: 'ltr'
+      }, category);
+      const categoryContent = renderSafeLink(categoryText, point.link ?? null);
+      let hasInteractiveLink = false;
+      if (point.link && categoryContent instanceof HTMLElement) {
+        categoryContent.title = fullCategory;
+        categoryContent.setAttribute('aria-label', `${point.link.label}: ${fullCategory}`);
+        hasInteractiveLink = true;
+      }
       return h(
         'li',
         { className: 'horizontal-bar-chart-row' },
-        h('span', { className: 'horizontal-bar-chart-label', title: point.x },
-          renderSafeLink(
-            h('bdi', { className: 'horizontal-bar-chart-label-text', dir: 'ltr' }, category),
-            point.link ?? null
-          )
+        h('span', {
+          className: 'horizontal-bar-chart-label',
+          title: fullCategory,
+          tabIndex: hasInteractiveLink ? undefined : 0,
+          'aria-label': hasInteractiveLink ? undefined : fullCategory
+        },
+        categoryContent
         ),
         h(
           'span',
