@@ -13,6 +13,7 @@ const controlPolicy = JSON.parse(readFileSync(".github/workflows/cao.json", "utf
 const landingPage = readFileSync("docs/README.md", "utf8");
 const hero = readFileSync("docs/components/HierarchyHero.astro", "utf8");
 const heroIntro = readFileSync("docs/components/HeroIntro.astro", "utf8");
+const illustration = readFileSync("docs/components/DispatchIllustration.astro", "utf8");
 const terminal = readFileSync("docs/components/TerminalDemo.astro", "utf8");
 const wizard = readFileSync("docs/components/OpsWizard.astro", "utf8");
 const setupPage = readFileSync("docs/pages/setup.astro", "utf8");
@@ -57,6 +58,26 @@ test("landing page presents the product through real operational surfaces", () =
   assert.doesNotMatch(hero, /trust-section|Coordination without concentrated risk|section-actions/);
   assert.doesNotMatch(`${landingPage}\n${hero}`, /\bfactor(?:y|ies)\b/i);
   assert.doesNotMatch(`${landingPage}\n${hero}`, /\bfleets?\b/i);
+});
+
+test("landing page explains and illustrates campaign dispatch", () => {
+  assert.match(
+    hero,
+    /An Agentic Campaign is a scalable work dispatcher that operates on your repositories to acheive a goal\./,
+  );
+  assert.match(hero, /<DispatchIllustration \/>/);
+  assert.match(hero, /aria-describedby="dispatch-description"/);
+  assert.match(illustration, /control-plane-dispatch-fallback\.svg/);
+  assert.match(illustration, /control-plane-dispatch-fallback-dark-mode\.svg/);
+  assert.match(illustration, /control-plane-dispatch-mobile\.svg/);
+  assert.match(illustration, /control-plane-dispatch-mobile-dark-mode\.svg/);
+  assert.match(illustration, /control-plane-dispatch-motion\.svg/);
+  assert.match(illustration, /control-plane-dispatch-mobile-motion\.svg/);
+  assert.match(illustration, /@media \(prefers-reduced-motion: reduce\)/);
+  for (const layout of ["", "-mobile"]) {
+    const motion = readFileSync(`docs/assets/control-plane-dispatch${layout}-motion.svg`, "utf8");
+    assert.doesNotMatch(motion, /prefers-color-scheme/);
+  }
 });
 
 test("setup wizard lives on a dedicated page linked from the header", () => {
