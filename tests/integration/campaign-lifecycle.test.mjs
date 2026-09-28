@@ -185,15 +185,28 @@ function installedManifests(consumer) {
   return readdirSync(join(consumer, ".github", "aw", "packages"));
 }
 
-function run(command, args, cwd, input = undefined) {
+function run(command, args, cwd, input = undefined, env = process.env) {
   return execFileSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: process.env,
+    env,
     input,
     maxBuffer: 16 * 1024 * 1024,
     stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
+}
+
+// `gh aw update` reports a package whose manifest resolution failed as zero
+// successes and zero failures when the package installs no agentic workflows,
+// so the only visible symptom is "no workflows were successfully updated".
+// Enabling the gh-aw CLI debug namespaces keeps the underlying cause in the
+// captured stderr, which node:test reports when the command exits non-zero.
+// The update re-resolves the package through the contents API, so it is exposed
+// to the same transient GitHub gateway errors as the initial install.
+function runUpdate(args, cwd) {
+  return retryTransientCampaignInstall(
+    () => run("gh", args, cwd, undefined, { ...process.env, DEBUG: "cli:*" }),
+  );
 }
 
 async function installCampaign(source) {
@@ -345,7 +358,7 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
 
     const removedRuntime = controlRuntimeFiles[0];
     rmSync(join(consumer, removedRuntime));
-    run("gh", [
+    await runUpdate([
       "aw",
       "update",
       campaignUpdateSource,
@@ -620,7 +633,7 @@ test("gh aw update replaces workflows and restores campaign-owned assets after c
       rmSync(join(consumer, relativePath));
     }
 
-    run("gh", [
+    await runUpdate([
       "aw",
       "update",
       dependabotCampaignUpdateSource,
