@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -279,7 +280,7 @@ func TestHostedMCPConfigurationFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(site, "index.html"), []byte("<html></html>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := New(&redisx.Store{}, Config{
+	_, err := New(context.Background(), &redisx.Store{}, Config{
 		HostProfile: hostedHostProfile(), Listen: "127.0.0.1:8080",
 		SiteDirectory: site, MCPEnabled: true,
 		Proxy: ProxyPolicy{
@@ -369,7 +370,7 @@ func newMCPTestAppConfig(
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(redisx.NewStore(client, "test"), Config{
+	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
 		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 		DashboardQueries: definitions, AgentCatalogPath: testAgentCatalog,
 		MCPContractPath: testMCPContract, MCPEnabled: enabled,
