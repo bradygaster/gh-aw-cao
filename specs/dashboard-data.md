@@ -1866,6 +1866,16 @@ has been received. Therefore a database read during ingestion MAY observe an
 intermediate state. Query subscriptions that depend on the unfinished phase
 MUST retain their prior complete payload until the phase succeeds.
 
+Published inventory metadata that no activity shard observes — marketplace
+packages — SHALL be committed before any activity shard is downloaded, and the
+worker SHALL publish that inventory phase as soon as the commit lands. Only
+subscriptions whose resolved canonical sources are entirely satisfied by that
+phase SHALL be published from it, so an inventory-only page such as Marketplace
+renders without waiting for historical run ingestion. The complete inventory
+payload SHALL still be committed after shard ingestion, so inventory continues
+to resolve shared structural records last and the converged canonical state is
+unchanged.
+
 ---
 
 # 30. Ingestion Receipts and Retry
