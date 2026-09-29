@@ -188,4 +188,6 @@ test("cached view is populated before background ingestion updates it", async ({
   releaseFreshData();
 
   await expect(page.getByRole("cell", { name: "Fresh dashboard run" })).toBeVisible();
+  await expect(page.locator(".dashboard-snapshot-status")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Dashboard data is current" })).toBeVisible();
 });

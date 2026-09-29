@@ -3,7 +3,7 @@
       import { offerCancelCommand } from "./cancel-command.js";
       import { loadDashboardQuerySources, processDashboardQueries, subscribeWorkerLoadingProgress } from "./data-processor.js";
       import { startDashboardData } from "./data/startup.js";
-      import { renderDashboardSnapshotStatus, renderRefreshError } from "./components/refresh-error.js";
+      import { renderDashboardCurrentStatus, renderDashboardSnapshotStatus, renderRefreshError } from "./components/refresh-error.js";
       import { collectFullDiagnostics } from "./diagnostics.js";
       import { startDashboardAppUpdates } from "./dashboard-data-updates.js";
       import { attachCliActions, setDeclaredCliActions } from "./components/cli-actions.js";
@@ -338,11 +338,13 @@
         } else if (state === "stale") {
           dashboard.classList.add("dashboard-stale");
         }
-        if (snapshot) {
+        if (snapshot && state !== "ready") {
           dashboard.prepend(renderDashboardSnapshotStatus(
             snapshot,
-            state === "cached" ? "refreshing" : state === "stale" ? "stale" : "current"
+            state === "cached" ? "refreshing" : "stale"
           ));
+        } else if (snapshot) {
+          dashboard.querySelector(".dashboard-horizon")?.after(renderDashboardCurrentStatus(snapshot));
         }
         if (retryRefresh && (state === "stale" || (state === "loading" && !snapshot))) {
           dashboard.querySelector(".report-body")?.prepend(renderRefreshError(retryRefresh, {

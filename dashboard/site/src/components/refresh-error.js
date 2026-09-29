@@ -1,6 +1,6 @@
 import { h } from '../dom.js';
 import { octicon } from '../octicons.js';
-import { renderCloseButton } from './ui-primitives.js';
+import { renderCloseButton, renderTooltip } from './ui-primitives.js';
 import { createDebug } from '../debug.js';
 
 const debugRefreshError = createDebug('refresh-error');
@@ -53,21 +53,39 @@ export function renderRefreshError(retry, { hasCachedSnapshot = true } = {}) {
 
 /**
  * @param {{ createdAt: string }} snapshot
- * @param {'refreshing'|'current'|'stale'} state
+ * @param {'refreshing'|'stale'} state
  */
 export function renderDashboardSnapshotStatus(snapshot, state) {
-  const timestamp = Date.parse(snapshot.createdAt);
-  const date = Number.isFinite(timestamp)
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
-    : 'an unknown time';
+  const date = formatSnapshotDate(snapshot);
   const message = state === 'refreshing'
     ? `Refreshing dashboard data. Showing the last complete snapshot from ${date}.`
-    : state === 'stale'
-      ? `Dashboard refresh failed. Showing the last complete snapshot from ${date}.`
-      : `Dashboard data is current as of ${date}.`;
+    : `Dashboard refresh failed. Showing the last complete snapshot from ${date}.`;
   return h('p', {
     className: 'dashboard-snapshot-status',
     role: 'status',
     'aria-live': 'polite'
   }, message);
+}
+
+/**
+ * @param {{ createdAt: string }} snapshot
+ */
+export function renderDashboardCurrentStatus(snapshot) {
+  return renderTooltip({
+    id: 'dashboard-current-status-tooltip',
+    label: 'Dashboard data is current',
+    description: `Dashboard data is current as of ${formatSnapshotDate(snapshot)}.`,
+    icon: octicon('check-circle-fill'),
+    className: 'dashboard-current-status'
+  });
+}
+
+/**
+ * @param {{ createdAt: string }} snapshot
+ */
+function formatSnapshotDate(snapshot) {
+  const timestamp = Date.parse(snapshot.createdAt);
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp)
+    : 'an unknown time';
 }
