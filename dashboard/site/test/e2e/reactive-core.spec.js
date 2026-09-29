@@ -1,12 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 
-test('DLS-CONF-004 reactive DOM nodes render stable keyed output in browser', async ({ page }) => {
+/** @param {string} source */
+function toDataUrl(source) {
+  return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
+}
+
+function createDomModuleUrl() {
   const debugSource = readFileSync(new URL('../../src/debug.js', import.meta.url), 'utf8');
-  const debugModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(debugSource)}`;
+  const debugModuleUrl = toDataUrl(debugSource);
   const domSource = readFileSync(new URL('../../src/dom.js', import.meta.url), 'utf8')
     .replace("'./debug.js'", JSON.stringify(debugModuleUrl));
-  const domModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(domSource)}`;
+  return toDataUrl(domSource);
+}
+
+test('DLS-CONF-004 reactive DOM nodes render stable keyed output in browser', async ({ page }) => {
+  const domModuleUrl = createDomModuleUrl();
 
   await page.setContent(`
     <main id="app"></main>
@@ -29,18 +38,13 @@ test('DLS-CONF-004 reactive DOM nodes render stable keyed output in browser', as
 });
 
 test('reactive shadow-tree updates preserve focused keyed nodes in browser', async ({ page }) => {
-  const debugSource = readFileSync(new URL('../../src/debug.js', import.meta.url), 'utf8');
-  const debugModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(debugSource)}`;
-  const domSource = readFileSync(new URL('../../src/dom.js', import.meta.url), 'utf8')
-    .replace("'./debug.js'", JSON.stringify(debugModuleUrl));
+  const domModuleUrl = createDomModuleUrl();
   const reconcilerSource = readFileSync(new URL('../../src/dom-reconciler.js', import.meta.url), 'utf8')
-    .replace("'./dom.js'", JSON.stringify(`data:text/javascript;charset=utf-8,${encodeURIComponent(domSource)}`));
+    .replace("'./dom.js'", JSON.stringify(domModuleUrl));
   const reconcilerModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(reconcilerSource)}`;
   const reactiveSource = readFileSync(new URL('../../src/reactive.js', import.meta.url), 'utf8')
     .replace("'./dom-reconciler.js'", JSON.stringify(reconcilerModuleUrl));
   const reactiveModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(reactiveSource)}`;
-  const domModuleUrl = `data:text/javascript;charset=utf-8,${encodeURIComponent(domSource)}`;
-
   await page.setContent(`
     <main id="app"></main>
     <script type="module">
