@@ -1,10 +1,107 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
 )
+
+func TestCollectionHealthSourceIsAvailableOnlyToAuthorizedReaders(t *testing.T) {
+	app := &App{}
+	unavailable, err := app.collectionHealthSource(t.Context(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unavailable.Metadata["availability"] != "unavailable" || len(unavailable.Rows) != 0 {
+		t.Fatalf("unauthorized health source exposed data: %+v", unavailable)
+	}
+	available, err := app.collectionHealthSource(t.Context(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available.Metadata["availability"] != "available" || len(available.Rows) != 1 {
+		t.Fatalf("health source was not produced by the server query boundary: %+v", available)
+	}
+	if available.Rows[0]["configured"] != false || available.Rows[0]["health"] != "not-configured" {
+		t.Fatalf("unconfigured profile was not explicit: %+v", available.Rows[0])
+	}
+}
+
+func TestCollectionHealthQueryRunsThroughServerQueryEngine(t *testing.T) {
+	address, closeServer := fakeRedis(t)
+	defer closeServer()
+	client, err := redisx.New("redis://" + address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{store: redisx.NewStore(client, "health-query-test")}
+	input := queryRequest{
+		Queries:     []query.Definition{{Name: "ingestion-health", From: collectionHealthSourceName}},
+		SourceNames: []string{"ingestion-health"},
+	}
+	for _, test := range []struct {
+		name       string
+		authorized bool
+		want       string
+	}{
+		{name: "authorized", authorized: true, want: "available"},
+		{name: "unauthorized", authorized: false, want: "unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, status, err := app.executeQuery(t.Context(), input, test.authorized)
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("executeQuery() status=%d err=%v", status, err)
+			}
+			source, ok := result.Sources["ingestion-health"]
+			if !ok || source.Metadata["availability"] != test.want {
+				t.Fatalf("query returned unexpected health source: %+v", source)
+			}
+			if test.authorized && (len(source.Rows) != 1 || source.Rows[0]["health"] != "not-configured") {
+				t.Fatalf("authorized health query returned wrong row: %+v", source.Rows)
+			}
+		})
+	}
+}
+
+func TestCollectionStatusRequiresHostedAdministrator(t *testing.T) {
+	app := &App{
+		oauth:  &githubOAuth{},
+		config: Config{AdminUsers: []string{"operator"}},
+	}
+	request := httptest.NewRequestWithContext(
+		context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "reader"}),
+		http.MethodGet, "/api/v1/ingestion/health", nil,
+	)
+	response := httptest.NewRecorder()
+	app.collectionStatus(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status request returned %d", response.Code)
+	}
+
+	request = httptest.NewRequestWithContext(
+		context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "operator"}),
+		http.MethodGet, "/api/v1/ingestion/health", nil,
+	)
+	response = httptest.NewRecorder()
+	app.collectionStatus(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("administrator status request returned %d: %s", response.Code, response.Body.String())
+	}
+	var status map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status["configured"] != false || status["health"] != "not-configured" {
+		t.Fatalf("unexpected unconfigured collection response: %#v", status)
+	}
+}
 
 func TestProfilesAreMutuallyExclusive(t *testing.T) {
 	collector := &CollectorConfig{

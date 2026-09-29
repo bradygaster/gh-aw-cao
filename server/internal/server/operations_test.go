@@ -8,12 +8,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/githubnext/gh-aw-cao/server/internal/collect"
 	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
 	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-aw-cao/server/internal/simulator"
 )
 
 type testReconciler struct {
@@ -74,6 +78,7 @@ func TestWebhookReconcilesThroughInjectedCanonicalUpdater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	reconciler := &testReconciler{called: make(chan struct{})}
 	var authBranches []string
 	app := &App{
@@ -190,5 +195,149 @@ func TestHostedRebuildRequiresExplicitAdministrator(t *testing.T) {
 	}
 	if strings.Join(branches, ",") != "admin.denied,admin.allowed" {
 		t.Fatalf("unexpected administrator branch logs: %v", branches)
+	}
+}
+
+func TestSimulatorUsesProductionWebhookAdmissionAndCollectionQueue(t *testing.T) {
+	var client *redisx.Client
+	var err error
+	if endpoint := os.Getenv("CAO_SIMULATOR_REDIS_URL"); endpoint != "" {
+		client, err = redisx.New(endpoint)
+		if err == nil {
+			_, err = client.Do(t.Context(), "PING")
+		}
+		if err != nil {
+			t.Fatalf("connect to CAO_SIMULATOR_REDIS_URL: %v", err)
+		}
+	} else {
+		address, closeServer := fakeRedis(t)
+		t.Cleanup(closeServer)
+		client, err = redisx.New("redis://" + address)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	site := t.TempDir()
+	if err := os.WriteFile(site+"/index.html", []byte("<html><body></body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "simulator-webhook-secret"
+	namespace := "simulator-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	app, err := New(t.Context(), redisx.NewStore(client, namespace), Config{
+		Listen:        "127.0.0.1:0",
+		SiteDirectory: site,
+		AccessToken:   strings.Repeat("x", 32),
+		WebhookSecret: secret,
+		Collector:     &CollectorConfig{AppID: 1, AdmitOnly: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	result, err := (simulator.Scenario{
+		Name:                "production-webhook-path",
+		Repositories:        4,
+		EventsPerRepository: 2,
+		Seed:                3,
+		Distribution:        "uniform",
+		DuplicateEvery:      2,
+	}).Deliver(t.Context(), server.Client(), server.URL+"/api/github/webhook", secret, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted != result.Attempts || result.Failed != 0 || result.Duplicates == 0 {
+		t.Fatalf("simulator did not exercise successful deduplicating admission: %#v", result)
+	}
+}
+
+func TestSimulatorExercisesGoServerWithRedis(t *testing.T) {
+	endpoint := os.Getenv("CAO_SIMULATOR_REDIS_URL")
+	if endpoint == "" {
+		t.Skip("set CAO_SIMULATOR_REDIS_URL to run the Go server simulator integration")
+	}
+	client, err := redisx.New(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Do(t.Context(), "PING"); err != nil {
+		t.Fatalf("connect to CAO_SIMULATOR_REDIS_URL: %v", err)
+	}
+
+	site := t.TempDir()
+	if err := os.WriteFile(site+"/index.html", []byte("<html><body></body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "simulator-webhook-secret"
+	namespace := "simulator-server-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	app, err := New(t.Context(), redisx.NewStore(client, namespace), Config{
+		Listen:        "127.0.0.1:0",
+		SiteDirectory: site,
+		AccessToken:   testAccessToken,
+		WebhookSecret: secret,
+		Collector:     &CollectorConfig{AppID: 1, AdmitOnly: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Collector().Start(t.Context(), nil); err != nil {
+		t.Fatalf("start Go server collector: %v", err)
+	}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	result, err := (simulator.Scenario{
+		Name:                "go-server-recovery-burst",
+		Repositories:        8,
+		EventsPerRepository: 5,
+		Seed:                29,
+		Distribution:        "hot",
+		OutOfOrder:          true,
+		DuplicateEvery:      3,
+		DropEvery:           7,
+		DelayEvery:          4,
+		Delay:               "1ms",
+		ReplayCount:         3,
+		RemoveRepositories:  true,
+	}).Deliver(ctx, server.Client(), server.URL+"/api/github/webhook", secret, 8)
+	if err != nil {
+		t.Fatalf("deliver simulator workload to Go server: %v", err)
+	}
+	if result.Accepted != result.Attempts || result.Failed != 0 || result.Duplicates == 0 || result.Dropped == 0 || result.Replayed == 0 {
+		t.Fatalf("simulator did not exercise burst, duplicate, drop, and replay traffic: %#v", result)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/ingestion/health", nil) // #nosec G704 -- httptest binds this endpoint to loopback.
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testAccessToken)
+	response, err := server.Client().Do(request) // #nosec G704 -- the request targets the local httptest server.
+	if err != nil {
+		t.Fatalf("read Go server ingestion health: %v", err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close ingestion health response: %v", err)
+		}
+	}()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("ingestion health returned %d", response.StatusCode)
+	}
+	var status collect.Status
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Health != "recovering" || status.QueueDepth == 0 || status.PendingTasks != 0 {
+		t.Fatalf("simulator workload did not leave queued recovery work: %#v", status)
+	}
+	if status.Counters["webhookReceived"] != int64(result.Attempts) {
+		t.Fatalf("health snapshot counted %d webhooks, simulator sent %d", status.Counters["webhookReceived"], result.Attempts)
+	}
+	if status.Counters["webhookDuplicate"] == 0 || status.Counters["taskQueued"] == 0 {
+		t.Fatalf("health snapshot is missing simulator ingestion counters: %#v", status.Counters)
 	}
 }

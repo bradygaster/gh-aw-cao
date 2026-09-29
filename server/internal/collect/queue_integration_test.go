@@ -356,6 +356,31 @@ func TestQueueCapacityBackpressuresWithoutTrimmingPendingWork(t *testing.T) {
 	}
 }
 
+func TestQueueCapacityCountsScheduledRetries(t *testing.T) {
+	store, ctx := integrationStore(t)
+	queue := Queue{Store: store, MaxLength: 1}
+	if err := queue.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(ctx, Task{Repository: "octo/retry"}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := queue.Lease(ctx, "worker", 1, 0)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("lease = %+v, err = %v", leases, err)
+	}
+	leases[0].Task.NotBefore = time.Now().UTC().Add(time.Hour)
+	if err := queue.Defer(ctx, leases[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(ctx, Task{Repository: "octo/overflow"}); !errors.Is(err, redisx.ErrStreamCapacity) {
+		t.Fatalf("enqueue error = %v, want capacity backpressure for scheduled task", err)
+	}
+	if depth, err := queue.Depth(ctx); err != nil || depth != 1 {
+		t.Fatalf("depth = %d, err = %v; want delayed task counted in queue depth", depth, err)
+	}
+}
+
 func TestQueueDeadLettersAfterRepeatedFailures(t *testing.T) {
 	store, ctx := integrationStore(t)
 	queue := Queue{Store: store, MaxAttempts: 2}
@@ -368,6 +393,11 @@ func TestQueueDeadLettersAfterRepeatedFailures(t *testing.T) {
 	}
 	failure := errors.New("collection failed")
 	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if _, err := queue.promoteDue(ctx, time.Now().UTC().Add(time.Hour), 10); err != nil {
+				t.Fatal(err)
+			}
+		}
 		leases, err := queue.Lease(ctx, "worker", 10, 50*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
@@ -432,6 +462,87 @@ func TestQueueSerializesOneRepository(t *testing.T) {
 	}
 }
 
+func TestWorkerCancellationPreservesNotBeforeTask(t *testing.T) {
+	store, ctx := integrationStore(t)
+	queue := Queue{Store: store}
+	if err := queue.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	notBefore := time.Now().UTC().Add(time.Hour)
+	if _, err := queue.Enqueue(ctx, Task{
+		Repository: "octo/api", InstallationID: 7, NotBefore: notBefore,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := queue.Lease(ctx, "worker", 1, 0)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("lease = %+v, err = %v; want delayed task", leases, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	worker := Worker{Queue: queue}
+	if worker.process(cancelled, leases[0]) {
+		t.Fatal("cancelled delayed task should not be processed")
+	}
+	pending, err := queue.Pending(ctx)
+	if err != nil || pending != 0 {
+		t.Fatalf("pending = %d, err = %v; expected the original lease to be scheduled", pending, err)
+	}
+	if depth, err := queue.Depth(ctx); err != nil || depth != 1 {
+		t.Fatalf("depth = %d, err = %v; want one durably scheduled task", depth, err)
+	}
+	promoted, err := queue.promoteDue(ctx, notBefore.Add(time.Millisecond), 1)
+	if err != nil || promoted != 1 {
+		t.Fatalf("promoted = %d, err = %v; want delayed task to become ready", promoted, err)
+	}
+	requeued, err := queue.Lease(ctx, "replacement-worker", 1, 0)
+	if err != nil || len(requeued) != 1 {
+		t.Fatalf("requeued task = %+v, err = %v", requeued, err)
+	}
+	if !requeued[0].Task.NotBefore.Equal(notBefore) {
+		t.Fatalf("notBefore = %s, want %s", requeued[0].Task.NotBefore, notBefore)
+	}
+}
+
+func TestDelayedTaskDoesNotBlockReadyQueueWork(t *testing.T) {
+	store, ctx := integrationStore(t)
+	queue := Queue{Store: store}
+	if err := queue.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(ctx, Task{
+		Repository: "octo/delayed", NotBefore: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Enqueue(ctx, Task{Repository: "octo/ready"}); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := queue.Lease(ctx, "worker", 1, 0)
+	if err != nil || len(leases) != 1 || leases[0].Task.Repository != "octo/delayed" {
+		t.Fatalf("first lease = %+v, err = %v; want delayed task", leases, err)
+	}
+	worker := Worker{Queue: queue}
+	processingCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		worker.process(processingCtx, leases[0])
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("scheduling a delayed task blocked the worker")
+	}
+	ready, err := queue.Lease(ctx, "ready-worker", 1, 0)
+	if err != nil || len(ready) != 1 || ready[0].Task.Repository != "octo/ready" {
+		t.Fatalf("ready lease = %+v, err = %v; delayed task blocked ready work", ready, err)
+	}
+}
+
 func TestAdmitterRefusesRepositoriesOutsideScope(t *testing.T) {
 	store, ctx := integrationStore(t)
 	enrollment := Enrollment{Store: store}
@@ -481,11 +592,17 @@ func TestAdmitterErasesEvidenceWhenScopeIsWithdrawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	projector := Projector{Store: store, Lake: lake, Enrollment: enrollment}
+	queue := Queue{Store: store}
+	if err := queue.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
 	admitter := Admitter{
 		Enrollment: enrollment,
-		Queue:      Queue{Store: store},
-		Lake:       &lake,
+		Queue:      queue,
 		Projection: projector,
+	}
+	if _, err := queue.Enqueue(ctx, Task{Repository: "acme/withdrawn", InstallationID: 11}); err != nil {
+		t.Fatal(err)
 	}
 	shards := map[string]string{
 		lake.ShardDirectory(): "raw",
@@ -505,8 +622,18 @@ func TestAdmitterErasesEvidenceWhenScopeIsWithdrawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if admission.Erased != 1 {
-		t.Fatalf("erased %d repositories, want 1", admission.Erased)
+	if admission.ErasureQueued != 1 {
+		t.Fatalf("queued erasure for %d repositories, want 1", admission.ErasureQueued)
+	}
+	leases, err := queue.Lease(ctx, "erasure-test", 1, 0)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("lease = %+v, err = %v; want queued collection task", leases, err)
+	}
+	worker := Worker{
+		Queue: queue, Runner: Runner{Lake: lake}, Enrollment: enrollment,
+	}
+	if !worker.process(ctx, leases[0]) {
+		t.Fatal("withdrawn collection task did not erase its retained evidence")
 	}
 	for directory := range shards {
 		withdrawn := directory + "/" + lake.ShardPrefix("acme/withdrawn") + "0001.jsonl"
@@ -559,6 +686,34 @@ func TestAdmitterQueuesErasureWithoutALake(t *testing.T) {
 	}
 }
 
+func TestInstallationRemovalSerializesMembershipSnapshot(t *testing.T) {
+	store, ctx := integrationStore(t)
+	enrollment := Enrollment{Store: store}
+	if err := enrollment.AddRepositories(ctx, 17, []string{"Acme/first", "acme/second"}); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot []string
+	removed, err := enrollment.RemoveInstallationBefore(ctx, 17, func(ctx context.Context, repositories []string) error {
+		snapshot = append([]string(nil), repositories...)
+		if err := enrollment.AddRepositories(ctx, 18, []string{"acme/racing"}); !errors.Is(err, ErrEnrollmentMutationBusy) {
+			t.Fatalf("concurrent enrollment mutation error = %v, want busy", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot) != 2 || snapshot[0] != "acme/first" || snapshot[1] != "acme/second" {
+		t.Fatalf("prepared erasure snapshot = %v", snapshot)
+	}
+	if len(removed) != len(snapshot) || removed[0] != snapshot[0] || removed[1] != snapshot[1] {
+		t.Fatalf("removed repositories = %v, want prepared snapshot %v", removed, snapshot)
+	}
+	if enrolled, err := enrollment.Enrolled(ctx, "acme/racing"); err != nil || enrolled {
+		t.Fatalf("repository from blocked mutation enrolled=%t, err=%v", enrolled, err)
+	}
+}
+
 func TestTransferredRepositoryIgnoresStaleInstallationRemoval(t *testing.T) {
 	store, ctx := integrationStore(t)
 	enrollment := Enrollment{Store: store}
@@ -598,6 +753,48 @@ func TestTransferredRepositoryIgnoresStaleInstallationRemoval(t *testing.T) {
 	}
 }
 
+func TestStaleRemovalErasureDoesNotDeleteTransferredEvidence(t *testing.T) {
+	store, ctx := integrationStore(t)
+	enrollment := Enrollment{Store: store}
+	queue := Queue{Store: store}
+	if err := queue.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := enrollment.AddRepositories(ctx, 11, []string{"octo/api"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enrollment.AddRepositories(ctx, 12, []string{"octo/api"}); err != nil {
+		t.Fatal(err)
+	}
+	lake := Lake{Directory: t.TempDir()}
+	if err := lake.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	shard := lake.ShardDirectory() + "/" + lake.ShardPrefix("octo/api") + "0001.jsonl"
+	if err := WriteFileAtomic(shard, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	admitter := Admitter{Enrollment: enrollment, Queue: queue}
+	payload := []byte(`{"action":"removed","installation":{"id":11},` +
+		`"repositories_removed":[{"full_name":"octo/api"}]}`)
+	if _, err := admitter.Admit(ctx, "installation_repositories", payload); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := queue.Lease(ctx, "stale-erasure-test", 1, 0)
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("lease = %+v, err = %v; want stale erasure task", leases, err)
+	}
+	worker := Worker{
+		Queue: queue, Runner: Runner{Lake: lake}, Enrollment: enrollment,
+	}
+	if worker.process(ctx, leases[0]) {
+		t.Fatal("stale erasure should not report evidence changed")
+	}
+	if _, err := os.Stat(shard); err != nil {
+		t.Fatalf("transferred repository evidence was erased: %v", err)
+	}
+}
+
 func TestReplacementPersistsWhenAckCannotComplete(t *testing.T) {
 	store, ctx := integrationStore(t)
 	queue := Queue{Store: store}
@@ -621,6 +818,9 @@ func TestReplacementPersistsWhenAckCannotComplete(t *testing.T) {
 	pending, err := queue.Pending(ctx)
 	if err != nil || pending != 0 {
 		t.Fatalf("pending = %d, err = %v; want original acknowledged", pending, err)
+	}
+	if _, err := queue.promoteDue(ctx, time.Now().UTC().Add(time.Hour), 1); err != nil {
+		t.Fatal(err)
 	}
 	replacement, err := queue.Lease(ctx, "worker-b", 1, 0)
 	if err != nil || len(replacement) != 1 {

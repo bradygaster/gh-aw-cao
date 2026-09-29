@@ -662,8 +662,10 @@ function compareBackends(results, queries) {
   const mismatches = [];
   for (const [backend, rowsByName] of Object.entries(results)) {
     if (backend === baselineName) continue;
-    for (const [name, baselineRows] of Object.entries(results[baselineName])) {
-      const query = queryIndex.get(name);
+    for (const query of queries) {
+      const { name } = query;
+      if (!Object.hasOwn(results[baselineName], name)) continue;
+      const baselineRows = results[baselineName][name];
       if (backend === "redis" && query?.from === "transactions") continue;
       const ordered = (query?.["order-by"]?.length ?? 0) > 0;
       const expected = normalizedParityRows(query, baselineRows, ordered);
@@ -716,6 +718,7 @@ async function main() {
     const localNames = names.filter(
       (name) => queryExecutionRequirements(resolvedDocument, name).local,
     );
+    const localQueries = queries.filter(({ name }) => localNames.includes(name));
     const agentSqlitePath = join(temporaryDirectory, "agent.sqlite");
     const sqliteFactory = installSqliteIndexedDB(agentSqlitePath);
     await executeNodeBackend(sqliteFactory, sources, queries, names);
@@ -767,13 +770,15 @@ async function main() {
       redis: redisResult.redis,
     };
     report.backends = [...Object.keys(results), "cao-named-query", "cao-mcp"];
-    report.mismatches.push(...compareBackends(results, queries));
+    // Server-only sources such as collection health have no local IndexedDB
+    // equivalent and are therefore outside the cross-backend parity contract.
+    report.mismatches.push(...compareBackends(results, localQueries));
     report.mismatches.push(...compareBackends({
       "node-indexeddb": Object.fromEntries(
         Object.keys(redisResult.goMcp).map((name) => [name, databaseBaseline[name]]),
       ),
       "go-mcp": redisResult.goMcp,
-    }, queries));
+    }, localQueries));
     report.backends.push("go-mcp");
     report.status = report.mismatches.length === 0 ? "passed" : "failed";
     if (report.mismatches.length > 0) {

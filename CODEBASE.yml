@@ -139,7 +139,7 @@ components:
     responsibility: disposable generation-scoped dashboard projection using core Redis row sets
   dashboard_https_server:
     path: server/
-    responsibility: independently resolve compiled app-target and declarative Redis-provider modules from non-secret cao.json, compose and validate their capabilities, ingest deployed artifacts, execute Dashboard Language queries server-side, and serve bounded canonical results
+    responsibility: independently resolve compiled app-target and declarative Redis-provider modules from non-secret cao.json, compose and validate their capabilities, ingest deployed artifacts, execute Dashboard Language queries server-side, and serve bounded canonical or explicitly registered runtime-source results
   dashboard_coolify_deployment:
     path: server/coolify/
     responsibility: build and run the non-root serve-hosted container behind a fail-closed Coolify TLS proxy with a managed Redis connection and an atomically populated external read-only artifact volume
@@ -161,6 +161,9 @@ components:
   dashboard_server_collection:
     path: server/internal/collect/
     responsibility: optional alternative ingestion profile that collects evidence into a snapshot-compatible evidence lake from GitHub App installations and projects it through the existing ingestion pipeline
+  dashboard_collection_health:
+    path: server/internal/server/collecting.go
+    responsibility: persist allowlisted Redis-backed ingestion counters and expose a read-only health API and admin-authorized collection-health runtime source through the query boundary
   dashboard_collection_credentials:
     path: server/internal/githubapp/
     responsibility: mint short-lived installation tokens and govern per-installation GitHub rate-limit budget
@@ -171,8 +174,8 @@ components:
     path: server/internal/doctor/
     responsibility: run a read-only systematic check-up of runtime configuration, Redis safety and capacity, canonical integrity, query definitions, generation reclamation, and optional collection health, rendered as human-readable text or versioned structured JSON
   dashboard_language_queries:
-    path: dashboard/site/src/data/
-    responsibility: declarative query definitions executed by the browser data worker
+    path: dashboard/site/src/data/ and server/internal/query/
+    responsibility: execute declarative canonical-data queries in the browser worker and registered bounded runtime-source queries at the server boundary
   computations:
     path: specs/computations.md
     responsibility: define deterministic partitioned measures that transform canonical evidence into bounded actionable insights
@@ -311,10 +314,14 @@ invariants:
   - "OAuth refresh MUST atomically compare-and-swap the encrypted session record; a refresh superseded by logout or another refresh MUST revoke or durably queue its newly issued credentials and MUST NOT restore session authority."
   - "GitHub webhook deliveries MUST be signature-verified and deduplicated before reconciliation; collection delivery deduplication and durable task admission MUST commit atomically, and webhook payloads are invalidation signals rather than projection authority."
   - "Server collection MUST remain at-least-once: retry, deferral, blocked requeue, malformed-entry, and dead-letter transitions MUST append durable replacement state before ACK in one Redis operation; worker crashes and ambiguous ACK failures MAY repeat safe collection."
+  - "Delivery recovery MUST persist pagination progress separately from its processed-delivery boundary, resume bounded scans before advancing that boundary, and MUST NOT advance past a failed redelivery request."
+  - "Scope withdrawal MUST serialize with enrollment changes and durably enqueue erasure for the exact membership snapshot before removing enrollment; workers MUST serialize erasure with collection under repository leases and recheck current ownership before collecting or erasing."
+  - "Workers MUST persist future retries outside the ready stream, promote them only when due, count scheduled work toward queue capacity/depth, preserve leased work on shutdown, and never block ready work while waiting."
   - "The collection task stream MUST apply admission backpressure at its configured capacity and MUST NOT trim undelivered or pending work; completed entries are ACKed and deleted atomically."
   - "Published-snapshot ingestion and server collection are mutually exclusive profiles; configuring both MUST fail at startup, and the published-snapshot profile MUST remain the default with unchanged behavior when collection is unconfigured."
   - "Server collection MUST write evidence in the published snapshot layout and project it through the same ingestion pipeline, so a retained evidence lake repopulates a database on cold start without GitHub requests."
   - "Server collection scope MUST derive from GitHub App installations; a delivery for an unenrolled repository MUST be dropped rather than collected, and GitHub budget MUST be reserved per installation before each collection."
+  - "The local ingestion simulator MUST use the production webhook admission and collection subprocess path, strict seeded JSON scenarios, synthetic repositories, bounded event/repository/concurrency limits, and MUST NOT be treated as a complete GitHub API emulator or production-capacity guarantee."
   - "Server diagnostics MUST be read-only, use stable check identifiers, produce equivalent human-readable and versioned structured reports, redact secrets, bound each dependency check, and require explicit deep mode before reading every active source."
   - "Redis rebuilds MUST use a distributed lock, stage and validate a fresh immutable generation, and atomically activate it without modifying the active generation in place."
   - "An empty Redis instance is healthy but not ready and MUST report that a rebuild is required."

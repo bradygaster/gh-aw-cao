@@ -19,6 +19,19 @@ import (
 )
 
 const redisWriteBatchSize = 100
+const ingestionHealthKey = "state:ingestion-health"
+
+var ingestionCounterNames = map[string]struct{}{
+	"webhookReceived":        {},
+	"webhookDuplicate":       {},
+	"webhookAdmissionFailed": {},
+	"taskQueued":             {},
+	"taskCoalesced":          {},
+	"collectionSucceeded":    {},
+	"collectionFailed":       {},
+	"collectionRetried":      {},
+	"collectionDeadLettered": {},
+}
 
 var ErrSourceUnavailable = errors.New("redis source is unavailable")
 
@@ -257,6 +270,83 @@ func (s *Store) OperationalState(ctx context.Context, name string) ([]byte, erro
 		return nil, err
 	}
 	return []byte(fmt.Sprint(value)), nil
+}
+
+// IncrementIngestionCounter records one bounded, low-cardinality ingestion
+// event. Counter names are restricted to the known health contract.
+func (s *Store) IncrementIngestionCounter(ctx context.Context, name string) error {
+	if _, ok := ingestionCounterNames[name]; !ok {
+		return errors.New("unknown ingestion counter")
+	}
+	script := `local count = redis.call("HINCRBY", KEYS[1], ARGV[1], 1); redis.call("HINCRBY", KEYS[1], "healthRevision", 1); return count`
+	_, err := s.Client.Do(ctx, "EVAL", script, "1", s.Key(ingestionHealthKey), name)
+	return err
+}
+
+// RecordIngestionHealthEvent stores only fixed event codes and timestamps, not
+// error messages, request data, or credentials.
+func (s *Store) RecordIngestionHealthEvent(ctx context.Context, event, code string, at time.Time) error {
+	var field string
+	switch event {
+	case "failure":
+		if code != "admission" && code != "collection" && code != "redis" {
+			return errors.New("unknown ingestion failure code")
+		}
+		field = "lastFailure"
+	case "success":
+		if code != "" {
+			return errors.New("success events must not include a code")
+		}
+		field = "lastSuccess"
+	case "webhook":
+		if code != "" {
+			return errors.New("webhook events must not include a code")
+		}
+		field = "lastWebhook"
+	default:
+		return errors.New("unknown ingestion health event")
+	}
+	timestamp := at.UTC().Format(time.RFC3339Nano)
+	script := `redis.call("HINCRBY", KEYS[1], "healthRevision", 1); redis.call("HSET", KEYS[1], ARGV[1], ARGV[2]); return 1`
+	if event == "failure" {
+		script = `redis.call("HINCRBY", KEYS[1], "healthRevision", 1); redis.call("HSET", KEYS[1], ARGV[1], ARGV[2], ARGV[3], ARGV[4]); return 1`
+		_, err := s.Client.Do(ctx, "EVAL", script, "1", s.Key(ingestionHealthKey),
+			field+"At", timestamp, field+"Code", code)
+		return err
+	}
+	_, err := s.Client.Do(ctx, "EVAL", script, "1", s.Key(ingestionHealthKey), field+"At", timestamp)
+	return err
+}
+
+// IngestionHealth returns the bounded health fields persisted by the
+// collection pipeline.
+func (s *Store) IngestionHealth(ctx context.Context) (map[string]int64, map[string]string, error) {
+	value, err := s.Client.Do(ctx, "HGETALL", s.Key(ingestionHealthKey))
+	if err != nil {
+		return nil, nil, err
+	}
+	fields, err := Strings(value)
+	if err != nil {
+		return nil, nil, err
+	}
+	counters := make(map[string]int64, len(ingestionCounterNames))
+	events := make(map[string]string, 5)
+	for index := 0; index+1 < len(fields); index += 2 {
+		name, value := fields[index], fields[index+1]
+		if _, ok := ingestionCounterNames[name]; ok {
+			count, parseErr := strconv.ParseInt(value, 10, 64)
+			if parseErr != nil || count < 0 {
+				return nil, nil, errors.New("invalid ingestion counter")
+			}
+			counters[name] = count
+			continue
+		}
+		switch name {
+		case "lastFailureAt", "lastFailureCode", "lastSuccessAt", "lastWebhookAt", "healthRevision":
+			events[name] = value
+		}
+	}
+	return counters, events, nil
 }
 
 const repositoryMemoryManifestField = "repository-memory:manifest"
