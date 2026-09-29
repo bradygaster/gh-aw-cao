@@ -113,6 +113,75 @@ beforeEach(() => {
   vi.stubGlobal('Worker', DataRequestWorker);
 });
 
+describe('semantic view prompt action', () => {
+  it('automatically exposes the shared preview on a chart with composed semantics', () => {
+    const document = /** @type {import('../../src/presenter.js').PresentationDocument} */ ({
+      languageVersion: '0.1.0',
+      dashboard: {
+        id: 'semantic-dashboard',
+        title: 'Semantic dashboard',
+        queries: [
+          { name: 'health', from: 'runs', intent: 'Show health', objective: 'Investigate failures', acceptance: 'Runs pass' }
+        ],
+        pages: [{
+          id: 'overview', kind: 'custom', title: 'Overview',
+          views: [{
+            id: 'health-chart', title: 'Health chart', mark: 'chart', chart: 'bar',
+            data: { source: 'health' },
+            intent: 'Compare workflow health',
+            encoding: { x: { field: 'workflow', type: 'nominal' }, y: { field: 'count', type: 'quantitative' } }
+          }]
+        }]
+      }
+    });
+    const rendered = renderDashboardView({
+      document,
+      sources: {
+        health: {
+          source: 'health',
+          rows: [{ workflow: 'daily', count: 3 }],
+          metadata: { 'source-id': 'health', 'source-kind': 'fixture', 'as-of': '', 'retrieved-at': '',
+            availability: 'available', completeness: 'complete', freshness: 'fresh' }
+        }
+      }
+    });
+    const button = /** @type {HTMLButtonElement | null} */ (rendered.querySelector('[data-view-id="health-chart"] .table-intent-button'));
+    expect(button?.getAttribute('aria-label')).toBe('Create prompt for Health chart');
+    button?.click();
+    const preview = rendered.querySelector('.table-intent-preview')?.textContent ?? '';
+    expect(preview).toContain('Show health\n\nCompare workflow health');
+    expect(preview).toContain('Investigate failures');
+    expect(preview).toContain('Runs pass');
+    expect(preview).toContain('Named CAO query IDs: health');
+    expect(preview).toContain('"workflow": "daily"');
+    disposeDashboard(rendered);
+  });
+
+  it('preserves the existing heading of an annotated callout', () => {
+    const document = /** @type {import('../../src/presenter.js').PresentationDocument} */ ({
+      languageVersion: '0.1.0',
+      dashboard: {
+        id: 'semantic-callout',
+        title: 'Semantic callout',
+        pages: [{
+          id: 'overview', kind: 'custom', title: 'Overview',
+          views: [{
+            id: 'alert', title: 'Review required', description: 'Investigate the alert.',
+            intent: 'Show an alert.', objective: 'Investigate it.', acceptance: 'Alert resolved.',
+            data: { source: 'runs' }, mark: 'callout', callout: { label: 'Alert' }
+          }]
+        }]
+      }
+    });
+    const rendered = renderDashboardView({ document, sources: {} });
+    const callout = rendered.querySelector('[data-view-id="alert"]');
+    expect(callout?.querySelectorAll('h3, h4')).toHaveLength(1);
+    expect(callout?.querySelector('aside')?.getAttribute('aria-labelledby')).toBe('overview-alert-callout-heading');
+    expect(callout?.querySelector('.table-intent-button')?.getAttribute('aria-label')).toBe('Create prompt for Review required');
+    disposeDashboard(rendered);
+  });
+});
+
 describe('dashboard DOM provenance', () => {
 
   it('renders independently bound elements without registering a page-wide query', () => {
