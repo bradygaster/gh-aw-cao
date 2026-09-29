@@ -1,0 +1,7 @@
+{
+  "campaign": "squad-advisory",
+  "orchestrator": "squad-advisory",
+  "workers": {
+    "research": "squad-advisory-research"
+  }
+}

@@ -1,0 +1,9 @@
+name: Squad Advisory
+description: A standing advisory squad in the control repository that researches one target repository at a time and files a triaged, decision-ready plan for its owners.
+min-version: v0.89.22
+experimental: true
+includes:
+  - ../aw.yml
+  - .github/workflows/squad-advisory-research.md
+  - .github/workflows/squad-advisory.md
+  - README.md

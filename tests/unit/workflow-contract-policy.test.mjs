@@ -268,6 +268,8 @@ test("enterprise defaults, budgets, timeouts, and concurrency are finite", () =>
     "optimization-token-auditor.md": { credits: 400, timeout: 30 },
     "optimization-token-optimizer.md": { credits: 500, timeout: 40 },
     "software-development-practices.md": { credits: 250, timeout: 15, dispatchMax: 20, workers: 2 },
+    "squad-advisory.md": { credits: 250, timeout: 15, dispatchMax: 4, workers: 1 },
+    "squad-advisory-research.md": { credits: 600, timeout: 45 },
     "software-development-practices-github-well-architected.md": { credits: 400, timeout: 30 },
     "software-development-practices-nist-ssdf.md": { credits: 400, timeout: 30 },
     "self-care-accessibility-checker.md": { credits: 400, timeout: 30 },
