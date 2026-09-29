@@ -303,7 +303,7 @@
       "id": "memory",
       "title": "Memory",
       "description": "Browse repository memory published by centrally managed campaigns.",
-      "experimental": true,
+      "experimental": false,
       "parameters": [],
       "queries": [
         "campaign-memory-campaigns"
