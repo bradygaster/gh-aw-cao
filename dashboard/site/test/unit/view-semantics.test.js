@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { effectiveViewSemantics, semanticViewPrompt } from '../../src/view-semantics.js';
+import { authoritativeDashboard } from '../authoritative-dashboard.js';
 
 afterEach(() => {
   vi.doUnmock('../../src/debug.js');
@@ -26,6 +27,27 @@ describe('semantic view prompts', () => {
       objective: 'Investigate failures\n\nIdentify regressions\n\nRemediate issues',
       acceptance: 'Runs healthy\n\nTrend stable\n\nVerified resolution'
     });
+  });
+
+  it('defines intent, objective, and acceptance on every dashboard chart', () => {
+    /** @type {Array<{ pageId: string, view: Record<string, unknown> }>} */
+    const charts = [];
+    /** @param {any} container @param {string} pageId */
+    const visit = (container, pageId) => {
+      for (const view of container.views ?? []) {
+        if (view.mark === 'chart') charts.push({ pageId, view });
+      }
+      for (const section of container.sections ?? []) visit(section, pageId);
+    };
+    for (const page of authoritativeDashboard.dashboard.pages) {
+      visit(page.kind === 'built-in' ? page.definition : page, page.id);
+    }
+    expect(charts.length).toBeGreaterThan(0);
+    const missing = charts.flatMap(({ pageId, view }) =>
+      ['intent', 'objective', 'acceptance']
+        .filter((field) => typeof view[field] !== 'string' || !view[field].trim())
+        .map((field) => `${pageId}/${view.id}: ${field}`));
+    expect(missing).toEqual([]);
   });
 
   it('keeps unannotated views disabled and bounds the untrusted snapshot', () => {
