@@ -896,14 +896,74 @@ API responses use `Cache-Control: no-store`. The dashboard service worker
 excludes `/api/` so query results and event streams are never placed in browser
 caches.
 
+## OAuth sign-in troubleshooting
+
+If the OAuth callback shows a sign-in error, select **Sign out and try again**.
+This attempts the existing CSRF-protected logout (including server-side token
+revocation), clears the pending OAuth state and the dashboard IndexedDB cache
+on the signed-out page, and then offers a fresh, explicit GitHub sign-in.
+
+The older `{"error":"GitHub authorization failed"}` response corresponds to
+an authorization failure; current versions show a help page instead. This
+failure can mean the selected account is not an active member of an allowed
+organization or team, or that GitHub membership could not be verified.
+Try an authorized account, or ask your dashboard administrator to check the
+allowed organizations and teams and your active membership. Do not send
+OAuth callback URLs, codes, tokens, or cookies when requesting help.
+
+If other open tabs block browser data deletion, close them and wait for the
+signed-out page to finish before signing in. If logout cannot be confirmed,
+the page keeps the error visible; clear this site's cookies before retrying,
+or contact your dashboard administrator. Try a GitHub account that is an
+active member of an organization or team permitted by the dashboard.
+Signing in does not itself grant access.
+
+The error page shows a request ID when tracing is enabled. Administrators can
+search for that W3C trace ID in their OpenTelemetry backend and inspect the
+`GET /auth/callback` span's fixed `error.type` classification. The same ID is
+sent as `X-Trace-Id` on the response. Neither the page nor the span reveals
+the OAuth code, state, credentials, account, membership details, or raw
+provider errors. If no trace ID appears, configure an OTLP trace endpoint as
+described below before expecting backend correlation; avoid sending callback
+URLs, cookies, codes, or tokens when requesting support.
+
+All generic server HTTP spans use a redacted copy of each request: the server
+does not export peer/client IP addresses, user-agent strings, query strings,
+arbitrary URL paths, W3C baggage, or client-provided tracestate. The original
+request still reaches the authentication and rate-limiting code unchanged.
+Raw user-agent strings may identify or fingerprint a browser, so they remain
+excluded from telemetry rather than assuming their collection is GDPR compliant.
+OAuth callbacks continue to use their own fixed-attribute span and extract
+only W3C trace context, not baggage. Trace IDs are correlation identifiers,
+not user identities. For GDPR-sensitive deployments, operators must also
+limit collector/exporter access and retention, review any upstream proxy
+logging and configured resource attributes, and avoid attaching identifiers
+in custom instrumentation. This application-level minimization does not
+certify the entire deployment's GDPR compliance.
+
 ## Telemetry
 
 The server is instrumented with standard, vendor-neutral
 [OpenTelemetry](https://opentelemetry.io/) tracing and metrics
-(`internal/telemetry/`). Every HTTP request is wrapped with `otelhttp`, which
-supplies OpenTelemetry HTTP semantic-convention attributes and the standard
+(`internal/telemetry/`). HTTP requests other than `GET /auth/callback` are
+wrapped with `otelhttp` using a redacted request, which supplies bounded
+OpenTelemetry HTTP semantic-convention attributes and the standard
 `http.server.request.duration`, `http.server.request.body.size`, and
-`http.server.response.body.size` metrics. The query engine and ingestion paths
+`http.server.response.body.size` metrics. OAuth callbacks instead emit a
+dedicated W3C-context-propagating server span named `GET /auth/callback` with
+only fixed `http.route` and `http.request.method` attributes, plus
+`cao_dashboard.auth.callback.count` (unit `{callback}`). Both the span and
+counter use `cao_dashboard.auth.callback.outcome` (`success` or `failure`);
+failures additionally use a fixed, bounded `error.type` (`invalid_state`,
+`missing_code`, `provider_denied`, `exchange_failed`, `authorization_failed`,
+`session_id_generation_failed`, `csrf_generation_failed`, or
+`session_save_failed`). Only server-side failures mark the span as an error;
+raw exceptions and provider error descriptions are never recorded. This
+separate instrumentation avoids exposing callback request metadata. The callback
+retains
+`X-Trace-Id` and `X-Span-Id` correlation headers; no OAuth code, state, cookie,
+token, login, provider message, query string, or other user identifier is
+added to its telemetry. The query engine and ingestion paths
 start dedicated `cao_dashboard.query.execute` and `cao_dashboard.ingest.run`
 spans. MCP requests use the OpenTelemetry MCP semantic conventions, including
 `mcp.method.name`, `mcp.protocol.version`, `gen_ai.operation.name`, and
