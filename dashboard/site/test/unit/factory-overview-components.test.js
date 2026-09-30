@@ -17,15 +17,15 @@ function binding({ pending = false, unavailable = false, rows = [] } = {}) {
   };
 }
 
-/** @param {number} [currentOffset] @returns {Record<string, unknown>[]} */
-function rhythmRows(currentOffset = 0) {
+/** @param {number} [currentOffset] @param {number} [firstPrevious] @returns {Record<string, unknown>[]} */
+function rhythmRows(currentOffset = 0, firstPrevious = 7) {
   return [{
     rhythm: {
       days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, index) => ({
         label,
         date: `2026-09-${String(7 + index).padStart(2, '0')}`,
         current: index < 3 ? index + 1 + currentOffset : 0,
-        previous: 7 - index,
+        previous: index === 0 ? firstPrevious : 7 - index,
         reached: index < 3
       }))
     }
@@ -95,7 +95,8 @@ describe('Overview component boundaries', () => {
     expect(rendered.querySelectorAll('.factory-rhythm-baseline')).toHaveLength(7);
     expect(barHeight(days[0]?.querySelector('.factory-rhythm-current'))).toBeCloseTo(100 / 7);
     expect(barHeight(days[0]?.querySelector('.factory-rhythm-baseline'))).toBe(100);
-    expect(barHeight(days[3]?.querySelector('.factory-rhythm-current'))).toBe(5);
+    expect(days[3]?.querySelector('.factory-rhythm-current')?.hasAttribute('hidden')).toBe(true);
+    expect(barHeight(days[3]?.querySelector('.factory-rhythm-current'))).toBe(0);
     expect(barHeight(days[3]?.querySelector('.factory-rhythm-baseline'))).toBeCloseTo(400 / 7);
 
     rows.set(rhythmRows(10));
@@ -119,7 +120,30 @@ describe('Overview component boundaries', () => {
     expect(rendered.querySelectorAll('.factory-rhythm-bar-pair i')).toHaveLength(14);
     expect(rendered.querySelector('.factory-rhythm-day')?.getAttribute('aria-label'))
       .toBe('Mon: 0 successful runs this week (day not yet reached); 0 successful runs last week.');
-    expect(barHeight(rendered.querySelector('.factory-rhythm-current'))).toBe(5);
+    expect(rendered.querySelectorAll('.factory-rhythm-bar-pair i:not([hidden])')).toHaveLength(0);
+    expect(barHeight(rendered.querySelector('.factory-rhythm-current'))).toBe(0);
+    controller.abort();
+  });
+
+  it('rhythm hides zero bars independently and restores them when counts change', () => {
+    const controller = new AbortController();
+    const rows = state(rhythmRows());
+    const rendered = renderFactoryRhythm({ rows: rows.get }, { signal: controller.signal });
+    const first = rendered.querySelector('.factory-rhythm-day');
+    const current = first?.querySelector('.factory-rhythm-current');
+    const previous = first?.querySelector('.factory-rhythm-baseline');
+
+    expect(current?.hasAttribute('hidden')).toBe(false);
+    expect(previous?.hasAttribute('hidden')).toBe(false);
+    rows.set(rhythmRows(0, 0));
+    expect(current?.hasAttribute('hidden')).toBe(false);
+    expect(previous?.hasAttribute('hidden')).toBe(true);
+    expect(barHeight(previous)).toBe(0);
+    expect(first?.getAttribute('aria-label')).toContain('0 successful runs last week');
+
+    rows.set(rhythmRows());
+    expect(previous?.hasAttribute('hidden')).toBe(false);
+    expect(barHeight(previous)).toBe(100);
     controller.abort();
   });
 
