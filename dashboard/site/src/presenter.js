@@ -785,13 +785,14 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
       let rendered = renderCustomView(page.id, view, index, sources, units, cardTemplates, headingTag, routeParameter, queryContext);
       if (isPlainObject(view)) {
         const semantics = effectiveViewSemantics(view, queries);
-        if (semantics.intent && semantics.objective && semantics.acceptance) {
+        if (view.prompt === 'always' || (view.prompt !== 'none'
+          && semantics.intent && semantics.objective && semantics.acceptance)) {
           const selectedSources = Object.fromEntries(getViewSources(view).flatMap((sourceName, sourceIndex) => {
             const source = sources[resolveViewSourceName(sources, page.id, view, index, sourceName, sourceIndex)];
             return source ? [[sourceName, source]] : [];
           }));
           const prompt = renderPromptPreviewAction(
-            `Create prompt for ${getViewTitle(view, index)}`,
+            view.mark === 'chart' ? `Fix it: ${getViewTitle(view, index)}` : `Create prompt for ${getViewTitle(view, index)}`,
             () => {
               const routeValues = Object.fromEntries(new URLSearchParams(globalThis.location?.hash.split('?')[1] ?? ''));
               return semanticViewPrompt({
@@ -817,12 +818,16 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
             'comment',
             'semantic-prompt'
           );
-          prompt.classList.add('semantic-prompt-action');
+          prompt.classList.add(view.mark === 'chart' ? 'chart-prompt-action' : 'semantic-prompt-action');
           const section = rendered.matches('.page-section') ? rendered : null;
           if (section) {
             section.classList.add('semantic-prompt-view');
             const heading = section.querySelector('h3, h4');
-            if (heading) heading.after(prompt);
+            if (heading && view.mark === 'chart') {
+              const titleRow = h('div', { className: 'chart-prompt-heading' });
+              heading.before(titleRow);
+              titleRow.append(heading, prompt);
+            } else if (heading) heading.after(prompt);
             else section.prepend(prompt);
           } else {
             rendered = h('div', { className: 'semantic-prompt-view' },
