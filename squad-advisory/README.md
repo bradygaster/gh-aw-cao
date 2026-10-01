@@ -44,6 +44,8 @@ When deployed across a farm, the campaign's very first action is to evaluate the
 
 Like the initial research-proposals issue in Squad agentic workflows, the Squad maps the component topology, surfaces cross-cutting architectural bottlenecks, and publishes a single, decision-ready issue in the ops repo: **The Top 3 Initiatives Across All Repositories**. This gives engineering leadership and maintainers immediate clarity on the macro priorities across their entire portfolio before diving into component-level details.
 
+Before the agent starts, a deterministic pre-fetch step reads a bounded snapshot of each allowed repository (at most 16): metadata, languages, top-level entries, and excerpts of key files such as `README.md`, `docker-compose.yml`, `Dockerfile`, and build manifests. These reads use the worker's read credential. In per-repository PAT mode that credential reaches only the target repository, so other farm repositories appear as evidence gaps rather than being guessed at.
+
 ### 2. Component Sweeps Aligned to the Farm Top 3
 
 Following the portfolio advisory, the orchestrator advances through the component repositories one by one on its daily schedule. 
