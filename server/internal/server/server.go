@@ -1031,6 +1031,7 @@ func (loader *generationLoader) LoadSource(name string, definition *query.Defini
 		source, err := loader.app.collectionHealthSource(loader.ctx, loader.allowCollectionHealth)
 		return source, model.Metrics{}, err
 	}
+
 	if name == gitHubQuotaUsageSourceName {
 		source, err := loader.app.gitHubQuotaUsageSource(loader.ctx, loader.allowCollectionHealth)
 		return source, model.Metrics{}, err
@@ -1046,6 +1047,12 @@ func (loader *generationLoader) LoadSource(name string, definition *query.Defini
 		return unavailableSource(name), metrics, nil
 	}
 	return source, metrics, err
+}
+
+// RuntimeQuerySourceNames lists sources resolved by the server rather than
+// stored as generation-scoped RedisJSON documents.
+func RuntimeQuerySourceNames() []string {
+	return []string{collectionHealthSourceName, gitHubQuotaUsageSourceName, marketplace.SourceName}
 }
 
 func unavailableSource(name string) model.Source {
