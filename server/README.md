@@ -832,10 +832,20 @@ Known limits, in the order they will be felt at scale:
 
 ## Entity and operational storage
 
-Postgres stores the current dashboard entity sources, their metadata and
-canonical diagnostics, and one revision/evaluation state. An ingestion replaces
-these atomically: failed transactions leave the previous committed state
-untouched. There are no Postgres generations, projections, or snapshots.
+Postgres stores the current dashboard entity sources as native typed fields,
+alongside their metadata, canonical diagnostics, and one revision/evaluation
+state. An ingestion replaces these atomically: failed transactions leave the
+previous committed state untouched. There are no Postgres generations,
+projections, or snapshots.
+On startup, the store converts legacy JSONB rows, metadata, counts, and
+diagnostics for **all namespaces** into relational typed tables in one
+transaction, then drops the legacy JSONB columns. A failed conversion rolls
+back both schema and data changes, so fixing the legacy data and restarting
+can retry safely. Existing revisions and namespace boundaries are retained;
+subsequent startups do not re-import converted data. Numeric values retain
+their original JSON lexemes for exact round-tripping, including values outside
+PostgreSQL `NUMERIC` range. Migration fetches legacy rows in bounded batches;
+ingestion batches typed-value and row inserts in the same replacement transaction.
 Redis remains namespaced operational storage for caches, queues, sessions, and
 it does not hold dashboard entity rows or query indexes.
 Neither store grants control-plane authority. Credentials stay server-side.
@@ -845,7 +855,13 @@ Neither store grants control-plane authority. Credentials stay server-side.
 The browser sends declarative query definitions and requested source names to
 `POST /api/v1/query`. The server validates the query graph and resource limits
 before loading data.
-
+Postgres source reads use one ordered, parameterized native SQL query per source
+to select its namespace, metadata, rows, and typed values. This is **not**
+SQL translation of Dashboard Language queries: filters (including predicates), joins,
+aggregation, ordering, and limits still execute in the Go query engine.
+Predicate pushdown is not enabled because its coercion rules for arbitrary
+nested values, optional/missing fields, and operation budgets cannot be
+preserved by a simple SQL predicate without changing query results or limits.
 Execution fails closed when a requested plan exceeds 16 dependency levels, 256
 derived queries, or 16 joins along one dependency path. Independent queries in a
 batch do not consume one another's structural join allowance. Runtime guards cap
@@ -859,9 +875,10 @@ input, join, output, and operator limits remain independently enforced.
 Expensive stages, including sorting, are charged against the operation budget
 before they allocate or run.
 
-Queries load current logical sources from Postgres. The Go engine applies
-selection, joins, aggregation, and limits to complete source documents; Redis
-is not a query backend. Query resource limits remain fail-closed.
+Native SQL reads load current logical sources from Postgres. The Go engine
+applies Dashboard Language selection, joins, aggregation, and limits to
+complete source documents; Redis is not a query backend. Query resource
+limits remain fail-closed.
 
 The engine rejects unsupported prediction queries and enforces limits on query
 definitions, joins, predicates, input rows, output rows, and total operations.
