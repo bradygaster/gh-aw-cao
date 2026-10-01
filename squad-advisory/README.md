@@ -32,13 +32,29 @@ The five specialists run in parallel. The fact checker and the responsible-AI re
 
 Workers are independently dispatchable and handle exactly one authorized target repository. Review mode routes findings to the control repository; live mode may open the equivalent issue on the target repository.
 
-## Covering the whole farm
+## Covering the whole farm: The "First Big Rock" and Cyclical Cadence
 
-The squad lives in the control repository, but it is not *about* the control repository. Aggregate AI Credit admission means a run typically researches one repository, so coverage comes from cadence rather than fan-out: the orchestrator runs daily, always prefers a repository it has never advised over one it has, and defers any repository advised within the last 30 days. A four-repository farm is therefore fully covered in about four days and then rests.
+The squad lives in the control repository, but its mission is the whole farm. In a multi-repository system, individual repositories do not exist in a vacuum — a frontend change requires backend API updates, an ASMX service modernization impacts queue workers, and Docker Compose configurations link multiple checkouts together.
 
-Quiet repositories are ranked, not skipped. A control repository holding only campaign configuration is still advisable — its rollout posture and campaign coverage are legitimate subjects — and a control repository with genuinely nothing in it simply yields its turn to the repositories that do have code.
+The campaign operates across two complementary advisory roles in a continuous, cyclical cadence:
 
-Because component repositories in one product are rarely independent, the worker reads the `**Action:**` line of sibling plans before triaging. It avoids re-claiming work another plan already owns and promotes anything that cannot be settled inside a single repository into a decision addressed to the owners of the whole set.
+### 1. The First Big Rock — Farm Portfolio Advisory
+
+When deployed across a farm, the campaign's very first action is to evaluate the control repository / operations hub. Instead of treating an operations repo as "just configuration," the standing Squad uses the control plane's allowed repository scope (`cao.json`) to survey the entire farm.
+
+Like the initial research-proposals issue in Squad agentic workflows, the Squad maps the component topology, surfaces cross-cutting architectural bottlenecks, and publishes a single, decision-ready issue in the ops repo: **The Top 3 Initiatives Across All Repositories**. This gives engineering leadership and maintainers immediate clarity on the macro priorities across their entire portfolio before diving into component-level details.
+
+### 2. Component Sweeps Aligned to the Farm Top 3
+
+Following the portfolio advisory, the orchestrator advances through the component repositories one by one on its daily schedule. 
+
+When advising a component repository, the worker checks the safe-output repository for the active Farm Portfolio Advisory. It aligns its recommended work so that local improvements — testing, dependency hygiene, refactoring — directly advance the farm's Top 3 Initiatives.
+
+### 3. Cyclical Farm Reassessment
+
+Once all component repositories in the farm have been advised, the cycle returns to the control repository (after a 14-day reassessment window). The Squad reconvenes on the entire farm to measure what has shipped, retire completed initiatives, identify new systemic friction, and publish a refreshed portfolio plan.
+
+Coverage comes from cadence rather than simultaneous fan-out: the orchestrator runs daily with a default `max-repositories: 1`, prioritizing the farm hub first, sweeping the components, and then cyclically re-assessing the farm. A four-repository farm completes its initial portfolio and component sweep in four to five days and then enters its reassessment cadence.
 
 ## What the plan contains
 
