@@ -422,7 +422,7 @@ steps:
           ...summary.repositories.map((r) => `| ${r.repository} | ${r.head_sha ? `\`${r.head_sha.slice(0, 7)}\`` : r.status} | ${r.tracked_files ?? 'unknown'} | [\`${r.path}\`](${r.path.replace(`${FARM_DIR}/`, '')}) |`),
           '',
         ];
-        fs.writeFileSync(path.join(FARM_DIR, 'README.md'), `${index.join('\n')}\n`);
+        fs.writeFileSync(path.join(FARM_DIR, 'INDEX.md'), `${index.join('\n')}\n`);
         finish();
 ---
 

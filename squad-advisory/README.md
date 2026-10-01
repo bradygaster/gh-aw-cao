@@ -65,7 +65,7 @@ The built-in squad above is a fixed, compile-time roster. To have [Squad](https:
 
 1. **Farm snapshot.** Whenever the control repository is an eligible candidate, the orchestrator also dispatches `squad-advisory-farm-snapshot`.
    - Deterministic steps read each same-owner repository in `allowed-repositories` with the farm-scoped read App token.
-   - They write `farm/README.md` plus one `farm/<repository>/SNAPSHOT.md` per repository. Each snapshot holds metadata, languages, the file tree, key files, a few representative source files, recent commits, open issues and pull requests, and recent workflow runs.
+   - They write `farm/INDEX.md` plus one `farm/<repository>/SNAPSHOT.md` per repository. The index is deliberately not named `README.md`, which gh-aw treats as a protected file. Each snapshot holds metadata, languages, the file tree, key files, a few representative source files, recent commits, open issues and pull requests, and recent workflow runs.
    - Credential-like values are redacted, and any value redacted once is scrubbed from every snapshot.
    - The agent only checks the diff and proposes it through one `create-pull-request` safe output restricted to `farm/**`. It declines when a snapshot pull request is already open or nothing changed.
 2. **Merge the snapshot pull request** after confirming that no credential values appear.
