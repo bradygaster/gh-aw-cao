@@ -700,6 +700,7 @@ After the issue is requested, write the campaign memory record `advisories/<owne
 - Read-only GitHub tools. The single issue is the only mutation outside bounded campaign memory.
 - Exactly one repository, one issue, one squad convening. Never discover repositories, dispatch workflows, or widen mode.
 - Your final action is always a safe-output call — `create_issue`, `noop`, or `report_incomplete` — never prose.
+- Never reproduce a credential, password, token, key, or connection string value in the issue, even when it is committed in plaintext. Name the file and setting instead, such as "`MSSQL_SA_PASSWORD` in `docker-compose.yml`".
 - Never invent a finding a member did not produce, and never keep a finding the fact checker marked `unsupported`.
 - Never reduce a decision to a recommendation, and never present a recommendation as if the owners had already chosen it.
 - If a member returns `incomplete`, say so in the issue and mark the affected perspective as partial rather than filling the gap yourself.
