@@ -78,6 +78,18 @@ func (s *Store) ExecutePlan(
 	if err != nil {
 		return nil, metrics, err
 	}
+	response, ok := value.([]any)
+	if !ok || len(response) == 0 {
+		return nil, metrics, errors.New("invalid Redis aggregate response")
+	}
+	total, ok := response[0].(int64)
+	expected := total
+	if definition.Limit != nil {
+		expected = min(expected, int64(*definition.Limit))
+	}
+	if !ok || total < 0 || expected != int64(len(rows)) {
+		return nil, metrics, errors.New("incomplete Redis aggregate response")
+	}
 	metadata["source-id"] = definition.Name
 	metadata["source-kind"] = "database-query"
 	metadata["availability"] = "available"
@@ -110,6 +122,7 @@ type outputField struct {
 	fromLoad bool
 	numeric  bool
 	boolean  bool
+	tag      bool
 }
 
 func nativeAggregateCommand(index string, definition query.Definition, indexed []indexField) ([]string, map[string]outputField, error) {
@@ -122,8 +135,16 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(definition.Select) == 0 {
-		return nil, nil, errors.New("redis query engine requires an explicit projection")
+	plan := query.Normalize(definition)
+	if plan.ResultShape.Mode == query.PreserveInput {
+		return nil, nil, errors.New("redis aggregate pipeline cannot preserve full source documents")
+	}
+	if definition.Aggregate != nil && len(definition.Aggregate.By) == 0 {
+		// Go emits one zero-count group even when the source is empty.
+		return nil, nil, errors.New("redis aggregate pipeline cannot preserve empty global groups")
+	}
+	if definition.Limit != nil && *definition.Limit > 10_000 {
+		return nil, nil, errors.New("redis aggregate pipeline cannot return more than 10000 rows")
 	}
 	computed := make(map[string]query.ComputedField, len(definition.Compute))
 	for _, field := range definition.Compute {
@@ -132,12 +153,17 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 		}
 		computed[field.As] = field
 	}
-	selected := make(map[string]bool, len(definition.Select))
-	outputFields := make(map[string]outputField, len(definition.Select))
+	outputFields := make(map[string]outputField)
 	command := []string{"FT.AGGREGATE", index, search}
-	loads := make([]string, 0, len(definition.Select)*3)
+	projection := definition.Select
+	if len(projection) == 0 {
+		for _, field := range plan.ResultShape.Fields {
+			projection = append(projection, query.SelectedField(field))
+		}
+	}
+	loads := make([]string, 0, len(projection)*3)
 	if definition.Aggregate == nil {
-		for _, field := range definition.Select {
+		for _, field := range projection {
 			if _, isComputed := computed[field.Field]; !isComputed {
 				loads = append(loads, redisJSONPath(field.Field), "AS", nativeFieldAlias(field.Field))
 			}
@@ -169,6 +195,7 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 			group = append(group, "@"+field.Alias)
 			available[name] = outputField{
 				name: name, numeric: field.Kind == indexFieldNumeric, boolean: computedBooleans[name],
+				tag: field.Kind == indexFieldTag && !computedBooleans[name],
 			}
 		}
 		command = append(command, "GROUPBY", strconv.Itoa(len(group)))
@@ -189,7 +216,7 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 			available[value.As] = outputField{name: value.As, numeric: true}
 		}
 	}
-	for _, field := range definition.Select {
+	for _, field := range projection {
 		if !nativeQueryField.MatchString(field.Field) {
 			return nil, nil, fmt.Errorf("unsupported Redis selected field %q", field.Field)
 		}
@@ -201,6 +228,7 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 		fromLoad := false
 		numeric := false
 		boolean := false
+		tag := false
 		if definition.Aggregate == nil {
 			_, isComputed := computed[field.Field]
 			fromLoad = !isComputed
@@ -215,18 +243,21 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 			}
 			numeric = availableField.numeric
 			boolean = availableField.boolean
+			tag = availableField.tag
 		}
 		if previous, exists := outputFields[alias]; exists && previous.name != output {
 			return nil, nil, fmt.Errorf("redis field alias collision for %q", field.Field)
 		}
 		outputFields[alias] = outputField{
-			name: output, fromLoad: fromLoad, numeric: numeric, boolean: boolean,
+			name: output, fromLoad: fromLoad, numeric: numeric, boolean: boolean, tag: tag,
 		}
-		selected[field.Field] = true
 	}
 	for _, field := range definition.OrderBy {
-		if !selected[field.Field] {
-			return nil, nil, fmt.Errorf("redis ordering field %q must be projected", field.Field)
+		if _, present := outputFields[nativeFieldAlias(field.Field)]; !present ||
+			outputFields[nativeFieldAlias(field.Field)].name != field.Field {
+			// Dashboard Language sorts after select. A field removed or
+			// renamed by select cannot be sorted by the native pipeline.
+			return nil, nil, fmt.Errorf("redis ordering field %q is not present after select", field.Field)
 		}
 	}
 	if len(definition.OrderBy) != 0 {
@@ -247,6 +278,11 @@ func nativeAggregateCommand(index string, definition query.Definition, indexed [
 	limit := query.MaxOutputRows
 	if definition.Limit != nil {
 		limit = *definition.Limit
+	}
+	// RediSearch defaults to MAXAGGREGATERESULTS=10000. Never silently
+	// return a truncated result when a query asks for more.
+	if limit > 10_000 {
+		limit = 10_000
 	}
 	command = append(command, "LIMIT", "0", strconv.Itoa(limit), "DIALECT", "4")
 	return command, outputFields, nil
@@ -453,6 +489,10 @@ func decodeAggregateRows(value any, outputFields map[string]outputField) ([]mode
 			alias := fmt.Sprint(fields[index])
 			output, wanted := outputFields[alias]
 			if wanted {
+				if output.tag {
+					row[output.name] = fmt.Sprint(fields[index+1])
+					continue
+				}
 				row[output.name] = nativeResultValue(
 					fields[index+1], output.fromLoad, output.numeric, output.boolean,
 				)
