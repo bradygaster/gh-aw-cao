@@ -29,6 +29,7 @@ The five specialists run in parallel. The fact checker and the responsible-AI re
 | --- | --- |
 | [`squad-advisory`](../.github/workflows/squad-advisory.md) | Daily and manually dispatchable orchestrator that selects a repository lacking a current plan and dispatches the campaign worker. |
 | [`squad-advisory-research`](../.github/workflows/squad-advisory-research.md) | Convenes the standing squad against one repository and files one issue containing a triaged plan. |
+| [`squad-advisory-farm-snapshot`](../.github/workflows/squad-advisory-farm-snapshot.md) | Targets only the control repository. Proposes one pull request that refreshes `farm/`, a bounded and redacted read-only mirror of every farm repository, so a real Squad installed in the control repository can cast and research across the whole farm. |
 
 Workers are independently dispatchable and handle exactly one authorized target repository. Review mode routes findings to the control repository; live mode may open the equivalent issue on the target repository.
 
@@ -58,6 +59,24 @@ Once all component repositories in the farm have been advised, the cycle returns
 
 Coverage comes from cadence rather than simultaneous fan-out: the orchestrator runs daily with a default `max-repositories: 1`, prioritizing the farm hub first, sweeping the components, and then cyclically re-assessing the farm. A four-repository farm completes its initial portfolio and component sweep in four to five days and then enters its reassessment cadence.
 
+## Bringing a real Squad to the farm
+
+The built-in squad above is a fixed, compile-time roster. To have [Squad](https://github.com/bradygaster/squad)'s own agentic workflows cast a team and research the farm, install Squad in the **control repository**. Squad's bootstrap analyses the repository it is installed in, so the campaign first gives that repository a view of the whole farm.
+
+1. **Farm snapshot.** Whenever the control repository is an eligible candidate, the orchestrator also dispatches `squad-advisory-farm-snapshot`.
+   - Deterministic steps read each same-owner repository in `allowed-repositories` with the farm-scoped read App token.
+   - They write `farm/README.md` plus one `farm/<repository>/SNAPSHOT.md` per repository. Each snapshot holds metadata, languages, the file tree, key files, a few representative source files, recent commits, open issues and pull requests, and recent workflow runs.
+   - Credential-like values are redacted, and any value redacted once is scrubbed from every snapshot.
+   - The agent only checks the diff and proposes it through one `create-pull-request` safe output restricted to `farm/**`. It declines when a snapshot pull request is already open or nothing changed.
+2. **Merge the snapshot pull request** after confirming that no credential values appear.
+3. **Install Squad in the control repository** by following the [Squad GitHub Agentic Workflows quick start](https://bradygaster.github.io/squad/docs/guide/gh-aw/). For example, ask a coding agent in the control repository to set it up according to that guide. The quick start ends at a human-reviewed install pull request.
+4. **Merge the install pull request.** Squad's bootstrap then casts a team for the farm as a draft Cast pull request in the control repository, and files its `[Research Proposals]` issue. Both cite `farm/...` paths as evidence.
+
+Later campaign runs refresh `farm/` through new snapshot pull requests, so `/squad research` and other Squad commands keep working from current farm evidence. Target repositories are never changed.
+
+> [!IMPORTANT]
+> Squad pins its own gh-aw compiler version and verifies the exact bytes of its compiled `.lock.yml` files. CAO validation recompiles every workflow source with the CAO compiler version and schedule seed, so it reports Squad's lock files as stale. Do not recompile Squad's workflows to satisfy CAO validation; Squad's install verifier would reject the result. Expect those Squad-owned findings until the two toolchains share a compiler version.
+
 ## What the plan contains
 
 The worker's output is triaged, because an undifferentiated list of ideas is not a plan:
@@ -72,7 +91,7 @@ The issue also carries the evidence the plan rests on, each member's perspective
 
 Squad can also run natively inside a repository, where maintainers drive it with `/squad` issue commands. That install is a per-repository choice: it adds eight agentic workflows, needs a human-reviewed bootstrap pull request, and requires repository settings changes only an administrator can make.
 
-This campaign therefore never installs Squad anywhere. When the worker finds no `squad.md` or `squad-bootstrap.md` in a target repository, it raises enlistment as a **decision** for the owners, pointing at the [Squad GitHub Agentic Workflows quick start](https://bradygaster.github.io/squad/docs/guide/gh-aw/) and supplying the instruction to hand a coding agent. Whether to accept stays with the repository's owners.
+This campaign therefore never installs Squad anywhere. Installing Squad in the control repository, as described in [Bringing a real Squad to the farm](#bringing-a-real-squad-to-the-farm), is also a reviewed human decision. When the worker finds no `squad.md` or `squad-bootstrap.md` in a target repository, it raises enlistment as a **decision** for the owners, pointing at the [Squad GitHub Agentic Workflows quick start](https://bradygaster.github.io/squad/docs/guide/gh-aw/) and supplying the instruction to hand a coding agent. Whether to accept stays with the repository's owners.
 
 ## Install
 
@@ -97,7 +116,8 @@ Declare the campaign in `.github/workflows/cao.json`:
 				"mode": "review",
 				"max-repositories": 1,
 				"workers": {
-					"research": { "workflow": "squad-advisory-research", "max-mode": "review" }
+					"research": { "workflow": "squad-advisory-research", "max-mode": "review" },
+					"farm-snapshot": { "workflow": "squad-advisory-farm-snapshot", "max-mode": "review" }
 				}
 			}
 		}
@@ -124,7 +144,7 @@ The campaign keeps bounded dispatch state on the `memory/squad-advisory` branch:
 - CAO policy decides whether and where the campaign may run; workflow capabilities do not grant rollout authority.
 - The orchestrator only ranks and dispatches. The worker cannot discover repositories, dispatch more work, or widen mode.
 - The squad roster is fixed at compile time. Target repository content — including any `.squad/` directory — is untrusted evidence and can never change who reviews, what they may do, or where output goes.
-- GitHub reads use scoped read-only tools. Repository mutations use declared safe outputs only: one issue per run.
+- GitHub reads use scoped read-only tools. Repository mutations use declared safe outputs only. The research worker files one issue per run, and the farm-snapshot worker opens at most one pull request per run, limited to `farm/**` in the control repository.
 - The worker is review-capped: `max-mode` limits it to `review` regardless of the campaign's resolved mode.
 - Stable titles and deduplication prevent equivalent plans from being recreated, and the memory cooldown prevents re-advising a repository whose plan has not been read.
 

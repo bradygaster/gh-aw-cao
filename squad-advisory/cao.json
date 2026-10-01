@@ -2,6 +2,7 @@
   "campaign": "squad-advisory",
   "orchestrator": "squad-advisory",
   "workers": {
-    "research": "squad-advisory-research"
+    "research": "squad-advisory-research",
+    "farm-snapshot": "squad-advisory-farm-snapshot"
   }
 }

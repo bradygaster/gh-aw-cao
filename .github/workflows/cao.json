@@ -201,6 +201,10 @@
           "research": {
             "workflow": "squad-advisory-research",
             "max-mode": "review"
+          },
+          "farm-snapshot": {
+            "workflow": "squad-advisory-farm-snapshot",
+            "max-mode": "review"
           }
         }
       },

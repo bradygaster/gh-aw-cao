@@ -104,7 +104,7 @@ network:
 
 safe-outputs:
   dispatch-workflow:
-    workflows: [squad-advisory-research]
+    workflows: [squad-advisory-research, squad-advisory-farm-snapshot]
     max: 4
   threat-detection: false
 ---
@@ -146,6 +146,11 @@ Select no more than the effective `max_repos`. The aggregate AI Credit admission
 ## Worker
 
 - `squad-advisory-research` runs the control repository's standing advisory squad against exactly one repository and files one issue containing a triaged, decision-ready plan.
+- `squad-advisory-farm-snapshot` targets only the control repository. It proposes one pull request that refreshes the control repository's `farm/` directory, a bounded and redacted read-only mirror of every farm repository, so a Squad installed in the control repository can cast and research across the whole farm.
+
+## Farm snapshot
+
+Whenever the control repository is an eligible candidate, also dispatch `squad-advisory-farm-snapshot` for the control repository, at most once per run, unless an open pull request titled with the `[squad-advisory:farm-snapshot]` prefix already exists in the control repository. This dispatch is independent of the advisory cooldown and does not count as advising the control repository. The worker declines on its own when the snapshot is already current.
 
 For each selected repository, dispatch the worker at most once using the full standard control-plane envelope. Deduplicate `(worker, target_repo, safe_output_mode)` tuples before dispatch. Do not retry a failed or rate-limited dispatch in the same run.
 

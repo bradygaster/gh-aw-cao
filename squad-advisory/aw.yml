@@ -6,4 +6,5 @@ includes:
   - ../aw.yml
   - .github/workflows/squad-advisory-research.md
   - .github/workflows/squad-advisory.md
+  - .github/workflows/squad-advisory-farm-snapshot.md
   - README.md
