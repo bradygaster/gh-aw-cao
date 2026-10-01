@@ -4,13 +4,15 @@ import { queryDashboardSourceObservations } from '../../dashboard/site/src/data/
 import { normalize } from '../../dashboard/site/src/data/normalize/index.js';
 import { queryCollection, readCollection } from '../../dashboard/site/src/data/storage/indexeddb.js';
 import { createDebug } from '../debug.mjs';
+import { computeIntelligencePortfolio } from './intelligence.mjs';
 import {
   computeRuntimeHealthPortfolio,
   evaluateRuntimeHealthPartition,
   workerEvaluationState
 } from './runtime-health.mjs';
 
-export const COMPUTATION_NAMES = Object.freeze(['runtime-health']);
+export const COMPUTATION_NAMES = Object.freeze(['intelligence', 'runtime-health']);
+const debugIntelligence = createDebug('computation:intelligence');
 const debugRuntimeHealth = createDebug('computation:runtime-health');
 
 export function hasComputation(name) {
@@ -262,7 +264,7 @@ function partition(campaignId, workflow, runs, targetId, membership) {
   };
 }
 
-function queryRuns(name, workflows, runs) {
+function queryRuns(name, workflows, runs, partitionByTarget = false) {
   if (workflows.length === 0) return [];
   return executeQuery({
     name,
@@ -281,7 +283,7 @@ function queryRuns(name, workflows, runs) {
     'order-by': [
       { field: '_campaign-id', direction: 'asc' },
       { field: 'workflowId', direction: 'asc' },
-      { field: 'targetRepository', direction: 'asc' },
+      ...(partitionByTarget ? [{ field: 'targetRepository', direction: 'asc' }] : []),
       { field: '_runtime-date', direction: 'desc' },
       { field: 'githubRunId', direction: 'desc' },
       { field: 'attempt', direction: 'desc' }
@@ -361,7 +363,12 @@ function buildRuntimeHealthInputFromSelection(campaignRows, workflowRows, runs, 
   const eligibleWorkerWorkflows = workflowRows.filter((workflow) => (
     workflow.role === 'worker' && eligibleCampaigns.has(String(workflow.campaignId))
   ));
-  const workerRuns = queryRuns('runtime-health-worker-runs', eligibleWorkerWorkflows, runs);
+  const workerRuns = queryRuns(
+    'runtime-health-worker-runs',
+    eligibleWorkerWorkflows,
+    runs,
+    true
+  );
   const workerRunsByWorkflow = Map.groupBy(workerRuns, (run) => String(run.workflowId));
 
   return {
@@ -409,6 +416,27 @@ export function computeRuntimeHealthFromCanonicalData(data, options = {}) {
     command: 'computation',
     computation: 'runtime-health',
     result: diagnostics ? { ...result, diagnostics } : result
+  };
+}
+
+export function computeIntelligenceFromCanonicalData(data, options = {}) {
+  const startedAt = performance.now();
+  const runtimeHealth = computeRuntimeHealthFromCanonicalData(data, {
+    campaign: options.campaign
+  }).result;
+  const result = computeIntelligencePortfolio(runtimeHealth, {
+    previousResult: options.previousResult
+  });
+  debugIntelligence(
+    'computed %d decision(s) and %d suppression(s) in %d ms',
+    result.decisionCount,
+    result.suppressionCount,
+    performance.now() - startedAt
+  );
+  return {
+    command: 'computation',
+    computation: 'intelligence',
+    result
   };
 }
 
@@ -478,7 +506,30 @@ export async function queryRuntimeHealth(indexedDB, options = {}) {
   };
 }
 
+async function queryIntelligence(indexedDB, options = {}) {
+  const startedAt = performance.now();
+  const runtimeHealth = await queryRuntimeHealth(indexedDB, {
+    campaign: options.campaign,
+    inventorySources: options.inventorySources
+  });
+  const result = computeIntelligencePortfolio(runtimeHealth.result, {
+    previousResult: options.previousResult
+  });
+  debugIntelligence(
+    'computed %d decision(s) and %d suppression(s) in %d ms',
+    result.decisionCount,
+    result.suppressionCount,
+    performance.now() - startedAt
+  );
+  return {
+    command: 'computation',
+    computation: 'intelligence',
+    result
+  };
+}
+
 export function queryComputation(indexedDB, name, options = {}) {
+  if (name === 'intelligence') return queryIntelligence(indexedDB, options);
   if (name === 'runtime-health') return queryRuntimeHealth(indexedDB, options);
   throw new Error(`Unknown computation: ${name}`);
 }
