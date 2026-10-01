@@ -136,10 +136,55 @@ safe-outputs:
 timeout-minutes: 45
 
 steps:
+  - name: Resolve farm read scope from control policy
+    id: squad_farm_scope
+    if: ${{ inputs.target_repo == github.repository }}
+    shell: bash
+    env:
+      CONTROL_OWNER: ${{ github.repository_owner }}
+    run: |
+      node -e '
+        const fs = require("fs");
+        const owner = process.env.CONTROL_OWNER.toLowerCase();
+        const pattern = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
+        let names = [];
+        try {
+          const policy = JSON.parse(fs.readFileSync(".github/workflows/cao.json", "utf8"));
+          const allowed = policy?.["control-plane"]?.scope?.["allowed-repositories"];
+          if (Array.isArray(allowed)) {
+            names = allowed
+              .filter((name) => typeof name === "string" && pattern.test(name))
+              .filter((name) => name.split("/")[0].toLowerCase() === owner)
+              .map((name) => name.split("/")[1])
+              .slice(0, 16);
+          }
+        } catch {}
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, `repositories=${[...new Set(names)].join(",")}\n`);
+      '
+
+  - name: Generate farm-scoped read App token
+    id: squad_farm_read_token
+    env:
+      FARM_REPOSITORIES: ${{ steps.squad_farm_scope.outputs.repositories }}
+      FARM_APP_ID: ${{ vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && vars.GH_AW_GITHUB_AUTH_MODE != 'workflow-token' && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
+      FARM_APP_PRIVATE_KEY: ${{ vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && vars.GH_AW_GITHUB_AUTH_MODE != 'workflow-token' && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
+    if: ${{ env.FARM_REPOSITORIES != '' && env.FARM_APP_ID != '' && env.FARM_APP_PRIVATE_KEY != '' }}
+    continue-on-error: true
+    uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+    with:
+      client-id: ${{ vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && vars.GH_AW_GITHUB_AUTH_MODE != 'workflow-token' && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
+      private-key: ${{ vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && vars.GH_AW_GITHUB_AUTH_MODE != 'workflow-token' && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
+      owner: ${{ github.repository_owner }}
+      repositories: ${{ steps.squad_farm_scope.outputs.repositories }}
+      github-api-url: ${{ github.api_url }}
+      permission-contents: read
+      permission-metadata: read
+
   - name: Deterministic pre-fetch of advisory evidence
     uses: actions/github-script@v9
     env:
       TARGET_REPOSITORY: ${{ inputs.target_repo }}
+      FARM_READ_TOKEN: ${{ steps.squad_farm_read_token.outputs.token }}
     with:
       github-token: ${{ vars.GH_AW_GITHUB_AUTH_MODE == 'pat' && secrets[fromJSON(vars.GH_AW_GITHUB_READ_PAT_REPOSITORIES || '{}')[inputs.target_repo || github.repository]] || vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && secrets.GH_AW_GITHUB_READ_PAT || vars.GH_AW_GITHUB_AUTH_MODE != 'pat' && secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
       script: |
@@ -456,11 +501,13 @@ steps:
             ];
             const FARM_FILE_CHARS = 2000;
             const FARM_REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
+            const farmGithub = process.env.FARM_READ_TOKEN ? getOctokit(process.env.FARM_READ_TOKEN) : github;
+            evidence.farm.read_credential = process.env.FARM_READ_TOKEN ? 'farm-scoped-app' : 'target-scoped';
             for (const farmRepo of evidence.farm.allowed_repositories.slice(0, 16)) {
               if (typeof farmRepo !== 'string' || !FARM_REPOSITORY_PATTERN.test(farmRepo)) continue;
               const [fOwner, fRepo] = farmRepo.split('/');
               try {
-                const { data: rData } = await github.rest.repos.get({ owner: fOwner, repo: fRepo });
+                const { data: rData } = await farmGithub.rest.repos.get({ owner: fOwner, repo: fRepo });
                 const entry = {
                   name: farmRepo,
                   description: clamp(rData.description, MAX_TEXT_CHARS),
@@ -473,7 +520,7 @@ steps:
                   key_files: {},
                 };
                 try {
-                  const { data: rootEntries } = await github.rest.repos.getContent({ owner: fOwner, repo: fRepo, path: '' });
+                  const { data: rootEntries } = await farmGithub.rest.repos.getContent({ owner: fOwner, repo: fRepo, path: '' });
                   if (Array.isArray(rootEntries)) {
                     entry.top_level_entries = rootEntries.slice(0, MAX_LIST_ITEMS).map((item) => `${item.name}${item.type === 'dir' ? '/' : ''}`);
                   }
@@ -481,14 +528,14 @@ steps:
                   entry.top_level_entries = null;
                 }
                 try {
-                  const { data: languages } = await github.rest.repos.listLanguages({ owner: fOwner, repo: fRepo });
+                  const { data: languages } = await farmGithub.rest.repos.listLanguages({ owner: fOwner, repo: fRepo });
                   entry.languages = languages;
                 } catch {
                   entry.languages = null;
                 }
                 for (const keyFile of FARM_KEY_FILES) {
                   try {
-                    const { data: file } = await github.rest.repos.getContent({ owner: fOwner, repo: fRepo, path: keyFile });
+                    const { data: file } = await farmGithub.rest.repos.getContent({ owner: fOwner, repo: fRepo, path: keyFile });
                     if (file && !Array.isArray(file) && file.type === 'file' && typeof file.content === 'string') {
                       entry.key_files[keyFile] = clamp(Buffer.from(file.content, 'base64').toString('utf8'), FARM_FILE_CHARS);
                     }
@@ -553,6 +600,8 @@ Launch these five specialists **in parallel**, once each. Give each one the same
 | `squad-dx` | Contributor and agent experience: onboarding, documented commands, issue and pull request hygiene, ambient context quality. |
 | `squad-product` | What users and contributors are actually asking for, backlog themes, unmet intent, and where the project's stated purpose and recent activity diverge. |
 
+Tell every member, in its brief, that it must return its JSON as its final reply text and must never call `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool`. Those safe-output tools belong to you alone, and each is limited to one use per run; a member that consumes one would end the run without a plan.
+
 Each member returns compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, `status`. `findings` is an array of at most five objects with `id`, `title`, `claim`, `evidence`, `impact` (`high`, `medium`, or `low`), `effort` (`small`, `medium`, or `large`), and `confidence` (`0.0`–`1.0`). `questions` holds at most three questions only the repository's owners can answer. `status` is `complete` or `incomplete`.
 
 Discard any finding whose `evidence` does not point at something concrete in the evidence file or the checkout. A perspective is not a finding.
@@ -599,6 +648,8 @@ For a Farm Portfolio Advisory (`evidence.is_control_plane` is true), the ordered
 For a Component Advisory, group the work items into at most three ordered phases advancing the farm initiatives and local health. Each phase states what becomes true when it is done and why it comes before the next one. A phase with no dependency on the previous one is not a phase — merge it. Name the single highest-return item across all phases as the starting point.
 
 ## Step 6 — Publish one issue
+
+Call `create_issue` in the same turn that you finish triage and sequencing. Do not end your turn with a status message such as "now compiling the issue": the run ends when your turn ends, and an announced issue that was never requested is a failed run. If a member already consumed `noop` by mistake, still call `create_issue`.
 
 Create exactly one issue in the safe-output repository. Provide only the unprefixed subject as the safe-output title. The configured `title-prefix` is added automatically; do not repeat it or add a semantically equivalent category prefix. Keep the subject stable across runs for the same repository so deduplication works — describe the repository and the plan, not the run (e.g. for a farm portfolio advisory, `Farm Portfolio: Top 3 Initiatives Across Repositories`; for a component advisory, `Research & Advisory: <repository>`).
 
@@ -648,6 +699,7 @@ After the issue is requested, write the campaign memory record `advisories/<owne
 
 - Read-only GitHub tools. The single issue is the only mutation outside bounded campaign memory.
 - Exactly one repository, one issue, one squad convening. Never discover repositories, dispatch workflows, or widen mode.
+- Your final action is always a safe-output call — `create_issue`, `noop`, or `report_incomplete` — never prose.
 - Never invent a finding a member did not produce, and never keep a finding the fact checker marked `unsupported`.
 - Never reduce a decision to a recommendation, and never present a recommendation as if the owners had already chosen it.
 - If a member returns `incomplete`, say so in the issue and mark the affected perspective as partial rather than filling the gap yourself.
@@ -660,7 +712,7 @@ You are the squad's architect. Read the advisory evidence file you were given an
 
 Judge how the repository is put together: top-level shape, module and package boundaries, where churn concentrates and whether that concentration looks like active feature work or repeated repair, dependency and build configuration, and whether the structure still fits what the project says it is. Look for design debt that is costing the team now, not for stylistic preferences. When `evidence.is_control_plane` is true and `evidence.farm` is present, assess multi-repository boundaries, service coupling, inter-service contracts (e.g. SOAP/REST/queues), and cross-repo dependencies across the farm.
 
-Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence — a path, a count, a manifest entry — for every finding, and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`.
+Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence — a path, a count, a manifest entry — for every finding, and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-security`
 ---
@@ -670,7 +722,7 @@ You are the squad's security specialist. Read the advisory evidence file you wer
 
 Judge the repository's security posture from what is observable: dependency manifests and whether automated updates are configured, the permissions and trigger surface of its GitHub Actions workflows, obvious secret-handling patterns, the presence and usefulness of `SECURITY.md`, and licensing clarity. Describe posture and the highest-value hardening step. Do not attempt exploitation, do not guess at vulnerabilities you cannot see, and never report a specific unpatched weakness in a way that reads as an exploit recipe. When `evidence.is_control_plane` is true and `evidence.farm` is present, assess cross-repository supply-chain hygiene, inconsistent dependencies across services, shared secrets, and cross-service authentication.
 
-Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`.
+Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-reliability`
 ---
@@ -680,7 +732,7 @@ You are the squad's reliability engineer. Read the advisory evidence file you we
 
 Judge how confidently this project can ship a change: which workflows run and which of them fail, whether failures cluster in one workflow or are spread, whether tests exist and are wired into CI, how long pull requests stay open, and whether releases happen on a rhythm. Distinguish a repository with no safety net from one whose safety net is failing. When `evidence.is_control_plane` is true and `evidence.farm` is present, assess CI/CD consistency across repositories, cross-repo integration testing, deployment synchronization, and shared failure patterns.
 
-Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`.
+Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-dx`
 ---
@@ -690,7 +742,7 @@ You are the squad's developer-experience specialist. Read the advisory evidence 
 
 Judge what it is like to arrive at this repository and try to contribute — as a human and as an agent. Consider whether `README.md` explains what the project is and how to run it, whether `CONTRIBUTING.md` and ambient context files such as `AGENTS.md` exist and state exact commands, whether issues are labelled and triaged, whether pull requests get reviewed, and whether the setup path is discoverable. Prefer the one friction point that blocks the most people. When `evidence.is_control_plane` is true and `evidence.farm` is present, assess cross-repository developer experience, multi-repo local setups (such as Docker Compose files referencing sibling projects), documentation drift between services, and repository setup friction.
 
-Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`.
+Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-product`
 ---
@@ -700,7 +752,7 @@ You are the squad's product strategist. Read the advisory evidence file you were
 
 Judge where this project is going. Cluster the open issues into themes, separate requests from defects, compare what the repository says it is for with what recent commits and merged pull requests actually changed, and identify demand that has gone unanswered long enough to be a decision rather than a backlog item. Do not propose features nobody asked for. When `evidence.is_control_plane` is true and `evidence.farm` is present, assess product coherence across the farm, backlog themes spanning multiple services, cross-repo feature coordination, and divergence between product intent and multi-repo code.
 
-Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`.
+Return compact JSON with exactly these keys: `member`, `summary`, `findings`, `questions`, and `status`. Include at most five findings, each with `id`, `title`, `claim`, `evidence`, `impact`, `effort`, and `confidence`. Cite concrete evidence for every finding and drop anything you cannot ground. Use at most three `questions` that only the repository's owners can answer, and one of `complete` or `incomplete` for `status`. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-fact-checker`
 ---
@@ -710,7 +762,7 @@ You are the squad's fact checker. You did not participate in the research and yo
 
 For each finding, decide whether the evidence actually supports the claim as written. Check that cited paths, counts, dates, and numbers exist and say what the finding says they say. Treat an inference presented as an observation as unsupported. Treat a claim that is plausible but ungrounded in the provided evidence as unverifiable, not supported.
 
-Return compact JSON with exactly these keys: `member`, `verdicts`, and `status`. `verdicts` is an array with one object per finding containing `id`, `verdict` (`supported`, `unsupported`, or `unverifiable`), and `reason` (one sentence). Use one of `complete` or `incomplete` for `status`. Do not add findings, do not rewrite claims, and do not soften a verdict because a finding sounds useful.
+Return compact JSON with exactly these keys: `member`, `verdicts`, and `status`. `verdicts` is an array with one object per finding containing `id`, `verdict` (`supported`, `unsupported`, or `unverifiable`), and `reason` (one sentence). Use one of `complete` or `incomplete` for `status`. Do not add findings, do not rewrite claims, and do not soften a verdict because a finding sounds useful. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 ## agent: `squad-rai`
 ---
@@ -720,6 +772,6 @@ You are the squad's responsible-AI reviewer. You were given the surviving findin
 
 Flag any recommendation that would create risk if a maintainer or an agent applied it without thinking: changes to permissions, credentials, authentication, data handling, telemetry, user-facing behaviour, licensing, governance, or anything affecting people who did not ask for it. Separately, flag any recommendation that assumes maintainer time, expertise, or infrastructure the evidence does not show exists. Be specific about the risk and about what would make it acceptable.
 
-Return compact JSON with exactly these keys: `member`, `flags`, `summary`, and `status`. `flags` is an array with one object per flagged finding containing `id`, `risk` (one sentence), `category` (`safety`, `privacy`, `security`, `governance`, `fairness`, or `capacity`), and `mitigation` (one sentence). Use one of `complete` or `incomplete` for `status`. Do not delete findings, do not add new recommendations, and do not flag something merely because it is ambitious.
+Return compact JSON with exactly these keys: `member`, `flags`, `summary`, and `status`. `flags` is an array with one object per flagged finding containing `id`, `risk` (one sentence), `category` (`safety`, `privacy`, `security`, `governance`, `fairness`, or `capacity`), and `mitigation` (one sentence). Use one of `complete` or `incomplete` for `status`. Do not delete findings, do not add new recommendations, and do not flag something merely because it is ambitious. Deliver this JSON as the text of your final reply. Never call a safe-output tool — `noop`, `create_issue`, `report_incomplete`, `missing_data`, or `missing_tool` — because those belong to the coordinator alone and each can be used only once per run.
 
 {{#runtime-import? .github/cao/squad-advisory.md}}
