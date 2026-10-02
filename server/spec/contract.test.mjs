@@ -34,6 +34,11 @@ test('the generated contract describes the implemented security and wire formats
   assert.ok(openapi.paths['/api/v1/events'].get.responses['200'].content['text/event-stream'])
   assert.ok(openapi.paths['/api/github/webhook'].post.responses['202'])
   assert.ok(openapi.paths['/api/admin/rebuild'].post.responses['202'])
+  const logs = openapi.paths['/api/admin/logs'].get
+  assert.ok(logs.security.some(entry => 'BearerAuth' in entry))
+  assert.ok(logs.security.some(entry => 'ApiKeyAuth' in entry))
+  assert.equal(logs.responses['200'].content['application/json'].schema.$ref, '#/components/schemas/ServerLogSnapshot')
+  assert.ok(logs.parameters.some(parameter => parameter.name === 'X-GitHub-Actor'))
   assert.ok(openapi.paths['/auth/logout'].post.responses['204'])
   assert.equal(openapi.components.securitySchemes.ApiKeyAuth.name, 'cao_session')
   for (const field of ['pushedDown', 'fallbackOperations']) {
@@ -61,6 +66,8 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     ['../internal/model/model.go', 'Source', 'QuerySource'],
     ['../internal/model/model.go', 'Metrics', 'QueryMetrics'],
     ['../internal/server/operations.go', 'rebuildStatus', 'RebuildStatus'],
+    ['../internal/server/logs.go', 'serverLogSnapshot', 'ServerLogSnapshot'],
+    ['../internal/server/logs.go', 'serverLogRedis', 'ServerLogRedis'],
     ['../internal/collect/recovery.go', 'Status', 'CollectionStatus'],
     ['../internal/githubquota/usage.go', 'UsageReport', 'QuotaUsage'],
     ['../internal/repositorymemory/memory.go', 'Campaign', 'MemoryCampaign']
