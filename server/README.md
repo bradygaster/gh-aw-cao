@@ -1305,6 +1305,53 @@ go -C server run ./cmd/cao-dashboard ingest \
 go -C server run ./cmd/cao-dashboard serve
 ```
 
+To inspect local traces and metrics, start the optional
+[OpenObserve self-hosted instance](https://openobserve.ai/docs/getting-started/)
+on `http://127.0.0.1:5080` via the separate `server/otel-compose.yml`.
+It is not started by the Redis/Postgres Compose stack.
+Set an email and a locally held password (8–128 characters with uppercase,
+lowercase, digit, and special characters) before its first startup
+(do not commit them or put them in command-line arguments):
+
+```bash
+read -rp 'OpenObserve email: ' CAO_LOCAL_OTEL_EMAIL
+read -rsp 'OpenObserve password: ' CAO_LOCAL_OTEL_PASSWORD; echo
+export CAO_LOCAL_OTEL_EMAIL CAO_LOCAL_OTEL_PASSWORD
+npm run dashboard:server:otel-up
+```
+
+In the same shell, configure the Go server's OTLP/HTTP exporters before
+running `serve` or `ingest`. OpenObserve requires Basic authentication and
+uses signal-specific endpoints; the shared base OTLP endpoint would append
+the wrong paths. The credentials are needed again after a restart to export
+telemetry, even though OpenObserve only uses them for account creation on
+first startup.
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:5080/api/default/v1/traces
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://127.0.0.1:5080/api/default/v1/metrics
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf '%s' "$CAO_LOCAL_OTEL_EMAIL:$CAO_LOCAL_OTEL_PASSWORD" | base64 | tr -d '\n')"
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=local
+go -C server run ./cmd/cao-dashboard serve
+```
+
+To exercise both exporters from the local Go server integration test (after
+starting OpenObserve and setting the variables above in the same shell):
+
+```bash
+CAO_LOCAL_OTEL_INTEGRATION=1 go -C server test ./internal/telemetry -run '^TestLocalOpenObserveExport$' -count=1
+```
+
+The test skips during ordinary `go test ./...` runs; when enabled it fails if
+either the trace or metric export is rejected or unreachable.
+
+Sign in to OpenObserve with the same credentials and select the `default`
+organization. The local instance stores data in the `openobserve-data` Docker
+volume; `docker-compose -f server/otel-compose.yml down` stops it without
+deleting that volume. Do not use `down -v` unless you intend to erase its data.
+For hosted deployments, supply exporter authentication through the deployment
+secret manager instead of exporting it from an interactive shell.
+
 `serve` prints a capability URL such as:
 
 ```text
