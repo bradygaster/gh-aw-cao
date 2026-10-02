@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"github.com/githubnext/gh-aw-cao/server/internal/logger"
 	"github.com/githubnext/gh-aw-cao/server/internal/marketplace"
 	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
 	"github.com/githubnext/gh-aw-cao/server/internal/query"
 	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
 	"github.com/githubnext/gh-aw-cao/server/internal/repositorymemory"
@@ -54,6 +56,7 @@ type Config struct {
 	CORS                 CORSPolicy
 	GitHubOAuth          *GitHubOAuthConfig
 	DatabaseQueriesPath  string
+	Database             *postgresx.Store
 	DashboardQueries     []query.Definition
 	DashboardQueriesPath string
 	AgentCatalogPath     string
@@ -73,34 +76,75 @@ type Config struct {
 	// RateLimits overrides inbound request rate limits; the zero value keeps
 	// the production defaults.
 	RateLimits RateLimitConfig
+	QueryCache QueryCacheConfig
 }
 
 type App struct {
-	store         *redisx.Store
-	config        Config
-	accessToken   string
-	oauth         *githubOAuth
-	hub           *eventHub
-	canonical     canonicalService
-	reconciler    Reconciler
-	memory        *repositorymemory.RemoteResolver
-	webhookSecret []byte
-	mcp           http.Handler
-	actionsToken  string
-	actionsActor  string
-	quota         *githubquota.Service
-	startMu       sync.Mutex
-	startContext  context.Context
-	stop          context.CancelFunc
+	store           *redisx.Store
+	database        *postgresx.Store
+	ownedDatabase   *postgresx.Store
+	closeDatabase   sync.Once
+	closeError      error
+	databaseQueries []query.Definition
+	config          Config
+	accessToken     string
+	oauth           *githubOAuth
+	hub             *eventHub
+	canonical       canonicalService
+	reconciler      Reconciler
+	memory          *repositorymemory.RemoteResolver
+	webhookSecret   []byte
+	mcp             http.Handler
+	actionsToken    string
+	actionsActor    string
+	quota           *githubquota.Service
+	startMu         sync.Mutex
+	startContext    context.Context
+	stop            context.CancelFunc
+	draining        bool
+	drain           chan struct{}
+	taskMu          sync.Mutex
+	taskCount       int
+	tasksDone       chan struct{}
+	cacheOnce       sync.Once
+	cacheMetrics    *queryCacheTelemetry
+	cacheError      error
 }
 
 func New(ctx context.Context, store *redisx.Store, config Config) (*App, error) {
+	if config.Database == nil {
+		return nil, errors.New("dashboard Postgres database is required")
+	}
+	databaseQueries := []query.Definition{{
+		Name: "$records", From: "$domains",
+		Union: []string{"$tools", "$skills", "$friction", "$audits", "$issues"},
+	}}
+	if config.DatabaseQueriesPath != "" {
+		content, err := os.ReadFile(config.DatabaseQueriesPath)
+		if err != nil {
+			return nil, fmt.Errorf("read database queries: %w", err)
+		}
+		parsed, err := query.ParseDefinitions(content)
+		if err != nil {
+			return nil, err
+		}
+		databaseQueries = append(databaseQueries, parsed...)
+		databaseQueries = append(databaseQueries, rawSourceDefinitions(parsed)...)
+	}
 	if err := validateHostProfile(store, &config); err != nil {
 		return nil, err
 	}
 	if err := config.RateLimits.validate(); err != nil {
 		return nil, err
 	}
+	cache, err := queryCacheConfigFromEnv(config.QueryCache)
+	if err != nil {
+		return nil, err
+	}
+	config.QueryCache = cache
+	queryCacheLog.Printf("configured enabled=%t ttl_ms=%d min_duration_ms=%d max_result_bytes=%d max_bytes=%d max_entries=%d",
+		!cache.Disabled, redisx.QueryCacheTTL.Milliseconds(), cache.MinDuration.Milliseconds(),
+		cache.MaxResultBytes, cache.MaxBytes, redisx.QueryCacheMaxEntries)
 	cors, err := config.CORS.normalize()
 	if err != nil {
 		return nil, err
@@ -141,7 +185,7 @@ func New(ctx context.Context, store *redisx.Store, config Config) (*App, error) 
 		return nil, err
 	}
 	if config.Collector != nil {
-		collector, err := NewCollector(ctx, store, *config.Collector, config.DatabaseQueriesPath)
+		collector, err := NewCollector(ctx, store, config.Database, *config.Collector, config.DatabaseQueriesPath)
 		if err != nil {
 			return nil, fmt.Errorf("configure collection: %w", err)
 		}
@@ -161,7 +205,7 @@ func New(ctx context.Context, store *redisx.Store, config Config) (*App, error) 
 	}
 	if reconciler == nil && config.SourceDirectory != "" {
 		reconciler = DirectoryReconciler{
-			Store: store, SourceDirectory: config.SourceDirectory,
+			Store: config.Database, SourceDirectory: config.SourceDirectory,
 			DatabaseQueriesPath: config.DatabaseQueriesPath,
 		}
 	}
@@ -187,10 +231,10 @@ func New(ctx context.Context, store *redisx.Store, config Config) (*App, error) 
 	}
 	serverLog.Printf("initialized host_profile=%s oauth=%t source_ingestion=%t", profile.Name, oauth != nil, config.SourceDirectory != "")
 	app := &App{
-		store: store, config: config, accessToken: accessToken, oauth: oauth, hub: newEventHub(),
-		canonical: canonicalService{store: store}, reconciler: reconciler, memory: memoryResolver,
+		store: store, database: config.Database, databaseQueries: databaseQueries, config: config, accessToken: accessToken, oauth: oauth, hub: newEventHub(),
+		canonical: canonicalService{store: config.Database, definitions: databaseQueries}, reconciler: reconciler, memory: memoryResolver,
 		webhookSecret: []byte(config.WebhookSecret), actionsToken: actionsToken, actionsActor: actionsActor,
-		quota: quota,
+		quota: quota, drain: make(chan struct{}),
 	}
 	if config.MCPEnabled {
 		handler, err := app.newMCPHandler()
@@ -202,6 +246,34 @@ func New(ctx context.Context, store *redisx.Store, config Config) (*App, error) 
 	return app, nil
 }
 
+func rawSourceDefinitions(definitions []query.Definition) []query.Definition {
+	var recordQuery *query.Definition
+	declared := make(map[string]bool, len(definitions))
+	for i := range definitions {
+		declared[definitions[i].Name] = true
+		if definitions[i].Name == "run-records" {
+			recordQuery = &definitions[i]
+		}
+	}
+	result := make([]query.Definition, 0, 9)
+	for _, name := range []string{"jobs", "sessions", "events"} {
+		if !declared[name] {
+			result = append(result, query.Definition{Name: name, From: "$" + name})
+		}
+	}
+	if recordQuery != nil {
+		for _, name := range []string{"domains", "tools", "skills", "friction", "audits", "issues"} {
+			if declared[name] {
+				continue
+			}
+			derived := *recordQuery
+			derived.Name, derived.From = name, "$"+name
+			result = append(result, derived)
+		}
+	}
+	return result
+}
+
 //nolint:contextcheck // Startup validation has no request context.
 func verifyGitHubActionsPermissionsAtStartup(config Config, token string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -211,8 +283,13 @@ func verifyGitHubActionsPermissionsAtStartup(config Config, token string) error 
 
 // Start initializes the projection and background tasks without taking
 // ownership of an HTTP listener. The caller must keep ctx alive while serving
-// and call Stop after the listener has drained.
+// and call Drain before shutting down its HTTP server, then Stop after HTTP
+// requests have drained.
 func (a *App) Start(ctx context.Context) error {
+	return a.start(ctx, ctx)
+}
+
+func (a *App) start(startupCtx, runtimeCtx context.Context) error {
 	if a.config.HostProfile.Listener == HostListenerPlatform {
 		return fmt.Errorf("host profile %q delegates startup to the platform", a.config.HostProfile.Name)
 	}
@@ -221,13 +298,16 @@ func (a *App) Start(ctx context.Context) error {
 	if a.startContext != nil {
 		return errors.New("dashboard service has already started")
 	}
-	if err := ctx.Err(); err != nil {
+	if a.draining {
+		return errors.New("dashboard service has already stopped")
+	}
+	if err := startupCtx.Err(); err != nil {
 		return err
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(runtimeCtx)
 	serverLog.Printf("starting service initial_ingestion=%t", a.config.SourceDirectory != "")
 	if a.config.SourceDirectory != "" {
-		result, err := ingest.Run(runCtx, a.store, a.config.SourceDirectory, ingest.Options{DatabaseQueriesPath: a.config.DatabaseQueriesPath})
+		result, err := ingest.Run(startupCtx, a.database, a.config.SourceDirectory, ingest.Options{DatabaseQueriesPath: a.config.DatabaseQueriesPath})
 		if err != nil {
 			cancel()
 			return fmt.Errorf("initial ingestion failed: %w", err)
@@ -236,31 +316,150 @@ func (a *App) Start(ctx context.Context) error {
 		a.config.Logger.Printf("activated dashboard revision %d", result.Revision)
 	}
 	if collector := a.Collector(); collector != nil {
-		if err := collector.Start(runCtx, a.hub.Broadcast); err != nil {
-			cancel()
+		if err := collector.start(startupCtx, runCtx, a.hub.Broadcast, a.startTask); err != nil {
+			a.cancelAndWaitTasks(cancel, startupCtx)
 			return fmt.Errorf("start collection: %w", err)
 		}
 		serverLog.Printf("collection profile started workers=%d", a.config.Collector.Workers)
 	}
+	if err := startupCtx.Err(); err != nil {
+		a.cancelAndWaitTasks(cancel, startupCtx)
+		return err
+	}
 	if err := runCtx.Err(); err != nil {
-		cancel()
+		a.cancelAndWaitTasks(cancel, startupCtx)
 		return err
 	}
 	a.startContext = runCtx
 	a.stop = cancel
 	if a.oauth != nil && (a.config.SourceDirectory != "" || a.Collector() != nil) {
-		go a.oauth.runRevocationWorker(runCtx)
+		a.startTask(func() { a.oauth.runRevocationWorker(runCtx) })
 	}
 	return nil
 }
 
-// Stop cancels CAO-owned background tasks. The external host must drain its
-// HTTP listener before stopping the application.
-func (a *App) Stop() {
+// Drain stops admitting requests and ends active SSE streams. The host then
+// calls http.Server.Shutdown to wait for ordinary HTTP requests before Stop.
+func (a *App) Drain() {
 	a.startMu.Lock()
 	defer a.startMu.Unlock()
+	a.drainLocked()
+}
+
+func (a *App) drainLocked() {
+	if !a.draining {
+		a.draining = true
+		if a.drain == nil {
+			a.drain = make(chan struct{})
+		}
+		close(a.drain)
+	}
+}
+
+// startTask is called under startMu during startup.
+func (a *App) startTask(work func()) {
+	a.taskMu.Lock()
+	if a.taskCount == 0 {
+		a.tasksDone = make(chan struct{})
+	}
+	a.taskCount++
+	a.taskMu.Unlock()
+	go func() {
+		defer a.finishTask()
+		work()
+	}()
+}
+
+func (a *App) finishTask() {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	a.taskCount--
+	if a.taskCount == 0 {
+		close(a.tasksDone)
+	}
+}
+
+// launchTask tracks work admitted by an HTTP request while the service is
+// running. Direct handler users without a started lifecycle retain their
+// existing detached-operation behavior.
+func (a *App) launchTask(work func()) bool {
+	a.startMu.Lock()
+	defer a.startMu.Unlock()
+	if a.draining || (a.startContext != nil && a.startContext.Err() != nil) {
+		return false
+	}
+	if a.startContext == nil {
+		go work()
+	} else {
+		a.startTask(work)
+	}
+	return true
+}
+
+func (a *App) operationContext(requestCtx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(requestCtx), projectionTimeout)
+	a.startMu.Lock()
+	runCtx := a.startContext
+	a.startMu.Unlock()
+	if runCtx == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(runCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
+// Stop cancels CAO-owned background tasks and waits until they exit or ctx is
+// canceled. The external host must call Drain and wait for HTTP shutdown first.
+func (a *App) Stop(ctx context.Context) error {
+	a.startMu.Lock()
+	a.drainLocked()
 	if a.stop != nil {
 		a.stop()
+	}
+	a.startMu.Unlock()
+	if a.hub != nil {
+		a.hub.shutdown()
+	}
+	if err := a.waitTasks(ctx); err != nil {
+		return err
+	}
+	if a.hub != nil {
+		if err := a.hub.wait(ctx); err != nil {
+			return err
+		}
+	}
+	if a.ownedDatabase != nil {
+		a.closeDatabase.Do(func() { a.closeError = a.ownedDatabase.Close() })
+		return a.closeError
+	}
+	return nil
+}
+
+func (a *App) waitTasks(ctx context.Context) error {
+	a.taskMu.Lock()
+	if a.taskCount == 0 {
+		a.taskMu.Unlock()
+		return nil
+	}
+	done := a.tasksDone
+	a.taskMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *App) cancelAndWaitTasks(cancel context.CancelFunc, parent context.Context) {
+	cancel()
+	ctx, waitCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+	defer waitCancel()
+	if err := a.waitTasks(ctx); err != nil {
+		serverLog.Printf("background startup cleanup failed")
 	}
 }
 
@@ -268,8 +467,22 @@ func (a *App) requireStarted(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		a.startMu.Lock()
 		ctx := a.startContext
+		draining := a.draining
 		a.startMu.Unlock()
-		if ctx == nil || ctx.Err() != nil {
+		if draining || ctx == nil || ctx.Err() != nil {
+			writeError(response, http.StatusServiceUnavailable, "dashboard service is not running")
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
+}
+
+func (a *App) requireNotDraining(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		a.startMu.Lock()
+		draining := a.draining
+		a.startMu.Unlock()
+		if draining {
 			writeError(response, http.StatusServiceUnavailable, "dashboard service is not running")
 			return
 		}
@@ -281,10 +494,16 @@ func (a *App) Serve(ctx context.Context) error {
 	if a.config.HostProfile.Listener != HostListenerProcess {
 		return fmt.Errorf("host profile %q delegates listener ownership", a.config.HostProfile.Name)
 	}
-	if err := a.Start(ctx); err != nil {
+	defer func(ctx context.Context) {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := a.Stop(stopCtx); err != nil {
+			serverLog.Printf("background shutdown failed")
+		}
+	}(ctx)
+	if err := a.start(ctx, context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
-	defer a.Stop()
 	serverLog.Printf("starting server tls=%t", a.config.CertFile != "")
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", a.config.Listen)
@@ -319,19 +538,20 @@ func (a *App) Serve(ctx context.Context) error {
 	serveDone := make(chan struct{})
 	shutdownResult := make(chan error, 1)
 	defer close(serveDone)
-	go func() {
+	go func(ctx context.Context) {
 		select {
 		case <-ctx.Done():
+			a.Drain()
 			shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			err := httpServer.Shutdown(shutdown)
 			if err != nil {
-				serverLog.Printf("HTTP shutdown failed: %v", err)
+				serverLog.Printf("HTTP shutdown failed")
 			}
 			shutdownResult <- err
 		case <-serveDone:
 		}
-	}()
+	}(ctx)
 	err = httpServer.Serve(servingListener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return <-shutdownResult
@@ -381,12 +601,20 @@ func (a *App) Handler() http.Handler {
 	register("GET /api/v1/ingestion/health", a.collectionStatus)
 	register("GET /api/v1/github-quota/usage", a.gitHubQuotaUsage)
 	mux.HandleFunc("/", a.static)
-	tracedMux := withResponseTraceHeaders(mux)
+	handler := a.preAuthRateLimit(a.cors(a.requireAccess(a.rateLimit(mux))))
+	switch a.config.HostProfile.Listener {
+	case HostListenerExternal:
+		handler = a.requireStarted(handler)
+	case HostListenerProcess:
+		handler = a.requireNotDraining(handler)
+	case HostListenerPlatform:
+	}
+	tracedHandler := withResponseTraceHeaders(handler)
 	instrumented := otelhttp.NewHandler(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		original := request.Context().Value(originalHTTPRequestKey{}).(*http.Request)
 		restored := original.WithContext(request.Context())
 		restored.Body = request.Body
-		tracedMux.ServeHTTP(response, restored)
+		tracedHandler.ServeHTTP(response, restored)
 	}), telemetry.SpanHTTPServer,
 		otelhttp.WithFilter(func(request *http.Request) bool {
 			// OAuth callbacks use a dedicated, allowlisted server span instead
@@ -429,11 +657,7 @@ func (a *App) Handler() http.Handler {
 		}
 		instrumented.ServeHTTP(response, safe)
 	})
-	handler := a.preAuthRateLimit(a.cors(a.requireAccess(a.rateLimit(safeTelemetry))))
-	if a.config.HostProfile.Listener == HostListenerExternal {
-		handler = a.requireStarted(handler)
-	}
-	return securityHeaders(handler)
+	return securityHeaders(safeTelemetry)
 }
 
 type originalHTTPRequestKey struct{}
@@ -595,10 +819,27 @@ func (a *App) requireGitHubAccess(next http.Handler) http.Handler {
 			return
 		}
 		if request.URL.Path == "/mcp" && a.mcp != nil {
-			actor, err := verifyHostedActionsMCP(request.Context(), a.config, request)
+			ctx, span := telemetry.Tracer().Start(request.Context(), "cao_dashboard.auth.mcp")
+			defer span.End()
+			actor, err := verifyHostedActionsMCP(ctx, a.config, request)
 			if err != nil {
 				a.logAuthBranch("access.hosted_actions_rejected")
-				writeError(response, http.StatusUnauthorized, "GitHub Actions MCP authentication is required")
+				var refusal *hostedMCPRefusal
+				code := "authentication_failed"
+				if errors.As(err, &refusal) {
+					code = refusal.code
+				}
+				result := map[string]string{
+					"error": "GitHub Actions MCP authentication is required",
+					"code":  code,
+				}
+				spanContext := span.SpanContext()
+				if spanContext.IsValid() {
+					telemetry.SetResponseTraceHeaders(response, spanContext)
+					result["traceId"] = spanContext.TraceID().String()
+				}
+				serverLog.Printf("hosted MCP authentication rejected code=%s trace_id=%s", code, result["traceId"])
+				writeJSON(response, http.StatusUnauthorized, result)
 				return
 			}
 			a.logAuthBranch("access.hosted_actions_accepted")
@@ -649,13 +890,14 @@ func (a *App) requireGitHubAccess(next http.Handler) http.Handler {
 	})
 }
 
-// navigationRequest reports whether a request is a top-level document
-// navigation that may be redirected to the GitHub login flow. Browsers
-// identify subresource fetches with Sec-Fetch-Mode; clients that omit the
-// header keep the existing redirect behavior.
+// navigationRequest reports whether a request may enter the GitHub login
+// flow. Browsers identify subresources and embedded navigations with Fetch
+// Metadata; clients that omit these headers keep the existing behavior.
 func navigationRequest(request *http.Request) bool {
 	mode := request.Header.Get("Sec-Fetch-Mode")
-	return mode == "" || mode == "navigate"
+	destination := request.Header.Get("Sec-Fetch-Dest")
+	return (mode == "" || mode == "navigate") &&
+		(destination == "" || destination == "document")
 }
 
 func (a *App) proxyPolicy() ProxyPolicy {
@@ -706,19 +948,23 @@ func securityHeaders(next http.Handler) http.Handler {
 func (a *App) health(response http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
 	defer cancel()
-	active, activeErr := a.store.Active(ctx)
+	active, activeErr := a.database.State(ctx)
 	redisHealthy := a.store.Ping(ctx) == nil
 	status := http.StatusOK
 	if !redisHealthy || activeErr != nil {
 		status = http.StatusServiceUnavailable
 	}
-	serverLog.Printf("health status=%d redis=%t data=%t", status, redisHealthy, active.Generation != "")
+	serverLog.Printf("health status=%d redis=%t data=%t", status, redisHealthy, active.Ready)
+	data := map[string]any{"available": active.Ready, "rebuildRequired": !active.Ready}
+	if active.Ready && !active.EvaluatedAt.IsZero() {
+		data["evaluatedAt"] = active.EvaluatedAt.UTC().Format(time.RFC3339Nano)
+	}
 	payload := map[string]any{
 		"status": "healthy",
 		"redis":  map[string]any{"connected": redisHealthy},
-		"data":   map[string]any{"available": active.Generation != "", "rebuildRequired": active.Generation == ""},
+		"data":   data,
 	}
-	if !redisHealthy {
+	if status != http.StatusOK {
 		payload["status"] = "unhealthy"
 	}
 	detailsAuthorized := a.authorized(request) || (a.oauth != nil && a.oauth.requestHasSession(request))
@@ -731,7 +977,6 @@ func (a *App) health(response http.ResponseWriter, request *http.Request) {
 			rowCount += count
 		}
 		payload["revision"] = active.Revision
-		payload["generation"] = active.Generation
 		payload["counts"] = active.Counts
 		payload["sourceCount"] = len(active.Counts)
 		payload["rowCount"] = rowCount
@@ -744,20 +989,24 @@ func (a *App) health(response http.ResponseWriter, request *http.Request) {
 func (a *App) readiness(response http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
 	defer cancel()
-	active, activeErr := a.store.Active(ctx)
+	active, activeErr := a.database.State(ctx)
 	redisHealthy := a.store.Ping(ctx) == nil
-	ready := redisHealthy && activeErr == nil && active.Generation != ""
+	ready := redisHealthy && activeErr == nil && active.Ready
 	status := http.StatusOK
 	if !ready {
 		status = http.StatusServiceUnavailable
 	}
+	data := map[string]any{
+		"available":       active.Ready,
+		"rebuildRequired": !active.Ready,
+	}
+	if active.Ready && !active.EvaluatedAt.IsZero() {
+		data["evaluatedAt"] = active.EvaluatedAt.UTC().Format(time.RFC3339Nano)
+	}
 	writeJSON(response, status, map[string]any{
 		"ready": ready,
 		"redis": map[string]any{"connected": redisHealthy},
-		"data": map[string]any{
-			"available":       active.Generation != "",
-			"rebuildRequired": active.Generation == "",
-		},
+		"data":  data,
 	})
 }
 
@@ -773,44 +1022,47 @@ func (a *App) events(response http.ResponseWriter, request *http.Request) {
 	}
 	if err := http.NewResponseController(response).SetWriteDeadline(time.Time{}); err != nil &&
 		!errors.Is(err, http.ErrNotSupported) {
-		serverLog.Printf("event stream requires a response writer with deadline control: %v", err)
+		serverLog.Printf("event stream requires a response writer with deadline control")
 		writeError(response, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 	response.Header().Set("Content-Type", "text/event-stream")
 	response.Header().Set("Connection", "keep-alive")
-	active, _ := a.store.Active(request.Context())
 	allowHealth := a.adminAuthorized(request)
+	channel := a.hub.Subscribe(request.Context(), a, allowHealth)
+	if channel == nil {
+		return
+	}
+	defer a.hub.Unsubscribe(channel)
+	active, _ := a.database.State(request.Context())
 	healthRevision, _ := a.ingestionHealthRevision(request.Context(), allowHealth)
 	writeEvent(response, active.Revision, healthRevision)
 	flusher.Flush()
 	lastRevision := active.Revision
 	lastHealthRevision := healthRevision
-	channel := a.hub.Subscribe()
 	serverLog.Printf("event stream subscribed")
-	defer a.hub.Unsubscribe(channel)
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
-	poll := time.NewTicker(time.Second)
-	defer poll.Stop()
+	a.startMu.Lock()
+	drain := a.drain
+	a.startMu.Unlock()
 	for {
 		select {
-		case revision := <-channel:
-			healthRevision, _ := a.ingestionHealthRevision(request.Context(), allowHealth)
-			if revision != lastRevision || healthRevision != lastHealthRevision {
-				writeEvent(response, revision, healthRevision)
-				flusher.Flush()
-				lastRevision = revision
-				lastHealthRevision = healthRevision
+		case <-drain:
+			serverLog.Printf("event stream drained")
+			return
+		case observation, ok := <-channel:
+			if !ok {
+				return
 			}
-		case <-poll.C:
-			active, err := a.store.Active(request.Context())
-			healthRevision, healthErr := a.ingestionHealthRevision(request.Context(), allowHealth)
-			if err == nil && healthErr == nil &&
-				(active.Revision != lastRevision || healthRevision != lastHealthRevision) {
-				writeEvent(response, active.Revision, healthRevision)
+			healthRevision := int64(0)
+			if allowHealth {
+				healthRevision = observation.healthRevision
+			}
+			if observation.revision != lastRevision || healthRevision != lastHealthRevision {
+				writeEvent(response, observation.revision, healthRevision)
 				flusher.Flush()
-				lastRevision = active.Revision
+				lastRevision = observation.revision
 				lastHealthRevision = healthRevision
 			}
 		case <-heartbeat.C:
@@ -915,7 +1167,7 @@ func (a *App) query(response http.ResponseWriter, request *http.Request) {
 func writeQueryError(response http.ResponseWriter, status int, err error) {
 	var limitErr *query.PlanLimitError
 	if errors.As(err, &limitErr) {
-		writeJSON(response, http.StatusUnprocessableEntity, map[string]string{
+		writeErrorPayload(response, http.StatusUnprocessableEntity, map[string]string{
 			"error": limitErr.Error(), "code": "query_plan_too_large", "queryId": limitErr.QueryID, "boundary": limitErr.Boundary,
 		})
 		return
@@ -932,8 +1184,65 @@ type queryResponse struct {
 }
 
 func (a *App) executeQuery(ctx context.Context, input queryRequest, allowCollectionHealth bool) (queryResponse, int, error) {
-	active, err := a.store.Active(ctx)
-	if err != nil || active.Generation == "" {
+	if a.database == nil {
+		return queryResponse{}, http.StatusServiceUnavailable, errors.New("dashboard data is unavailable")
+	}
+	cache, err := a.config.QueryCache.resolve()
+	if err != nil {
+		return queryResponse{}, http.StatusInternalServerError, err
+	}
+	cacheEnabled := !cache.Disabled && a.store != nil && (len(input.SourceNames) > 0 || len(input.Aliases) > 0)
+	if !cacheEnabled {
+		reason := "readiness"
+		if cache.Disabled {
+			reason = "disabled"
+		} else if a.store == nil {
+			reason = "no-redis"
+		}
+		if err := a.recordQueryCacheBypass(ctx, reason); err != nil {
+			return queryResponse{}, http.StatusInternalServerError, err
+		}
+	}
+	var cacheKey string
+	if cacheEnabled {
+		cacheKey, err = a.queryCacheIdentity(input, allowCollectionHealth)
+		if err != nil {
+			return queryResponse{}, http.StatusBadRequest, err
+		}
+		cached, hit, err := a.loadCachedQuery(ctx, cacheKey, cache)
+		if err != nil {
+			return queryCacheError(err)
+		}
+		if hit {
+			return cached, http.StatusOK, nil
+		}
+	}
+	started := time.Now()
+	var response queryResponse
+	var status int
+	err = a.database.WithReadTransaction(ctx, func(ctx context.Context, reader postgresx.NativeReader) error {
+		var queryErr error
+		response, status, queryErr = a.executeQueryWithReader(ctx, input, allowCollectionHealth, reader)
+		return queryErr
+	})
+	if err != nil && status == 0 {
+		status = http.StatusServiceUnavailable
+	}
+	if err == nil && cacheEnabled && time.Since(started) >= cache.MinDuration {
+		if cacheErr := a.storeCachedQuery(ctx, cacheKey, response, cache); cacheErr != nil {
+			return queryCacheError(cacheErr)
+		}
+	} else if err == nil && cacheEnabled {
+		if telemetryErr := a.recordQueryCacheBypass(ctx, "cheap-query"); telemetryErr != nil {
+			return queryResponse{}, http.StatusInternalServerError, telemetryErr
+		}
+	}
+	return response, status, err
+}
+
+func (a *App) executeQueryWithReader(ctx context.Context, input queryRequest, allowCollectionHealth bool, reader postgresx.NativeReader) (queryResponse, int, error) {
+	active, err := reader.State(ctx)
+	if err != nil || !active.Ready {
 		return queryResponse{}, http.StatusServiceUnavailable, errors.New("dashboard data is unavailable")
 	}
 	evaluatedAt := evaluationTime(active)
@@ -951,12 +1260,13 @@ func (a *App) executeQuery(ctx context.Context, input queryRequest, allowCollect
 			Metrics: model.Metrics{PushedDown: []string{}, FallbackOperations: []string{}},
 		}, http.StatusOK, nil
 	}
-	definitions := append([]query.Definition{}, a.config.DashboardQueries...)
+	definitions := append([]query.Definition{}, a.databaseQueries...)
+	definitions = append(definitions, a.config.DashboardQueries...)
 	if len(input.Queries) > 0 {
-		definitions = append([]query.Definition{}, input.Queries...)
+		definitions = append(append([]query.Definition{}, a.databaseQueries...), input.Queries...)
 	}
 	definitions = append(definitions, input.CompiledQueries...)
-	resolveQueryContext(definitions, evaluatedAt)
+	ResolveQueryContext(definitions, evaluatedAt)
 	replaced := map[string]bool{}
 	for _, name := range input.ReplacedSources {
 		replaced[name] = true
@@ -968,63 +1278,108 @@ func (a *App) executeQuery(ctx context.Context, input queryRequest, allowCollect
 		}
 	}
 	started := time.Now()
-	loader := &generationLoader{
-		ctx: ctx, store: a.store, generation: active.Generation,
+	loader := &databaseLoader{
+		ctx: ctx, database: reader, operational: a.store, dataRevision: active.DataRevision,
 		app: a, allowCollectionHealth: allowCollectionHealth,
 	}
-	engine := query.New(loader)
-	sources, metrics, err := engine.Execute(definitions, requested)
+	pages := map[string]postgresx.SQLPage{}
+	for name, page := range input.Pagination {
+		offset, err := paginationOffset(name, strconv.FormatInt(active.Revision, 10), page)
+		if err != nil {
+			return queryResponse{}, http.StatusBadRequest, err
+		}
+		pages[name] = postgresx.SQLPage{Offset: offset, Limit: page.Limit}
+	}
+	sources, metrics, err := loader.ExecuteSQLPlan(definitions, requested, pages)
 	if err != nil {
 		serverLog.Printf("query failed")
 		return queryResponse{}, http.StatusBadRequest, err
 	}
-	for name, page := range input.Pagination {
+	for name := range input.Pagination {
 		source, ok := sources[name]
 		if !ok {
 			continue
 		}
-		paginated, err := paginate(source, strconv.FormatInt(active.Revision, 10), page)
-		if err != nil {
-			return queryResponse{}, http.StatusBadRequest, err
+		offset := pages[name].Offset
+		total, _ := source.Metadata["total-row-count"].(int)
+		end := offset + len(source.Rows)
+		if end < total {
+			cursor, _ := json.Marshal(map[string]any{"source": name, "revision": strconv.FormatInt(active.Revision, 10), "offset": end})
+			source.ContinuationToken = base64.RawURLEncoding.EncodeToString(cursor)
 		}
-		sources[name] = paginated
+		sources[name] = source
 	}
 	metrics.DurationMS = time.Since(started).Milliseconds()
-	serverLog.Printf("query completed sources=%d duration_ms=%d redis_commands=%d redis_rows=%d", len(sources), metrics.DurationMS, metrics.RedisCommands, metrics.RedisRows)
+	serverLog.Printf("query completed sources=%d duration_ms=%d", len(sources), metrics.DurationMS)
 	return queryResponse{
 		Revision: active.Revision, HealthRevision: healthRevision,
 		EvaluatedAt: evaluatedAt, Sources: sources, Metrics: metrics,
 	}, http.StatusOK, nil
 }
 
-type generationLoader struct {
+type databaseLoader struct {
 	ctx                   context.Context
-	store                 *redisx.Store
-	generation            string
+	database              postgresx.NativeReader
+	operational           *redisx.Store
+	dataRevision          string
 	app                   *App
 	allowCollectionHealth bool
 }
 
-func (loader *generationLoader) LoadSource(name string, definition *query.Definition) (model.Source, model.Metrics, error) {
+func (loader *databaseLoader) ExecuteSQLPlan(definitions []query.Definition, requested []string, pages map[string]postgresx.SQLPage) (map[string]model.Source, model.Metrics, error) {
+	return loader.database.ExecuteSQLPlanWithOptions(loader.ctx, definitions, requested, postgresx.SQLExecutionOptions{
+		Pages: pages, Runtime: func(ctx context.Context, name string) (model.Source, error) {
+			return loader.runtimeSource(ctx, name, definitions)
+		},
+	})
+}
+
+func (loader *databaseLoader) runtimeSource(ctx context.Context, name string, definitions []query.Definition) (model.Source, error) {
+	if name == simulationDaysSourceName {
+		return simulationDaysSource(), nil
+	}
 	if name == collectionHealthSourceName {
-		source, err := loader.app.collectionHealthSource(loader.ctx, loader.allowCollectionHealth)
-		return source, model.Metrics{}, err
+		if loader.app == nil {
+			return model.Source{}, errors.New("collection-health provider is unavailable")
+		}
+		return loader.app.collectionHealthSource(ctx, loader.allowCollectionHealth)
 	}
+
 	if name == gitHubQuotaUsageSourceName {
-		source, err := loader.app.gitHubQuotaUsageSource(loader.ctx, loader.allowCollectionHealth)
-		return source, model.Metrics{}, err
+		if loader.app == nil {
+			return model.Source{}, errors.New("GitHub quota provider is unavailable")
+		}
+		return loader.app.gitHubQuotaUsageSource(ctx, loader.allowCollectionHealth)
 	}
-	if name == marketplace.SourceName {
-		// The marketplace catalog is never stored as an ingested Redis source:
-		// it is resolved (and cached) transparently here so every query-engine
-		// caller sees an ordinary source, with no secrets ever leaving this call.
-		return marketplaceSource(loader.ctx, loader.store, loader.generation), model.Metrics{}, nil
+	if name == "$marketplacePackages" {
+		source := marketplaceSource(ctx, loader.operational, loader.dataRevision)
+		for index, input := range source.Rows {
+			row := model.Row{}
+			for _, definition := range definitions {
+				if definition.Name != marketplace.SourceName {
+					continue
+				}
+				for _, field := range definition.Select {
+					logical := field.As
+					if logical == "" {
+						logical = field.Field
+					}
+					if value, present := input[logical]; present {
+						row[field.Field] = value
+					}
+				}
+			}
+			source.Rows[index] = row
+		}
+		return source, nil
 	}
-	source, metrics, err := loader.store.LoadSource(loader.ctx, loader.generation, name, definition)
-	if errors.Is(err, redisx.ErrSourceUnavailable) {
-		return unavailableSource(name), metrics, nil
-	}
-	return source, metrics, err
+	return model.Source{}, errors.New("runtime SQL source is not registered")
+}
+
+// RuntimeQuerySourceNames lists sources resolved by the server rather than
+// stored as Postgres dashboard entities.
+func RuntimeQuerySourceNames() []string {
+	return []string{collectionHealthSourceName, gitHubQuotaUsageSourceName, marketplace.SourceName, simulationDaysSourceName}
 }
 
 func unavailableSource(name string) model.Source {
@@ -1040,47 +1395,36 @@ func unavailableSource(name string) model.Source {
 	}
 }
 
-func paginate(source model.Source, revision string, page paginationRequest) (model.Source, error) {
+func paginationOffset(source, revision string, page paginationRequest) (int, error) {
 	if page.Limit <= 0 || page.Limit > query.MaxOutputRows {
-		return model.Source{}, fmt.Errorf("pagination limit for %q is invalid", source.Source)
+		return 0, fmt.Errorf("pagination limit for %q is invalid", source)
 	}
 	offset := 0
 	if page.ContinuationToken != "" {
 		data, err := base64.RawURLEncoding.DecodeString(page.ContinuationToken)
 		if err != nil {
-			return model.Source{}, fmt.Errorf("invalid or stale continuation token for %q", source.Source)
+			return 0, fmt.Errorf("invalid or stale continuation token for %q", source)
 		}
 		var cursor struct {
 			Source   string `json:"source"`
 			Revision string `json:"revision"`
 			Offset   int    `json:"offset"`
 		}
-		if json.Unmarshal(data, &cursor) != nil || cursor.Source != source.Source || cursor.Revision != revision || cursor.Offset <= 0 {
-			return model.Source{}, fmt.Errorf("invalid or stale continuation token for %q", source.Source)
+		if json.Unmarshal(data, &cursor) != nil || cursor.Source != source || cursor.Revision != revision || cursor.Offset <= 0 {
+			return 0, fmt.Errorf("invalid or stale continuation token for %q", source)
 		}
 		offset = cursor.Offset
 	}
-	if offset > len(source.Rows) {
-		return model.Source{}, fmt.Errorf("invalid or stale continuation token for %q", source.Source)
-	}
-	end := min(len(source.Rows), offset+page.Limit)
-	total := len(source.Rows)
-	source.Rows = source.Rows[offset:end]
-	source.Metadata["total-row-count"] = total
-	if end < total {
-		cursor, _ := json.Marshal(map[string]any{"source": source.Source, "revision": revision, "offset": end})
-		source.ContinuationToken = base64.RawURLEncoding.EncodeToString(cursor)
-	}
-	return source, nil
+	return offset, nil
 }
 
 func (a *App) diagnostics(response http.ResponseWriter, request *http.Request) {
-	active, err := a.store.Active(request.Context())
-	if err != nil || active.Generation == "" {
+	active, err := a.database.State(request.Context())
+	if err != nil || !active.Ready {
 		writeError(response, http.StatusServiceUnavailable, "dashboard data is unavailable")
 		return
 	}
-	diagnostics, err := a.store.Diagnostics(request.Context(), active.Generation)
+	diagnostics, err := a.database.Diagnostics(request.Context())
 	if err != nil {
 		writeError(response, http.StatusServiceUnavailable, "dashboard diagnostics are unavailable")
 		return
@@ -1090,7 +1434,7 @@ func (a *App) diagnostics(response http.ResponseWriter, request *http.Request) {
 }
 
 func (a *App) refresh(response http.ResponseWriter, request *http.Request) {
-	active, err := a.store.Active(request.Context())
+	active, err := a.database.State(request.Context())
 	if err != nil {
 		writeError(response, http.StatusServiceUnavailable, "dashboard data is unavailable")
 		return
@@ -1103,19 +1447,19 @@ func (a *App) refresh(response http.ResponseWriter, request *http.Request) {
 	})
 }
 
-func evaluationTime(active model.ActiveGeneration) string {
+func evaluationTime(active postgresx.State) string {
 	if !active.EvaluatedAt.IsZero() {
 		return active.EvaluatedAt.UTC().Format(time.RFC3339Nano)
 	}
-	if active.Activated.IsZero() {
-		return time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	return active.Activated.UTC().Format(time.RFC3339Nano)
+	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
-func resolveQueryContext(definitions []query.Definition, evaluatedAt string) {
+// ResolveQueryContext binds the ingestion evaluation time to dashboard queries.
+func ResolveQueryContext(definitions []query.Definition, evaluatedAt string) {
 	for definitionIndex := range definitions {
+		definitions[definitionIndex].Compute = slices.Clone(definitions[definitionIndex].Compute)
 		for computedIndex := range definitions[definitionIndex].Compute {
+			definitions[definitionIndex].Compute[computedIndex].Args = slices.Clone(definitions[definitionIndex].Compute[computedIndex].Args)
 			for argumentIndex := range definitions[definitionIndex].Compute[computedIndex].Args {
 				argument := &definitions[definitionIndex].Compute[computedIndex].Args[argumentIndex]
 				if argument.Context == "time-end" {
@@ -1169,7 +1513,7 @@ func (a *App) serveIndex(response http.ResponseWriter, accessToken string) {
 		return
 	}
 	html := string(content)
-	injections := `<meta name="dashboard-data-backend" content="redis-http">`
+	injections := `<meta name="dashboard-data-backend" content="server-http">`
 	if a.oauth != nil {
 		injections += `<meta name="cao-auth-mode" content="github">`
 		injections += `<script>const m=document.cookie.match(/(?:^|;\s*)cao_csrf=([^;]+)/);if(m){const c=decodeURIComponent(m[1]);const f=window.fetch.bind(window);window.fetch=(i,n={})=>{const u=typeof i==="string"?i:i.url;if(u&&new URL(u,location.href).origin===location.origin){const h=new Headers(n.headers||{});if(!h.has("X-CSRF-Token"))h.set("X-CSRF-Token",c);n={...n,headers:h};}return f(i,n);};}</script>`
@@ -1198,39 +1542,161 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 }
 
 func writeError(response http.ResponseWriter, status int, message string) {
-	writeJSON(response, status, map[string]string{"error": message})
+	writeErrorPayload(response, status, map[string]string{"error": message})
+}
+
+func writeErrorPayload(response http.ResponseWriter, status int, payload map[string]string) {
+	traceID := response.Header().Get(telemetry.TraceIDHeader)
+	spanID := response.Header().Get(telemetry.SpanIDHeader)
+	if traceID != "" {
+		payload["traceId"] = traceID
+	}
+	if spanID != "" {
+		payload["spanId"] = spanID
+	}
+	serverLog.Printf(
+		"http error status=%d trace_id=%s span_id=%s",
+		status, traceID, spanID,
+	)
+	writeJSON(response, status, payload)
 }
 
 type eventHub struct {
 	mu      sync.Mutex
-	clients map[chan int64]struct{}
+	clients map[chan eventObservation]bool
+	current eventObservation
+	cancel  context.CancelFunc
+	wake    chan struct{}
+	workers sync.WaitGroup
+	stopped bool
+	done    chan struct{}
 }
 
-func newEventHub() *eventHub { return &eventHub{clients: map[chan int64]struct{}{}} }
+type eventObservation struct {
+	revision       int64
+	healthRevision int64
+}
 
-func (hub *eventHub) Subscribe() chan int64 {
+func newEventHub() *eventHub {
+	return &eventHub{clients: map[chan eventObservation]bool{}, wake: make(chan struct{}, 1)}
+}
+
+func (hub *eventHub) Subscribe(ctx context.Context, app *App, allowHealth bool) chan eventObservation {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	channel := make(chan int64, 1)
-	hub.clients[channel] = struct{}{}
+	if hub.stopped {
+		return nil
+	}
+	channel := make(chan eventObservation, 1)
+	hub.clients[channel] = allowHealth
+	if hub.cancel == nil {
+		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		hub.cancel = cancel
+		hub.workers.Add(1)
+		go hub.observe(ctx, app)
+	}
 	return channel
 }
 
-func (hub *eventHub) Unsubscribe(channel chan int64) {
+func (hub *eventHub) Unsubscribe(channel chan eventObservation) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	delete(hub.clients, channel)
 	close(channel)
+	if len(hub.clients) == 0 && hub.cancel != nil {
+		hub.cancel()
+		hub.cancel = nil
+	}
 }
 
 func (hub *eventHub) Broadcast(revision int64) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
+	hub.current.revision = revision
+	hub.publishLocked()
+	select {
+	case hub.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (hub *eventHub) publishLocked() {
 	for channel := range hub.clients {
 		select {
-		case channel <- revision:
+		case channel <- hub.current:
 		default:
+			// A slow stream needs the latest state, not every intermediate revision.
+			select {
+			case <-channel:
+			default:
+			}
+			select {
+			case channel <- hub.current:
+			default:
+			}
 		}
+	}
+}
+
+func (hub *eventHub) observe(ctx context.Context, app *App) {
+	defer hub.workers.Done()
+	poll := time.NewTicker(time.Second)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-poll.C:
+		case <-hub.wake:
+		}
+		hub.mu.Lock()
+		needsHealth := false
+		for _, allowed := range hub.clients {
+			needsHealth = needsHealth || allowed
+		}
+		hub.mu.Unlock()
+		active, err := app.database.State(ctx)
+		if err != nil {
+			continue
+		}
+		healthRevision, healthErr := app.ingestionHealthRevision(ctx, needsHealth)
+		hub.mu.Lock()
+		if ctx.Err() == nil {
+			changed := hub.current.revision != active.Revision ||
+				(needsHealth && healthErr == nil && hub.current.healthRevision != healthRevision)
+			if healthErr == nil && changed {
+				hub.current = eventObservation{revision: active.Revision, healthRevision: healthRevision}
+				hub.publishLocked()
+			}
+		}
+		hub.mu.Unlock()
+	}
+}
+
+func (hub *eventHub) shutdown() {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.stopped {
+		return
+	}
+	hub.stopped = true
+	if hub.cancel != nil {
+		hub.cancel()
+		hub.cancel = nil
+	}
+	hub.done = make(chan struct{})
+	go func() {
+		hub.workers.Wait()
+		close(hub.done)
+	}()
+}
+
+func (hub *eventHub) wait(ctx context.Context) error {
+	select {
+	case <-hub.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

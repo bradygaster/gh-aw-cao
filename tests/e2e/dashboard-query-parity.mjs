@@ -26,6 +26,7 @@ import {
 } from "../../dashboard/site/src/data/storage/sqlite-indexeddb.js";
 import { loadDashboardSourceSync } from "../../dashboard/report/bundle-dashboards.mjs";
 import {
+  listQueries,
   queryExecutionRequirements,
 } from "../../dashboard/site/src/agent/catalog.js";
 import {
@@ -159,7 +160,7 @@ function representativeSources() {
       event,
       "started-at": startedAt,
       "ended-at": new Date(Date.parse(startedAt) + (index + 1) * 60_000).toISOString(),
-      duration: (index + 1) * 60,
+      duration: String((index + 1) * 60),
       "rollout-mode": workflow === "beta" ? "live" : "review",
       engine: index % 2 === 0 ? "copilot" : "claude",
       "requested-model": index % 2 === 0 ? "model-a" : "model-b",
@@ -181,7 +182,7 @@ function representativeSources() {
       "observed-at": startedAt,
     }))),
     "work-items": logicalSource(runs.map(([id, workflow, conclusion, , startedAt]) => ({
-      "work-item-id": `synthetic:${workflow}`,
+      "work-item-id": `synthetic:${workflow}:${id}`,
       name: `Synthetic ${workflow}`,
       objective: "Exercise dashboard query semantics",
       organization: "synthetic-org",
@@ -252,6 +253,11 @@ function representativeSources() {
 
 function dashboardQueries() {
   const { document } = loadDashboardSourceSync(dashboardPath);
+  // This corpus has no scenario inputs; parameterized queries are exercised
+  // separately with explicit values by the named-query tests.
+  const unparameterized = new Set(listQueries(document)
+    .filter((query) => !query.parameters.some((parameter) => parameter.type))
+    .map((query) => query.id));
   const resolveContext = (value) => {
     if (Array.isArray(value)) return value.map(resolveContext);
     if (!value || typeof value !== "object") return value;
@@ -262,9 +268,28 @@ function dashboardQueries() {
   };
   // Ingestion receipts describe each backend's own writes, so their values are
   // intentionally backend-local rather than cross-backend query results.
-  return resolveContext(document.dashboard.queries).filter(
-    (query) => query.from !== "transactions",
+  const candidates = resolveContext(document.dashboard.queries).filter(
+    (query) => unparameterized.has(query.name),
   );
+  const excluded = new Set(candidates
+    .filter((query) => query.from === "transactions")
+    .map((query) => query.name));
+  const inputs = (query) => [
+    query.from,
+    ...(query.union ?? []),
+    ...(query.joins ?? []).map((join) => join.source),
+  ];
+  // Queries derived from receipt-backed queries inherit their backend-local values.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const query of candidates) {
+      if (!excluded.has(query.name) && inputs(query).some((input) => excluded.has(input))) {
+        excluded.add(query.name);
+        changed = true;
+      }
+    }
+  }
+  return candidates.filter((query) => !excluded.has(query.name));
 }
 
 function rowsByQuery(result, names) {
@@ -382,7 +407,10 @@ function canonicalToolResult(result) {
   if (canonical.isError === false) delete canonical.isError;
   const metadata = canonical.structuredContent?.metadata;
   if (metadata) {
+    // Source quality is recorded by each backend's own ingestion, so the local
+    // projection and hosted database legitimately differ on these fields.
     delete metadata["as-of"];
+    delete metadata.completeness;
     delete metadata.freshness;
   }
   return canonical;
@@ -452,13 +480,22 @@ async function writeDeployedArtifact(directory, factory, sources) {
     (name) => name !== "transactions",
   ));
   const runCollections = new Set(["campaigns", "repositories", "workflows", "runs"]);
-  const encode = (collections, phase) => [
-    JSON.stringify({ kind: "metadata", schemaVersion: 13, ingestionVersion: 3, phase }),
-    ...collections.flatMap((collection) => canonical[collection].map((record) =>
+  const encode = (collections, phase) => {
+    const lines = collections.flatMap((collection) => canonical[collection].map((record) =>
       JSON.stringify({ kind: "record", collection, record })
-    )),
-    "",
-  ].join("\n");
+    ));
+    return [
+      JSON.stringify({
+        kind: "metadata",
+        schemaVersion: 13,
+        ingestionVersion: 3,
+        phase,
+        records: lines.length,
+      }),
+      ...lines,
+      "",
+    ].join("\n");
+  };
   const runs = encode([...runCollections], "runs");
   const recordCollections = ["domains", "tools", "skills", "friction", "audits", "issues", "operationalValues"];
   const records = encode(recordCollections, "records");
@@ -497,10 +534,10 @@ async function waitForServer() {
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
-  throw new Error(`Redis dashboard server did not become ready: ${lastError}`);
+  throw new Error(`Postgres dashboard server did not become ready: ${lastError}`);
 }
 
-async function executeRedisBackend(
+async function executePostgresBackend(
   artifactDirectory,
   dashboardDocumentPath,
   agentFactory,
@@ -548,7 +585,7 @@ async function executeRedisBackend(
       body: JSON.stringify({ sourceNames: names, queries }),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(`Redis query failed (${response.status}): ${JSON.stringify(payload)}`);
+    if (!response.ok) throw new Error(`Postgres query failed (${response.status}): ${JSON.stringify(payload)}`);
     const goTools = await callGoMcp("tools/list");
     const nodeTools = await handleMcpRequest({
       headers: {
@@ -613,7 +650,7 @@ async function executeRedisBackend(
       }
       goMcpRows[name] = result.result.structuredContent.rows;
     }
-    return { redis: rowsByQuery(payload.sources, names), goMcp: goMcpRows };
+    return { postgres: rowsByQuery(payload.sources, names), goMcp: goMcpRows };
   } finally {
     child.kill("SIGTERM");
     await Promise.race([
@@ -638,7 +675,10 @@ function stableJSON(value) {
 }
 
 function normalizedRows(rows, ordered) {
-  const normalized = JSON.parse(JSON.stringify(rows));
+  // Timestamps denote the same instant with or without zero milliseconds.
+  const normalized = JSON.parse(JSON.stringify(rows), (_key, value) =>
+    typeof value === "string" ? value.replace(/(T\d{2}:\d{2}:\d{2})\.0+Z$/, "$1Z") : value
+  );
   return ordered ? normalized : normalized.toSorted((left, right) =>
     stableJSON(left).localeCompare(stableJSON(right))
   );
@@ -666,7 +706,7 @@ function compareBackends(results, queries) {
       const { name } = query;
       if (!Object.hasOwn(results[baselineName], name)) continue;
       const baselineRows = results[baselineName][name];
-      if (backend === "redis" && query?.from === "transactions") continue;
+      if (backend === "postgres" && query?.from === "transactions") continue;
       const ordered = (query?.["order-by"]?.length ?? 0) > 0;
       const expected = normalizedParityRows(query, baselineRows, ordered);
       const actual = normalizedParityRows(query, rowsByName[name] ?? [], ordered);
@@ -751,10 +791,10 @@ async function main() {
       },
       queries,
     ));
-    const [browserRows, sqliteRows, redisResult] = await Promise.all([
+    const [browserRows, sqliteRows, postgresResult] = await Promise.all([
       executeBrowserBackend(sources, queries, names),
       executeNodeBackend(installSqliteIndexedDB(sqlitePath), sources, queries, names),
-      executeRedisBackend(
+      executePostgresBackend(
         artifactDirectory,
         resolvedDocumentPath,
         sqliteFactory,
@@ -767,17 +807,28 @@ async function main() {
       "node-indexeddb": nodeRows,
       "playwright-indexeddb": browserRows,
       "sqlite-indexeddb": sqliteRows,
-      redis: redisResult.redis,
     };
-    report.backends = [...Object.keys(results), "cao-named-query", "cao-mcp"];
+    report.backends = [...Object.keys(results), "postgres", "cao-named-query", "cao-mcp"];
     // Server-only sources such as collection health have no local IndexedDB
     // equivalent and are therefore outside the cross-backend parity contract.
     report.mismatches.push(...compareBackends(results, localQueries));
+    // The server executes canonical queries rather than the injected logical
+    // inventory fixtures used by the browser comparison.
+    report.mismatches.push(...compareBackends({
+      "node-indexeddb": rowsByQuery(
+        await loadDatabaseQuerySources(nodeFactory, {}, {
+          queries,
+          sourceNames: names,
+        }),
+        names,
+      ),
+      postgres: postgresResult.postgres,
+    }, localQueries));
     report.mismatches.push(...compareBackends({
       "node-indexeddb": Object.fromEntries(
-        Object.keys(redisResult.goMcp).map((name) => [name, databaseBaseline[name]]),
+        Object.keys(postgresResult.goMcp).map((name) => [name, databaseBaseline[name]]),
       ),
-      "go-mcp": redisResult.goMcp,
+      "go-mcp": postgresResult.goMcp,
     }, localQueries));
     report.backends.push("go-mcp");
     report.status = report.mismatches.length === 0 ? "passed" : "failed";

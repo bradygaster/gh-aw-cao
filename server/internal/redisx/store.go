@@ -4,21 +4,18 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-aw-cao/server/internal/logger"
 )
 
-const redisWriteBatchSize = 100
+var storeLog = logger.New("cao:redis:store")
+
 const ingestionHealthKey = "state:ingestion-health"
 
 var ingestionCounterNames = map[string]struct{}{
@@ -38,8 +35,6 @@ var ingestionLoadNames = map[string]string{
 	"collectionSucceeded": "collection",
 	"collectionFailed":    "failure",
 }
-
-var ErrSourceUnavailable = errors.New("redis source is unavailable")
 
 type Store struct {
 	Client          CommandClient
@@ -330,19 +325,18 @@ func (s *Store) RecordIngestionHealthEvent(ctx context.Context, event, code stri
 	return err
 }
 
-// IngestionHealth returns the bounded health fields persisted by the
-// collection pipeline.
-func (s *Store) IngestionHealth(ctx context.Context) (map[string]int64, map[string]string, error) {
-	value, err := s.Client.Do(ctx, "HGETALL", s.Key(ingestionHealthKey))
-	if err != nil {
-		return nil, nil, err
-	}
-	fields, err := Strings(value)
-	if err != nil {
-		return nil, nil, err
-	}
-	counters := make(map[string]int64, len(ingestionCounterNames))
-	events := make(map[string]string, 5)
+// parseIngestionHealthFields classifies one flat HGETALL field/value sequence
+// into bounded ingestion counters and fixed health events, applying the same
+// precedence IngestionHealth previously checked inline: a recognized counter
+// name, then a recognized event field, otherwise the field is ignored. It is
+// a pure function extracted from IngestionHealth so every branch — a valid
+// counter, a negative or non-numeric counter value, a recognized event, and
+// an unrecognized field name — is testable without a Redis client. An error
+// is returned as soon as a recognized counter has an invalid value, mirroring
+// IngestionHealth's previous fail-fast behavior.
+func parseIngestionHealthFields(fields []string) (counters map[string]int64, events map[string]string, err error) {
+	counters = make(map[string]int64, len(ingestionCounterNames))
+	events = make(map[string]string, 5)
 	for index := 0; index+1 < len(fields); index += 2 {
 		name, value := fields[index], fields[index+1]
 		if _, ok := ingestionCounterNames[name]; ok {
@@ -361,60 +355,23 @@ func (s *Store) IngestionHealth(ctx context.Context) (map[string]int64, map[stri
 	return counters, events, nil
 }
 
-const repositoryMemoryManifestField = "repository-memory:manifest"
-
-func repositoryMemoryFileField(campaign, path string) string {
-	return "repository-memory:file:" + base64.RawURLEncoding.EncodeToString([]byte(campaign+"\x00"+path))
-}
-
-func (s *Store) PutRepositoryMemory(ctx context.Context, generation string, manifest []byte, files map[string][]byte) error {
-	if _, err := s.Client.Do(ctx, "HSET", s.generationKey(generation), repositoryMemoryManifestField, string(manifest)); err != nil {
-		return fmt.Errorf("write repository-memory manifest: %w", err)
-	}
-	commands := make([][]string, 0, redisWriteBatchSize)
-	for key, content := range files {
-		campaign, path, found := strings.Cut(key, "\x00")
-		if !found {
-			return errors.New("repository-memory file key is invalid")
-		}
-		commands = append(commands, []string{
-			"HSET", s.generationKey(generation), repositoryMemoryFileField(campaign, path), string(content),
-		})
-		if len(commands) == cap(commands) {
-			if _, err := s.Client.DoMany(ctx, commands); err != nil {
-				return fmt.Errorf("write repository-memory files: %w", err)
-			}
-			commands = commands[:0]
-		}
-	}
-	if len(commands) > 0 {
-		if _, err := s.Client.DoMany(ctx, commands); err != nil {
-			return fmt.Errorf("write repository-memory files: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) RepositoryMemoryManifest(ctx context.Context, generation string) ([]byte, error) {
-	value, err := s.Client.Do(ctx, "HGET", s.generationKey(generation), repositoryMemoryManifestField)
+// IngestionHealth returns the bounded health fields persisted by the
+// collection pipeline.
+func (s *Store) IngestionHealth(ctx context.Context) (map[string]int64, map[string]string, error) {
+	value, err := s.Client.Do(ctx, "HGETALL", s.Key(ingestionHealthKey))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if value == nil {
-		return nil, ErrSourceUnavailable
-	}
-	return []byte(fmt.Sprint(value)), nil
-}
-
-func (s *Store) RepositoryMemoryFile(ctx context.Context, generation, campaign, path string) ([]byte, error) {
-	value, err := s.Client.Do(ctx, "HGET", s.generationKey(generation), repositoryMemoryFileField(campaign, path))
+	fields, err := Strings(value)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if value == nil {
-		return nil, ErrSourceUnavailable
+	counters, events, err := parseIngestionHealthFields(fields)
+	if err != nil {
+		return nil, nil, err
 	}
-	return []byte(fmt.Sprint(value)), nil
+	storeLog.Printf("ingestion health read counters=%d events=%d", len(counters), len(events))
+	return counters, events, nil
 }
 
 func repositoryMemoryCacheKey(parts ...string) string {
@@ -475,9 +432,8 @@ func marketplaceCacheKey(registryID, generation string) string {
 }
 
 // CachedMarketplaceRegistry returns one registry's cached, already-normalized
-// package list for the given dashboard data revision (generation), or nil if
-// no entry is cached. The cache key is derived from both registryID and
-// generation so results never leak across registries or across revisions.
+// package list for the given data revision, or nil if no entry is cached.
+// The cache key isolates both registry identity and revision.
 func (s *Store) CachedMarketplaceRegistry(ctx context.Context, registryID, generation string) ([]byte, error) {
 	value, err := s.Client.Do(ctx, "GET", s.Key("marketplace:registry:"+marketplaceCacheKey(registryID, generation)))
 	if err != nil || value == nil {
@@ -487,7 +443,7 @@ func (s *Store) CachedMarketplaceRegistry(ctx context.Context, registryID, gener
 }
 
 // CacheMarketplaceRegistry stores one registry's normalized package list for
-// ttl, isolated by registryID and generation. content must already be safe to
+// ttl, isolated by registryID and revision. content must already be safe to
 // serve to clients: callers must never cache raw secrets or access tokens.
 func (s *Store) CacheMarketplaceRegistry(
 	ctx context.Context, registryID, generation string, content []byte, ttl time.Duration,
@@ -509,325 +465,3 @@ func (s *Store) CacheMarketplaceRegistry(
 func (s *Store) Key(suffix string) string {
 	return s.namespace + ":" + suffix
 }
-
-func (s *Store) Active(ctx context.Context) (model.ActiveGeneration, error) {
-	value, err := s.Client.Do(ctx, "HGETALL", s.activeKey())
-	if err != nil {
-		return model.ActiveGeneration{}, err
-	}
-	fields, err := Strings(value)
-	if err != nil {
-		return model.ActiveGeneration{}, err
-	}
-	if len(fields) == 0 {
-		return model.ActiveGeneration{Counts: map[string]int{}}, nil
-	}
-	result, malformed := parseActiveGeneration(fields)
-	if malformed > 0 {
-		redisLog.Printf("active generation fields malformed=%d", malformed)
-	}
-	return result, nil
-}
-
-// parseActiveGeneration decodes an HGETALL ... reply, which alternates field
-// and value strings, into an ActiveGeneration. It is a pure function so
-// Active's decoding of a malformed revision, evaluatedAt, counts, or
-// activatedAt field is testable without a fake Redis reply. A field that
-// fails to parse is left at its zero value, matching the prior inline
-// decoding, and counted in the returned malformed total.
-func parseActiveGeneration(fields []string) (model.ActiveGeneration, int) {
-	result := model.ActiveGeneration{Counts: map[string]int{}}
-	malformed := 0
-	for i := 0; i+1 < len(fields); i += 2 {
-		switch fields[i] {
-		case "generation":
-			result.Generation = fields[i+1]
-		case "revision":
-			revision, err := strconv.ParseInt(fields[i+1], 10, 64)
-			if err != nil {
-				malformed++
-				continue
-			}
-			result.Revision = revision
-		case "dataRevision":
-			result.DataRevision = fields[i+1]
-		case "evaluatedAt":
-			evaluatedAt, err := time.Parse(time.RFC3339Nano, fields[i+1])
-			if err != nil {
-				malformed++
-				continue
-			}
-			result.EvaluatedAt = evaluatedAt
-		case "counts":
-			if err := json.Unmarshal([]byte(fields[i+1]), &result.Counts); err != nil {
-				malformed++
-			}
-		case "activatedAt":
-			activated, err := time.Parse(time.RFC3339Nano, fields[i+1])
-			if err != nil {
-				malformed++
-				continue
-			}
-			result.Activated = activated
-		}
-	}
-	return result, malformed
-}
-
-func (s *Store) Activate(ctx context.Context, generation, dataRevision string, evaluatedAt time.Time, counts map[string]int) (int64, error) {
-	redisLog.Printf("activating generation sources=%d", len(counts))
-	data, _ := json.Marshal(counts)
-	activationTime := time.Now().UTC()
-	activated := activationTime.Format(time.RFC3339Nano)
-	// The issue overlay is keyed by identity independently of generations;
-	// activation never scans or copies issue status.
-	script := fmt.Sprintf(issueStatusPruneScript, int64(issueStatusRetention.Seconds())) +
-		`prune(KEYS[4], KEYS[5], tonumber(ARGV[6]), ARGV[1], ARGV[7], ARGV[8], ARGV[9]); local revision = redis.call("INCR", KEYS[3]); redis.call("HSET", KEYS[1], "generation", ARGV[1], "revision", revision, "dataRevision", ARGV[2], "evaluatedAt", ARGV[3], "counts", ARGV[4], "activatedAt", ARGV[5]); redis.call("SET", KEYS[2], ARGV[1]); return revision`
-	value, err := s.Client.Do(
-		ctx, "EVAL", script, "5", s.activeKey(), s.activeGenerationKey(), s.revisionSequenceKey(),
-		s.issueStatusKey(), s.issueStatusAgeKey(),
-		generation, dataRevision, evaluatedAt.UTC().Format(time.RFC3339Nano), string(data), activated,
-		strconv.FormatInt(activationTime.Unix(), 10),
-		s.namespace+":g:", ":source:"+safeName("issues")+":row:", ":source:"+safeName("issues")+":rows",
-	)
-	if err != nil {
-		return 0, fmt.Errorf("activate Redis generation: %w", err)
-	}
-	revision, ok := value.(int64)
-	if !ok {
-		return 0, errors.New("activate Redis generation returned an invalid revision")
-	}
-	return revision, nil
-}
-
-// PutSource stages one source's rows.
-//
-// Rows are stored as a single raw JSON document per key plus a set of the keys
-// in the source. Nothing else is written: the previous implementation also
-// wrote every scalar field as its own hash field purely so RediSearch could
-// index it, which doubled the memory a generation occupied to serve a pushdown
-// path that no canonical query was eligible for.
-func (s *Store) PutSource(ctx context.Context, generation string, source model.Source) error {
-	redisLog.Printf("staging source rows=%d", len(source.Rows))
-	prefix := s.rowPrefix(generation, source.Source)
-	setKey := s.sourceSetKey(generation, source.Source)
-	commands := make([][]string, 0, redisWriteBatchSize)
-	flush := func(rowNumber int) error {
-		if len(commands) == 0 {
-			return nil
-		}
-		if _, err := s.Client.DoMany(ctx, commands); err != nil {
-			return fmt.Errorf("write %s rows through %d: %w", source.Source, rowNumber, err)
-		}
-		commands = commands[:0]
-		return nil
-	}
-	script := `redis.call("HSET", KEYS[1], "raw", ARGV[1]); redis.call("SADD", KEYS[2], KEYS[1]); return "OK"`
-	for rowNumber, row := range source.Rows {
-		data, err := json.Marshal(row)
-		if err != nil {
-			return fmt.Errorf("encode %s row: %w", source.Source, err)
-		}
-		key := prefix + rowID(row, rowNumber)
-		commands = append(commands, []string{"EVAL", script, "2", key, setKey, string(data)})
-		if len(commands) == cap(commands) {
-			if err := flush(rowNumber); err != nil {
-				return err
-			}
-		}
-	}
-	if err := flush(len(source.Rows) - 1); err != nil {
-		return err
-	}
-	metadata, _ := json.Marshal(source.Metadata)
-	if _, err := s.Client.Do(ctx, "HSET", s.generationKey(generation),
-		"source:"+source.Source+":metadata", string(metadata),
-	); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) PutDiagnostics(ctx context.Context, generation string, diagnostics model.Diagnostics) error {
-	data, err := json.Marshal(diagnostics)
-	if err != nil {
-		return err
-	}
-	_, err = s.Client.Do(ctx, "HSET", s.generationKey(generation), "diagnostics", string(data))
-	return err
-}
-
-func (s *Store) Diagnostics(ctx context.Context, generation string) (model.Diagnostics, error) {
-	value, err := s.Client.Do(ctx, "HGET", s.generationKey(generation), "diagnostics")
-	if err != nil {
-		return model.Diagnostics{}, err
-	}
-	if value == nil {
-		return model.Diagnostics{}, errors.New("diagnostics are unavailable")
-	}
-	var diagnostics model.Diagnostics
-	if err := json.Unmarshal([]byte(fmt.Sprint(value)), &diagnostics); err != nil {
-		return model.Diagnostics{}, err
-	}
-	return diagnostics, nil
-}
-
-// LoadSource reads a source's rows and lets the query engine evaluate the
-// definition.
-//
-// There is deliberately no query pushdown. Pushdown required RediSearch, and
-// therefore a Redis tier with modules, while none of the canonical projection
-// queries were eligible for it: each one joins, unions, computes, or projects
-// columns, and none bounds its result below the search result cap. Evaluating
-// in the engine is the path those queries always took, so removing pushdown
-// removed a second implementation rather than a capability.
-func (s *Store) LoadSource(ctx context.Context, generation, name string, definition *query.Definition) (model.Source, model.Metrics, error) {
-	metadata, err := s.sourceInfo(ctx, generation, name)
-	if err != nil {
-		return model.Source{}, model.Metrics{}, err
-	}
-	_ = definition
-	metrics := model.Metrics{FallbackOperations: []string{"query"}, RedisCommands: 1}
-	value, err := s.Client.Do(ctx, "SMEMBERS", s.sourceSetKey(generation, name))
-	metrics.RedisCommands++
-	if err != nil {
-		return model.Source{}, metrics, err
-	}
-	keys, err := Strings(value)
-	if err != nil {
-		return model.Source{}, metrics, err
-	}
-	sort.Strings(keys)
-	if len(keys) > query.MaxInputRows {
-		return model.Source{}, metrics, fmt.Errorf("source %q exceeds max input rows", name)
-	}
-	rows := make([]model.Row, 0, len(keys))
-	const batchSize = 1000
-	script := `local out = {}; for i,key in ipairs(KEYS) do out[i] = redis.call("HGET", key, "raw"); end; return out`
-	for offset := 0; offset < len(keys); offset += batchSize {
-		end := min(len(keys), offset+batchSize)
-		command := make([]string, 0, 3+end-offset)
-		command = append(command, "EVAL", script, strconv.Itoa(end-offset))
-		command = append(command, keys[offset:end]...)
-		value, err := s.Client.Do(ctx, command...)
-		metrics.RedisCommands++
-		if err != nil {
-			return model.Source{}, metrics, err
-		}
-		rawRows, err := Strings(value)
-		if err != nil {
-			return model.Source{}, metrics, err
-		}
-		for _, raw := range rawRows {
-			var row model.Row
-			if err := json.Unmarshal([]byte(raw), &row); err != nil {
-				return model.Source{}, metrics, err
-			}
-			rows = append(rows, row)
-		}
-	}
-	if name == "issues" {
-		// Only request statuses for retained rows; even a large global overlay
-		// never requires an unbounded Redis reply or main-thread hash scan.
-		for offset := 0; offset < len(rows); offset += batchSize {
-			end := min(len(rows), offset+batchSize)
-			ids := make([]string, 0, end-offset)
-			issueRows := make([]model.Row, 0, end-offset)
-			for _, row := range rows[offset:end] {
-				if id, ok := row["id"].(string); ok && id != "" &&
-					row["isPullRequest"] == false && !strings.Contains(fmt.Sprint(row["url"]), "/pull/") {
-					ids = append(ids, id)
-					issueRows = append(issueRows, row)
-				}
-			}
-			if len(ids) == 0 {
-				continue
-			}
-			command := append([]string{"HMGET", s.issueStatusKey()}, ids...)
-			value, err := s.Client.Do(ctx, command...)
-			metrics.RedisCommands++
-			if err != nil {
-				return model.Source{}, metrics, err
-			}
-			updates, ok := value.([]any)
-			if !ok || len(updates) != len(ids) {
-				return model.Source{}, metrics, errors.New("invalid issue status response")
-			}
-			for i, raw := range updates {
-				if raw == nil {
-					continue
-				}
-				var update model.Row
-				if err := json.Unmarshal([]byte(fmt.Sprint(raw)), &update); err != nil {
-					return model.Source{}, metrics, err
-				}
-				row := issueRows[i]
-				if update["ambiguous"] == true || update["rowHash"] != rowID(row, 0) ||
-					!strings.EqualFold(fmt.Sprint(update["repository"]), fmt.Sprint(row["repositoryFullName"])) {
-					continue
-				}
-				observed, updateErr := time.Parse(time.RFC3339Nano, fmt.Sprint(update["statusObservedAt"]))
-				snapshot, snapshotErr := time.Parse(time.RFC3339Nano, fmt.Sprint(row["statusObservedAt"]))
-				if updateErr != nil || snapshotErr == nil && !observed.After(snapshot) {
-					continue
-				}
-				for _, field := range []string{"state", "closed", "stateReason", "closedAt", "statusObservedAt"} {
-					row[field] = update[field]
-				}
-			}
-		}
-	}
-	metrics.RedisRows = len(rows)
-	redisLog.Printf("loaded source rows=%d mode=fallback", len(rows))
-	return model.Source{Source: name, Rows: rows, Metadata: metadata}, metrics, nil
-}
-
-func (s *Store) sourceInfo(ctx context.Context, generation, name string) (model.Metadata, error) {
-	value, err := s.Client.Do(ctx, "HGET", s.generationKey(generation), "source:"+name+":metadata")
-	if err != nil {
-		return nil, err
-	}
-	if value == nil {
-		return nil, fmt.Errorf("%w: %q", ErrSourceUnavailable, name)
-	}
-	metadata := model.Metadata{}
-	if raw := fmt.Sprint(value); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &metadata)
-	}
-	return metadata, nil
-}
-
-func rowID(row model.Row, fallback int) string {
-	for _, field := range []string{"id", "event", "run", "repository-coordinate"} {
-		if value := strings.TrimSpace(fmt.Sprint(row[field])); value != "" && value != "<nil>" {
-			sum := sha256.Sum256([]byte(value))
-			return hex.EncodeToString(sum[:16])
-		}
-	}
-	data, _ := json.Marshal(row)
-	data = append(data, strconv.Itoa(fallback)...)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:16])
-}
-
-func safeName(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:12])
-}
-
-func (s *Store) activeKey() string { return s.namespace + ":active" }
-func (s *Store) activeGenerationKey() string {
-	return s.namespace + ":active-generation"
-}
-func (s *Store) revisionSequenceKey() string { return s.namespace + ":revision-sequence" }
-func (s *Store) generationKey(generation string) string {
-	return s.namespace + ":g:" + generation
-}
-func (s *Store) sourceSetKey(generation, source string) string {
-	return s.generationKey(generation) + ":source:" + safeName(source) + ":rows"
-}
-func (s *Store) rowPrefix(generation, source string) string {
-	return s.generationKey(generation) + ":source:" + safeName(source) + ":row:"
-}
-func (s *Store) issueStatusKey() string    { return s.Key("issue-status") }
-func (s *Store) issueStatusAgeKey() string { return s.Key("issue-status:updated") }

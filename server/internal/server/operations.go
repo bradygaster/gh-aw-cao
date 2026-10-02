@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
 )
 
 const (
@@ -34,7 +34,7 @@ type GitHubWebhook struct {
 }
 
 type DirectoryReconciler struct {
-	Store               *redisx.Store
+	Store               *postgresx.Store
 	SourceDirectory     string
 	DatabaseQueriesPath string
 }
@@ -55,7 +55,6 @@ type rebuildStatus struct {
 	Required     bool           `json:"required"`
 	StartedAt    string         `json:"startedAt,omitempty"`
 	CompletedAt  string         `json:"completedAt,omitempty"`
-	Generation   string         `json:"generation,omitempty"`
 	Revision     int64          `json:"revision,omitempty"`
 	DataRevision string         `json:"dataRevision,omitempty"`
 	Counts       map[string]int `json:"counts,omitempty"`
@@ -85,9 +84,9 @@ func (a *App) rebuild(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	started := time.Now().UTC()
-	active, _ := a.store.Active(request.Context())
+	active, _ := a.database.State(request.Context())
 	status := rebuildStatus{
-		State: "running", Required: active.Generation == "",
+		State: "running", Required: !active.Ready,
 		StartedAt: started.Format(time.RFC3339Nano),
 	}
 	if err := a.writeRebuildStatus(request.Context(), status); err != nil {
@@ -95,8 +94,13 @@ func (a *App) rebuild(response http.ResponseWriter, request *http.Request) {
 		writeError(response, http.StatusServiceUnavailable, "rebuild status is unavailable")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), projectionTimeout)
-	go a.performRebuild(ctx, cancel, token, status)
+	ctx, cancel := a.operationContext(request.Context())
+	if !a.launchTask(func() { a.performRebuild(ctx, cancel, token, status) }) {
+		cancel()
+		a.releaseProjectionLock(request.Context(), token)
+		writeError(response, http.StatusServiceUnavailable, "dashboard service is not running")
+		return
+	}
 	writeJSON(response, http.StatusAccepted, status)
 }
 
@@ -114,7 +118,6 @@ func (a *App) performRebuild(ctx context.Context, cancel context.CancelFunc, tok
 	status.State = "succeeded"
 	status.Required = false
 	status.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	status.Generation = result.Generation
 	status.Revision = result.Revision
 	status.DataRevision = result.DataRevision
 	status.Counts = result.Counts
@@ -210,8 +213,13 @@ func (a *App) githubWebhook(response http.ResponseWriter, request *http.Request)
 		Event:    event,
 		Payload:  payload,
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(request.Context()), projectionTimeout)
-	go a.performReconciliation(ctx, cancel, token, eventPayload)
+	ctx, cancel := a.operationContext(request.Context())
+	if !a.launchTask(func() { a.performReconciliation(ctx, cancel, token, eventPayload) }) {
+		cancel()
+		a.releaseProjectionLock(request.Context(), token)
+		writeError(response, http.StatusServiceUnavailable, "dashboard service is not running")
+		return
+	}
 	writeJSON(response, http.StatusAccepted, map[string]any{"accepted": true})
 }
 
@@ -248,11 +256,8 @@ func (a *App) admitWebhook(
 		a.recordIngestionCounter(request.Context(), "webhookDuplicate")
 		serverLog.Printf("webhook delivery duplicate")
 	} else {
-		if result["reason"] == "ambiguous-status" {
-			a.recordIngestionFailure(request.Context(), "admission")
-		}
-		serverLog.Printf("webhook admission completed kind=%v queued=%v applied=%v reason=%v admitted_at=%s",
-			result["kind"], result["queued"], result["applied"], result["reason"],
+		serverLog.Printf("webhook admission completed kind=%v queued=%v reason=%v admitted_at=%s",
+			result["kind"], result["queued"], result["reason"],
 			time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	writeJSON(response, http.StatusAccepted, payload)
@@ -340,20 +345,20 @@ func (a *App) readRebuildStatus(ctx context.Context) (rebuildStatus, error) {
 				return rebuildStatus{}, err
 			}
 			if !held {
-				active, err := a.store.Active(ctx)
+				active, err := a.database.State(ctx)
 				if err != nil {
 					return rebuildStatus{}, err
 				}
 				status.State = "interrupted"
-				status.Required = active.Generation == ""
+				status.Required = !active.Ready
 				status.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			}
 		}
 		return status, nil
 	}
-	active, err := a.store.Active(ctx)
+	active, err := a.database.State(ctx)
 	if err != nil {
 		return rebuildStatus{}, err
 	}
-	return rebuildStatus{State: "idle", Required: active.Generation == ""}, nil
+	return rebuildStatus{State: "idle", Required: !active.Ready}, nil
 }

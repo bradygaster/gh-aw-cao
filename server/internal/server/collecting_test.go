@@ -39,7 +39,8 @@ func TestCollectionHealthSourceReportsBackfillProgress(t *testing.T) {
 	source := collectionHealthSource(collect.Status{
 		Configured: true, Health: "recovering", Backfill: "partial",
 		BackfillFailures: 2, BackfillRunTasks: 17, OldestPending: "23s",
-		Load: map[string]float64{"webhook": 2.5, "collection": 1.5, "failure": 0.5},
+		Load:     map[string]float64{"webhook": 2.5, "collection": 1.5, "failure": 0.5},
+		Counters: map[string]int64{"webhookReceived": 23, "collectionSucceeded": 11},
 	})
 	if got := source.Rows[0]["backfill"]; got != "partial" {
 		t.Fatalf("backfill phase = %v, want partial", got)
@@ -56,16 +57,21 @@ func TestCollectionHealthSourceReportsBackfillProgress(t *testing.T) {
 	if got := source.Rows[0]["webhook-load"]; got != 2.5 {
 		t.Fatalf("webhook load = %v, want 2.5", got)
 	}
+	if source.Rows[0]["webhook-received"] != int64(23) || source.Rows[0]["collection-succeeded"] != int64(11) {
+		t.Fatalf("Redis counters were not exposed to the admin dashboard: %+v", source.Rows[0])
+	}
 }
 
 func TestCollectionHealthQueryRunsThroughServerQueryEngine(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://" + address)
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{store: redisx.NewStore(client, "health-query-test")}
+	app := &App{store: redisx.NewStore(client, "health-query-test"), database: database}
 	input := queryRequest{
 		Queries:     []query.Definition{{Name: "ingestion-health", From: collectionHealthSourceName}},
 		SourceNames: []string{"ingestion-health"},

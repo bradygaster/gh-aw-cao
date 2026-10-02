@@ -2,6 +2,69 @@ import { assert, authoritativeDashboard, buildPresenterModuleUrl, expect, expect
 
 registerSmokeRoutes();
 
+test('Simulators exposes its database-size tab and bounded scenario inputs', async ({ page }) => {
+  await page.setContent(`
+    <div id="root"></div>
+    <script type="module">
+      import { renderDashboard } from ${JSON.stringify(buildPresenterModuleUrl())};
+      document.querySelector('#root').append(renderDashboard({
+        document: ${JSON.stringify(authoritativeDashboard)},
+        sources: {}
+      }));
+      window.location.hash = '#page-simulators';
+    </script>
+  `);
+  const simulator = page.locator('[data-page-id="simulators"]');
+  await expect(simulator.getByRole('link', { name: 'Database size' })).toHaveAttribute('aria-current', 'page');
+  await expect(simulator.getByRole('slider')).toHaveCount(5);
+  await expect(simulator.getByRole('slider', { name: 'Repositories' })).toHaveAttribute('max', '100000');
+  await expect(simulator.getByRole('slider', { name: 'Skipped runs (%)' })).toHaveAttribute('min', '1');
+});
+
+test('Simulators binds slider values to a recomputed 30-day table', async ({ page }) => {
+  await page.setContent(`
+    <div id="root"></div>
+    <script type="module">
+      import { renderDashboard } from ${JSON.stringify(buildPresenterModuleUrl())};
+      import { compileDashboardViewPayloadQueries } from '/src/data/queries/view-payload-compiler.js';
+      import { processDataRequest } from '/src/data-worker.js';
+      const documentModel = ${JSON.stringify(authoritativeDashboard)};
+      const pageDefinition = documentModel.dashboard.pages.find((entry) => entry.id === 'simulators');
+      window.simulatorQueries = [];
+      window.location.hash = '#page-simulators';
+      document.querySelector('#root').append(renderDashboard({
+        document: documentModel,
+        sources: {},
+        loadPageSources: async (pageId, options) => {
+          if (pageId !== 'simulators') return {};
+          const payload = compileDashboardViewPayloadQueries(pageDefinition, pageId, {
+            queries: documentModel.dashboard.queries,
+            queryContext: options.queryContext
+          });
+          window.simulatorQueries.push({
+            repositories: options.queryContext?.formValues?.repositories ?? pageDefinition.form.fields[0].default,
+            parameter: payload.queries.find((query) => query.name.endsWith(':simulator-database-inputs'))?.compute[0].args[0].value
+          });
+          const results = processDataRequest({
+            operation: 'execute-dashboard-queries', sources: {},
+            queries: payload.queries, sourceNames: payload.aliases
+          });
+          return { ...results, [pageDefinition.views[0].data.source]: results[payload.aliases[0]] };
+        }
+      }));
+    </script>
+  `);
+  const simulator = page.locator('[data-page-id="simulators"]');
+  const table = simulator.getByRole('table');
+  await expect(table.getByRole('row', { name: 'Total 890880000' })).toBeVisible();
+  const slider = simulator.getByRole('slider', { name: 'Repositories' });
+  await slider.fill('2000');
+  await expect(table.getByRole('row', { name: 'Total 1781760000' })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => /** @type {Window & { simulatorQueries: unknown[] }} */ (
+    /** @type {unknown} */ (window)
+  ).simulatorQueries.at(-1))).toEqual({ repositories: 2000, parameter: 2000 });
+});
+
 test('mobile shell keeps Overview navigation in the hamburger menu', async ({ page }) => {
   const presenterModuleUrl = buildPresenterModuleUrl();
   const documentModel = authoritativeDashboard;
@@ -1090,7 +1153,8 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
     'Operational Value',
     'Friction',
     'Skills',
-    'Steering'
+    'Steering',
+    'Simulators'
   ]);
   await expect(cleanNavigation.first().locator('.octicon-home')).toBeVisible();
   await expect(page.locator('.account-menu')).toHaveCount(0);

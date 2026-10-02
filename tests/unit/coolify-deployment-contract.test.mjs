@@ -53,6 +53,22 @@ test("Coolify Compose builds the checked-out source without deployment credentia
   ]);
   assert.equal(dashboard.environment.CAO_SOURCE_DIRECTORY, "/app/source");
   assert.equal(
+    dashboard.environment.CAO_POSTGRES_URL,
+    "${CAO_POSTGRES_URL:?Configure the PostgreSQL connection URL}",
+  );
+  assert.equal(
+    dashboard.environment.CAO_GITHUB_CLIENT_SECRET,
+    "${CAO_GITHUB_CLIENT_SECRET_ROTATED:-}",
+  );
+  assert.equal(
+    dashboard.environment.CAO_SESSION_SECRET,
+    "${CAO_SESSION_SECRET_ROTATED:-}",
+  );
+  assert.equal(
+    dashboard.environment.CAO_GITHUB_WEBHOOK_SECRET,
+    "${CAO_GITHUB_WEBHOOK_SECRET_ROTATED:-}",
+  );
+  assert.equal(
     dashboard.environment.CAO_MCP_ACTIONS_REPOSITORY,
     "${CAO_MCP_ACTIONS_REPOSITORY:?Configure the GitHub repository selected as this Coolify resource's source}",
   );
@@ -64,6 +80,9 @@ test("Coolify Compose builds the checked-out source without deployment credentia
     dashboard.environment.CAO_BUILD_VERSION,
     "${SOURCE_COMMIT:-unknown}",
   );
+  assert.equal(dashboard.environment.CAO_OTEL_LOGS_ENABLED, "${CAO_OTEL_LOGS_ENABLED:-false}");
+  assert.equal(dashboard.environment.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT, "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:-}");
+  assert.equal(dashboard.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS, "${OTEL_EXPORTER_OTLP_LOGS_HEADERS:-}");
   assert.equal(dashboard.read_only, true);
   assert.equal(dashboard.init, true);
   assert.deepEqual(dashboard.cap_drop, ["ALL"]);
@@ -78,7 +97,7 @@ test("Coolify Compose builds the checked-out source without deployment credentia
   assert.doesNotMatch(source, /CAO_IMAGE|COOLIFY_API_TOKEN/);
   assert.doesNotMatch(source, /github_pat_|ghp_|gho_|-----BEGIN/);
   for (const [name, value] of Object.entries(dashboard.environment)) {
-    if (/SECRET|REDIS_URL/.test(name)) {
+    if (/SECRET|REDIS_URL|POSTGRES_URL/.test(name)) {
       assert.match(value, /^\$\{/, `${name} must be injected by Coolify`);
     }
   }

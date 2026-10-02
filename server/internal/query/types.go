@@ -3,8 +3,6 @@ package query
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
 )
 
 const (
@@ -74,9 +72,10 @@ type Predicate struct {
 }
 
 type Argument struct {
-	Field   *string `json:"field,omitempty"`
-	Value   any     `json:"value,omitempty"`
-	Context string  `json:"context,omitempty"`
+	Field     *string `json:"field,omitempty"`
+	Value     any     `json:"value,omitempty"`
+	Context   string  `json:"context,omitempty"`
+	Parameter string  `json:"parameter,omitempty"`
 }
 
 // argumentKind identifies which of the mutually exclusive shapes a compute
@@ -85,10 +84,11 @@ type Argument struct {
 type argumentKind string
 
 const (
-	argumentKindField   argumentKind = "field"
-	argumentKindValue   argumentKind = "value"
-	argumentKindContext argumentKind = "context"
-	argumentKindInvalid argumentKind = "invalid"
+	argumentKindField     argumentKind = "field"
+	argumentKindValue     argumentKind = "value"
+	argumentKindContext   argumentKind = "context"
+	argumentKindParameter argumentKind = "parameter"
+	argumentKindInvalid   argumentKind = "invalid"
 )
 
 // classifyArgumentKind inspects a decoded compute-argument object and reports
@@ -104,6 +104,8 @@ func classifyArgumentKind(raw map[string]json.RawMessage) argumentKind {
 		return argumentKindValue
 	case has(raw, "context"):
 		return argumentKindContext
+	case has(raw, "parameter"):
+		return argumentKindParameter
 	default:
 		return argumentKindInvalid
 	}
@@ -131,6 +133,12 @@ func (a *Argument) UnmarshalJSON(data []byte) error {
 		return json.Unmarshal(raw["value"], &a.Value)
 	case argumentKindContext:
 		return json.Unmarshal(raw["context"], &a.Context)
+	case argumentKindParameter:
+		if len(raw) != 1 {
+			return fmt.Errorf("compute parameter argument must contain only parameter")
+		}
+		a.Field, a.Value, a.Context = nil, nil, ""
+		return json.Unmarshal(raw["parameter"], &a.Parameter)
 	default:
 		queryLog.Printf("compute argument decode rejected reason=missing-field-value-context")
 		return fmt.Errorf("compute argument must contain field, value, or context")
@@ -172,6 +180,11 @@ type TemporalSeries struct {
 	Carry    []string          `json:"carry,omitempty"`
 	Measures []TemporalMeasure `json:"measures,omitempty"`
 	Maps     []TemporalMap     `json:"maps,omitempty"`
+	Trend    *TemporalTrend    `json:"trend,omitempty"`
+}
+
+type TemporalTrend struct {
+	Direction string `json:"direction"`
 }
 
 type TemporalMeasure struct {
@@ -185,12 +198,4 @@ type TemporalMap struct {
 	Definitions string `json:"definitions,omitempty"`
 	Group       string `json:"group,omitempty"`
 	Kind        string `json:"kind"`
-}
-
-type Loader interface {
-	LoadSource(name string, definition *Definition) (model.Source, model.Metrics, error)
-}
-
-type Options struct {
-	MaxOperations int
 }

@@ -173,14 +173,6 @@ func ParsePackageManifest(source string, coordinates Coordinates) (Package, erro
 		ReadmePath:         readmePath,
 		Source:             sourceCoordinate,
 		AddCommand:         "./cao.sh add " + sourceCoordinate,
-		VerificationStatus: "unknown",
-		VerificationSource: "unknown",
-		MaintenanceStatus:  "unknown",
-		MaintenanceSource:  "unknown",
-		PopularitySource:   "unknown",
-		SignalsObservedAt:  time.Now().UTC().Format(time.RFC3339),
-		InstallationStatus: "unknown",
-		AdoptionSource:     "unknown",
 	}, nil
 }
 
@@ -215,50 +207,53 @@ func repositoryLink(repository, apiURL string) *RepositoryLink {
 
 const maxRepositorySignalBytes = 64 * 1024
 
-func repositorySignals(ctx context.Context, opts Options, url, token string, commitPayload map[string]any, observed time.Time) (string, string, string, *int, *int, string) {
-	unknown := func() (string, string, string, *int, *int, string) {
-		return "unknown", "unknown", "", nil, nil, "unknown"
-	}
+func repositoryCounts(ctx context.Context, opts Options, url, token string) (*int, *int) {
 	response, err := githubRequest(ctx, opts, http.MethodGet, url, token)
 	if err != nil {
-		return unknown()
+		return nil, nil
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxRepositorySignalBytes+1))
 	if err != nil || len(body) > maxRepositorySignalBytes {
-		return unknown()
+		resolveLog.Printf("repository signals request failed stage=read-body")
+		return nil, nil
 	}
+	stars, forks, outcome := decodeRepositorySignals(body)
+	resolveLog.Printf("repository signals decoded outcome=%s", outcome)
+	return stars, forks
+}
+
+// repositorySignalsOutcome names why decodeRepositorySignals did or did not
+// confirm public star and fork counts, stable across response shape changes
+// so it is useful to log without exposing the counts or visibility value.
+type repositorySignalsOutcome string
+
+const (
+	repositorySignalsOutcomeConfirmed     repositorySignalsOutcome = "confirmed"
+	repositorySignalsOutcomeNotPublic     repositorySignalsOutcome = "not-public"
+	repositorySignalsOutcomeInvalidCounts repositorySignalsOutcome = "invalid-counts"
+	repositorySignalsOutcomeDecodeFailed  repositorySignalsOutcome = "decode-failed"
+)
+
+// decodeRepositorySignals parses a GitHub repository API response body and
+// decides whether it confirms a public repository with valid, non-negative
+// star and fork counts. It is a pure function so each outcome (malformed
+// JSON, a private/internal/unknown-visibility repository, or an invalid
+// count) is testable without a fake GitHub HTTP server.
+func decodeRepositorySignals(body []byte) (*int, *int, repositorySignalsOutcome) {
 	var repo map[string]any
 	if err := json.Unmarshal(body, &repo); err != nil {
-		return unknown()
+		return nil, nil, repositorySignalsOutcomeDecodeFailed
 	}
 	if private, ok := repo["private"].(bool); !ok || private || repo["visibility"] != "public" {
-		return unknown()
-	}
-
-	maintenanceStatus, maintenanceSource, lastMaintainedAt := "unknown", "unknown", ""
-	if commitDetails, ok := commitPayload["commit"].(map[string]any); ok {
-		if committer, ok := commitDetails["committer"].(map[string]any); ok {
-			if date, ok := committer["date"].(string); ok {
-				if maintained, err := time.Parse(time.RFC3339, date); err == nil && !maintained.After(observed) {
-					lastMaintainedAt = maintained.UTC().Format(time.RFC3339)
-					maintenanceStatus, maintenanceSource = "active", "github-repository"
-					if observed.Sub(maintained) > 180*24*time.Hour {
-						maintenanceStatus = "stale"
-					}
-				}
-			}
-		}
+		return nil, nil, repositorySignalsOutcomeNotPublic
 	}
 	stars, starsOK := nonnegativeCount(repo["stargazers_count"])
 	forks, forksOK := nonnegativeCount(repo["forks_count"])
-	popularitySource := "unknown"
-	if starsOK && forksOK {
-		popularitySource = "github-public-repository"
-	} else {
-		stars, forks = nil, nil
+	if !starsOK || !forksOK {
+		return nil, nil, repositorySignalsOutcomeInvalidCounts
 	}
-	return maintenanceStatus, maintenanceSource, lastMaintainedAt, stars, forks, popularitySource
+	return stars, forks, repositorySignalsOutcomeConfirmed
 }
 
 func nonnegativeCount(raw any) (*int, bool) {
@@ -268,13 +263,6 @@ func nonnegativeCount(raw any) (*int, bool) {
 	}
 	count := int(number)
 	return &count, true
-}
-
-func setPublisherVerification(pkg *Package, verified bool) {
-	pkg.VerificationStatus, pkg.VerificationSource = "unknown", "unknown"
-	if verified {
-		pkg.VerificationStatus, pkg.VerificationSource = "verified", "control-policy"
-	}
 }
 
 func scalarPattern(name string) *regexp.Regexp {
@@ -381,9 +369,7 @@ func ResolveRegistry(ctx context.Context, registry Registry, precedence int, opt
 	}
 	readmes := readmeEntries(rawTree, prefix)
 
-	observed := opts.now().UTC()
-	maintenanceStatus, maintenanceSource, lastMaintainedAt, stars, forks, popularitySource :=
-		repositorySignals(ctx, opts, fmt.Sprintf("%s/repos/%s", base, repositoryPath), token, commitPayload, observed)
+	stars, forks := repositoryCounts(ctx, opts, fmt.Sprintf("%s/repos/%s", base, repositoryPath), token)
 
 	packages := make([]Package, 0, len(entries))
 	skippedPrivate := 0
@@ -423,10 +409,7 @@ func ResolveRegistry(ctx context.Context, registry Registry, precedence int, opt
 		if err != nil {
 			return nil, err
 		}
-		pkg.SignalsObservedAt = observed.Format(time.RFC3339)
-		pkg.MaintenanceStatus, pkg.MaintenanceSource, pkg.LastMaintainedAt = maintenanceStatus, maintenanceSource, lastMaintainedAt
-		pkg.Stars, pkg.Forks, pkg.PopularitySource = stars, forks, popularitySource
-		setPublisherVerification(&pkg, registry.VerifiedPublisher)
+		pkg.Stars, pkg.Forks = stars, forks
 		packages = append(packages, pkg)
 	}
 	resolveLog.Printf("resolved registry registry_id=%s entries=%d packages=%d skipped_private=%d",

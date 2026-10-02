@@ -138,6 +138,39 @@ test("cao_query returns rows with availability metadata", async () => {
   assert.ok(payload.metadata["as-of"]);
 });
 
+test("cao_query runs a typed simulator scenario and rejects invalid inputs", async () => {
+  const parameters = {
+    repositories: 2,
+    "runs-per-day": 3,
+    "tools-per-run": 4,
+    "issues-per-run": 1,
+    "skip-rate": 50,
+  };
+  const invoke = (values) => request(
+    "tools/call",
+    { name: "cao_query", arguments: { id: "simulator-database-summary", parameters: values } },
+    { "mcp-name": "cao_query" },
+  );
+  const { status, body } = await invoke(parameters);
+  assert.equal(status, 200);
+  assert.equal(body.result.isError, undefined);
+  assert.deepEqual(body.result.structuredContent.rows, [
+    { table: "Run summaries", bytes: 92160 },
+    { table: "Tools (30-day TTL)", bytes: 92160 },
+    { table: "Issues (30-day TTL)", bytes: 46080 },
+    { table: "Total", bytes: 230400 },
+  ]);
+  for (const values of [
+    { ...parameters, repositories: 100001 },
+    { ...parameters, "skip-rate": 0 },
+    { ...parameters, "tools-per-run": "NaN" },
+    { repositories: 2 },
+  ]) {
+    const rejected = await invoke(values);
+    assert.equal(rejected.body.result.isError, true);
+  }
+});
+
 test("cao_query refuses unknown queries and unknown parameters", async () => {
   const unknownQuery = await request(
     "tools/call",

@@ -1,62 +1,60 @@
 package ingest
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
-	"strconv"
+	"path/filepath"
+	"reflect"
 	"testing"
-	"time"
-
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
 )
 
-func TestEmptyRedisRebuildAndFailedReplacementPreservesActiveGeneration(t *testing.T) {
-	rawURL := os.Getenv("REDIS_URL")
-	if rawURL == "" {
-		t.Skip("REDIS_URL is not set")
+func TestEmptyPostgresRebuildAndFailedIngestionPreservesCurrentData(t *testing.T) {
+	ctx, store := ingestTestStore(t)
+	directory := scratchDirectory(t)
+	options := Options{DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json"}
+	for _, name := range []string{"inventory-sources.json", "payload-hashes.json", "gh-aw-logs-runs/subset.jsonl", "gh-aw-logs-records/subset.jsonl"} {
+		// #nosec G304 -- the fixture root and filenames are fixed test inputs.
+		content, err := os.ReadFile(filepath.Join("../../testdata/deployed-subset", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(directory, name), content)
 	}
-	client, err := redisx.New(rawURL)
+	before, err := Run(ctx, store, directory, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	namespace, err := redisx.NormalizeNamespace("recovery-" + strconv.FormatInt(time.Now().UnixNano(), 36))
+	name := "gh-aw-logs-records/subset.jsonl"
+	// #nosec G304 -- this path belongs to this test's owned scratch directory.
+	content, err := os.ReadFile(filepath.Join(directory, name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := redisx.NewStore(client, namespace)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	before, err := store.Active(ctx)
+	content = append(content, []byte("{\"kind\":\"record\",\"collection\":\"domains\",\"record\":{\"id\":\"orphan\",\"runId\":\"missing\"}}\n")...)
+	writeTestFile(t, filepath.Join(directory, name), content)
+	// #nosec G304 -- this path belongs to this test's owned scratch directory.
+	manifestContent, err := os.ReadFile(filepath.Join(directory, "payload-hashes.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.Generation != "" {
-		t.Fatalf("new projection namespace unexpectedly has active data: %#v", before)
+	var manifest Manifest
+	if err := json.Unmarshal(manifestContent, &manifest); err != nil {
+		t.Fatal(err)
 	}
-
-	result, err := Run(ctx, store, "../../testdata/deployed-subset", Options{
-		DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json",
-		Force:               true,
-	})
+	sum := sha256.Sum256(content)
+	manifest[name] = hex.EncodeToString(sum[:])
+	manifestContent, _ = json.Marshal(manifest)
+	writeTestFile(t, filepath.Join(directory, "payload-hashes.json"), manifestContent)
+	if _, err := Run(ctx, store, directory, options); err == nil {
+		t.Fatal("orphan shard published")
+	}
+	after, err := store.State(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Generation == "" || result.Revision != 1 || len(result.Counts) == 0 {
-		t.Fatalf("empty Redis was not rebuilt into a valid active generation: %#v", result)
-	}
-
-	if _, err := Run(ctx, store, t.TempDir(), Options{
-		DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json",
-		Force:               true,
-	}); err == nil {
-		t.Fatal("expected rebuild from an invalid authoritative source to fail")
-	}
-	after, err := store.Active(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Generation != result.Generation || after.Revision != result.Revision {
-		t.Fatalf("failed rebuild replaced active generation: before=%#v after=%#v", result, after)
+	if after.Revision != before.Revision || after.DataRevision != before.DataRevision || !reflect.DeepEqual(after.Counts, before.Counts) {
+		t.Fatalf("failed ingestion changed publication: %+v", after)
 	}
 }

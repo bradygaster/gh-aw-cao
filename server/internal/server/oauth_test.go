@@ -31,6 +31,7 @@ func TestAzureModeRequiresCompleteGitHubOAuthPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = New(context.Background(), redisx.NewStore(client, "test"), Config{
+		Database:      constructorDatabase(),
 		HostProfile:   azureFunctionsHostProfile(),
 		SiteDirectory: site,
 		AccessToken:   testAccessToken,
@@ -42,6 +43,7 @@ func TestAzureModeRequiresCompleteGitHubOAuthPolicy(t *testing.T) {
 	}
 
 	_, err = New(context.Background(), redisx.NewStore(client, "test"), Config{
+		Database:      constructorDatabase(),
 		HostProfile:   azureFunctionsHostProfile(),
 		SiteDirectory: site,
 		Proxy:         ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}, RequireHTTPS: true},
@@ -60,6 +62,7 @@ func TestAzureModeRequiresCompleteGitHubOAuthPolicy(t *testing.T) {
 func TestAzureOAuthLoginCallbackAndAuthorizedAPI(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 
 	login := httptest.NewRecorder()
 	request := azureRequest(t, http.MethodGet, "/auth/login")
@@ -73,7 +76,7 @@ func TestAzureOAuthLoginCallbackAndAuthorizedAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := location.Query().Get("state")
-	if state == "" || location.Query().Get("scope") != "read:org" {
+	if state == "" || location.Query().Get("scope") != "read:org" || location.Query().Get("prompt") != "select_account" {
 		t.Fatalf("unexpected login redirect: %s", location.String())
 	}
 
@@ -95,6 +98,9 @@ func TestAzureOAuthLoginCallbackAndAuthorizedAPI(t *testing.T) {
 	csrfCookie := firstCookie(t, callback.Result(), csrfCookieName)
 	if csrfCookie.HttpOnly || !csrfCookie.Secure {
 		t.Fatalf("csrf cookie has unexpected flags: %#v", csrfCookie)
+	}
+	if csrfCookie.MaxAge != int(csrfCookieTTL.Seconds()) || sessionCookie.MaxAge != int(sessionTTL.Seconds()) {
+		t.Fatal("CSRF cookie must expire before the session cookie")
 	}
 
 	unauthorized := httptest.NewRecorder()
@@ -140,6 +146,12 @@ func TestAzureOAuthRejectsInvalidStateAndDeniedMembership(t *testing.T) {
 	}
 	if !deniedGitHub.sawRevocation("access-old") || !deniedGitHub.sawRevocation("refresh-old") {
 		t.Fatal("denied callback left issued credentials active")
+	}
+	retry := httptest.NewRecorder()
+	app.Handler().ServeHTTP(retry, azureRequest(t, http.MethodGet, "/auth/login"))
+	location, err := url.Parse(retry.Header().Get("Location"))
+	if retry.Code != http.StatusFound || err != nil || location.Query().Get("prompt") != "select_account" {
+		t.Fatalf("retry after denied membership did not request account selection: %s (%v)", retry.Header().Get("Location"), err)
 	}
 }
 
@@ -207,6 +219,7 @@ func TestOAuthRevalidationPersistsAuthorizationFreshness(t *testing.T) {
 func TestOAuthRefreshReconcilesConcurrentAuthorizationRecheck(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: -60, refreshSucceeds: true})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 	cookie, csrf := callbackSession(t, app)
 	github.onUserRequest = func() {
 		current, sealed, err := app.oauth.loadSessionRecord(t.Context(), cookie.Value)
@@ -285,6 +298,7 @@ func TestOAuthRevokesCallbackCredentialsAfterClientCancellation(t *testing.T) {
 func TestAzureOAuthRefreshRotationLogoutAndRefreshFailure(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: -60, refreshSucceeds: true})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 	sessionCookie, csrfCookie := callbackSession(t, app)
 
 	refreshed := httptest.NewRecorder()
@@ -295,6 +309,14 @@ func TestAzureOAuthRefreshRotationLogoutAndRefreshFailure(t *testing.T) {
 	app.Handler().ServeHTTP(refreshed, request)
 	if refreshed.Code != http.StatusOK {
 		t.Fatalf("refresh rotation request returned %d: %s", refreshed.Code, refreshed.Body.String())
+	}
+	if renewed := firstCookie(t, refreshed.Result(), sessionCookieName); renewed.Value != sessionCookie.Value ||
+		renewed.MaxAge != int(sessionTTL.Seconds()) || !renewed.HttpOnly || !renewed.Secure {
+		t.Fatal("token refresh did not renew the secure session cookie")
+	}
+	if renewed := firstCookie(t, refreshed.Result(), csrfCookieName); renewed.Value != csrfCookie.Value ||
+		renewed.MaxAge != int(csrfCookieTTL.Seconds()) || renewed.HttpOnly || !renewed.Secure {
+		t.Fatal("token refresh did not renew the browser-readable CSRF cookie")
 	}
 
 	logout := httptest.NewRecorder()
@@ -322,6 +344,9 @@ func TestAzureOAuthRefreshRotationLogoutAndRefreshFailure(t *testing.T) {
 	if failed.Code != http.StatusUnauthorized {
 		t.Fatalf("refresh failure returned %d: %s", failed.Code, failed.Body.String())
 	}
+	if firstCookie(t, failed.Result(), sessionCookieName).MaxAge >= 0 {
+		t.Fatal("failed token refresh renewed a revoked session")
+	}
 
 	removedGitHub := fakeGitHub(t, fakeGitHubOptions{
 		membershipState:          "active",
@@ -340,8 +365,52 @@ func TestAzureOAuthRefreshRotationLogoutAndRefreshFailure(t *testing.T) {
 	if removed.Code != http.StatusUnauthorized {
 		t.Fatalf("removed member refresh returned %d: %s", removed.Code, removed.Body.String())
 	}
+
 	if !removedGitHub.sawRevocation("access-new") {
 		t.Fatalf("removed member's refreshed token was not revoked: %#v", removedGitHub.revoked)
+	}
+}
+
+func TestOAuthRestoresExpiredCSRFCookieBeforeSessionExpiry(t *testing.T) {
+	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600})
+	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
+	sessionCookie, csrfCookie := callbackSession(t, app)
+
+	recovery := httptest.NewRecorder()
+	request := azureRequest(t, http.MethodGet, "/api/auth/session")
+	request.AddCookie(sessionCookie)
+	app.Handler().ServeHTTP(recovery, request)
+	if recovery.Code != http.StatusOK {
+		t.Fatalf("CSRF recovery returned %d: %s", recovery.Code, recovery.Body.String())
+	}
+	if renewed := firstCookie(t, recovery.Result(), csrfCookieName); renewed.Value != csrfCookie.Value ||
+		renewed.MaxAge != int(csrfCookieTTL.Seconds()) {
+		t.Fatal("authenticated read did not restore the missing CSRF cookie")
+	}
+	if renewed := firstCookie(t, recovery.Result(), sessionCookieName); renewed.Value != sessionCookie.Value ||
+		renewed.MaxAge != int(sessionTTL.Seconds()) {
+		t.Fatal("CSRF recovery did not renew the matching session cookie")
+	}
+
+	empty := httptest.NewRecorder()
+	request = azureRequest(t, http.MethodGet, "/api/auth/session")
+	request.AddCookie(sessionCookie)
+	request.AddCookie(&http.Cookie{
+		Name: csrfCookieName, Value: "", Secure: true,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	app.Handler().ServeHTTP(empty, request)
+	if empty.Code != http.StatusOK || firstCookie(t, empty.Result(), csrfCookieName).Value != csrfCookie.Value {
+		t.Fatal("authenticated read did not replace an empty CSRF cookie")
+	}
+
+	denied := httptest.NewRecorder()
+	request = azureRequest(t, http.MethodPost, "/api/v1/refresh")
+	request.AddCookie(sessionCookie)
+	app.Handler().ServeHTTP(denied, request)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF header bypassed mutation protection: %d", denied.Code)
 	}
 }
 
@@ -540,8 +609,21 @@ func TestHostedOAuthExposesAndSwitchesCurrentAccount(t *testing.T) {
 func TestHostedOAuthLoggedOutPageRequiresExplicitLogin(t *testing.T) {
 	app := newAzureTestApp(t, fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600}).URL)
 	response := httptest.NewRecorder()
+	request := azureRequest(t, http.MethodGet, "/auth/logged-out")
+	request.AddCookie(&http.Cookie{
+		Name: sessionCookieName, Value: "stale-session",
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	request.AddCookie(&http.Cookie{
+		Name: csrfCookieName, Value: "stale-csrf",
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
+	request.AddCookie(&http.Cookie{
+		Name: "cao_oauth_state", Value: "stale-state",
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
 
-	app.Handler().ServeHTTP(response, azureRequest(t, http.MethodGet, "/auth/logged-out"))
+	app.Handler().ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("logged-out page returned %d: %s", response.Code, response.Body.String())
@@ -549,17 +631,35 @@ func TestHostedOAuthLoggedOutPageRequiresExplicitLogin(t *testing.T) {
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("logged-out page may be cached")
 	}
-	if !strings.Contains(response.Body.String(), `href="/auth/login"`) {
-		t.Fatal("logged-out page does not offer explicit GitHub sign-in")
+	for name, path := range map[string]string{
+		sessionCookieName: "/", csrfCookieName: "/", "cao_oauth_state": "/auth/",
+	} {
+		cookie := firstCookie(t, response.Result(), name)
+		if cookie.Value != "" || cookie.MaxAge >= 0 || cookie.Path != path || !cookie.Secure {
+			t.Errorf("logged-out page did not clear %s cookie: %#v", name, cookie)
+		}
+	}
+	if !strings.Contains(response.Body.String(), `href="/auth/login?select_account=1"`) {
+		t.Fatal("logged-out page does not offer sign-in with account selection")
+	}
+	if !strings.Contains(response.Body.String(), `href="https://github.com/" target="_blank" rel="noreferrer noopener"`) {
+		t.Fatal("logged-out page does not offer a way to add another GitHub account")
 	}
 	if response.Header().Get("Location") != "" {
 		t.Fatal("logged-out page unexpectedly restarted OAuth")
+	}
+	login := httptest.NewRecorder()
+	app.Handler().ServeHTTP(login, azureRequest(t, http.MethodGet, "/auth/login?select_account=1"))
+	location, err := url.Parse(login.Header().Get("Location"))
+	if err != nil || location.Query().Get("prompt") != "select_account" {
+		t.Fatalf("retry did not ask GitHub to select an account: %s (%v)", login.Header().Get("Location"), err)
 	}
 }
 
 func TestHostedOAuthLogsBranchesWithoutCredentialValues(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 	var branches []string
 	app.oauth.log = func(branch string) {
 		branches = append(branches, branch)
@@ -590,7 +690,7 @@ func TestHostedOAuthLogsBranchesWithoutCredentialValues(t *testing.T) {
 
 	for _, expected := range []string{
 		"access.public_allowed",
-		"login.default_account_requested",
+		"login.account_selection_requested",
 		"exchange.succeeded",
 		"identity.loaded",
 		"organization_membership.active",
@@ -806,6 +906,7 @@ func newAzureTestApp(t *testing.T, githubURL string) *App {
 		t.Fatal(err)
 	}
 	config := Config{
+		Database:      constructorDatabase(),
 		HostProfile:   azureFunctionsHostProfile(),
 		SiteDirectory: site,
 		Proxy:         ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}, RequireHTTPS: true},

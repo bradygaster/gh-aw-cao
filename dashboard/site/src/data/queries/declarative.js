@@ -13,6 +13,7 @@
 
 import { PREDICTION_METHODS, tidy } from '../../data-operations.js';
 import { createDebug } from '../../debug.js';
+import { SIMULATION_DAYS, simulationDaysSource } from './simulation-days.js';
 
 const debugQuery = createDebug('data:query');
 
@@ -478,9 +479,10 @@ function reachesQuery(index, from, target) {
  * requested sources is loaded and unrelated sources stay excluded.
  * @param {unknown} definitions
  * @param {Iterable<string>} requested
+ * @param {Set<string>} [precomputed] query results already available without loading their inputs
  * @returns {string[]} requested names plus every transitively required source
  */
-export function resolveDashboardQuerySources(definitions, requested) {
+export function resolveDashboardQuerySources(definitions, requested, precomputed = new Set()) {
   const index = dashboardQueryIndex(definitions);
   /** @type {Set<string>} */
   const resolved = new Set();
@@ -490,6 +492,7 @@ export function resolveDashboardQuerySources(definitions, requested) {
     const name = /** @type {string} */ (pending.shift());
     if (resolved.has(name)) continue;
     resolved.add(name);
+    if (precomputed.has(name)) continue;
     for (const input of queryInputNames(index.get(name))) {
       if (!resolved.has(input)) pending.push(input);
     }
@@ -574,11 +577,14 @@ export function executeDashboardQueries(definitions, sources, requested, options
   /** @type {Record<string, LogicalSourceInput>} */
   const compiled = Object.create(null);
   const visiting = new Set();
-  const names = requested ? new Set(requested) : index.keys();
+  const names = new Set(requested ?? index.keys());
+  const inputs = resolveDashboardQuerySources(definitions, names).includes(SIMULATION_DAYS)
+    ? { ...sources, [SIMULATION_DAYS]: simulationDaysSource() }
+    : sources;
   for (const name of names) {
     if (!index.has(name)) continue;
     defineLazyProperty(derived, name, () => {
-      compileDashboardQuery(name, index, sources, defects, queryBudget(), compiled, visiting);
+      compileDashboardQuery(name, index, inputs, defects, queryBudget(), compiled, visiting);
       const page = options.pagination?.[name];
       if (!page) return compiled[name];
       const required = new Set(resolveDashboardQuerySources(definitions, [name]));

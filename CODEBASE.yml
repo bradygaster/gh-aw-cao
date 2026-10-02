@@ -14,6 +14,7 @@ project:
     - SQLite
     - IndexedDB
     - Redis
+    - PostgreSQL
     - Go
     - Dashboard Language
     - Astro/Starlight
@@ -27,7 +28,7 @@ structure:
   activity: activity/
   dashboard: dashboard/
   dashboard_data: dashboard/site/src/data/
-  dashboard_redis_server: server/
+  dashboard_go_server: server/
   dashboard_server_contract: server/spec/
   dashboard_coolify_profile: server/coolify/
   dashboard_upstash_profile: server/internal/server/hosted.go
@@ -79,6 +80,9 @@ architecture:
     computation_authority: authority inferred from a derived computation result
     outcome_inference_from_runtime: treating runtime success as verification, accepted outcome, an operational-grader result, or operational value
     generation_scoped_computation_results: disposable bounded measure results keyed to one canonical generation, measure version, partition, and input fingerprint
+    dashboard_entity_storage: current hosted dashboard entity rows, quality metadata, diagnostics, and revision state
+    dashboard_query_execution: Dashboard Language evaluation over current hosted dashboard data
+    operational_state_storage: sessions, rate limits, queues, deduplication, coordination, quota state, revocation retries, and bounded caches
 
 components:
   policy_resolution:
@@ -135,21 +139,30 @@ components:
   indexeddb_projection:
     path: dashboard/site/src/data/
     responsibility: rebuildable per-browser data projection
-  redis_projection:
-    path: server/
-    responsibility: disposable generation-scoped dashboard projection using core Redis row sets
+  postgres_entity_store:
+    path: server/internal/postgresx/
+    responsibility: initialize a fresh TypeSpec-generated schema and transactionally replace and read eighteen query-minimal native entity tables, entity-owned relational child values, quality metadata, diagnostics, and revision state; preserve missing versus null with compact presence bits; compile and execute bounded Dashboard Language plans as SQL in a repeatable-read snapshot without persisted documents, duplicate scalar representations, or compatibility migrations
+  redis_operational_store:
+    path: server/internal/redisx/
+    responsibility: support operational caches, queues, and sessions, not dashboard entity storage or query execution
+  dashboard_query_result_cache:
+    path: server/internal/redisx/query_cache.go and server/internal/server/query_cache.go
+    responsibility: cache expensive compact HTTP and MCP query results by SHA-256 query identity for five minutes, with atomic expiry, allocator-reported memory limits and oldest-first eviction
   dashboard_https_server:
     path: server/
-    responsibility: independently resolve compiled app-target and declarative Redis-provider modules from non-secret cao.json, compose and validate their capabilities, ingest deployed artifacts, execute Dashboard Language queries server-side, and serve bounded canonical or explicitly registered runtime-source results
+    responsibility: independently resolve compiled app-target and declarative Redis-provider modules from non-secret cao.json, ingest deployed artifacts into Postgres, use Redis for operational state and bounded result caches, execute hosted Dashboard Language plans through the PostgreSQL SQL engine with registered runtime sources, and serve bounded query results
   dashboard_http_contract:
     path: server/spec/
-    responsibility: specify the public Go server HTTP and SSE contracts in TypeSpec and generate checked OpenAPI and JSON Schema artifacts
+    responsibility: specify public HTTP/SSE and fresh Postgres storage contracts in TypeSpec; generate checked OpenAPI, wire JSON Schemas, standalone SQL DDL, and Go entity bindings; enforce query-field coverage and column minimization
   dashboard_external_host:
     path: server/hosting/
     responsibility: expose the complete hosted CAO handler and cancellation-aware application startup to a separately owned HTTP listener without exporting Redis or authentication internals
   dashboard_coolify_deployment:
     path: server/coolify/
     responsibility: let a repository-scoped Coolify GitHub App watch protected main, build the non-root serve-hosted container from the checked-out source commit, and run it behind a fail-closed Coolify TLS proxy with an atomically populated external read-only artifact volume
+  dashboard_observability:
+    path: server/internal/telemetry/, server/internal/server/, dashboard/site/src/remote-data-backend.js
+    responsibility: export vendor-neutral OTLP traces and metrics plus explicitly enabled DEBUG-selected logs, correlate bounded server errors and browser failures through matching W3C trace/span identifiers, and keep exporter credentials and internal failure details outside responses and logs
   dashboard_server_package:
     path: .github/workflows/cao-package.yml
     responsibility: validate protected source authority, test and independently scan, and seal the deployment-neutral multi-role CAO server image without package-write authority
@@ -182,10 +195,10 @@ components:
     responsibility: coordinate GitHub API quota across replicas for buckets keyed by app, installation, and resource through authoritative observations, expiring atomic Redis reservations, parking, a credential-free provider registry, headroom-based bucket selection, and a bounded 24-hour usage history exposed to administrators through a REST API and the github-quota-usage runtime source
   dashboard_rebuild_control:
     path: server/internal/server/operations.go
-    responsibility: coordinate multi-replica rebuilds, stage and validate a fresh generation, atomically activate it, and report operational status
+    responsibility: coordinate multi-replica rebuilds, validate and transactionally replace current Postgres sources, and report operational status
   dashboard_server_diagnostics:
     path: server/internal/doctor/
-    responsibility: run a read-only systematic check-up of runtime configuration, Redis safety and capacity, canonical integrity, query definitions, generation reclamation, and optional collection health, rendered as human-readable text or versioned structured JSON
+    responsibility: run a read-only systematic check-up of runtime configuration, Redis operational capacity, Postgres canonical state and integrity, query definitions, and optional collection health, rendered as text or versioned structured JSON
   dashboard_language_queries:
     path: dashboard/site/src/data/ and server/internal/query/
     responsibility: execute declarative canonical-data queries in the browser worker and registered bounded runtime-source queries at the server boundary
@@ -231,8 +244,11 @@ dependencies:
   - browser_data_worker -> indexeddb_projection
   - browser_data_worker -> dashboard_language_queries
   - dashboard_publisher -> dashboard_https_server
-  - dashboard_https_server -> redis_projection
-  - redis_projection -> dashboard_https_server
+  - dashboard_https_server -> postgres_entity_store
+  - postgres_entity_store -> dashboard_https_server
+  - dashboard_https_server -> redis_operational_store
+  - dashboard_https_server -> dashboard_query_result_cache
+  - dashboard_query_result_cache -> redis_operational_store
   - dashboard_https_server -> dashboard_language_queries
   - dashboard_https_server -> dashboard_canonical_api
   - dashboard_https_server -> dashboard_http_contract
@@ -241,10 +257,11 @@ dependencies:
   - dashboard_server_package -> dashboard_server_package_publisher
   - dashboard_server_package_publisher -> dashboard_https_server
   - dashboard_upstash_deployment -> dashboard_https_server
-  - dashboard_upstash_deployment -> redis_projection
+  - dashboard_upstash_deployment -> redis_operational_store
   - dashboard_github_auth -> dashboard_https_server
   - dashboard_webhook_reconciliation -> dashboard_rebuild_control
-  - dashboard_rebuild_control -> redis_projection
+  - dashboard_rebuild_control -> postgres_entity_store
+  - dashboard_rebuild_control -> redis_operational_store
   - sqlite_projection -> computations
   - indexeddb_projection -> computations
   - computations -> computation_reference_runtime
@@ -261,7 +278,7 @@ dependencies:
   - marketplace_registry_policy -> marketplace_static_resolver
   - marketplace_registry_policy -> marketplace_hosted_resolver
   - marketplace_static_resolver -> browser_data_worker
-  - marketplace_hosted_resolver -> redis_projection
+  - marketplace_hosted_resolver -> redis_operational_store
   - marketplace_static_resolver -> marketplace_ui
   - marketplace_hosted_resolver -> marketplace_ui
 
@@ -299,6 +316,19 @@ boundaries:
     must_not_depend_on:
       - computation_authority
       - outcome_inference_from_runtime
+  - subject: postgres_entity_store
+    may_depend_on:
+      - canonical_evidence
+      - dashboard_entity_storage
+      - dashboard_query_execution
+    must_not_depend_on:
+      - operational_state_storage
+  - subject: redis_operational_store
+    may_depend_on:
+      - operational_state_storage
+    must_not_depend_on:
+      - dashboard_entity_storage
+      - dashboard_query_execution
 
 invariants:
   - "CAO controls whether and where operations run; gh-aw controls how admitted workflows run."
@@ -312,13 +342,18 @@ invariants:
   - "Dispatch envelopes include identity, mode, review destination, and provenance; they MUST NOT include credentials."
   - "Activity evidence MUST NOT determine rollout, outcomes, or operational value."
   - "JSONL snapshots are authoritative; caches, SQLite, and IndexedDB are disposable projections."
-  - "Local Redis generations are disposable projections activated atomically from verified deployed dashboard artifacts."
+  - "Postgres is the exclusive hosted dashboard entity and query store: it holds native typed entity and inventory tables, quality metadata, diagnostics, and revision state; replacement is transactional and does not create generations or persistent derived projections."
+  - "The hosted query plan executor MUST bind values and namespace and enforce pre-filter input and resource bounds; all hosted row operations execute in SQL without Go evaluator fallback."
+  - "TypeSpec owns the fresh Postgres physical schema; entities MUST NOT be duplicated in generic source storage or persisted as JSON/JSONB/serialized documents. Startup MUST NOT migrate or import old database layouts."
   - "Dashboard ingestion MUST load every run-information shard before record shards; every domain, tool, audit, and issue MUST identify its owning run."
   - "The deployed dashboard artifact MUST NOT contain or manifest raw Activity JSONL; browser ingestion MUST consume compacted normalized run and record JSONL and fail closed when run-information shards are absent."
   - "Normalized Activity shards MUST be JSONL and browser consumers MUST stream bounded record batches without buffering a complete shard."
   - "Missing, stale, partial, and zero evidence are distinct states."
-  - "Dashboard data operations MUST be declared in Dashboard Language and execute outside the browser main thread: in the data Web Worker for static deployment or in the Go HTTP(S) server for the Redis profile."
-  - "In the Redis profile, Dashboard Language queries execute in the Go HTTP(S) server and compatible stages MUST be pushed into Redis before bounded Go fallback."
+  - "Dashboard data operations MUST be declared in Dashboard Language and execute outside the browser main thread: in the data Web Worker for static deployment or in the Go HTTP(S) server over current Postgres sources."
+  - "Redis is operational-only: it stores sessions, rate limits, queues, deduplication, coordination, quota state, revocation retries, and bounded caches; it MUST NOT store dashboard entity rows, canonical source documents, query indexes, persistent query projections, or execute dashboard data queries."
+  - "The hosted server MUST NOT fall back from Postgres to Redis for dashboard data; Postgres unavailability makes dashboard data unavailable even when Redis is healthy."
+  - "Hosted Redis stores operational caches, queues, and sessions; it MUST NOT store or query dashboard entity sources."
+  - "Hosted query-result cache identities MUST include definitions, parameters, pagination, schema and current authorization class, not ingestion revisions; entries retain their original evidence revision and evaluation time for a fixed five-minute lifetime without ingestion invalidation or renewal on data egress, and atomic expiry and oldest-first eviction MUST bound result/index memory and entry count without changing global Redis eviction policy."
   - "The local Redis profile MUST bind to loopback, use HTTP by default for localhost debugging, enable HTTPS only with operator-supplied certificate files, and MUST NOT expose Redis endpoints or credentials to browser code."
   - "The hosted Redis profile MUST use GitHub OAuth with explicit organization or team authorization, explicit rebuild administrators, server-side secrets and sessions, and an explicit account-selection flow for switching GitHub identities."
   - "Hosted Redis MUST use TLS by default and Azure Functions MUST always require TLS; private plaintext Redis is allowed only through an explicit opt-in and only for a private IP or single-label service hostname."
@@ -330,10 +365,12 @@ invariants:
   - "The CAO server package MUST require stable release identities in exact vX.Y.Z form on protected main history; admit manual branch dispatch only for original and rerun actors with maintain or admin permission when the executing workflow is current protected main and the requested source branch is at its current head; keep manual dispatch identities separate from main and release identities; run lint, test, and image build/scanning as separate jobs; test exact sources; gate Dockerfile and workflow security with Hadolint, actionlint, and zizmor; preserve raw static-check outputs in a short-lived artifact even on failure; independently gate high/critical CVEs with Trivy and Grype; check container hardening with Dockle; generate an SPDX SBOM with Syft; keep lint, test, build, and scanner execution outside the package-write security domain; pass only a checksummed candidate and exact metadata to the protected-main reusable publisher; revalidate caller, source, checksum, metadata, and OCI labels before publication; publish only immutable commit or exact stable release identities; attest provenance and SBOM for the exact OCI digest; expose the multi-role server for downstream Docker Compose command selection; emit privacy-safe core.info milestones for JavaScript control checks; and never publish mutable channel tags."
   - "Package and delivery step summaries MUST use non-nested details sections and disclose only check scope, policy, and outcome; they MUST NOT reproduce vulnerability records, SBOM contents, image inventory, credentials, endpoints, payloads, registry responses, or adapter responses."
   - "Coolify production delivery MUST use a repository-scoped Coolify GitHub App and automatic deployments from protected main; build server/Dockerfile through server/coolify/compose.yml from the selected source commit; embed SOURCE_COMMIT; bake the base and Coolify policy profiles into the image; retain the authoritative activity artifact as an external read-only volume; require no GitHub deployment workflow, Coolify API token, public Coolify API endpoint, runner tailnet access, registry credentials, or mutable registry tag; and treat package-workflow scans, hardening checks, SBOMs, and attestations as guarantees for published packages rather than admission evidence for the source-built production image."
+  - "Hosted server telemetry MUST use standard OTEL runtime configuration; exporter endpoints and headers MUST remain deployment secrets and MUST NOT enter policy, browser state, or logs. When tracing is active, API error bodies, response headers, browser request IDs, and bounded server error logs MUST carry matching W3C trace identifiers without exposing internal exceptions, query payloads, source rows, or storage credentials."
+  - "Observability backends are diagnostic infrastructure only and MUST NOT become dashboard data stores, policy authorities, rollout authorities, or sources of operational evidence."
   - "Hosted logout and account switching MUST remove active session authority before remote token revocation; failed GitHub revocations MUST retain encrypted credentials only in the durable Redis pending-revocation queue for bounded maintenance retries through credential expiry."
   - "Hosted session encryption MUST identify the active key and support one explicitly configured previous key during controlled rotation; the previous key MUST remain available until sessions and revocation records using it drain."
   - "OAuth refresh MUST atomically compare-and-swap the encrypted session record; a refresh superseded by logout or another refresh MUST revoke or durably queue its newly issued credentials and MUST NOT restore session authority."
-  - "GitHub webhook deliveries MUST be signature-verified and deduplicated before reconciliation; collection delivery deduplication and durable task admission MUST commit atomically. Webhook payloads are invalidation signals rather than projection authority except for bounded status-only observations from verified issue lifecycle deliveries, which MUST affect only retained issues in enrolled repositories and MUST yield to newer projected evidence."
+  - "GitHub webhook deliveries MUST be signature-verified and deduplicated before reconciliation; collection delivery deduplication and durable task admission MUST commit atomically. Verified issue lifecycle deliveries for enrolled repositories enqueue collection rather than directly mutating stored issue entities."
   - "Server collection MUST remain at-least-once: retry, deferral, blocked requeue, malformed-entry, and dead-letter transitions MUST append durable replacement state before ACK in one Redis operation; worker crashes and ambiguous ACK failures MAY repeat safe collection."
   - "Delivery recovery MUST persist pagination progress separately from its processed-delivery boundary, resume bounded scans before advancing that boundary, and MUST NOT advance past a failed redelivery request."
   - "Scope withdrawal MUST serialize with enrollment changes and durably enqueue erasure for the exact membership snapshot before removing enrollment; workers MUST serialize erasure with collection under repository leases and recheck current ownership before collecting or erasing."
@@ -344,9 +381,9 @@ invariants:
   - "Server collection scope MUST derive from GitHub App installations; a delivery for an unenrolled repository MUST be dropped rather than collected, and GitHub budget MUST be reserved per installation before each collection."
   - "The local ingestion simulator MUST use the production webhook admission and collection subprocess path, strict seeded JSON scenarios, synthetic repositories, bounded event/repository/concurrency limits, and MUST NOT be treated as a complete GitHub API emulator or production-capacity guarantee."
   - "Server diagnostics MUST be read-only, use stable check identifiers, produce equivalent human-readable and versioned structured reports, redact secrets, bound each dependency check, and require explicit deep mode before reading every active source."
-  - "Redis rebuilds MUST use a distributed lock, stage and validate a fresh immutable generation, and atomically activate it without modifying the active generation in place."
-  - "An empty Redis instance is healthy but not ready and MUST report that a rebuild is required."
-  - "Browsers and external clients MUST NOT receive Redis endpoints, credentials, keys, or Redis-specific representations."
+  - "Hosted rebuilds MUST use a distributed lock, validate input, and atomically replace current Postgres sources and state; a failed replacement MUST leave the previously committed data intact."
+  - "An empty Postgres store is not ready and MUST report that ingestion is required."
+  - "Browsers and external clients MUST NOT receive Redis or Postgres endpoints, credentials, keys, or storage-specific representations."
   - "Computations MUST consume canonical evidence, preserve evidence quality and provenance, and emit bounded, versioned results."
   - "Computation results MUST NOT grant authority or turn runtime success into verification, accepted outcomes, or operational value."
   - "Successful-Run value computations MUST report produced outputs, native operational-grader measurements, and efficiency as separate axes; operational value is reserved for package-defined repository campaign metrics, output creation MUST NOT imply acceptance or value, and no composite score may be invented."
@@ -399,7 +436,10 @@ flows:
     - computation_projection
     - dashboard_language_queries
     - dashboard_ui
-  activity_dashboard_redis:
+  hosted_error_correlation:
+    - dashboard_https_server
+    - dashboard_observability
+  activity_dashboard_postgres:
     - gh_aw_logs
     - activity_jsonl_shards
     - activity_run_information_shards
@@ -409,7 +449,8 @@ flows:
     - dashboard_github_auth
     - dashboard_webhook_reconciliation
     - dashboard_rebuild_control
-    - redis_projection
+    - postgres_entity_store
+    - redis_operational_store
     - dashboard_canonical_api
     - dashboard_language_queries
     - dashboard_ui
@@ -417,14 +458,16 @@ flows:
     - dashboard_publisher
     - dashboard_coolify_deployment
     - dashboard_https_server
-    - redis_projection
+    - postgres_entity_store
+    - redis_operational_store
     - dashboard_language_queries
     - dashboard_ui
   activity_dashboard_upstash:
     - dashboard_publisher
     - dashboard_upstash_deployment
     - dashboard_https_server
-    - redis_projection
+    - postgres_entity_store
+    - redis_operational_store
     - dashboard_language_queries
     - dashboard_ui
   coolify_source_delivery:
@@ -446,7 +489,7 @@ flows:
   marketplace_hosted:
     - marketplace_registry_policy
     - marketplace_hosted_resolver
-    - redis_projection
+    - redis_operational_store
     - dashboard_language_queries
     - marketplace_ui
 
@@ -458,6 +501,13 @@ generation:
   dashboard_server_package:
     path: .github/workflows/cao-package.yml
     output: ghcr.io/githubnext/gh-aw-cao/cao-server
+  dashboard_postgres_schema:
+    source: server/spec/storage.tsp
+    emitter: server/spec/postgres-emitter.mjs
+    outputs:
+      - server/internal/postgresx/schema.sql
+      - server/internal/postgresx/schema.gen.go
+    command: npm --prefix server/spec run generate:storage
   new_operation:
     path: <operation>/aw.yml
   workflow_source:
@@ -506,7 +556,7 @@ commands:
       lint: npm run lint
       typecheck: npm run typecheck
       corpus_validation: npm run validate:corpus
-  dashboard_redis_server:
+  dashboard_server:
     working_directory: server/
     entries:
       tests: go test ./...
@@ -525,11 +575,11 @@ validation:
     - commands.dashboard_site.entries.lint
     - commands.dashboard_site.entries.typecheck
     - commands.dashboard_site.entries.corpus_validation
-  dashboard_redis_server_command_refs:
+  dashboard_server_command_refs:
     - commands.repository_root.entries.dashboard_server_lint
     - commands.repository_root.entries.dashboard_server_tests
     - commands.repository_root.entries.dashboard_server_e2e
-    - commands.dashboard_redis_server.entries.tests
+    - commands.dashboard_server.entries.tests
   workflow_source_command_refs:
     - commands.repository_root.entries.workflow_compile
   workflow_source_generated_artifact_command_refs:
@@ -551,6 +601,7 @@ validation:
     - "Verify policy and workflow changes are reviewed together."
     - "Verify workflow sources, not generated lock files, are edited."
     - "Verify dashboard data access crosses either the Web Worker or Go HTTP(S) server declarative query boundary."
+    - "Verify hosted dashboard entities and queries use Postgres, while Redis remains operational-only."
 
 provenance:
   source: ARCHITECTURE.md

@@ -162,6 +162,7 @@ import { cliActionTemplateFields } from './cli-action-template.js';
 import { compileDashboardQueryTypes } from './query-type-checker.js';
 import { findDeadDashboardQueries } from './query-usage.js';
 import { executeDashboardQueries, resolveDashboardQuerySources } from './data/queries/declarative.js';
+import { SIMULATION_DAYS, simulationDaysSource } from './data/queries/simulation-days.js';
 import { compileDashboardViewPayloadQueries } from './data/queries/view-payload-compiler.js';
 
 const debugValidator = createDebug('validator');
@@ -1704,6 +1705,13 @@ function validatePage(page, pageNode, path, pageIds, errors) {
       `${path}.mode-indicator`
     ));
   }
+  if (page['retain-on-navigation'] !== undefined && typeof page['retain-on-navigation'] !== 'boolean') {
+    errors.push(createError(
+      ERROR_CODES.missingOrInvalidRequiredField,
+      'retain-on-navigation must be a Boolean when present.',
+      `${path}.retain-on-navigation`
+    ));
+  }
   validatePageForm(page.form, getValueNodeByKey(pageNode, 'form'), `${path}.form`, errors);
   if (page.icon !== undefined) {
     validateStringField(page.icon, `${path}.icon`, true, errors);
@@ -2270,13 +2278,6 @@ function validateRouteTabs(route, routePath, errors) {
     }
     return;
   }
-  if (route['hash-query-parameter'] === undefined) {
-    errors.push(createError(
-      ERROR_CODES.missingOrInvalidRequiredField,
-      'route tabs require hash-query-parameter.',
-      `${routePath}.tabs`
-    ));
-  }
   if (!Array.isArray(route.tabs) || route.tabs.length === 0 || route.tabs.length > MAX_PAGE_ROUTE_TABS) {
     errors.push(createError(
       ERROR_CODES.missingOrInvalidRequiredField,
@@ -2349,10 +2350,10 @@ function validateCustomPage(page, pageNode, path, errors) {
       ));
     } else {
       validateObjectKeys(getValueNodeByKey(pageNode, 'route'), PAGE_ROUTE_KEYS, routePath, errors);
-      if (page.route['hash-query-parameter'] === undefined && page.route['navigation-page'] === undefined) {
+      if (page.route['hash-query-parameter'] === undefined && page.route['navigation-page'] === undefined && page.route.tabs === undefined) {
         errors.push(createError(
           ERROR_CODES.missingOrInvalidRequiredField,
-          'route must declare hash-query-parameter or navigation-page.',
+          'route must declare hash-query-parameter, navigation-page, or tabs.',
           routePath
         ));
       }
@@ -2371,6 +2372,38 @@ function validateCustomPage(page, pageNode, path, errors) {
           'route navigation page',
           errors
         );
+      }
+      if (page.route['availability-view'] !== undefined) {
+        if (page.route['navigation-page'] === undefined) {
+          errors.push(createError(
+            ERROR_CODES.missingOrInvalidRequiredField,
+            'route availability-view requires navigation-page for recovery.',
+            `${routePath}.navigation-page`
+          ));
+        }
+        validateRequiredIdentifier(
+          page.route['availability-view'],
+          `${routePath}.availability-view`,
+          'route availability view',
+          errors
+        );
+        const availabilityViewId = page.route['availability-view'];
+        if (!Array.isArray(page.views) || !page.views.some((view) => isPlainObject(view) && view.id === availabilityViewId)) {
+          errors.push(createError(
+            ERROR_CODES.missingOrInvalidRequiredField,
+            'route availability-view must reference a view on this page.',
+            `${routePath}.availability-view`
+          ));
+        }
+      }
+      for (const key of ['availability-message', 'partial-message']) {
+        if (page.route[key] !== undefined && (typeof page.route[key] !== 'string' || !page.route[key].trim())) {
+          errors.push(createError(
+            ERROR_CODES.missingOrInvalidRequiredField,
+            `${key} must be a non-empty string when present.`,
+            `${routePath}.${key}`
+          ));
+        }
       }
       const routeTitleFormat = page.route['title-format'];
       if (routeTitleFormat !== undefined
@@ -4830,10 +4863,12 @@ function validateViewQueryMaterialization(dashboard, errors) {
       freshness: 'fresh',
       availability: 'empty'
     };
+    /** @type {Record<string, import('./presenter.js').LogicalSourceInput>} */
     const querySources = Object.fromEntries(QUERY_SOURCE_VALUES.map((name) => [
       name,
       { source: name, rows: [], metadata }
     ]));
+    querySources[SIMULATION_DAYS] = simulationDaysSource();
 
     dashboard.pages.forEach((page, pageIndex) => {
       const resolvedPage = resolveReusablePageViews(page);

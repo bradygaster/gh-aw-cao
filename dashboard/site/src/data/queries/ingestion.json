@@ -223,18 +223,8 @@
         "readmePath": { "field": "readme-path", "default": "" },
         "sourceCoordinate": { "field": "source" },
         "addCommand": { "field": "add-command" },
-        "verificationStatus": { "field": "verification-status", "default": "unknown" },
-        "verificationSource": { "field": "verification-source", "default": "unknown" },
-        "maintenanceStatus": { "field": "maintenance-status", "default": "unknown" },
-        "maintenanceSource": { "field": "maintenance-source", "default": "unknown" },
-        "lastMaintainedAt": { "field": "last-maintained-at", "default": "" },
         "stars": { "field": "stars", "default": null },
-        "forks": { "field": "forks", "default": null },
-        "popularitySource": { "field": "popularity-source", "default": "unknown" },
-        "signalsObservedAt": { "field": "signals-observed-at", "default": "" },
-        "installationStatus": { "field": "installation-status", "default": "unknown" },
-        "adoptionCount": { "field": "adoption-count", "default": null },
-        "adoptionSource": { "field": "adoption-source", "default": "unknown" }
+        "forks": { "field": "forks", "default": null }
       }
     },
     {
@@ -254,6 +244,7 @@
         "inventoryWarnings": { "fields": ["campaign-inventory-warnings", "package-inventory-warnings"], "default": 0 },
         "workers": { "fields": ["campaign-workers", "package-workers"], "default": [] },
         "targets": { "fields": ["campaign-targets", "package-targets"], "default": [] },
+        "intelligenceDeclaration": { "fields": ["campaign-intelligence-declaration", "package-intelligence-declaration"], "default": null },
         "minVersion": { "fields": ["campaign-min-version", "package-min-version"], "default": "" },
         "version": { "fields": ["campaign-version", "package-version"], "default": "unknown" },
         "currentVersion": { "fields": ["campaign-current-version", "package-current-version"], "default": "unknown" },

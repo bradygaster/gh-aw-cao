@@ -50,12 +50,25 @@ test('hosted MCP lists tools, inspects the catalog, and executes a named query',
       }),
       signal: AbortSignal.timeout(20_000)
     });
+    if (response.status === 401) {
+      const refusal = await response.json().catch(() => ({}));
+      const codes = new Set(['credentials_missing', 'oidc_invalid', 'repository_unavailable', 'provenance_mismatch', 'permissions_denied', 'authentication_failed']);
+      const code = codes.has(refusal.code) ? refusal.code : 'unknown';
+      const trace = response.headers.get('x-trace-id');
+      const traceId = /^[0-9a-f]{32}$/.test(trace ?? '') ? trace : 'unavailable';
+      assert.fail(`${method} must succeed (HTTP 401; code=${code}; traceId=${traceId})`);
+    }
     assert.equal(response.status, 200, `${method} must succeed (HTTP ${response.status})`);
     sessionID = response.headers.get('mcp-session-id') ?? sessionID;
     const payload = await response.json();
     assert.equal(payload.id, id);
     assert.equal(payload.jsonrpc, '2.0');
     assert.equal(payload.error, undefined, `${method} must not return a JSON-RPC error`);
+    if (payload.result?.isError === true) {
+      const trace = response.headers.get('x-trace-id');
+      const traceId = /^[0-9a-f]{32}$/.test(trace ?? '') ? trace : 'unavailable';
+      assert.fail(`${method} ${params.name} returned a tool error (traceId=${traceId}): ${JSON.stringify(payload.result, null, 2)}`);
+    }
     return payload.result;
   }
 
@@ -69,11 +82,10 @@ test('hosted MCP lists tools, inspects the catalog, and executes a named query',
   const catalog = await call('tools/call', { name: 'cao_catalog', arguments: { kind: 'queries' } });
   assert.notEqual(catalog.isError, true);
   assert.ok(Array.isArray(catalog.structuredContent?.queries));
-  assert.ok(catalog.structuredContent.queries.some(({ id }) => id === 'campaign-runs'));
+  assert.ok(catalog.structuredContent.queries.some(({ id }) => id === 'database-campaign-count'));
 
-  const query = await call('tools/call', { name: 'cao_query', arguments: { id: 'campaign-runs', limit: 1 } });
-  assert.notEqual(query.isError, true);
-  assert.equal(query.structuredContent?.query, 'campaign-runs');
+  const query = await call('tools/call', { name: 'cao_query', arguments: { id: 'database-campaign-count', limit: 1 } });
+  assert.equal(query.structuredContent?.query, 'database-campaign-count');
   assert.ok(Array.isArray(query.structuredContent.rows));
   assert.ok(query.structuredContent.metadata?.availability);
   assert.notEqual(query.structuredContent.metadata.availability, 'unavailable');

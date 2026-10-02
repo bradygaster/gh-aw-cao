@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/githubnext/gh-aw-cao/server/internal/model"
 	"github.com/githubnext/gh-aw-cao/server/internal/query"
@@ -254,6 +256,7 @@ func TestExternallyHostedModeRequiresExplicitForwardedPeer(t *testing.T) {
 }
 
 func TestExternallyHostedHandlerRequiresActiveLifecycle(t *testing.T) {
+	database := integrationDatabase(t)
 	address, closeRedis := fakeRedis(t)
 	defer closeRedis()
 	client, err := redisx.New("redis://" + address)
@@ -263,6 +266,7 @@ func TestExternallyHostedHandlerRequiresActiveLifecycle(t *testing.T) {
 	profile := hostedHostProfile()
 	profile.Listener = HostListenerExternal
 	app, err := New(t.Context(), redisx.NewStore(client, "external-test"), Config{
+		Database:    database,
 		HostProfile: profile, SiteDirectory: t.TempDir(),
 		Proxy:       ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}, RequireHTTPS: true},
 		GitHubOAuth: validOAuthConfig("https://github.test"),
@@ -292,7 +296,11 @@ func TestExternallyHostedHandlerRequiresActiveLifecycle(t *testing.T) {
 	if err := app.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	defer app.Stop()
+	defer func() {
+		if err := app.Stop(t.Context()); err != nil {
+			t.Errorf("Stop failed: %v", err)
+		}
+	}()
 	if status := respond(preflight); status != http.StatusNoContent {
 		t.Fatalf("CORS preflight did not work after startup: %d", status)
 	}
@@ -308,7 +316,9 @@ func TestExternallyHostedHandlerRequiresActiveLifecycle(t *testing.T) {
 	if err := app.Start(t.Context()); err == nil {
 		t.Fatal("service started twice")
 	}
-	app.Stop()
+	if err := app.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if status := respond(request("dashboard.example.com")); status != http.StatusServiceUnavailable {
 		t.Fatalf("handler served after shutdown: %d", status)
 	}
@@ -330,6 +340,7 @@ func TestStartRejectsCanceledContext(t *testing.T) {
 }
 
 func TestEventStreamOutlivesHTTPWriteTimeout(t *testing.T) {
+	database := integrationDatabase(t)
 	address, closeRedis := fakeRedis(t)
 	defer closeRedis()
 	client, err := redisx.New("redis://" + address)
@@ -338,6 +349,7 @@ func TestEventStreamOutlivesHTTPWriteTimeout(t *testing.T) {
 	}
 	app := &App{
 		store: redisx.NewStore(client, "stream-test"), hub: newEventHub(),
+		database:    database,
 		config:      Config{HostProfile: localHostProfile()},
 		accessToken: testAccessToken,
 	}
@@ -378,6 +390,7 @@ func TestEventStreamOutlivesHTTPWriteTimeout(t *testing.T) {
 }
 
 func TestEventStreamSupportsWriterWithoutDeadlineControl(t *testing.T) {
+	database := integrationDatabase(t)
 	address, closeRedis := fakeRedis(t)
 	defer closeRedis()
 	client, err := redisx.New("redis://" + address)
@@ -386,6 +399,7 @@ func TestEventStreamSupportsWriterWithoutDeadlineControl(t *testing.T) {
 	}
 	app := &App{
 		store: redisx.NewStore(client, "stream-test"), hub: newEventHub(),
+		database:    database,
 		config:      Config{HostProfile: localHostProfile()},
 		accessToken: testAccessToken,
 	}
@@ -452,6 +466,7 @@ func TestCurrentDashboardQueriesAreAccepted(t *testing.T) {
 }
 
 func TestAPINeverReturnsRedisCredentials(t *testing.T) {
+	database := integrationDatabase(t)
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://default:super-secret@" + address + "/0")
@@ -471,7 +486,8 @@ func TestAPINeverReturnsRedisCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: database,
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -489,6 +505,7 @@ func TestAPINeverReturnsRedisCredentials(t *testing.T) {
 }
 
 func TestAPIResponsesCarryStandardizedTraceIdentifiers(t *testing.T) {
+	database := integrationDatabase(t)
 	previousProvider := otel.GetTracerProvider()
 	t.Cleanup(func() { otel.SetTracerProvider(previousProvider) })
 	t.Setenv("OTEL_SDK_DISABLED", "")
@@ -521,7 +538,8 @@ func TestAPIResponsesCarryStandardizedTraceIdentifiers(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: database,
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -540,6 +558,80 @@ func TestAPIResponsesCarryStandardizedTraceIdentifiers(t *testing.T) {
 	}
 	if len(spanID) != 16 {
 		t.Fatalf("expected a 16-character W3C span id, got %q", spanID)
+	}
+
+	errorRequest := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "https://localhost/api/v1/diagnostics", nil,
+	)
+	errorResponse := httptest.NewRecorder()
+	app.Handler().ServeHTTP(errorResponse, errorRequest)
+	if errorResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("diagnostics returned %d: %s", errorResponse.Code, errorResponse.Body.String())
+	}
+	var errorBody map[string]string
+	if err := json.Unmarshal(errorResponse.Body.Bytes(), &errorBody); err != nil {
+		t.Fatal(err)
+	}
+	if errorBody["traceId"] == "" ||
+		errorBody["traceId"] != errorResponse.Header().Get(telemetry.TraceIDHeader) {
+		t.Fatalf("error body trace id does not match response: %#v", errorBody)
+	}
+	if errorBody["spanId"] == "" ||
+		errorBody["spanId"] != errorResponse.Header().Get(telemetry.SpanIDHeader) {
+		t.Fatalf("error body span id does not match response: %#v", errorBody)
+	}
+}
+
+func TestAccessFailuresCarryStandardizedTraceIdentifiersWithoutDatabase(t *testing.T) {
+	previousProvider := otel.GetTracerProvider()
+	provider := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previousProvider)
+	})
+
+	app := &App{
+		config:      Config{HostProfile: localHostProfile()},
+		accessToken: testAccessToken,
+	}
+	request := httptest.NewRequestWithContext(
+		t.Context(), http.MethodGet, "https://localhost/api/v1/diagnostics", nil,
+	)
+	response := httptest.NewRecorder()
+	app.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("diagnostics returned %d: %s", response.Code, response.Body.String())
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	traceID := response.Header().Get(telemetry.TraceIDHeader)
+	spanID := response.Header().Get(telemetry.SpanIDHeader)
+	if len(traceID) != 32 || payload["traceId"] != traceID {
+		t.Fatalf("error trace id does not match response header: %#v", payload)
+	}
+	if len(spanID) != 16 || payload["spanId"] != spanID {
+		t.Fatalf("error span id does not match response header: %#v", payload)
+	}
+}
+
+func TestProcessTelemetryClose(t *testing.T) {
+	var p processTelemetry
+	if err := p.close(t.Context()); err != nil {
+		t.Fatalf("unconfigured telemetry shutdown: %v", err)
+	}
+	called := false
+	p.shutdown = func(ctx context.Context) error {
+		called = true
+		if ctx.Err() != nil {
+			t.Fatal("telemetry shutdown received a cancelled context")
+		}
+		return nil
+	}
+	if err := p.close(t.Context()); err != nil || !called {
+		t.Fatalf("process telemetry shutdown: called=%t err=%v", called, err)
 	}
 }
 
@@ -595,6 +687,10 @@ func TestAzureFunctionsHandlerLogsTelemetryFailureOnceAndKeepsServing(t *testing
 }
 
 func TestRefreshAndQueryReturnAuthoritativeEvaluatedAt(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, map[string]model.Source{
+		"$runs": {Source: "$runs", Rows: []model.Row{}},
+	})
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://" + address)
@@ -614,7 +710,8 @@ func TestRefreshAndQueryReturnAuthoritativeEvaluatedAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: database,
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -624,7 +721,7 @@ func TestRefreshAndQueryReturnAuthoritativeEvaluatedAt(t *testing.T) {
 		body string
 	}{
 		{path: "/api/v1/refresh", body: ""},
-		{path: "/api/v1/query", body: `{"sourceNames":["runs"],"evaluatedAt":"2099-01-01T00:00:00Z"}`},
+		{path: "/api/v1/query", body: `{"sourceNames":["$runs"],"evaluatedAt":"2099-01-01T00:00:00Z"}`},
 	} {
 		request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://localhost"+test.path, strings.NewReader(test.body))
 		if test.body != "" {
@@ -645,7 +742,28 @@ func TestRefreshAndQueryReturnAuthoritativeEvaluatedAt(t *testing.T) {
 	}
 }
 
+func TestHealthAndReadinessExposeAuthoritativeEvaluatedAt(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, map[string]model.Source{
+		"$runs": {Source: "$runs", Rows: []model.Row{}},
+	})
+	app := &App{store: redisx.NewStore(emptyRedisClient{}, "empty-test"), database: database}
+	for _, path := range []string{"/api/v1/health", "/api/readiness"} {
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://localhost"+path, nil)
+		response := httptest.NewRecorder()
+		app.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), `"evaluatedAt":"2026-02-03T04:05:06Z"`) {
+			t.Fatalf("%s did not expose authoritative evaluatedAt: %s", path, response.Body.String())
+		}
+	}
+}
+
 func TestQueryAllowsEmptyReadinessProbe(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://" + address)
@@ -665,7 +783,8 @@ func TestQueryAllowsEmptyReadinessProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: database,
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -697,8 +816,8 @@ func TestQueryAllowsEmptyReadinessProbe(t *testing.T) {
 	if len(result.Sources) != 0 {
 		t.Fatalf("readiness probe returned sources: %#v", result.Sources)
 	}
-	if result.Metrics.DurationMS != 0 || result.Metrics.RedisCommands != 0 || result.Metrics.RedisRows != 0 ||
-		len(result.Metrics.PushedDown) != 0 || len(result.Metrics.FallbackOperations) != 0 {
+	if result.Metrics.DurationMS != 0 || result.Metrics.Operations != 0 || result.Metrics.OutputRows != 0 ||
+		len(result.Metrics.PushedDown) != 0 {
 		t.Fatalf("readiness probe returned non-zero metrics: %#v", result.Metrics)
 	}
 }
@@ -720,7 +839,8 @@ func TestStaticIndexInjectsBackendMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: constructorDatabase(),
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -729,12 +849,14 @@ func TestStaticIndexInjectsBackendMeta(t *testing.T) {
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://localhost/route", nil)
 	authorize(request)
 	app.Handler().ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `<meta name="dashboard-data-backend" content="redis-http">`) {
+	if !strings.Contains(response.Body.String(), `<meta name="dashboard-data-backend" content="server-http">`) {
 		t.Fatalf("backend meta was not injected: %s", response.Body.String())
 	}
 }
 
 func TestCapabilityTokenProtectsStaticAssetsAndAPI(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://" + address)
@@ -746,7 +868,8 @@ func TestCapabilityTokenProtectsStaticAssetsAndAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
-		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
+		Database: database,
+		Listen:   "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -898,6 +1021,15 @@ func fakeRedis(t *testing.T) (string, func()) {
 					case "XADD":
 						_, _ = fmt.Fprint(connection, "$3\r\n1-0\r\n")
 					case "EVAL":
+						// Cache semantics are covered against real Redis; this fixture always misses.
+						if len(command) == 12 && strings.HasSuffix(command[3], "{query-cache:v1}:entries") {
+							result := "$-1\r\n"
+							if command[5] == "put" {
+								result = ":1\r\n"
+							}
+							_, _ = fmt.Fprint(connection, "*5\r\n"+result+":0\r\n:0\r\n:0\r\n:0\r\n")
+							continue
+						}
 						mu.Lock()
 						result := 1
 						bulkResult := ""
@@ -1009,6 +1141,15 @@ func fakeRedis(t *testing.T) (string, func()) {
 	}
 }
 
+func TestReadCommandConsumesLargeBulkStrings(t *testing.T) {
+	payload := strings.Repeat("script\n", 2048)
+	input := fmt.Sprintf("*2\r\n$4\r\nEVAL\r\n$%d\r\n%s\r\n", len(payload), payload)
+	command, err := readCommand(bufio.NewReaderSize(strings.NewReader(input), 64))
+	if err != nil || len(command) != 2 || command[0] != "EVAL" || command[1] != payload {
+		t.Fatalf("large RESP bulk string was not consumed exactly: fields=%d err=%v", len(command), err)
+	}
+}
+
 func readCommand(reader *bufio.Reader) ([]string, error) {
 	var count int
 	if _, err := fmt.Fscanf(reader, "*%d\r\n", &count); err != nil {
@@ -1021,7 +1162,7 @@ func readCommand(reader *bufio.Reader) ([]string, error) {
 			return nil, err
 		}
 		value := make([]byte, length+2)
-		if _, err := reader.Read(value); err != nil {
+		if _, err := io.ReadFull(reader, value); err != nil {
 			return nil, err
 		}
 		command[i] = string(value[:length])

@@ -28,6 +28,7 @@ it('traces an unavailable MCP view alias through its scoped query graph to the m
     viewId: 'mcp-top-tools',
     sourceNames: ['mcp-top-tools']
   });
+
   const alias = payload.aliases[0];
   const unavailable = executeDashboardQueries(payload.queries, {
     'mcp-calls': { source: 'mcp-calls', rows: [], metadata: { ...metadata, availability: 'unavailable' } }
@@ -43,6 +44,43 @@ it('traces an unavailable MCP view alias through its scoped query graph to the m
   }, payload.aliases)[alias];
   expect(empty.metadata.availability).toBe('empty');
   expect(empty.metadata['query-error']).toBeUndefined();
+});
+
+it('keeps a relative-time query scoped even when the view opts out of global context', () => {
+  const page = { views: [{ id: 'recent', mark: 'chart', data: { source: 'recent', 'query-context': false } }] };
+  const payload = compileDashboardViewPayloadQueries(page, 'recent', {
+    queries: [
+      { name: 'base', from: 'runs', time: { range: '7d' } },
+      { name: 'recent', from: 'base' }
+    ],
+    sourceNames: ['recent'],
+    evaluatedAt: '2026-09-24T00:00:00Z'
+  });
+
+  expect(payload.aliases).toHaveLength(1);
+  expect(payload.queries.some((query) => {
+    const filter = /** @type {{ predicates?: Array<{ field: string }> } | undefined} */ (query.filter);
+    return filter?.predicates?.some((predicate) => predicate.field === '@time');
+  })).toBe(true);
+});
+
+it('compiles view aliases for element views when query-context is false', () => {
+  const page = {
+    views: [{
+      id: 'controls',
+      mark: 'element',
+      element: 'custom-controls',
+      data: { sources: ['options'], 'query-context': false }
+    }]
+  };
+  const payload = compileDashboardViewPayloadQueries(page, 'custom', {
+    queries: [{ name: 'options', from: 'packages' }],
+    sourceNames: ['options']
+  });
+
+  expect(payload.aliases).toEqual(['view:custom:controls:options']);
+  expect(payload.queries).toHaveLength(1);
+  expect(payload.queries[0].name).toBe('view:custom:controls:options');
 });
 
 it('compiles distinct aliases when two views filter the same source differently', () => {
@@ -143,6 +181,36 @@ it('fails closed when a required form parameter has no default or runtime value'
         args: [{ field: 'aic' }, { parameter: 'multiplier' }]
       }]
     }]
+  })).toThrow('requires form parameter "multiplier"');
+});
+
+it('resolves parameters only in the selected view query dependency graph', () => {
+  const definitions = [
+    { name: 'chosen', from: 'runs' },
+    {
+      name: 'unrelated',
+      from: 'simulation-days',
+      parameters: [{ name: 'multiplier', type: 'number' }],
+      compute: [{
+        as: 'score',
+        function: 'product',
+        args: [{ field: 'day' }, { parameter: 'multiplier' }]
+      }]
+    }
+  ];
+  const page = {
+    views: [
+      { id: 'selected', data: { source: 'chosen' } },
+      { id: 'other', data: { source: 'unrelated' } }
+    ]
+  };
+  expect(() => compileDashboardViewPayloadQueries(page, 'tests', {
+    queries: definitions,
+    viewId: 'selected'
+  })).not.toThrow();
+  expect(() => compileDashboardViewPayloadQueries(page, 'tests', {
+    queries: definitions,
+    viewId: 'other'
   })).toThrow('requires form parameter "multiplier"');
 });
 

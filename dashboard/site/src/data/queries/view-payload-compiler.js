@@ -4,6 +4,7 @@
  */
 
 import { createDebug } from '../../debug.js';
+import { resolveDashboardQuerySources } from './declarative.js';
 
 const debugViewPayloadCompiler = createDebug('view-payload-compiler');
 
@@ -49,8 +50,21 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
     ...dashboardFormDefaultValues(payload.form),
     ...(options.queryContext?.formValues ?? {})
   };
-  const resolvedQueries = resolveDashboardQueryParameters(options.queries, formValues);
   const views = Array.isArray(payload.views) ? payload.views : [];
+  const activeViews = views.filter((view, index) => {
+    if (options.viewId) return isPlainObject(view) && (view.id ?? `view-${index + 1}`) === options.viewId;
+    return !options.queryContext?.viewMode || viewMatchesMode(view, options.queryContext.viewMode);
+  });
+  const requestedSources = options.sourceNames ? new Set(options.sourceNames) : null;
+  const relevantSources = activeViews.flatMap(getViewSources)
+    .filter((source) => !requestedSources || requestedSources.has(source));
+  const required = new Set(resolveDashboardQuerySources(options.queries, relevantSources));
+  const scopedDefinitions = Array.isArray(options.queries)
+    ? options.queries.filter((definition) => (
+        isPlainObject(definition) && typeof definition.name === 'string' && required.has(definition.name)
+      ))
+    : options.queries;
+  const resolvedQueries = resolveDashboardQueryParameters(scopedDefinitions, formValues);
   const routeParameterName = typeof payload.route?.['hash-query-parameter'] === 'string'
     ? payload.route['hash-query-parameter']
     : '';
@@ -64,7 +78,6 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
   /** @type {Array<Record<string, unknown>>} */
   const queries = [];
   const replacedSources = new Set();
-  const requestedSources = options.sourceNames ? new Set(options.sourceNames) : null;
 
   views.forEach((view, viewIndex) => {
     if (options.viewId && (!isPlainObject(view)
@@ -187,6 +200,10 @@ export function resolveDashboardQueryParameters(definitions, values) {
 function usesNativeSource(view, sourceName, predicates, queryContext, definitions) {
   const declared = Array.isArray(definitions)
     && definitions.some((definition) => isPlainObject(definition) && definition.name === sourceName);
+  const data = isPlainObject(view) && isPlainObject(view.data) ? view.data : null;
+  if (declared && isPlainObject(view) && view.mark !== 'element' && data?.['query-context'] === false && predicates.length === 0
+      && !(queryContext?.search?.query.trim()) && !(queryContext?.orderBy?.length)
+      && !hasRelativeQueryTime(sourceName, definitions)) return true;
   return isPlainObject(view)
     && view.mark === 'list'
     && view['lazy-list'] !== true
@@ -194,6 +211,29 @@ function usesNativeSource(view, sourceName, predicates, queryContext, definition
     && predicates.length === 0
     && !(queryContext?.search?.query.trim())
     && !(queryContext?.orderBy?.length);
+}
+
+/** @param {string} name @param {unknown} definitions */
+function hasRelativeQueryTime(name, definitions) {
+  const byName = new Map(Array.isArray(definitions)
+    ? definitions.filter(isPlainObject).map((definition) => [definition.name, definition])
+    : []);
+  const pending = [name];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const definition = byName.get(current);
+    if (!definition) continue;
+    if (isPlainObject(definition.time) && typeof definition.time.range === 'string') return true;
+    pending.push(...[
+      definition.from,
+      ...(Array.isArray(definition.union) ? definition.union : []),
+      ...(Array.isArray(definition.joins) ? definition.joins.filter(isPlainObject).map((join) => join.source) : [])
+    ].filter((dependency) => typeof dependency === 'string'));
+  }
+  return false;
 }
 
 /** @param {unknown} view @param {'chart'|'table'|'card'} mode */

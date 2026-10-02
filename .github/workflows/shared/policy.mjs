@@ -26,7 +26,7 @@ const REDIS_KEYS = [
 const REDIS_TLS_KEYS = ["mode", "server-name-env", "ca-certificate-env"];
 const REDIS_MODULES = [
   "generic", "local", "upstash", "aws-elasticache", "redis-cloud", "gcp-memorystore",
-  "railway", "render", "digitalocean",
+  "railway", "render", "digitalocean", "azure-managed-redis",
 ];
 const DEFAULT_KEYS = ["mode", "max-repositories", "rollout-percent", "monthly-ai-credit-budget"];
 const OCTICONS = [

@@ -272,6 +272,7 @@ test("control policy validates every deployment module and rejects incompatible 
   const redisModules = [
     "generic", "local", "upstash", "aws-elasticache", "redis-cloud",
     "gcp-memorystore", "railway", "render", "digitalocean",
+    "azure-managed-redis",
   ];
   assert.deepEqual(schema.$defs.hostTarget.properties.module.enum, ["generic", ...targetModules]);
   assert.deepEqual(schema.$defs.redisModule.properties.module.enum, redisModules);
@@ -439,6 +440,10 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
   assert.equal(
     policy["control-plane"].campaigns["self-care"].workers["server-go-logging"].workflow,
     "self-care-server-go-logging",
+  );
+  assert.equal(
+    policy["control-plane"].campaigns["self-care"].workers["redis-query-optimization"].workflow,
+    "self-care-redis-query-optimization",
   );
   assert.equal(policy["target-authority"].campaigns["self-care"].authority, "githubnext/gh-aw-cao");
 });

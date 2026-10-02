@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,7 +62,7 @@ func TestClassifyCORSRequestNotCrossOrigin(t *testing.T) {
 		"invalid host":       func(request *http.Request) { request.Header.Set("Origin", "https://tools.example.com") },
 	} {
 		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/health", nil)
 			mutate(request)
 			validHost := name != "invalid host"
 			if outcome := classifyCORSRequest(request, policy, validHost); outcome != corsOutcomeNotCrossOrigin {
@@ -87,7 +88,7 @@ func TestClassifyCORSRequestPreflight(t *testing.T) {
 		{"delete rejected", http.MethodDelete, corsOutcomePreflightRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodOptions, "/api/v1/query", nil)
+			request := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/api/v1/query", nil)
 			request.Header.Set("Origin", "https://tools.example.com")
 			request.Header.Set("Access-Control-Request-Method", tc.requestedMethod)
 			if outcome := classifyCORSRequest(request, policy, true); outcome != tc.want {
@@ -110,7 +111,7 @@ func TestClassifyCORSRequestSimpleAllowed(t *testing.T) {
 		{"options without requested method", http.MethodOptions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			request := httptest.NewRequest(tc.method, "/api/v1/health", nil)
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, "/api/v1/health", nil)
 			request.Header.Set("Origin", "https://tools.example.com")
 			if outcome := classifyCORSRequest(request, policy, true); outcome != corsOutcomeSimpleAllowed {
 				t.Fatalf("outcome = %s, want %s", outcome, corsOutcomeSimpleAllowed)
@@ -179,6 +180,7 @@ func TestHostPolicyReadsCORSFromCaoJSON(t *testing.T) {
 func TestSameOriginDefaultEmitsNoCORSHeaders(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 	request := azureRequest(t, http.MethodGet, "/api/v1/health")
 	request.Header.Set("Origin", "https://evil.example")
 	response := httptest.NewRecorder()
@@ -260,6 +262,7 @@ func TestConfiguredCORSAllowsOnlyListedOrigins(t *testing.T) {
 func TestConfiguredCORSNeverSharesCredentialedResponses(t *testing.T) {
 	github := fakeGitHub(t, fakeGitHubOptions{membershipState: "active", accessExpiresIn: 3600})
 	app := newAzureTestApp(t, github.URL)
+	app.database = integrationDatabase(t)
 	app.config.CORS = CORSPolicy{AllowedOrigins: []string{"https://tools.example.com"}, MaxAge: 120}
 	for _, path := range []string{"/api/auth/session", "/api/v1/health"} {
 		request := azureRequest(t, http.MethodGet, path)
@@ -302,6 +305,32 @@ func TestUnauthenticatedSubresourceIsNotRedirectedToGitHub(t *testing.T) {
 		if response.Code != http.StatusFound || response.Header().Get("Location") != "/auth/login" {
 			t.Fatalf("mode %q: expected login redirect, got %d location=%q",
 				mode, response.Code, response.Header().Get("Location"))
+		}
+	}
+
+	for _, destination := range []string{"iframe", "frame", "object", "embed"} {
+		for _, path := range []string{"/", "/auth/login"} {
+			request := azureRequest(t, http.MethodGet, path)
+			request.Header.Set("Sec-Fetch-Mode", "navigate")
+			request.Header.Set("Sec-Fetch-Dest", destination)
+			response := httptest.NewRecorder()
+			app.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || response.Header().Get("Location") != "" ||
+				len(response.Result().Cookies()) != 0 {
+				t.Fatalf("%s with destination %s: expected 401 without redirect or state cookie, got %d headers=%v",
+					path, destination, response.Code, response.Header())
+			}
+		}
+	}
+
+	for _, path := range []string{"/", "/auth/login"} {
+		request := azureRequest(t, http.MethodGet, path)
+		request.Header.Set("Sec-Fetch-Mode", "navigate")
+		request.Header.Set("Sec-Fetch-Dest", "document")
+		response := httptest.NewRecorder()
+		app.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusFound {
+			t.Fatalf("%s top-level navigation returned %d, want redirect", path, response.Code)
 		}
 	}
 }

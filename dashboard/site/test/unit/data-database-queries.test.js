@@ -13,7 +13,7 @@ import {
   queryIndexedDatabaseSources
 } from '../../src/data/queries/database.js';
 import { processDataRequest } from '../../src/data-worker.js';
-import { createDashboardQueryBudget, executeDashboardQueries } from '../../src/data/queries/declarative.js';
+import { createDashboardQueryBudget, executeDashboardQueries, resolveDashboardQuerySources } from '../../src/data/queries/declarative.js';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
 
 const loadCanonicalViewSources = loadDatabaseQuerySources;
@@ -383,6 +383,38 @@ describe('canonical view sources', () => {
     expect(collectionReads).not.toHaveBeenCalled();
   });
 
+  it('uses native counts only for declared non-null logical identity fields', async () => {
+    await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
+    const nativeCounts = vi.spyOn(IDBObjectStore.prototype, 'count');
+    const definitions = [
+      {
+        name: 'repository-logical-count',
+        from: 'repositories',
+        aggregate: {
+          values: [{ field: 'repository', as: 'repositories', reducer: 'count' }]
+        }
+      },
+      {
+        name: 'repository-optional-count',
+        from: 'repositories',
+        aggregate: {
+          values: [{ field: 'rollout-mode', as: 'repositories', reducer: 'count' }]
+        }
+      }
+    ];
+
+    const result = await queryNativeCountSources(
+      indexedDB,
+      sources,
+      definitions,
+      ['repository-logical-count', 'repository-optional-count']
+    );
+
+    expect(result['repository-logical-count'].rows).toEqual([{ repositories: 1 }]);
+    expect(result['repository-optional-count']).toBeUndefined();
+    expect(nativeCounts).toHaveBeenCalledOnce();
+  });
+
   it('resolves literal-labelled indexing table counts with native IndexedDB counts', async () => {
     await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
     const collectionReads = vi.spyOn(IDBObjectStore.prototype, 'getAll');
@@ -416,6 +448,26 @@ describe('canonical view sources', () => {
     )));
     expect(nativeCounts).toHaveBeenCalledTimes(required.length - 1);
     expect(collectionReads).not.toHaveBeenCalled();
+  });
+
+  it('does not reload native count dependencies through the canonical query boundary', async () => {
+    await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
+    const requested = ['indexing-database-table-counts'];
+    const dependencies = resolveDashboardQuerySources(dashboardQueries, requested);
+    const native = await queryNativeCountSources(indexedDB, sources, dashboardQueries, dependencies);
+    const nativeNames = new Set(Object.keys(native));
+    const required = resolveDashboardQuerySources(dashboardQueries, requested, nativeNames)
+      .filter((name) => !nativeNames.has(name));
+    const collectionReads = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+    const database = await queryCanonicalViewSources(indexedDB, sources, required);
+    const results = executeDashboardQueries(dashboardQueries, { ...database, ...native }, requested);
+
+    expect(collectionReads.mock.contexts.map((store) => /** @type {IDBObjectStore} */ (store).name))
+      .toEqual(['repositories', 'campaigns', 'operationalValues']);
+    expect(results['indexing-database-table-counts'].rows).toEqual(expect.arrayContaining([
+      { table: 'workflow runs', records: 1 },
+      { table: 'tool events', records: 1 }
+    ]));
   });
 
   it('pushes declarative failed-run predicates into the canonical run index', async () => {
@@ -759,14 +811,14 @@ describe('canonical view sources', () => {
     expect(topTools.rows[0]['mcp-tool']).not.toBe('stale_tool');
   });
 
-  it('does not read database stores for a missing logical source', async () => {
+  it('does not read database stores for an undeclared logical source', async () => {
     const collectionReads = vi.spyOn(IDBObjectStore.prototype, 'getAll');
 
-    const projected = await queryDatabaseSources(indexedDB, {}, ['usage']);
+    const projected = await queryDatabaseSources(indexedDB, {}, ['missing-logical-source']);
 
-    expect(projected.usage).toMatchObject({
+    expect(projected['missing-logical-source']).toMatchObject({
       rows: [],
-      metadata: { availability: 'empty' }
+      metadata: { availability: 'unavailable' }
     });
     expect(collectionReads).not.toHaveBeenCalled();
   });

@@ -696,6 +696,296 @@
   "limit": 10
  },
  {
+  "name": "campaign-workflow-import-evidence",
+  "subject": "Summarize retained import evidence at workflow grain for campaign inventory quality.",
+  "objective": "Preserve import-evidence provenance without materializing per-run ingestion indicators.",
+  "acceptance": "Compose all four retained event sources with the same availability, freshness, and completeness as event-runs; counts describe retained records, not executions or outcomes.",
+  "from": "audit-event-runs",
+  "union": [
+   "domain-event-runs",
+   "tool-event-runs",
+   "issue-event-runs"
+  ],
+  "aggregate": {
+   "by": [
+    "organization",
+    "repository",
+    "workflow"
+   ],
+   "values": [
+    {
+     "field": "events",
+     "as": "events",
+     "reducer": "sum"
+    }
+   ]
+  }
+ },
+ {
+  "name": "campaign-workflow-execution-base",
+  "subject": "Summarize retained run attempts and AI Credits before campaign workflow enrichment.",
+  "objective": "Read run identity and recorded AI Credits together instead of enriching every run with import status.",
+  "acceptance": "Count distinct run-attempt identities and sum aic-total per organization, repository, and workflow; missing retained evidence is not proof of no execution or cost.",
+  "from": "runs",
+  "compute": [
+   {
+    "as": "run-attempt-identity",
+    "function": "concat",
+    "args": [
+     {
+      "field": "run"
+     },
+     {
+      "value": ":"
+     },
+     {
+      "field": "run-attempt"
+     }
+    ]
+   }
+  ],
+  "aggregate": {
+   "by": [
+    "organization",
+    "repository",
+    "workflow"
+   ],
+   "values": [
+    {
+     "field": "run-attempt-identity",
+     "as": "runs",
+     "reducer": "distinct-count"
+    },
+    {
+     "field": "aic-total",
+     "as": "aic",
+     "reducer": "sum"
+    }
+   ]
+  }
+ },
+ {
+  "name": "campaign-workflow-execution-totals",
+  "subject": "Attach retained import-evidence quality to compact workflow execution totals.",
+  "objective": "Preserve the public inventory's run and import availability composition after aggregating run evidence.",
+  "acceptance": "Keep runs and AI Credits unchanged; unavailable run evidence fails closed and optional import evidence degrades quality exactly as in run-import-status.",
+  "description": "The import-evidence join preserves inventory provenance without per-run ingestion indicators. It follows run aggregation so unavailable run evidence retains the original failure-quality semantics.",
+  "from": "campaign-workflow-execution-base",
+  "joins": [
+   {
+    "source": "campaign-workflow-import-evidence",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     }
+    ],
+    "fields": [
+     {
+      "field": "events",
+      "as": "imported-events"
+     }
+    ]
+   }
+  ],
+  "select": [
+   {
+    "field": "organization"
+   },
+   {
+    "field": "repository"
+   },
+   {
+    "field": "workflow"
+   },
+   {
+    "field": "runs"
+   },
+   {
+    "field": "aic"
+   }
+  ]
+ },
+ {
+  "name": "campaign-workflow-inventory",
+  "subject": "Project declared campaign workflows with lean execution and configuration evidence.",
+  "objective": "Provide campaign totals and lists without unused ingestion, failure, or dashboard-link computations.",
+  "acceptance": "Keep all declared orchestrators and workers, including inactive and unobserved entries; preserve inventory ordering, configuration defaults, execution totals, and import-evidence quality.",
+  "description": "Lean campaign inventory with execution totals that retain the public workflow inventory's evidence-quality dependencies.",
+  "from": "workflows",
+  "joins": [
+   {
+    "source": "campaign-workflow-execution-totals",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     }
+    ],
+    "fields": [
+     {
+      "field": "runs",
+      "as": "observed-runs"
+     },
+     {
+      "field": "aic",
+      "as": "observed-aic"
+     }
+    ]
+   }
+  ],
+  "filter": {
+   "predicates": [
+    {
+     "field": "workflow-role",
+     "in": [
+      "orchestrator",
+      "worker"
+     ]
+    }
+   ]
+  },
+  "compute": [
+   {
+    "as": "repository-slug",
+    "function": "concat",
+    "args": [
+     {
+      "field": "organization"
+     },
+     {
+      "value": "/"
+     },
+     {
+      "field": "repository"
+     }
+    ]
+   },
+   {
+    "as": "declared-mode",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "rollout-mode"
+     },
+     {
+      "value": "unknown"
+     }
+    ]
+   },
+   {
+    "as": "declared-registration",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "workflow-active"
+     },
+     {
+      "value": "unknown"
+     }
+    ]
+   },
+   {
+    "as": "total-runs",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "observed-runs"
+     },
+     {
+      "value": 0
+     }
+    ]
+   },
+   {
+    "as": "total-aic",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "observed-aic"
+     },
+     {
+      "value": 0
+     }
+    ]
+   }
+  ],
+  "select": [
+   {
+    "field": "campaign"
+   },
+   {
+    "field": "campaign-name"
+   },
+   {
+    "field": "organization"
+   },
+   {
+    "field": "repository-slug",
+    "as": "repository"
+   },
+   {
+    "field": "workflow"
+   },
+   {
+    "field": "workflow-name"
+   },
+   {
+    "field": "workflow-role"
+   },
+   {
+    "field": "declared-mode",
+    "as": "rollout-mode"
+   },
+   {
+    "field": "declared-registration",
+    "as": "workflow-active"
+   },
+   {
+    "field": "total-runs",
+    "as": "runs"
+   },
+   {
+    "field": "total-aic",
+    "as": "aic"
+   },
+   {
+    "field": "repository-link"
+   },
+   {
+    "field": "workflow-link"
+   }
+  ],
+  "order-by": [
+   {
+    "field": "repository",
+    "direction": "asc"
+   },
+   {
+    "field": "workflow",
+    "direction": "asc"
+   }
+  ]
+ },
+ {
   "name": "workflow-inventory",
   "subject": "List declared workflows with their campaign, repository, configuration, and observed execution totals.",
   "objective": "Compare declared workflow configuration with retained run, import-coverage, and AI Credit evidence to select a workflow for closer inspection.",
@@ -2673,12 +2963,104 @@
   ]
  },
  {
+  "name": "campaign-dispatch-inventory",
+  "subject": "Project retained dispatch identity and campaign attribution before campaign counting.",
+  "objective": "Count dispatches without materializing run diagnoses and presentation links.",
+  "acceptance": "Keep workflow_dispatch runs in timestamp order with declared campaign attribution; preserve workflow and incomplete-outcome join quality and duplicate-key failure behavior.",
+  "description": "Lean dispatch-count input; the incomplete-outcome join preserves the full campaign run source's evidence quality and fail-closed validation.",
+  "from": "runs",
+  "joins": [
+   {
+    "source": "workflows",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     }
+    ],
+    "fields": [
+     {
+      "field": "campaign",
+      "as": "declared-campaign"
+     }
+    ]
+   },
+   {
+    "source": "run-incomplete-outcomes",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     },
+     {
+      "left": "run",
+      "right": "run"
+     },
+     {
+      "left": "run-attempt",
+      "right": "run-attempt"
+     }
+    ],
+    "fields": [
+     {
+      "field": "outcome-kind",
+      "as": "outcome-kind"
+     }
+    ]
+   }
+  ],
+  "filter": {
+   "predicates": [
+    {
+     "field": "event",
+     "equals": "workflow_dispatch"
+    }
+   ]
+  },
+  "select": [
+   {
+    "field": "declared-campaign",
+    "as": "campaign"
+   },
+   {
+    "field": "run"
+   },
+   {
+    "field": "started-at"
+   }
+  ],
+  "order-by": [
+   {
+    "field": "started-at",
+    "direction": "desc"
+   }
+  ]
+ },
+ {
   "name": "campaign-dispatch-totals",
   "subject": "Summarize observed workflow dispatches for each centrally managed campaign.",
   "objective": "Compare retained workflow_dispatch run counts across attributed campaigns.",
   "acceptance": "Count distinct run identifiers per campaign from dispatches; do not treat missing campaign attribution or unretained dispatches as zero actual activity.",
   "description": "Observed workflow-dispatch run totals grouped by campaign.",
-  "from": "dispatches",
+  "from": "campaign-dispatch-inventory",
   "aggregate": {
    "by": [
     "campaign"
@@ -2698,7 +3080,7 @@
   "objective": "Compare declared orchestrator/worker composition, rollout registration, observed runs, and AI Credit usage by campaign.",
   "acceptance": "Group only orchestrator and worker workflow-inventory rows by campaign; retain workflow count, distinct roles/modes/registration and summed observed runs and AIC, without inferring successful outcomes.",
   "description": "Observed workflow, rollout, run, and AI Credit totals grouped by campaign.",
-  "from": "workflow-inventory",
+  "from": "campaign-workflow-inventory",
   "filter": {
    "predicates": [
     {
@@ -4219,10 +4601,58 @@
  {
   "name": "repository-run-totals",
   "subject": "Summarize distinct runs, failures, and approval-required runs by repository.",
-  "objective": "Compare retained run volume, selected failure and action-required conclusions, and imported-record presence per repository.",
+  "objective": "Aggregate retained run volume, conclusions, and import coverage without materializing enriched run rows.",
   "acceptance": "Group by organization and repository; preserve distinct run IDs, configured failure/action-required conclusion counts, and imported-run sums. Missing enrichment or run history must not be treated as complete coverage.",
   "description": "Distinct run and conclusion totals for each repository.",
-  "from": "run-import-status",
+  "from": "runs",
+  "joins": [
+   {
+    "source": "event-runs",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     },
+     {
+      "left": "run",
+      "right": "run"
+     },
+     {
+      "left": "run-attempt",
+      "right": "run-attempt"
+     }
+    ],
+    "fields": [
+     {
+      "field": "events",
+      "as": "imported-events"
+     }
+    ]
+   }
+  ],
+  "compute": [
+   {
+    "as": "imported",
+    "function": "greater-than",
+    "args": [
+     {
+      "field": "imported-events"
+     },
+     {
+      "value": 0
+     }
+    ]
+   }
+  ],
   "aggregate": {
    "by": [
     "organization",
@@ -5228,8 +5658,8 @@
   "subject": "List campaign-owned orchestrator and worker workflows with database-backed execution totals.",
   "objective": "Choose an active campaign workflow whose observed execution warrants inspection.",
   "acceptance": "Listed workflows match active declared orchestrator or worker inventory entries; runs and AI Credits agree with the selected-horizon inventory, and absence is not evidence of disabled authority or no executions. Rollout mode is context, not permission to change policy.",
-  "description": "Campaign workflows projected from the canonical workflow inventory.",
-  "from": "workflow-inventory",
+  "description": "Campaign workflows projected from lean canonical inventory, with display names and drill-down links computed only for the active list.",
+  "from": "campaign-workflow-inventory",
   "filter": {
    "predicates": [
     {
@@ -5245,12 +5675,174 @@
     }
    ]
   },
+  "compute": [
+   {
+    "as": "campaign-title",
+    "function": "title-case",
+    "args": [
+     {
+      "field": "campaign"
+     }
+    ]
+   },
+   {
+    "as": "campaign-display-name",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "campaign-name"
+     },
+     {
+      "field": "campaign-title"
+     },
+     {
+      "value": "Repository-owned"
+     }
+    ]
+   },
+   {
+    "as": "workflow-display-name",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "workflow-name"
+     },
+     {
+      "field": "workflow"
+     }
+    ]
+   },
+   {
+    "as": "encoded-repository",
+    "function": "url-encode",
+    "args": [
+     {
+      "field": "repository"
+     }
+    ]
+   },
+   {
+    "as": "repository-dashboard-href",
+    "function": "concat",
+    "args": [
+     {
+      "value": "#page-repository-detail?repository="
+     },
+     {
+      "field": "encoded-repository"
+     }
+    ]
+   },
+   {
+    "as": "repository-dashboard-label",
+    "function": "concat",
+    "args": [
+     {
+      "value": "View "
+     },
+     {
+      "field": "repository"
+     },
+     {
+      "value": " repository dashboard"
+     }
+    ]
+   },
+   {
+    "as": "repository-dashboard-link",
+    "function": "dashboard-link",
+    "args": [
+     {
+      "field": "repository-link"
+     },
+     {
+      "field": "repository-dashboard-href"
+     },
+     {
+      "field": "repository-dashboard-label"
+     },
+     {
+      "field": "repository"
+     }
+    ]
+   },
+   {
+    "as": "workflow-identity",
+    "function": "concat",
+    "args": [
+     {
+      "field": "repository"
+     },
+     {
+      "value": ":"
+     },
+     {
+      "field": "workflow"
+     }
+    ]
+   },
+   {
+    "as": "encoded-workflow",
+    "function": "url-encode",
+    "args": [
+     {
+      "field": "workflow-identity"
+     }
+    ]
+   },
+   {
+    "as": "workflow-dashboard-href",
+    "function": "concat",
+    "args": [
+     {
+      "value": "#page-workflow-runtime?workflow="
+     },
+     {
+      "field": "encoded-workflow"
+     }
+    ]
+   },
+   {
+    "as": "workflow-dashboard-label",
+    "function": "concat",
+    "args": [
+     {
+      "value": "View "
+     },
+     {
+      "field": "workflow-display-name"
+     },
+     {
+      "value": " workflow dashboard"
+     }
+    ]
+   },
+   {
+    "as": "workflow-dashboard-link",
+    "function": "dashboard-link",
+    "args": [
+     {
+      "field": "workflow-link"
+     },
+     {
+      "field": "workflow-dashboard-href"
+     },
+     {
+      "field": "workflow-dashboard-label"
+     },
+     {
+      "field": "workflow-identity"
+     }
+    ]
+   }
+  ],
   "select": [
    {
     "field": "campaign"
    },
    {
-    "field": "campaign-name"
+    "field": "campaign-display-name",
+    "as": "campaign-name"
    },
    {
     "field": "organization"
@@ -5262,7 +5854,8 @@
     "field": "workflow"
    },
    {
-    "field": "workflow-name"
+    "field": "workflow-display-name",
+    "as": "workflow-name"
    },
    {
     "field": "workflow-role"
@@ -5280,10 +5873,12 @@
     "field": "aic"
    },
    {
-    "field": "repository-link"
+    "field": "repository-dashboard-link",
+    "as": "repository-link"
    },
    {
-    "field": "workflow-link"
+    "field": "workflow-dashboard-link",
+    "as": "workflow-link"
    }
   ],
   "order-by": [
@@ -6097,8 +6692,8 @@
   "name": "campaign-problem-runs",
   "subject": "List retained failed runs for campaign problem investigation.",
   "objective": "Choose a recent failed campaign run to investigate with its diagnostic evidence.",
-  "acceptance": "Each row corresponds to a retained campaign run with a declared failure, startup-failure, stale, or timed-out status and is ordered newest first; absence is not proof of healthy execution or complete ingestion.",
-  "description": "Failed campaign runs ordered from newest to oldest with retained diagnostic metadata.",
+  "acceptance": "Each row corresponds to a retained campaign run with a declared failure, startup-failure, stale, or timed-out status; campaign-problem-run-evidence orders matching rows newest first. Absence is not proof of healthy execution or complete ingestion.",
+  "description": "Private failed-run input with retained diagnostic metadata; the evidence consumer orders only runs matching current runtime problems.",
   "from": "campaign-runs",
   "filter": {
    "predicates": [
@@ -6112,15 +6707,63 @@
      ]
     }
    ]
+  }
+ },
+ {
+  "name": "campaign-problem-runtime-failures",
+  "subject": "Select current failing runtime partitions without presentation ordering.",
+  "objective": "Retain the exact current-failure eligibility needed by the problem evidence join.",
+  "acceptance": "A latest failure streak is a nonnegative integer, so failure-count at least one is equivalent to has-current-failure; missing or incomplete runtime evidence remains unknown.",
+  "description": "Private unsorted failure partitions for problem evidence; ordering is supplied by the retained failed runs.",
+  "from": "campaign-runtime-health-groups",
+  "filter": {
+   "predicates": [
+    {
+     "field": "failure-count",
+     "gte": 1
+    }
+   ]
   },
-  "order-by": [
+  "compute": [
    {
-    "field": "started-at",
-    "direction": "desc"
+    "as": "problem-kind",
+    "function": "coalesce",
+    "args": [
+     {
+      "value": "failure"
+     },
+     {
+      "value": "failure"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "campaign-problem-runtime-partitions",
+  "subject": "Project current runtime problem keys and diagnoses for the failed-run evidence join.",
+  "objective": "Avoid sorting and retaining unused runtime problem presentation fields.",
+  "acceptance": "Retain both current failures and unobserved orchestrators, including their metadata and duplicate-key failure semantics; this projection does not establish health or root cause.",
+  "description": "Private compact equivalent of campaign-runtime-problems for equality enrichment, not presentation.",
+  "from": "campaign-problem-runtime-failures",
+  "union": [
+   "campaign-unobserved-orchestrators"
+  ],
+  "select": [
+   {
+    "field": "campaign"
    },
    {
-    "field": "run",
-    "direction": "desc"
+    "field": "workflow"
+   },
+   {
+    "field": "runtime-repository"
+   },
+   {
+    "field": "failure-count"
+   },
+   {
+    "field": "problem-kind"
    }
   ]
  },
@@ -6133,7 +6776,7 @@
   "from": "campaign-problem-runs",
   "joins": [
    {
-    "source": "campaign-runtime-problems",
+    "source": "campaign-problem-runtime-partitions",
     "type": "inner",
     "on": [
      {
@@ -6159,6 +6802,16 @@
       "as": "problem-kind"
      }
     ]
+   }
+  ],
+  "order-by": [
+   {
+    "field": "started-at",
+    "direction": "desc"
+   },
+   {
+    "field": "run",
+    "direction": "desc"
    }
   ]
  },
@@ -6853,271 +7506,226 @@
   ]
  },
  {
-  "name": "workflow-aic-per-run",
-  "subject": "List declared workflows with observed runs and their average AI Credit cost per run.",
-  "objective": "Identify workflows with observed run AIC averages worth investigating alongside run evidence.",
-  "acceptance": "Include only workflow inventory rows marked as having observed runs, retaining their reported averages and missing telemetry; inspect underlying runs and separate outcome evidence before inferring waste or benefit.",
-  "description": "Workflow AI Credit averages limited to workflows with at least one observed run.",
-  "from": "workflow-inventory",
-  "filter": {
-   "predicates": [
+  "name": "workflow-aic-run-totals",
+  "subject": "Summarize observed run attempts and AI Credits for workflow cost comparison.",
+  "objective": "Count retained run attempts and recorded AI Credits without loading imported-event coverage.",
+  "acceptance": "Group observed run attempts by organization, repository, and workflow; count distinct run and attempt identities and sum recorded AI Credits, without inferring complete telemetry.",
+  "from": "runs",
+  "compute": [
+   {
+    "as": "run-attempt-identity",
+    "function": "concat",
+    "args": [
+     {
+      "field": "run"
+     },
+     {
+      "value": ":"
+     },
+     {
+      "field": "run-attempt"
+     }
+    ]
+   }
+  ],
+  "aggregate": {
+   "by": [
+    "organization",
+    "repository",
+    "workflow"
+   ],
+   "values": [
     {
-     "field": "has-observed-runs",
-     "equals": true
+     "field": "run-attempt-identity",
+     "as": "runs",
+     "reducer": "distinct-count"
+    },
+    {
+     "field": "aic-total",
+     "as": "aic",
+     "reducer": "sum"
     }
    ]
   }
  },
  {
-  "name": "marketplace-registry-options",
-  "subject": "Provide distinct authorized registry choices from resolved package records.",
-  "objective": "List the registry choices available in the current authorized marketplace package projection.",
-  "acceptance": "Return distinct registry IDs and names with package counts from resolved records; missing or inaccessible registries must not be inferred from absent rows.",
-  "from": "marketplace-packages",
-  "aggregate": {
-   "by": [
-    "registry-id",
-    "registry-name"
-   ],
-   "values": [
-    {
-     "field": "id",
-     "as": "packages",
-     "reducer": "count"
-    }
-   ]
-  },
-  "order-by": [
+  "name": "workflow-aic-per-run",
+  "subject": "List declared workflows with observed runs and their average AI Credit cost per run.",
+  "objective": "Identify workflows with observed run AIC averages worth investigating alongside run evidence.",
+  "acceptance": "Include only declared workflows with observed run attempts, retaining their reported averages and missing telemetry; inspect underlying runs and separate outcome evidence before inferring waste or benefit.",
+  "description": "Workflow AI Credit averages limited to workflows with at least one observed run.",
+  "from": "workflows",
+  "joins": [
    {
-    "field": "registry-name",
-    "direction": "asc"
-   }
-  ]
- },
- {
-  "name": "marketplace-publisher-options",
-  "subject": "Provide distinct publisher choices from resolved package records.",
-  "objective": "List the publisher choices available in the current authorized marketplace package projection.",
-  "acceptance": "Return distinct publishers with package counts from resolved records; an absent publisher is not proof that its packages do not exist.",
-  "from": "marketplace-packages",
-  "aggregate": {
-   "by": [
-    "publisher"
-   ],
-   "values": [
-    {
-     "field": "id",
-     "as": "packages",
-     "reducer": "count"
-    }
-   ]
-  },
-  "order-by": [
-   {
-    "field": "publisher",
-    "direction": "asc"
-   }
-  ]
- },
- {
-  "name": "marketplace-ranked",
-  "subject": "Order keyword-matched campaign packages by reviewed publisher attestation, public maintenance evidence, local adoption evidence, and public popularity, without treating missing evidence as zero.",
-  "objective": "Present authorized campaign packages in deterministic discovery order using only observable, governed signals.",
-  "acceptance": "Rank verified provenance and known maintenance before observed adoption and public stars, break ties by name and ID, and preserve unknown evidence rather than treating it as zero or verified.",
-  "from": "marketplace-packages",
-  "compute": [
-   {
-    "as": "verified-publisher",
-    "function": "equals-any",
-    "args": [
+    "source": "workflow-aic-run-totals",
+    "type": "left",
+    "on": [
      {
-      "field": "verification-status"
+      "left": "organization",
+      "right": "organization"
      },
      {
-      "value": "verified"
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
      }
-    ]
-   },
-   {
-    "as": "recently-maintained",
-    "function": "equals-any",
-    "args": [
+    ],
+    "fields": [
      {
-      "field": "maintenance-status"
+      "field": "runs",
+      "as": "observed-runs"
      },
      {
-      "value": "active"
-     }
-    ]
-   },
-   {
-    "as": "maintenance-unavailable",
-    "function": "equals-any",
-    "args": [
-     {
-      "field": "maintenance-status"
-     },
-     {
-      "value": "unknown"
-     }
-    ]
-   },
-   {
-    "as": "verification-rank",
-    "function": "if",
-    "args": [
-     {
-      "field": "verified-publisher"
-     },
-     {
-      "value": 1
-     },
-     {
-      "value": 0
-     }
-    ]
-   },
-   {
-    "as": "maintenance-unknown-rank",
-    "function": "if",
-    "args": [
-     {
-      "field": "maintenance-unavailable"
-     },
-     {
-      "value": 1
-     },
-     {
-      "value": 0
-     }
-    ]
-   },
-   {
-    "as": "maintenance-rank",
-    "function": "if",
-    "args": [
-     {
-      "field": "recently-maintained"
-     },
-     {
-      "value": 2
-     },
-     {
-      "field": "maintenance-unknown-rank"
-     }
-    ]
-   },
-   {
-    "as": "adoption-observed",
-    "function": "coalesce",
-    "args": [
-     {
-      "field": "adoption-count"
-     },
-     {
-      "value": -1
-     }
-    ]
-   },
-   {
-    "as": "stars-observed",
-    "function": "coalesce",
-    "args": [
-     {
-      "field": "stars"
-     },
-     {
-      "value": -1
-     }
-    ]
-   },
-   {
-    "as": "adoption-missing",
-    "function": "equals-any",
-    "args": [
-     {
-      "field": "adoption-observed"
-     },
-     {
-      "value": -1
-     }
-    ]
-   },
-   {
-    "as": "stars-missing",
-    "function": "equals-any",
-    "args": [
-     {
-      "field": "stars-observed"
-     },
-     {
-      "value": -1
-     }
-    ]
-   },
-   {
-    "as": "adoption-evidence-rank",
-    "function": "if",
-    "args": [
-     {
-      "field": "adoption-missing"
-     },
-     {
-      "value": 0
-     },
-     {
-      "value": 1
-     }
-    ]
-   },
-   {
-    "as": "stars-evidence-rank",
-    "function": "if",
-    "args": [
-     {
-      "field": "stars-missing"
-     },
-     {
-      "value": 0
-     },
-     {
-      "value": 1
+      "field": "aic",
+      "as": "observed-aic"
      }
     ]
    }
   ],
-  "order-by": [
+  "compute": [
    {
-    "field": "verification-rank",
-    "direction": "desc"
+    "as": "repository-slug",
+    "function": "concat",
+    "args": [
+     {
+      "field": "organization"
+     },
+     {
+      "value": "/"
+     },
+     {
+      "field": "repository"
+     }
+    ]
    },
    {
-    "field": "maintenance-rank",
-    "direction": "desc"
+    "as": "workflow-display-name",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "workflow-name"
+     },
+     {
+      "field": "workflow"
+     }
+    ]
    },
    {
-    "field": "adoption-evidence-rank",
-    "direction": "desc"
+    "as": "workflow-identity",
+    "function": "concat",
+    "args": [
+     {
+      "field": "repository-slug"
+     },
+     {
+      "value": ":"
+     },
+     {
+      "field": "workflow"
+     }
+    ]
    },
    {
-    "field": "adoption-count",
-    "direction": "desc"
+    "as": "encoded-workflow",
+    "function": "url-encode",
+    "args": [
+     {
+      "field": "workflow-identity"
+     }
+    ]
    },
    {
-    "field": "stars-evidence-rank",
-    "direction": "desc"
+    "as": "workflow-dashboard-href",
+    "function": "concat",
+    "args": [
+     {
+      "value": "#page-workflow-runtime?workflow="
+     },
+     {
+      "field": "encoded-workflow"
+     }
+    ]
    },
    {
-    "field": "stars",
-    "direction": "desc"
+    "as": "workflow-dashboard-label",
+    "function": "concat",
+    "args": [
+     {
+      "value": "View "
+     },
+     {
+      "field": "workflow-display-name"
+     },
+     {
+      "value": " workflow dashboard"
+     }
+    ]
    },
    {
-    "field": "package-name",
-    "direction": "asc"
+    "as": "workflow-dashboard-link",
+    "function": "dashboard-link",
+    "args": [
+     {
+      "field": "workflow-link"
+     },
+     {
+      "field": "workflow-dashboard-href"
+     },
+     {
+      "field": "workflow-dashboard-label"
+     },
+     {
+      "field": "workflow-identity"
+     }
+    ]
    },
    {
-    "field": "id",
-    "direction": "asc"
+    "as": "total-aic",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "observed-aic"
+     },
+     {
+      "value": 0
+     }
+    ]
+   },
+   {
+    "as": "aic-per-run",
+    "function": "quotient",
+    "args": [
+     {
+      "field": "total-aic"
+     },
+     {
+      "field": "observed-runs"
+     }
+    ]
+   }
+  ],
+  "filter": {
+   "predicates": [
+    {
+     "field": "observed-runs",
+     "gte": 1
+    }
+   ]
+  },
+  "select": [
+   {
+    "field": "workflow-identity",
+    "as": "workflow-label"
+   },
+   {
+    "field": "workflow-dashboard-link",
+    "as": "workflow-link"
+   },
+   {
+    "field": "aic-per-run"
    }
   ]
  },
@@ -7815,7 +8423,7 @@
    ],
    "values": [
     {
-     "field": "event",
+     "field": "table",
      "as": "records",
      "reducer": "count"
     }
@@ -8666,6 +9274,352 @@
   ]
  },
  {
+  "name": "simulator-database-inputs",
+  "subject": "Model daily run volume and 30-day retained detail from user-supplied scenario inputs.",
+  "objective": "Compare hypothetical workload choices without treating results as observed activity.",
+  "acceptance": "Each simulated day uses the selected inputs; skipped runs retain summaries and detailed records have a 30-day lifetime.",
+  "description": "Each simulated day includes all accumulated run summaries; tools and issues belong only to non-skipped runs and expire after 30 days.",
+  "from": "simulation-days",
+  "parameters": [
+   {
+    "name": "repositories",
+    "type": "number"
+   },
+   {
+    "name": "runs-per-day",
+    "type": "number"
+   },
+   {
+    "name": "tools-per-run",
+    "type": "number"
+   },
+   {
+    "name": "issues-per-run",
+    "type": "number"
+   },
+   {
+    "name": "skip-rate",
+    "type": "number"
+   }
+  ],
+  "compute": [
+   {
+    "as": "runs-daily",
+    "function": "product",
+    "args": [
+     {
+      "parameter": "repositories"
+     },
+     {
+      "parameter": "runs-per-day"
+     }
+    ]
+   },
+   {
+    "as": "skip-fraction",
+    "function": "quotient",
+    "args": [
+     {
+      "parameter": "skip-rate"
+     },
+     {
+      "value": 100
+     }
+    ]
+   },
+   {
+    "as": "active-fraction",
+    "function": "difference",
+    "args": [
+     {
+      "value": 1
+     },
+     {
+      "field": "skip-fraction"
+     }
+    ]
+   },
+   {
+    "as": "summary-runs",
+    "function": "product",
+    "args": [
+     {
+      "field": "day"
+     },
+     {
+      "field": "runs-daily"
+     }
+    ]
+   },
+   {
+    "as": "past-ttl",
+    "function": "greater-than",
+    "args": [
+     {
+      "field": "day"
+     },
+     {
+      "value": 30
+     }
+    ]
+   },
+   {
+    "as": "detail-days",
+    "function": "if",
+    "args": [
+     {
+      "field": "past-ttl"
+     },
+     {
+      "value": 30
+     },
+     {
+      "field": "day"
+     }
+    ]
+   },
+   {
+    "as": "detail-runs",
+    "function": "product",
+    "args": [
+     {
+      "field": "detail-days"
+     },
+     {
+      "field": "runs-daily"
+     },
+     {
+      "field": "active-fraction"
+     }
+    ]
+   },
+   {
+    "as": "tools-per-run",
+    "function": "literal",
+    "args": [
+     {
+      "parameter": "tools-per-run"
+     }
+    ]
+   },
+   {
+    "as": "issues-per-run",
+    "function": "literal",
+    "args": [
+     {
+      "parameter": "issues-per-run"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "simulator-run-size",
+  "subject": "Estimate retained run-summary table size at 512 bytes per run.",
+  "objective": "Show modeled accumulation of run summaries.",
+  "acceptance": "Summary size includes every simulated run at 512 bytes and is not presented as measured storage.",
+  "from": "simulator-database-inputs",
+  "compute": [
+   {
+    "as": "table",
+    "function": "literal",
+    "args": [
+     {
+      "value": "Run summaries"
+     }
+    ]
+   },
+   {
+    "as": "bytes",
+    "function": "product",
+    "args": [
+     {
+      "field": "summary-runs"
+     },
+     {
+      "value": 512
+     }
+    ]
+   }
+  ],
+  "select": [
+   {
+    "field": "day"
+   },
+   {
+    "field": "table"
+   },
+   {
+    "field": "bytes"
+   }
+  ]
+ },
+ {
+  "name": "simulator-tool-size",
+  "subject": "Estimate retained tool table size at 256 bytes per tool on non-skipped runs.",
+  "objective": "Show modeled tool-record growth under the selected workload.",
+  "acceptance": "Tool size uses only non-skipped simulated runs and 256 bytes per tool over the retained period.",
+  "from": "simulator-database-inputs",
+  "compute": [
+   {
+    "as": "table",
+    "function": "literal",
+    "args": [
+     {
+      "value": "Tools (30-day TTL)"
+     }
+    ]
+   },
+   {
+    "as": "bytes",
+    "function": "product",
+    "args": [
+     {
+      "field": "detail-runs"
+     },
+     {
+      "field": "tools-per-run"
+     },
+     {
+      "value": 256
+     }
+    ]
+   }
+  ],
+  "select": [
+   {
+    "field": "day"
+   },
+   {
+    "field": "table"
+   },
+   {
+    "field": "bytes"
+   }
+  ]
+ },
+ {
+  "name": "simulator-issue-size",
+  "subject": "Estimate retained issue table size at 512 bytes per issue on non-skipped runs.",
+  "objective": "Show modeled issue-record growth under the selected workload.",
+  "acceptance": "Issue size uses only non-skipped simulated runs and 512 bytes per issue over the retained period.",
+  "from": "simulator-database-inputs",
+  "compute": [
+   {
+    "as": "table",
+    "function": "literal",
+    "args": [
+     {
+      "value": "Issues (30-day TTL)"
+     }
+    ]
+   },
+   {
+    "as": "bytes",
+    "function": "product",
+    "args": [
+     {
+      "field": "detail-runs"
+     },
+     {
+      "field": "issues-per-run"
+     },
+     {
+      "value": 512
+     }
+    ]
+   }
+  ],
+  "select": [
+   {
+    "field": "day"
+   },
+   {
+    "field": "table"
+   },
+   {
+    "field": "bytes"
+   }
+  ]
+ },
+ {
+  "name": "simulator-database-size",
+  "subject": "Show modeled run-summary, tool, and issue table bytes after 30 days.",
+  "objective": "Compare hypothetical database table sizes at the end of the retention horizon.",
+  "acceptance": "The model presents separate summary, tool, and issue estimates after 30 simulated days, never observed storage.",
+  "description": "Run summaries accumulate; detailed records have a 30-day TTL.",
+  "from": "simulator-run-size",
+  "union": [
+   "simulator-tool-size",
+   "simulator-issue-size"
+  ],
+  "filter": {
+   "predicates": [
+    {
+     "field": "day",
+     "equals": 30
+    }
+   ]
+  },
+  "select": [
+   {
+    "field": "table"
+   },
+   {
+    "field": "bytes"
+   }
+  ]
+ },
+ {
+  "name": "simulator-database-total",
+  "subject": "Sum the modeled table sizes after 30 days.",
+  "objective": "Show the final estimated size of the modeled database tables.",
+  "acceptance": "The final value is the sum of the three modeled table sizes after 30 days.",
+  "from": "simulator-database-size",
+  "compute": [
+   {
+    "as": "total-label",
+    "function": "literal",
+    "args": [
+     {
+      "value": "Total"
+     }
+    ]
+   }
+  ],
+  "aggregate": {
+   "by": [
+    "total-label"
+   ],
+   "values": [
+    {
+     "field": "bytes",
+     "as": "bytes",
+     "reducer": "sum"
+    }
+   ]
+  },
+  "select": [
+   {
+    "field": "total-label",
+    "as": "table"
+   },
+   {
+    "field": "bytes"
+   }
+  ]
+ },
+ {
+  "name": "simulator-database-summary",
+  "subject": "List modeled table sizes and their final total after 30 days.",
+  "objective": "Present the 30-day estimate in a compact table.",
+  "acceptance": "Three modeled table sizes and their summed final value are shown without a growth chart.",
+  "from": "simulator-database-size",
+  "union": [
+   "simulator-database-total"
+  ]
+ },
+ {
   "name": "database-campaign-count",
   "subject": "Count campaigns in the dashboard database.",
   "objective": "Establish the retained campaign inventory denominator for Overview health presentation.",
@@ -8674,7 +9628,7 @@
   "aggregate": {
    "values": [
     {
-     "field": "id",
+     "field": "campaign",
      "as": "campaigns",
      "reducer": "count"
     }
@@ -9088,7 +10042,7 @@
   "aggregate": {
    "values": [
     {
-     "field": "id",
+     "field": "repository",
      "as": "registered-repositories",
      "reducer": "count"
     }
@@ -9333,7 +10287,7 @@
   "aggregate": {
    "values": [
     {
-     "field": "id",
+     "field": "campaign",
      "as": "healthy-campaigns",
      "reducer": "count",
      "filter": {
@@ -10105,11 +11059,167 @@
   ]
  },
  {
+  "name": "campaign-cost-totals",
+  "subject": "Sum observed AI Credit cost across declared campaign orchestrators and workers.",
+  "objective": "Attribute retained workflow AIC totals to centrally managed campaigns without computing unrelated inventory metrics.",
+  "acceptance": "Sum only orchestrator and worker workflow AIC by campaign; missing run observations contribute zero, not proof of zero actual usage.",
+  "from": "workflows",
+  "joins": [
+   {
+    "source": "workflow-aic-totals",
+    "type": "left",
+    "on": [
+     {
+      "left": "organization",
+      "right": "organization"
+     },
+     {
+      "left": "repository",
+      "right": "repository"
+     },
+     {
+      "left": "workflow",
+      "right": "workflow"
+     }
+    ],
+    "fields": [
+     {
+      "field": "aic",
+      "as": "observed-aic"
+     }
+    ]
+   }
+  ],
+  "filter": {
+   "predicates": [
+    {
+     "field": "workflow-role",
+     "in": [
+      "orchestrator",
+      "worker"
+     ]
+    }
+   ]
+  },
+  "compute": [
+   {
+    "as": "aic",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "observed-aic"
+     },
+     {
+      "value": 0
+     }
+    ]
+   }
+  ],
+  "aggregate": {
+   "by": [
+    "campaign"
+   ],
+   "values": [
+    {
+     "field": "aic",
+     "as": "aic",
+     "reducer": "sum"
+    }
+   ]
+  }
+ },
+ {
   "name": "cost-by-campaign",
   "subject": "Present observed AI Credit cost grouped by centrally managed campaign.",
   "objective": "Identify campaigns whose observed AI Credit use needs investigation.",
   "acceptance": "Rows preserve native aic values and descending order; investigate fresh campaign runs and snapshot completeness before suggesting a cost intervention, without inferring savings or value.",
-  "from": "campaign-inventory",
+  "from": "campaigns",
+  "joins": [
+   {
+    "source": "campaign-cost-totals",
+    "type": "left",
+    "on": [
+     {
+      "left": "campaign",
+      "right": "campaign"
+     }
+    ],
+    "fields": [
+     {
+      "field": "aic",
+      "as": "observed-aic"
+     }
+    ]
+   }
+  ],
+  "compute": [
+   {
+    "as": "aic",
+    "function": "coalesce",
+    "args": [
+     {
+      "field": "observed-aic"
+     },
+     {
+      "value": 0
+     }
+    ]
+   },
+   {
+    "as": "encoded-campaign",
+    "function": "url-encode",
+    "args": [
+     {
+      "field": "campaign"
+     }
+    ]
+   },
+   {
+    "as": "campaign-dashboard-href",
+    "function": "concat",
+    "args": [
+     {
+      "value": "#page-campaign-insights?campaign="
+     },
+     {
+      "field": "encoded-campaign"
+     }
+    ]
+   },
+   {
+    "as": "campaign-dashboard-label",
+    "function": "concat",
+    "args": [
+     {
+      "value": "View "
+     },
+     {
+      "field": "campaign-name"
+     },
+     {
+      "value": " campaign dashboard"
+     }
+    ]
+   },
+   {
+    "as": "campaign-dashboard-link",
+    "function": "dashboard-link",
+    "args": [
+     {
+      "value": ""
+     },
+     {
+      "field": "campaign-dashboard-href"
+     },
+     {
+      "field": "campaign-dashboard-label"
+     },
+     {
+      "field": "campaign"
+     }
+    ]
+   }
+  ],
   "select": [
    {
     "field": "campaign-name"
@@ -10351,33 +11461,7 @@
   "objective": "Compare observed AI Credit per run across repository workflows with each observed-runs denominator.",
   "acceptance": "aic-per-run is derived from native aic and observed-runs for matching workflows only; missing or zero denominators remain unavailable, and differences are not claimed as efficiency gains.",
   "description": "Observed AI Credit totals divided by observed run attempts for each declared workflow.",
-  "from": "workflow-aic-totals",
-  "joins": [
-   {
-    "source": "workflow-run-totals",
-    "type": "left",
-    "on": [
-     {
-      "left": "organization",
-      "right": "organization"
-     },
-     {
-      "left": "repository",
-      "right": "repository"
-     },
-     {
-      "left": "workflow",
-      "right": "workflow"
-     }
-    ],
-    "fields": [
-     {
-      "field": "runs",
-      "as": "observed-runs"
-     }
-    ]
-   }
-  ],
+  "from": "workflow-aic-run-totals",
   "compute": [
    {
     "as": "aic-per-run",
@@ -10387,7 +11471,7 @@
       "field": "aic"
      },
      {
-      "field": "observed-runs"
+      "field": "runs"
      }
     ]
    },
@@ -10496,7 +11580,8 @@
     "field": "workflow-dashboard-link"
    },
    {
-    "field": "observed-runs"
+    "field": "runs",
+    "as": "observed-runs"
    },
    {
     "field": "aic-per-run"

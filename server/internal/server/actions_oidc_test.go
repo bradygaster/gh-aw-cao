@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type oidcTestTransport func(*http.Request) (*http.Response, error)
@@ -25,6 +28,8 @@ func (transport oidcTestTransport) RoundTrip(request *http.Request) (*http.Respo
 }
 
 func TestHostedActionsMCPAuthentication(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -48,17 +53,18 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 	}
 	claims := actionsOIDCClaims{
 		Issuer: actionsOIDCIssuer, Audience: json.RawMessage(`"https://cao.githubnext.com"`),
-		Repository: "githubnext/gh-aw-cao", Subject: "repo:githubnext/gh-aw-cao:ref:refs/heads/main",
-		Ref:   "refs/heads/main",
-		Actor: "OctoCat", IssuedAt: time.Now().Add(-time.Minute).Unix(),
+		Repository: "githubnext/gh-aw-cao", RepositoryID: "1302952722", RepositoryOwnerID: "89615882",
+		Subject: "repo:githubnext@89615882/gh-aw-cao@1302952722:ref:refs/heads/main",
+		Ref:     "refs/heads/main",
+		Actor:   "OctoCat", IssuedAt: time.Now().Add(-time.Minute).Unix(),
 		ExpiresAt: time.Now().Add(4 * time.Minute).Unix(),
 	}
 	denied := ""
-	installedRepository := "githubnext/gh-aw-cao"
 	defaultBranch := "main"
 	denyDefaultBranch := false
 	probes := 0
 	jwks := 0
+	installationInventoryChecks := 0
 	api := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/.well-known/jwks" {
 			jwks++
@@ -75,13 +81,8 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 			return
 		}
 		if request.URL.Path == "/installation/repositories" {
-			if request.Header.Get("Authorization") != "Bearer "+testActionsToken {
-				response.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			_ = json.NewEncoder(response).Encode(map[string]any{"repositories": []any{
-				map[string]string{"full_name": installedRepository},
-			}})
+			installationInventoryChecks++
+			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		if request.URL.Path == "/repos/githubnext/gh-aw-cao" {
@@ -89,7 +90,10 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 				response.WriteHeader(http.StatusForbidden)
 				return
 			}
-			_ = json.NewEncoder(response).Encode(map[string]string{"default_branch": defaultBranch})
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"id": 1302952722, "full_name": "githubnext/gh-aw-cao",
+				"owner": map[string]any{"id": 89615882}, "default_branch": defaultBranch,
+			})
 			return
 		}
 		probes++
@@ -125,27 +129,30 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 		change     func(*actionsOIDCClaims)
 		bearer     string
 		permission string
-		installed  string
 		valid      bool
 	}{
-		{"valid", nil, testActionsToken, "", "", true},
-		{"wrong audience", func(c *actionsOIDCClaims) { c.Audience = json.RawMessage(`"https://other.example"`) }, testActionsToken, "", "", false},
+		{"valid immutable subject", nil, testActionsToken, "", true},
+		{"valid legacy subject", func(c *actionsOIDCClaims) {
+			c.Subject = "repo:githubnext/gh-aw-cao:ref:refs/heads/main"
+		}, testActionsToken, "", true},
+		{"wrong audience", func(c *actionsOIDCClaims) { c.Audience = json.RawMessage(`"https://other.example"`) }, testActionsToken, "", false},
 		{"multiple audiences", func(c *actionsOIDCClaims) {
 			c.Audience = json.RawMessage(`["https://cao.githubnext.com","https://other.example"]`)
-		}, testActionsToken, "", "", false},
-		{"wrong issuer", func(c *actionsOIDCClaims) { c.Issuer = "https://other.example" }, testActionsToken, "", "", false},
-		{"wrong repository", func(c *actionsOIDCClaims) { c.Repository = "attacker/repo" }, testActionsToken, "", "", false},
-		{"wrong subject", func(c *actionsOIDCClaims) { c.Subject = "repo:attacker/repo:ref:refs/heads/main" }, testActionsToken, "", "", false},
-		{"pull request subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:pull_request" }, testActionsToken, "", "", false},
-		{"environment subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:environment:production" }, testActionsToken, "", "", false},
-		{"branch subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:ref:refs/heads/feature" }, testActionsToken, "", "", false},
-		{"branch ref", func(c *actionsOIDCClaims) { c.Ref = "refs/heads/feature" }, testActionsToken, "", "", false},
-		{"missing ref", func(c *actionsOIDCClaims) { c.Ref = "" }, testActionsToken, "", "", false},
-		{"expired", func(c *actionsOIDCClaims) { c.ExpiresAt = time.Now().Add(-time.Minute).Unix() }, testActionsToken, "", "", false},
-		{"future", func(c *actionsOIDCClaims) { c.NotBefore = time.Now().Add(time.Minute).Unix() }, testActionsToken, "", "", false},
-		{"invalid permissions", nil, testActionsToken, "issues", "", false},
-		{"invalid bearer on public repo", nil, "wrong-token", "", "", false},
-		{"token for another repository", nil, testActionsToken, "", "attacker/repo", false},
+		}, testActionsToken, "", false},
+		{"wrong issuer", func(c *actionsOIDCClaims) { c.Issuer = "https://other.example" }, testActionsToken, "", false},
+		{"wrong repository", func(c *actionsOIDCClaims) { c.Repository = "attacker/repo" }, testActionsToken, "", false},
+		{"wrong repository id", func(c *actionsOIDCClaims) { c.RepositoryID = "1" }, testActionsToken, "", false},
+		{"wrong repository owner id", func(c *actionsOIDCClaims) { c.RepositoryOwnerID = "1" }, testActionsToken, "", false},
+		{"wrong subject", func(c *actionsOIDCClaims) { c.Subject = "repo:attacker/repo:ref:refs/heads/main" }, testActionsToken, "", false},
+		{"pull request subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:pull_request" }, testActionsToken, "", false},
+		{"environment subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:environment:production" }, testActionsToken, "", false},
+		{"branch subject", func(c *actionsOIDCClaims) { c.Subject = "repo:githubnext/gh-aw-cao:ref:refs/heads/feature" }, testActionsToken, "", false},
+		{"branch ref", func(c *actionsOIDCClaims) { c.Ref = "refs/heads/feature" }, testActionsToken, "", false},
+		{"missing ref", func(c *actionsOIDCClaims) { c.Ref = "" }, testActionsToken, "", false},
+		{"expired", func(c *actionsOIDCClaims) { c.ExpiresAt = time.Now().Add(-time.Minute).Unix() }, testActionsToken, "", false},
+		{"future", func(c *actionsOIDCClaims) { c.NotBefore = time.Now().Add(time.Minute).Unix() }, testActionsToken, "", false},
+		{"invalid permissions", nil, testActionsToken, "issues", false},
+		{"invalid bearer on public repo", nil, "wrong-token", "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			modified := claims
@@ -153,10 +160,6 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 				test.change(&modified)
 			}
 			denied = test.permission
-			installedRepository = "githubnext/gh-aw-cao"
-			if test.installed != "" {
-				installedRepository = test.installed
-			}
 			actor, err := verifyHostedActionsMCP(t.Context(), config, makeRequest(sign(modified), test.bearer))
 			if (err == nil) != test.valid {
 				t.Fatalf("actor=%q error=%v, want valid=%t", actor, err, test.valid)
@@ -164,12 +167,30 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 			if test.valid && actor != "octocat" {
 				t.Fatalf("actor=%q", actor)
 			}
+			if !test.valid {
+				code := "oidc_invalid"
+				switch test.name {
+				case "wrong repository id", "wrong repository owner id", "wrong subject",
+					"pull request subject", "environment subject", "branch subject", "branch ref", "missing ref":
+					code = "provenance_mismatch"
+				case "invalid permissions":
+					code = "permissions_denied"
+				case "invalid bearer on public repo":
+					code = "repository_unavailable"
+				}
+				var refusal *hostedMCPRefusal
+				if !errors.As(err, &refusal) || refusal.code != code {
+					t.Fatalf("refusal = %v, want code %s", err, code)
+				}
+			}
 		})
 	}
 	if jwks == 0 || probes == 0 {
 		t.Fatalf("expected JWKS and permission probes: jwks=%d probes=%d", jwks, probes)
 	}
-	installedRepository = "githubnext/gh-aw-cao"
+	if installationInventoryChecks != 0 {
+		t.Fatalf("made %d unsupported installation inventory checks", installationInventoryChecks)
+	}
 	for _, test := range []struct {
 		name          string
 		defaultBranch string
@@ -179,7 +200,7 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 	}{
 		{"non-main default branch", "trunk", false, func(c *actionsOIDCClaims) {
 			c.Ref = "refs/heads/trunk"
-			c.Subject = "repo:githubnext/gh-aw-cao:ref:refs/heads/trunk"
+			c.Subject = "repo:githubnext@89615882/gh-aw-cao@1302952722:ref:refs/heads/trunk"
 		}, true},
 		{"missing default branch", "", false, nil, false},
 		{"mismatched signed ref", "trunk", false, nil, false},
@@ -201,7 +222,6 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 		})
 	}
 	denied = ""
-	installedRepository = "githubnext/gh-aw-cao"
 	defaultBranch, denyDefaultBranch = "main", false
 	good := sign(claims)
 	tampered := good[:len(good)-3] + "abc"
@@ -225,6 +245,13 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 		},
 		oauth: &githubOAuth{}, mcp: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 	}
+	previousProvider := otel.GetTracerProvider()
+	provider := sdktrace.NewTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		_ = provider.Shutdown(t.Context())
+	})
 	handler := app.requireGitHubAccess(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Context().Value(githubActionsActorContextKey{}) != "octocat" {
 			t.Error("signed actor was not propagated as the rate-limit identity")
@@ -246,6 +273,16 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 		t.Fatalf("unauthorized hosted MCP returned %d (redirect=%q), want 401 without OAuth redirect",
 			response.Code, response.Header().Get("Location"))
 	}
+	var missingCredentialBody map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &missingCredentialBody); err != nil {
+		t.Fatal(err)
+	}
+	if missingCredentialBody["code"] != "credentials_missing" ||
+		missingCredentialBody["traceId"] == "" ||
+		missingCredentialBody["traceId"] != response.Header().Get("X-Trace-Id") {
+		t.Fatalf("missing credentials 401 diagnostic = %v; trace header = %q",
+			missingCredentialBody, response.Header().Get("X-Trace-Id"))
+	}
 	invalidBearer := makeRequest(good, "invalid-token")
 	invalidBearer.TLS = &tls.ConnectionState{}
 	response = httptest.NewRecorder()
@@ -253,8 +290,19 @@ func TestHostedActionsMCPAuthentication(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid bearer on a public repository returned %d, want 401", response.Code)
 	}
+	var invalidBearerBody map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &invalidBearerBody); err != nil {
+		t.Fatal(err)
+	}
+	if invalidBearerBody["code"] != "repository_unavailable" ||
+		invalidBearerBody["traceId"] == "" ||
+		invalidBearerBody["traceId"] != response.Header().Get("X-Trace-Id") {
+		t.Fatalf("invalid bearer 401 diagnostic = %v; trace header = %q",
+			invalidBearerBody, response.Header().Get("X-Trace-Id"))
+	}
 
 	fullApp := newMCPTestApp(t, true)
+	fullApp.database = database
 	fullApp.oauth = &githubOAuth{}
 	fullApp.config.HostProfile = hostedHostProfile()
 	fullApp.config.ActionsHTTPClient = client

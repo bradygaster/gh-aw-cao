@@ -53,6 +53,7 @@ const softwareDevelopmentPracticesCampaignSource = focusedCampaignSource("softwa
 const activityExpectedFiles = [
   "activity/actions-context.mjs",
   "activity/actions-log.mjs",
+  "activity/campaign-intelligence.mjs",
   "activity/cao.mjs",
   "activity/cli-usage.mjs",
   "activity/commands/activity-stats.mjs",
@@ -81,6 +82,8 @@ const activityExpectedFiles = [
   "activity/commands/setup-auth.mjs",
   "activity/commands/update.mjs",
   "activity/collect-logs.sh",
+  "activity/computations/intelligence-contracts.mjs",
+  "activity/computations/intelligence.mjs",
   "activity/computations/index.mjs",
   "activity/computations/runtime-health.mjs",
   "activity/control-settings.mjs",
@@ -158,6 +161,7 @@ const selfCareExpectedFiles = [
   ".github/workflows/self-care-pages-health.md",
   ".github/workflows/self-care-primer-brand-checker.md",
   ".github/workflows/self-care-reactive-ui-expert.md",
+  ".github/workflows/self-care-redis-query-optimization.md",
   ".github/workflows/self-care-release-blogger.md",
   ".github/workflows/self-care-server-go-logging.md",
   ".github/workflows/self-care-specs-maintainer.md",
@@ -623,6 +627,13 @@ test("gh aw update replaces workflows and restores campaign-owned assets after c
   const consumer = await installCampaign(dependabotUpdateSource);
 
   try {
+    const intelligenceSourcePath = join(consumer, "dependabot", "intelligence.json");
+    const intelligencePath = join(consumer, ".github", "cao", "intelligence", "dependabot.json");
+    assert.equal(
+      readFileSync(intelligencePath, "utf8"),
+      readFileSync(intelligenceSourcePath, "utf8"),
+      "initial exact-revision installation did not materialize Dependabot intelligence",
+    );
     const orchestratorPath = join(consumer, ".github", "workflows", "dependabot.md");
     const orchestrator = readFileSync(orchestratorPath, "utf8");
     writeFileSync(orchestratorPath, `${orchestrator.replace(/^source: .*$/m, `source: ${campaignSource}`)}\n# local integration-test change\n`);
@@ -639,6 +650,7 @@ test("gh aw update replaces workflows and restores campaign-owned assets after c
     for (const relativePath of removedFiles) {
       rmSync(join(consumer, relativePath));
     }
+    rmSync(intelligencePath);
 
     await runUpdate([
       "aw",
@@ -660,6 +672,14 @@ test("gh aw update replaces workflows and restores campaign-owned assets after c
     );
     for (const relativePath of removedFiles) {
       assert.ok(existsSync(join(consumer, relativePath)), `gh aw update did not restore ${relativePath}`);
+    }
+    assert.equal(
+      existsSync(intelligencePath),
+      existsSync(intelligenceSourcePath),
+      "materialized intelligence did not match the updated Campaign revision",
+    );
+    if (existsSync(intelligenceSourcePath)) {
+      assert.equal(readFileSync(intelligencePath, "utf8"), readFileSync(intelligenceSourcePath, "utf8"));
     }
   } finally {
     rmSync(consumer, { recursive: true, force: true });

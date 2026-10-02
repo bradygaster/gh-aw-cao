@@ -57,6 +57,8 @@ func withInsecureDefaultTransport(t *testing.T) {
 }
 
 func TestQueryTransparentlyInjectsMarketplacePackagesWithoutSecretLeakage(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	withInsecureDefaultTransport(t)
 	githubServer := newFakeMarketplaceGitHubServer(t, "name: Demo\ndescription: Example\nincludes:\n  - demo.md\n")
 
@@ -96,6 +98,7 @@ func TestQueryTransparentlyInjectsMarketplacePackagesWithoutSecretLeakage(t *tes
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
+		Database: database, DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json",
 		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {
@@ -135,6 +138,8 @@ func TestQueryTransparentlyInjectsMarketplacePackagesWithoutSecretLeakage(t *tes
 }
 
 func TestQueryDegradesMarketplacePackagesToUnavailableWhenThePolicyFileIsMissing(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	t.Setenv(marketplacePolicyPathEnv, filepath.Join(t.TempDir(), "does-not-exist.json"))
 
 	address, closeServer := fakeRedis(t)
@@ -156,6 +161,7 @@ func TestQueryDegradesMarketplacePackagesToUnavailableWhenThePolicyFileIsMissing
 		t.Fatal(err)
 	}
 	app, err := New(context.Background(), redisx.NewStore(client, "test"), Config{
+		Database: database, DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json",
 		Listen: "127.0.0.1:8443", SiteDirectory: site, AccessToken: testAccessToken,
 	})
 	if err != nil {

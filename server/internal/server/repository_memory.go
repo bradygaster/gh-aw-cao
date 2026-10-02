@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,11 +11,11 @@ import (
 	"strings"
 
 	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
 	"github.com/githubnext/gh-aw-cao/server/internal/repositorymemory"
 )
 
 var repositoryMemoryLog = logger.New("cao:server:repository-memory")
+var errRepositoryMemoryIntegrityFailure = errors.New("repository-memory file failed integrity validation")
 
 func (a *App) repositoryMemoryCampaign(response http.ResponseWriter, request *http.Request) {
 	campaignID := request.PathValue("campaign")
@@ -22,9 +23,10 @@ func (a *App) repositoryMemoryCampaign(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusBadRequest, "repository-memory campaign is invalid")
 		return
 	}
-	_, campaign, err := a.repositoryMemorySnapshot(request, campaignID)
+	var campaign repositorymemory.Campaign
+	campaign, err := repositoryMemorySnapshot(request.Context(), a.config.SourceDirectory, campaignID)
 	if err != nil && a.memory != nil &&
-		(errors.Is(err, errCanonicalEntityNotFound) || errors.Is(err, redisx.ErrSourceUnavailable)) {
+		errors.Is(err, errCanonicalEntityNotFound) {
 		resolved, resolveErr := a.memory.Campaign(request.Context(), campaignID)
 		if resolveErr != nil {
 			writeRepositoryMemoryError(response, resolveErr)
@@ -55,9 +57,39 @@ func (a *App) repositoryMemoryContent(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, "repository-memory file path is invalid")
 		return
 	}
-	generation, campaign, err := a.repositoryMemorySnapshot(request, campaignID)
+	var content []byte
+	err := func(ctx context.Context) error {
+		campaign, err := repositoryMemorySnapshot(ctx, a.config.SourceDirectory, campaignID)
+		if err != nil {
+			return err
+		}
+		var selected *repositorymemory.File
+		for index := range campaign.Files {
+			if campaign.Files[index].Path == filePath {
+				selected = &campaign.Files[index]
+				break
+			}
+		}
+		if selected == nil {
+			return repositorymemory.ErrNotFound
+		}
+		snapshot, err := repositorymemory.Load(a.config.SourceDirectory)
+		if err != nil {
+			return err
+		}
+		value, ok := snapshot.Files[repositorymemory.FileKey(campaignID, filePath)]
+		if !ok {
+			return errors.New("repository-memory file content is invalid")
+		}
+		content = value
+		if reason, ok := repositoryMemoryIntegrityFailure(content, *selected); !ok {
+			repositoryMemoryLog.Printf("repository-memory file failed integrity validation reason=%s", reason)
+			return errRepositoryMemoryIntegrityFailure
+		}
+		return nil
+	}(request.Context())
 	if err != nil && a.memory != nil &&
-		(errors.Is(err, errCanonicalEntityNotFound) || errors.Is(err, redisx.ErrSourceUnavailable)) {
+		errors.Is(err, errCanonicalEntityNotFound) {
 		content, resolveErr := a.memory.Content(request.Context(), campaignID, filePath)
 		if errors.Is(resolveErr, repositorymemory.ErrNotFound) ||
 			(resolveErr == nil && content == nil) {
@@ -75,33 +107,16 @@ func (a *App) repositoryMemoryContent(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusNotFound, "repository-memory branch was not found")
 		return
 	}
-	if err != nil {
-		writeError(response, http.StatusServiceUnavailable, "repository memory is unavailable")
-		return
-	}
-	var selected *repositorymemory.File
-	for index := range campaign.Files {
-		if campaign.Files[index].Path == filePath {
-			selected = &campaign.Files[index]
-			break
-		}
-	}
-	if selected == nil {
+	if errors.Is(err, repositorymemory.ErrNotFound) {
 		writeError(response, http.StatusNotFound, "repository-memory file was not found")
 		return
 	}
-	content, err := a.store.RepositoryMemoryFile(request.Context(), generation, campaignID, filePath)
-	if err != nil {
-		if errors.Is(err, redisx.ErrSourceUnavailable) {
-			writeError(response, http.StatusNotFound, "repository-memory file was not found")
-			return
-		}
-		writeError(response, http.StatusServiceUnavailable, "repository memory is unavailable")
+	if errors.Is(err, errRepositoryMemoryIntegrityFailure) {
+		writeError(response, http.StatusServiceUnavailable, "repository-memory file failed integrity validation")
 		return
 	}
-	if reason, ok := repositoryMemoryIntegrityFailure(content, *selected); !ok {
-		repositoryMemoryLog.Printf("repository-memory file failed integrity validation reason=%s", reason)
-		writeError(response, http.StatusServiceUnavailable, "repository-memory file failed integrity validation")
+	if err != nil {
+		writeError(response, http.StatusServiceUnavailable, "repository memory is unavailable")
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]string{"content": string(content)})
@@ -121,7 +136,7 @@ const (
 // manifest's recorded size and, when present, SHA-256 checksum. It is a pure
 // function extracted from repositoryMemoryContent so the size-mismatch and
 // checksum-mismatch rejection paths are independently testable without a
-// Redis-backed store. ok is false when content fails validation; reason then
+// source document. ok is false when content fails validation; reason then
 // names which check failed.
 func repositoryMemoryIntegrityFailure(content []byte, expected repositorymemory.File) (reason repositoryMemoryIntegrityReason, ok bool) {
 	if int64(len(content)) != expected.Size {
@@ -136,25 +151,29 @@ func repositoryMemoryIntegrityFailure(content []byte, expected repositorymemory.
 	return "", true
 }
 
-func (a *App) repositoryMemorySnapshot(request *http.Request, campaignID string) (string, repositorymemory.Campaign, error) {
-	active, err := a.store.Active(request.Context())
-	if err != nil || active.Generation == "" {
-		return "", repositorymemory.Campaign{}, redisx.ErrSourceUnavailable
+func repositoryMemorySnapshot(
+	ctx context.Context, directory, campaignID string,
+) (repositorymemory.Campaign, error) {
+	if err := ctx.Err(); err != nil {
+		return repositorymemory.Campaign{}, err
 	}
-	content, err := a.store.RepositoryMemoryManifest(request.Context(), active.Generation)
+	if directory == "" {
+		return repositorymemory.Campaign{}, errCanonicalEntityNotFound
+	}
+	snapshot, err := repositorymemory.Load(directory)
 	if err != nil {
-		return "", repositorymemory.Campaign{}, err
+		return repositorymemory.Campaign{}, err
 	}
 	var manifest repositorymemory.Manifest
-	if err := json.Unmarshal(content, &manifest); err != nil || manifest.Version != 1 {
-		return "", repositorymemory.Campaign{}, errors.New("repository-memory manifest is invalid")
+	if err := json.Unmarshal(snapshot.Manifest, &manifest); err != nil || manifest.Version != 1 {
+		return repositorymemory.Campaign{}, errors.New("repository-memory manifest is invalid")
 	}
 	for _, campaign := range manifest.Campaigns {
 		if campaign.Campaign == campaignID {
-			return active.Generation, campaign, nil
+			return campaign, nil
 		}
 	}
-	return active.Generation, repositorymemory.Campaign{}, errCanonicalEntityNotFound
+	return repositorymemory.Campaign{}, errCanonicalEntityNotFound
 }
 
 func writeRepositoryMemoryError(response http.ResponseWriter, err error) {

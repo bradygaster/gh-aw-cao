@@ -1,22 +1,56 @@
-# Go and Redis dashboard server
+# Go dashboard server with Postgres and Redis
 
 The [TypeSpec HTTP contract](spec/README.md) is the source for generated
 OpenAPI 3.1 and selected JSON Schemas; consult it before changing server routes.
 
 The `server/` module is an optional backend for running the Central Agentic Ops
 dashboard with server-owned persistence and query execution. It ingests the
-same compacted data published with the deployed dashboard, materializes
-generation-scoped logical sources in Redis, executes Dashboard Language queries
-in Go, and serves the built dashboard either over loopback HTTP or through an
-authenticated host-neutral service profile.
+same compacted data published with the deployed dashboard, stores current
+native entity rows in PostgreSQL and executes hosted Dashboard Language plans
+as SQL through the bounded PostgreSQL query engine,
+and serves the built dashboard either over loopback HTTP or through an
+authenticated host-neutral service profile. Redis handles operational caches,
+queues, and sessions; it does not hold or query dashboard entities.
 
-The browser never connects to Redis and never receives the Redis URL or
-credentials. It communicates only with the same-origin HTTP(S) API.
+The browser never connects directly to Postgres or Redis and never receives
+database credentials. It communicates only with the same-origin HTTP(S) API.
+
+## Offline query validation
+
+From `server/`, run `go run ./cmd/cao-dashboard compile-queries` to check every
+query in `dashboard/site/dashboard.json`, `dashboard/site/dashboard-fragments/`,
+and the canonical database query file. Use `--format json` for
+machine-readable results. This command validates definitions offline; it does
+not compile or execute SQL plans.
+
+Hosted queries are compiled to SQL and executed in PostgreSQL within the
+request's repeatable-read transaction. The server does not fall back to a Go
+row evaluator: unsupported definitions and unregistered sources fail closed.
+Generated TypeSpec identifiers are used, values and namespace are
+parameterized, missing values remain distinct from explicit null, and SQL
+resource checks enforce operation, output, retained-row, and memory budgets.
+Explicitly registered operational sources are provided at the server boundary
+and participate as bounded SQL input relations.
+
+The deployed query corpus is exercised through the SQL executor by the
+`TestDashboardQueryCorpusUsesPostgres` integration test. It requires
+`POSTGRES_URL`; the dashboard-query-parity CI job additionally compares
+representative HTTP/MCP results with the browser evaluator over the deployed
+unparameterized named-query corpus.
+
+With a disposable fresh database, run
+`POSTGRES_URL=... go test ./internal/postgresx -run '^$'
+-bench '^BenchmarkNativeFilterPlan$' -benchmem -benchtime=100x -count=1`
+from `server/` to compare typed SQL and hand-written SQL retrieval over 5,000
+domain records. The benchmark reports
+`EXPLAIN (ANALYZE, BUFFERS)`, table/index bytes, ingestion time, allocations,
+and p50/p95; it asserts zero canonical scalar copies in generic value storage.
+These synthetic measurements do not establish production traffic coverage.
 
 ### Debug logging
 
 The server includes the namespace logger helpers from `github/gh-aw`. Debug
-logs are disabled by default and always go to stderr. Enable selected
+logs are disabled by default and go to stderr when enabled. Enable selected
 components with `DEBUG`, for example:
 
 ```bash
@@ -35,6 +69,14 @@ the identifiers never contain user, request, session, or credential values.
 In the hosted dashboard, add `?debug=auth` to enable matching client-side
 authentication branch events through `dashboard/site/src/debug.js`; these
 events likewise contain fixed identifiers only.
+
+To also export enabled namespaces as OTLP logs, set
+`CAO_OTEL_LOGS_ENABLED=true` and configure `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+or `OTEL_EXPORTER_OTLP_ENDPOINT`. `DEBUG` still selects the same namespaces
+for both stderr and OTLP; setting an endpoint alone does not enable log export.
+The exporter batches records and flushes at shutdown. `slog` error records
+retain their severity and active trace/span context. Only enable reviewed,
+non-sensitive namespaces when exporting to an external collector.
 
 > [!IMPORTANT]
 > The default `serve` command remains local-only: it uses a local bearer
@@ -167,16 +209,17 @@ with `benchstat` and inspect profiles with `go tool pprof` or
 flowchart LR
   Artifact["Deployed dashboard artifact<br/>inventory + run JSONL + record JSONL"]
   Ingest["Go ingester<br/>verify, parse, project"]
-  Redis["Redis<br/>generation row sets"]
-  API["Go HTTP(S) server<br/>bounded query engine"]
+  Postgres["Postgres<br/>native entity tables"]
+  Redis["Redis<br/>operational state"]
+  API["Go HTTP(S) server<br/>bounded PostgreSQL SQL plans"]
   Browser["Dashboard browser app<br/>render bounded view payloads"]
 
   Artifact --> Ingest
-  Ingest -->|"stage complete generation"| Redis
-  Redis -->|"atomic activation"| API
+  Ingest -->|"transactional replacement"| Postgres
+  Postgres --> API
   Browser -->|"POST /api/v1/query"| API
-  API -->|"HGET/SMEMBERS/EVAL"| Redis
-  Redis --> API
+  API -->|"source reads"| Postgres
+  API -->|"sessions, queues, caches"| Redis
   API -->|"LogicalSourceInput JSON"| Browser
   API -->|"SSE revision events"| Browser
 ```
@@ -185,16 +228,17 @@ flowchart LR
 
 | Component | Location | Responsibility |
 | --- | --- | --- |
-| CLI | `cmd/cao-dashboard/` | Implements the `ingest` and `serve` commands and keeps Redis configuration in the server process. |
-| Artifact ingestion | `internal/ingest/` | Validates deployed manifests and hashes, loads run shards before record shards, projects canonical records into logical dashboard sources, and activates complete generations. |
-| Query engine | `internal/query/` | Validates Dashboard Language definitions and executes joins, filters, computed fields, aggregates, temporal series, selection, ordering, and limits under resource budgets. |
-| Redis projection | `internal/redisx/` | Stores source rows and metadata with core Redis commands and atomically publishes the active generation. |
+| CLI | `cmd/cao-dashboard/` | Implements the `ingest` and `serve` commands and keeps Postgres and Redis configuration in the server process. |
+| Artifact ingestion | `internal/ingest/` | Validates deployed manifests and hashes, streams run shards before record shards, and writes canonical rows through the native Postgres writer. |
+| Query engine | `internal/query/` | Validates Dashboard Language definitions and compiles hosted query plans to bounded SQL. |
+| Postgres entity storage | `internal/postgresx/` | Initializes fresh TypeSpec-generated tables and transactionally replaces native entities, quality metadata, diagnostics, and revision; executes query plans in repeatable-read snapshots. |
+| Redis operations | `internal/redisx/` | Supports caches, queues, and sessions. |
 | HTTP(S)/API server | `internal/server/` | Enforces loopback binding, optionally terminates operator-configured TLS, serves static dashboard assets, handles API requests, and publishes revision events. |
 | Externally hosted service | `hosting/` | Exposes a listener-independent application lifecycle and the complete hosted HTTP handler to other Go HTTP hosts. |
 | Azure Functions profile | `internal/server/azure.go` | Builds the same HTTP handler without starting a listener, validates Azure app settings, requires `rediss://` Redis, and trusts forwarded host/protocol headers only for configured Azure hosts. |
 | GitHub OAuth sessions | `internal/server/oauth.go` | Implements the GitHub OAuth authorization-code flow, active organization/team authorization, refresh-token rotation, server-side encrypted sessions in Redis, logout revocation, and CSRF protection for mutating requests. |
-| Shared API model | `internal/model/` | Defines logical sources, active-generation metadata, diagnostics, and query metrics. |
-| Telemetry | `internal/telemetry/` | Configures OpenTelemetry trace and metric providers from standard `OTEL_*` environment variables, exposes the server's tracer, and writes W3C trace/span id response headers. |
+| Shared API model | `internal/model/` | Defines logical sources, diagnostics, and query metrics. |
+| Telemetry | `internal/telemetry/` | Configures OpenTelemetry trace, metric, and opt-in log providers, exposes the server's tracer, and writes W3C trace/span id response headers. |
 | Local Redis | `docker-compose.yml` | Runs plain Redis on `127.0.0.1:6379`. |
 | Coolify container profile | `Dockerfile`, `coolify/compose.yml` | Builds the dashboard and Go service into a non-root image and runs `serve-hosted` behind an explicitly trusted Coolify TLS proxy. |
 
@@ -223,13 +267,40 @@ profile.
 The `generic` target also accepts `listener: external` for a Go host that owns
 the HTTP server instead of CAO's `Serve` command. Use the public `hosting.New`
 constructor with explicit paths to the built site and query documents, call
-`Start(ctx)` before serving `Handler()`, drain the host's HTTP server before
-`Stop()`, and keep the startup context alive through that drain. `Handler()`
+`Start(ctx)` before serving `Handler()`, then call `Drain()` to stop admitting
+new requests and end SSE streams. Call the host's `http.Server.Shutdown` to
+drain ordinary requests, then `Stop(ctx)` to cancel and await CAO background
+tasks and close the hosted PostgreSQL pool. Pass a context with the host's
+shutdown deadline; if it expires before tasks exit, the pool remains open and
+`Stop` may be retried with a fresh context. Databases supplied to `server.New`
+remain caller-owned. Keep the startup
+context alive through HTTP shutdown. `Handler()`
 includes all CAO authentication, trusted-host, CSRF, rate-limit, webhook, and
-telemetry middleware; it returns `503` before startup or after cancellation.
+telemetry middleware; it returns `503` before startup or after drain.
 There is no alternate raw router or automatic trust of an embedding host's
 identity headers. The existing process-owned `serve-hosted` and Azure handlers
 do not select this mode.
+
+SSE streams share one PostgreSQL revision observation per replica while any
+clients are connected. Authorized streams also share the Redis ingestion-health
+observation. Each replica polls the durable state so updates originating on
+another replica are delivered even without a local notification; local updates
+are broadcast immediately. `Drain` still ends active streams.
+
+`CAO_SSE_MEASURE=1 POSTGRES_URL=... go test ./internal/server -run
+^TestSSEFanoutMeasurements$ -count=1 -v` measures connections, PostgreSQL
+committed transactions per second (an approximate query-rate proxy), Go heap,
+and stream drain against disposable PostgreSQL. On one local PostgreSQL instance
+with a simulated Redis server, pre-change measurements for 1/12 clients on one
+replica were 4/6 connections and 2.8/16.2 transactions per second; for 2/24
+clients on two replicas, 7/8 connections and 5.0/28.4 transactions per second.
+After shared observation, the same scenarios measured 4/5 connections and
+3.6/5.8 transactions per second, and 7/8 connections and 5.6/9.4 transactions
+per second. Heap after the 12-client and 24-client sampling windows was
+2,615,304/3,364,256 bytes before and 2,102,776/2,840,400 bytes after.
+Active-stream drain completed in 394/656 microseconds for 12/24 clients after
+the change (the original harness only timed drain after closing its clients).
+These are local observations, not performance budgets.
 Generic OAuth targets cannot disable HTTPS in policy; Azure's explicit local
 simulation is a separate platform-only case.
 
@@ -408,11 +479,11 @@ The hosted server exposes canonical repository/run APIs, verifies and
 deduplicates webhook deliveries, and coordinates projection updates with a
 Redis lease so multiple replicas do not rebuild concurrently. Webhooks trigger
 authoritative re-ingestion; they are not treated as complete canonical records.
-Validated webhook and rebuild requests return `202` before projection work
+Validated webhook and rebuild requests return `202` before ingestion work
 continues under a bounded, request-independent context. Only explicitly listed
-administrators may call `POST /api/admin/rebuild`; it always forces a new staged
-generation, validates it, then atomically activates it. A failed rebuild leaves
-the previous generation active.
+administrators may call `POST /api/admin/rebuild`; it validates input and
+atomically replaces current Postgres sources and state. A failed replacement
+leaves the previous committed state intact.
 
 The hosted dashboard shows a user icon at the lower left of the navigation.
 It appears only after the server confirms an authenticated GitHub session and
@@ -441,7 +512,7 @@ valid callbacks by a digest of their signed state. Forwarding headers are
 considered only at the configured trusted-proxy boundary. Raw logins, client
 addresses, and OAuth state are not stored in rate-limit keys.
 Query requests reserve one cost unit before execution. Completed queries cost
-the greatest of execution duration, measured operations and Redis rows, peak
+the greatest of execution duration, measured operations and SQL input rows, peak
 working rows, and estimated bytes. Structural complexity is bounded separately
 and emitted as privacy-preserving telemetry. Cost is capped at the query bucket
 capacity; the additional cost is charged atomically before the result is
@@ -479,10 +550,12 @@ invalid, expired, and unauthenticated requests cannot bypass Redis enforcement.
 > validated against your organization's Azure, GitHub, compliance, monitoring,
 > incident-response, and data-retention requirements before live use.
 
-The Azure Functions profile keeps the dashboard browser isolated from Redis,
-GitHub tokens, refresh tokens, Redis access keys, and Key Vault secret values.
-The Function App is the only public application boundary and the only component
-that talks to GitHub APIs, Key Vault references, and Azure Managed Redis.
+The Azure Functions profile keeps the dashboard browser isolated from Postgres,
+Redis, GitHub tokens, refresh tokens, database credentials, and Key Vault secret values.
+The Function App is the only public application boundary. It talks to GitHub
+APIs and resolves Key Vault references, then reaches Postgres and Azure Managed
+Redis through the deployment virtual network. A private Container Apps job is
+the separate, explicitly triggered ingestion boundary.
 
 ```mermaid
 flowchart LR
@@ -490,9 +563,11 @@ flowchart LR
   Edge["Azure HTTPS edge / App Service front end<br/>sets forwarded host + proto"]
   Function["Function App<br/>Go dashboard HTTP handler<br/>GitHub OAuth sessions + CSRF"]
   GitHubOAuth["GitHub OAuth + API<br/>login, refresh, org/team membership"]
-  KeyVault["Azure Key Vault<br/>OAuth secret, session secret, Redis URL"]
-  Redis["Azure Managed Redis<br/>TLS<br/>derived dashboard projection"]
-  Storage["Functions storage account<br/>runtime state only"]
+  KeyVault["Azure Key Vault<br/>OAuth, session, Postgres, Redis secrets"]
+  Postgres["Private Postgres<br/>current dashboard entities"]
+  Redis["Private Azure Managed Redis<br/>TLS<br/>operational state"]
+  Storage["Storage account<br/>Functions state + ingestion share"]
+  Ingest["Private Container Apps job<br/>explicit artifact ingestion"]
   Insights["Application Insights<br/>non-secret operational telemetry"]
   Operators["Control-plane operators<br/>deploy Bicep + rotate secrets"]
 
@@ -500,14 +575,18 @@ flowchart LR
   Edge -->|"trusted forwarded host/proto only when allow-listed"| Function
   Function -->|"OAuth code, refresh, membership checks"| GitHubOAuth
   Function -->|"Key Vault references resolved by managed identity"| KeyVault
-  Function -->|"rediss:// core Redis commands"| Redis
+  Function -->|"rediss:// operational commands"| Redis
+  Function -->|"entity source reads/writes"| Postgres
   Function -->|"runtime binding state"| Storage
+  Storage -->|"read-only verified artifact mount"| Ingest
+  Ingest -->|"transactional entity replacement"| Postgres
+  Ingest -->|"operational coordination"| Redis
   Function -->|"no tokens, no Redis URL, no source records"| Insights
   Operators -->|"reviewed Bicep + secret rotation"| KeyVault
   Operators -->|"deploy package + app settings"| Function
 
   classDef boundary fill:#eef6ff,stroke:#0969da,stroke-width:2px;
-  class Function,KeyVault,Redis boundary;
+  class Function,KeyVault,Postgres,Redis boundary;
 ```
 
 Primary actors and responsibilities:
@@ -520,8 +599,10 @@ Primary actors and responsibilities:
   scale in, or terminate long-lived SSE requests.
 - **GitHub OAuth/API**: issues expiring access/refresh tokens and confirms
   organization/team membership; GitHub tokens never leave the server.
-- **Redis**: stores disposable, namespaced dashboard projections; it is not an
-  authority or source of truth.
+- **Postgres**: stores the current dashboard entity sources and diagnostics;
+  replacement is transactional, without generations or snapshots.
+- **Redis**: stores operational queues, caches, and sessions, not
+  dashboard entities.
 - **Control-plane operator**: reviews Bicep/app settings, keeps Key Vault
   mandatory, rotates credentials, and validates compliance evidence.
 
@@ -561,15 +642,13 @@ The ingestion sequence is:
 5. Project canonical Campaign, Repository, Workflow, Run, Domain, Tool, Audit,
    Issue, and Operational Value records through
    `dashboard/site/src/data/queries/database.json`.
-6. Stage every logical source, its metadata, diagnostics, and row set under a
-   new immutable generation.
-7. Atomically update the namespaced active pointer and increment the namespaced
-   active revision only after the generation is complete.
+6. Transactionally replace current Postgres logical sources, metadata,
+   diagnostics, and revision state.
 
-An ingestion with the same artifact revision reuses the active generation.
-Failure before activation leaves the previous active generation available.
+An ingestion with the same artifact revision can reuse current state.
+Failure before commit leaves the previous Postgres state available.
 
-The active generation also records an authoritative `evaluatedAt` timestamp
+The Postgres state also records an authoritative `evaluatedAt` timestamp
 derived from the latest canonical row or source metadata timestamp. Relative
 dashboard time windows use this value rather than browser wall-clock time.
 
@@ -606,12 +685,8 @@ Collection separates three concerns that fail differently:
    debounce, and appends one task to a Redis stream. A successful response
    therefore means durable admission. Admission is constant-time and takes no
    projection lease, so a delivery burst cannot block the endpoint.
-   Signed `issues` lifecycle events instead refresh status fields only for
-   existing issues in enrolled repositories, without queuing a repository
-   collection. The response reports `applied` (not `queued`); a same-timestamp
-   conflicting status reports `reason: ambiguous-status` and defers to the
-   projected row until newer evidence arrives. Status observations are retained
-   across generation activations and newer projected evidence takes precedence.
+   Signed `issues` lifecycle events for enrolled repositories enqueue
+   repository collection rather than mutating stored issue entities directly.
 2. **Collection.** Workers lease tasks and run the same
    `gh aw logs --audit` and `activity/cao.mjs` commands the Activity workflow
    runs, writing into the evidence lake. One repository is collected at a time,
@@ -686,19 +761,23 @@ current outstanding work and cumulative backfill admissions as clearly labeled
 horizontal bars and shows these loads to administrators. In the
 default profile the endpoint reports `{"configured": false}` rather than
 failing.
+The existing Redis-backed ingestion counters remain available in the
+administrator-only `collection-health` dashboard source; OTLP metrics do not
+replace them.
 
 ### Diagnose a deployment
 
 `cao-dashboard doctor` runs a read-only check-up of the current server
-configuration. It does not contact GitHub, write to Redis, repair data, or
+configuration. It does not contact GitHub, write to Redis or Postgres, repair data, or
 report secret values. Every check has a stable identifier such as
-`redis.memory` or `data.generations`, a severity, observed facts, and an
+`redis.memory` or `data.active`, a severity, observed facts, and an
 operator remedy. The default text report is intended to be readable by both a
 person and an agent:
 
 ```bash
 go -C server run ./cmd/cao-dashboard doctor \
   --redis-url "$CAO_REDIS_URL" \
+  --postgres-url "$CAO_POSTGRES_URL" \
   --redis-namespace production-dashboard
 ```
 
@@ -708,21 +787,21 @@ The standard check-up covers:
   exclusivity;
 - Redis connectivity, latency, TLS posture, server state, clients,
   persistence, memory headroom, `noeviction`, and namespace contents;
-- active-generation age, schema compatibility, source counts, referential
-  integrity, duplicate identifiers, and generation reclamation;
+- Postgres data age, schema compatibility, source counts, referential
+  integrity, and duplicate identifiers;
 - the canonical Dashboard Language query document;
 - collection configuration without reading secrets, enrollment coverage,
   queue backlog, pending work, dead letters, cold-start state, rate-limit
   headroom, evidence-lake replayability, and projection activity.
 
-Add `--deep` to read every active source through the production Redis loading
+Add `--deep` to read every current source through the production Postgres loading
 path and confirm that rows decode, recorded counts match, and no source is
-approaching the 200,000-row fail-closed limit. This can read the whole active
-generation, so it is deliberately opt-in.
+approaching the 200,000-row fail-closed limit. This can read every stored entity row, so it is deliberately opt-in.
 
 ```bash
 go -C server run ./cmd/cao-dashboard doctor \
   --redis-url "$CAO_REDIS_URL" \
+  --postgres-url "$CAO_POSTGRES_URL" \
   --redis-namespace production-dashboard \
   --deep
 ```
@@ -750,7 +829,6 @@ private-key file rather than reading it.
 | `CAO_COLLECT_WORKERS` | in-process workers; zero when workers scale separately |
 | `CAO_COLLECT_RATE_LIMIT_FLOOR` | requests reserved per installation |
 | `CAO_COLLECT_PROJECTION_INTERVAL` | minimum interval between projections (default 5 minutes) |
-| `CAO_COLLECT_RETAIN_GENERATIONS` | superseded canonical generations kept for rollback (default 3) |
 | `CAO_COLLECT_INVENTORY_LIMIT` | optional cap on enrolled repositories; exceeding it fails the projection |
 | `CAO_COLLECT_RECOVER_DELIVERIES` | replay failed webhook deliveries to close gaps |
 | `CAO_COLLECT_QUEUE_MAX_LENGTH` | admission backpressure limit for outstanding collection tasks (default 200 000); tasks are never trimmed |
@@ -786,24 +864,11 @@ way.
 
 ### Cost and sizing
 
-Steady-state cost is dominated by projection rather than by collection, because
-a projection's cost scales with retained evidence while a collection's cost
-scales with what changed. Three properties keep that affordable.
-
-Projection is *skipped* when nothing changed. A collection re-enumerates a
-repository's window and usually downloads nothing new, so the lake's
-content-addressed data revision is normally unchanged and the projector reuses
-the active generation instead of rewriting it. Only an explicit operator
-rebuild bypasses this.
-
-Superseded generations are *reclaimed*. Each projection that does run writes a
-complete copy of the canonical dataset plus its search indexes, and Redis is
-configured `NoEviction`. Reclamation is part of activation: a bounded number of
-generations is retained for rollback, and a generation is only dropped once a
-grace period has passed so in-flight reads finish. Tune with
-`CAO_COLLECT_RETAIN_GENERATIONS`; raise it to widen the rollback window at the
-cost of Redis memory. Redis capacity should be sized for the retained
-generation count, not for one copy of the dataset.
+Steady-state ingestion cost scales with retained evidence; unchanged artifact
+revisions may be skipped. Postgres stores only current entity sources and state,
+not staging or rollback generations. Size Postgres for current source rows and
+transactional replacement; size Redis separately for operational queues,
+sessions, and caches.
 
 The evidence lake is *many small per-repository shards*, so it is bound by file
 metadata operations rather than throughput. The lake share therefore defaults
@@ -819,10 +884,8 @@ Known limits, in the order they will be felt at scale:
   Go manifest validation. That is the structural ceiling on projection
   frequency, and it is why `CAO_COLLECT_PROJECTION_INTERVAL` defaults to five
   minutes rather than to seconds.
-- Redis is still an always-on cost, but it is now sized for retained key-value
-  data only. No Redis module is required, so the default Azure SKU is the
-  smallest `Balanced_B0` tier and operators can scale by retained-generation
-  memory rather than by RediSearch availability.
+- Redis is still an always-on operational cost. Size it for queues, sessions,
+  and caches. Size Postgres separately for current dashboard entity sources.
 - The Elastic Premium Function plan is always-on. It is sized for webhook
   admission, which is constant-time, so the smallest plan that meets the
   tenant's network requirements is the right one.
@@ -830,34 +893,39 @@ Known limits, in the order they will be felt at scale:
   KEDA scales on stream backlog, so an idle deployment pays for storage, Redis,
   and the Function plan only.
 
-## Redis model
+## Entity and operational storage
 
-Redis is a disposable query projection, not an authoritative data source.
-
-| Redis structure | Purpose |
-| --- | --- |
-| `<namespace>:active` | Active generation, monotonically increasing revision, artifact revision, evaluation time, activation time, and source counts. |
-| `<namespace>:active-generation` | Active generation pointer updated during atomic activation. |
-| `<namespace>:revision-sequence` | Revision counter used by atomic activation. |
-| `<namespace>:g:<generation>` | Source metadata and canonical diagnostics for one generation. |
-| `<namespace>:g:<generation>:source:<hash>:rows` | Set of row keys for one logical source. |
-| `<namespace>:g:<generation>:source:<hash>:row:<id>` | Hash containing the complete JSON row. |
-
-Source names and row identities are converted to deterministic hashes before
-becoming Redis key fragments. Complete row JSON remains available for bounded
-query-engine execution. Every key is scoped by `--redis-namespace`. The default
-is a stable
-`cao:checkout-<path-hash>` value derived from the absolute checkout/worktree
-path, so separate checkouts using Redis database 0 do not collide. Explicit
-values are normalized to a lowercase `cao:` namespace and reject Redis glob
-metacharacters.
+Postgres stores the current dashboard entity sources as native typed fields,
+alongside their metadata, canonical diagnostics, and one revision/evaluation
+state. An ingestion replaces these atomically: failed transactions leave the
+previous committed state untouched. There are no Postgres generations,
+projections, or snapshots.
+The editable representation is `spec/storage.tsp`; its emitter produces the
+standalone `internal/postgresx/schema.sql` and matching Go bindings.
+Eighteen entity tables retain query-consumed fields and identity/storage keys
+only. Scalars use native SQL types; timestamps are returned as UTC RFC3339
+strings. Nested scalar values are represented by generated columns in their
+owning entity tables. No canonical JSON/JSONB or serialized documents are
+stored, and canonical scalar rows are not copied into generic source/value
+tables.
+Startup only initializes this fresh schema. There is no old-layout detection,
+conversion, backfill, or backward-compatible import. Use a new database and
+re-ingest authoritative inputs when changing the physical contract.
+Redis remains namespaced operational storage for caches, queues, sessions, and
+it does not hold dashboard entity rows or query indexes.
+Neither store grants control-plane authority. Credentials stay server-side.
 
 ## Query execution
 
 The browser sends declarative query definitions and requested source names to
 `POST /api/v1/query`. The server validates the query graph and resource limits
 before loading data.
-
+The validated query dependency graph is compiled to SQL and executed in
+PostgreSQL. The Go server validates and binds the plan, enforces resource limits,
+and serializes bounded results; it does not filter, join, aggregate, compute,
+sort, or paginate rows. Missing/null, coercion, ordering, and resource semantics
+are enforced by the SQL compiler and query engine. Unsupported definitions fail
+closed rather than switching to another evaluator.
 Execution fails closed when a requested plan exceeds 16 dependency levels, 256
 derived queries, or 16 joins along one dependency path. Independent queries in a
 batch do not consume one another's structural join allowance. Runtime guards cap
@@ -871,19 +939,10 @@ input, join, output, and operator limits remain independently enforced.
 Expensive stages, including sorting, are charged against the operation budget
 before they allocate or run.
 
-For compatible base-source queries, the planner pushes work into Redis:
-
-- exact TAG and numeric/time-range filters;
-- full-text search over indexed text fields;
-- `count`, `distinct-count`, `sum`, `mean`, `min`, and `max` aggregation;
-- a single indexed sort;
-- result limits.
-
-Joins, computed fields, temporal-series projection, multi-field ordering,
-filtered or specialized reducers, and other unsupported pushdown shapes execute
-in bounded Go memory after Redis narrows the source. Query metrics report the
-pushed-down stages, Redis command count, Redis rows returned, fallback stages,
-and total duration.
+The SQL engine reads current native entity tables from PostgreSQL and evaluates
+Dashboard Language operators there. The Go server validates requests, binds
+parameters, enforces resource limits, and serializes bounded results; Redis is
+not a query backend.
 
 The engine rejects unsupported prediction queries and enforces limits on query
 definitions, joins, predicates, input rows, output rows, and total operations.
@@ -899,7 +958,7 @@ operator-managed certificate.
 The server injects:
 
 ```html
-<meta name="dashboard-data-backend" content="redis-http">
+<meta name="dashboard-data-backend" content="server-http">
 ```
 
 into the dashboard HTML. The browser then uses the server API instead of
@@ -907,13 +966,13 @@ IndexedDB ingestion:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/v1/health` | Public readiness exposes only Redis connectivity and data availability; capability-authenticated requests also receive generation/revision and source/row counts. |
-| `GET /api/health` | Public liveness; an empty Redis instance is healthy and reports `rebuildRequired`. |
-| `GET /api/readiness` | Public readiness; returns 503 until an active generation exists. |
+| `GET /api/v1/health` | Public readiness reports database dependency and data availability; capability-authenticated requests can receive revision and source/row counts. |
+| `GET /api/health` | Public health includes Redis and Postgres dependencies. |
+| `GET /api/readiness` | Public readiness; returns 503 until current Postgres data is available. |
 | `POST /api/v1/query` | Execute requested Dashboard Language queries and return bounded logical sources plus metrics. |
 | `POST /api/v1/refresh` | Return the current revision and authoritative evaluation time without ingesting data. |
-| `GET /api/v1/events` | Server-Sent Events stream that notifies active views when the Redis revision changes. |
-| `GET /api/v1/diagnostics` | Canonical schema counts, relationship errors, and duplicate IDs for the active generation. |
+| `GET /api/v1/events` | Server-Sent Events stream that notifies active views when the data revision changes. |
+| `GET /api/v1/diagnostics` | Canonical schema counts, relationship errors, and duplicate IDs from current Postgres data. |
 | `GET /api/v1/github-quota/usage` | Administrator-only GitHub API quota usage for the last 24 hours: the peak observed usage of each bucket (App, installation, resource) and the limit-weighted aggregate per 15-minute slot. The same data is the `github-quota-usage` runtime source behind the Ingestion page chart. No credentials are included. |
 | `GET /api/repositories` and `GET /api/repositories/:id` | Return canonical repository objects. |
 | `GET /api/repositories/:id/runs` and `GET /api/workflows/:id/runs` | Return related canonical runs. |
@@ -969,8 +1028,13 @@ is `specs/server-cors.md`.
 
 If the OAuth callback shows a sign-in error, select **Sign out and try again**.
 This attempts the existing CSRF-protected logout (including server-side token
-revocation), clears the pending OAuth state and the dashboard IndexedDB cache
-on the signed-out page, and then offers a fresh, explicit GitHub sign-in.
+revocation). The signed-out page clears CAO session, CSRF and OAuth state
+cookies and the dashboard IndexedDB cache, then offers an explicit sign-in
+that requests GitHub's account chooser. Every CAO login requests account
+selection, including login redirects after a failed session. CAO cannot clear
+GitHub's own cookies: if GitHub shows only the existing account's permission
+dialogue, use GitHub's profile menu to add or switch to another account,
+then retry sign-in.
 
 The older `{"error":"GitHub authorization failed"}` response corresponds to
 an authorization failure; current versions show a help page instead. This
@@ -1042,7 +1106,15 @@ rejected, concurrent, and failed rechecks from revoked, queued, or failed
 callback credential cleanup. No account, membership, token, cookie, or provider
 message is attached to these signals. The query engine and ingestion paths
 start dedicated `cao_dashboard.query.execute` and `cao_dashboard.ingest.run`
-spans. The GitHub API quota service (`internal/githubquota/`) starts
+spans. Every Postgres statement emits a child `cao_dashboard.postgres.query`
+client span and `cao_dashboard.postgres.query.count` (unit `{query}`) and
+`cao_dashboard.postgres.query.duration` (seconds) metrics. Duration measures
+statement execution after acquiring a connection, not pool wait or row
+decoding. Only fixed `db.operation.name` (`select`, `insert`, `update`,
+`delete`, `copy`, or `other`) and `cao_dashboard.postgres.outcome` (`success`
+or `error`) values are recorded; SQL, parameters, error messages, source
+names, and database connection details are excluded. Existing pgx tracers
+are preserved. The GitHub API quota service (`internal/githubquota/`) starts
 `cao_githubquota.<operation>` spans (`observe`, `commit`, `reserve`, `release`,
 `park`, `unpark`, `state`, `select`, `usage`) and records
 `cao_githubquota.operation.count` and `cao_githubquota.operation.duration`
@@ -1066,20 +1138,26 @@ continues an existing transport trace. MCP spans use trace context from
 `params._meta.traceparent` as their remote parent and link the ambient HTTP span. Every API
 response also echoes the active request's ids as `X-Trace-Id` / `X-Span-Id`
 headers for correlating a client-visible request with exported spans.
+JSON error responses repeat those identifiers as `traceId` and `spanId`, and
+the bounded server error log records the status plus the same identifiers.
+Browser error views show only the trace ID as a request ID; they do not expose
+span attributes, internal exceptions, query payloads, or storage details.
 
-Telemetry is configured entirely through the standard OpenTelemetry SDK
-environment variables. Traces and metrics are independently optional, and no
-exporter is started for a signal unless its endpoint is configured:
+Telemetry uses standard OpenTelemetry SDK environment variables for exporters,
+plus `CAO_OTEL_LOGS_ENABLED` for the additional log-export opt-in. Traces and
+metrics are independently optional; logs additionally require that opt-in:
 
 | Variable | Effect |
 | --- | --- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables both OTLP/HTTP exporters and sets their shared destination. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables trace and metric OTLP/HTTP exporters and sets their shared destination; also supplies the log destination when log export is enabled. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Enables the OTLP/HTTP trace exporter and sets its destination. Spans remain no-ops when neither this nor the shared endpoint is set. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Enables the OTLP/HTTP metric exporter and sets its destination. |
-| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS` | Authentication headers read directly by the corresponding OTLP exporter. Supply them through the deployment platform's secret manager; never place values in command-line arguments, checked-in configuration, or logs. |
+| `CAO_OTEL_LOGS_ENABLED` | Set to `true` to export `DEBUG`-selected server log namespaces when a log endpoint is configured. Stderr behavior is unchanged. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Log-specific OTLP/HTTP destination; takes priority over the shared endpoint and includes the complete `/v1/logs` path. |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_EXPORTER_OTLP_METRICS_HEADERS`, `OTEL_EXPORTER_OTLP_LOGS_HEADERS` | Authentication headers read directly by the corresponding OTLP exporter. Supply them through the deployment platform's secret manager; never place values in command-line arguments, checked-in configuration, or logs. |
 | `OTEL_SERVICE_NAME` | Overrides the default `cao-dashboard` `service.name` resource attribute. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds deployment-selected resource attributes; only configure reviewed, non-identifying values. Hostname detection is not enabled by default. |
-| `OTEL_SDK_DISABLED` | Set to `true` to keep both providers as no-ops even when endpoints are configured. |
+| `OTEL_SDK_DISABLED` | Set to `true` to keep all providers as no-ops even when endpoints are configured. |
 
 There is no Azure-specific exporter linked into the binary. To ship telemetry to
 Application Insights, point `OTEL_EXPORTER_OTLP_ENDPOINT` at an OpenTelemetry
@@ -1105,7 +1183,7 @@ the Function App itself never imports an Azure Monitor SDK.
 - Every other remote Redis connection requires `rediss://`, standard
   certificate-chain and hostname verification, and TLS 1.2 or newer. Azure
   always requires this path. There is no insecure skip-verification option.
-- Redis namespaces isolate this server's keys and indexes, but are not a
+- Redis namespaces isolate this server's operational keys, but are not a
   substitute for dedicated Redis credentials with narrow ACL key patterns or a
   dedicated Redis database or instance.
 - The HTTP(S) server sets content-type, frame, referrer, permissions, and
@@ -1115,12 +1193,12 @@ the Function App itself never imports an Azure Monitor SDK.
 - Deployed artifact paths and SHA-256 hashes are validated before parsing.
 - Static files are served only from the configured built-site directory, with
   SPA fallback to that directory's `index.html`.
-- Missing Redis, data, manifests, shards, projections, or diagnostics fail
+- Missing Redis, Postgres data, manifests, shards, or diagnostics fail
   closed.
 
 The local capability profile is not suitable for remote or multi-user
 deployment. The capability authorizes its holder to read the full active
-dashboard generation; it provides no user identity or per-source authorization.
+dashboard data; it provides no user identity or per-source authorization.
 
 The Azure Functions profile is the experimental remote profile. It is enabled
 by calling `NewAzureFunctionsHandlerFromEnv`; `serve` does not enable it. Azure
@@ -1166,20 +1244,20 @@ scale in, or terminate long-running requests. Cold starts rebuild the Go app
 from app settings and check Redis before serving requests.
 Request cancellation propagates through `request.Context()` to Redis queries.
 
-The Bicep deployment in `server/azure/main.bicep` provisions a Function App,
-Key Vault, Application Insights, storage, and module-free Azure Managed Redis.
+The bootstrap and main Bicep deployments under `server/azure/` provision Key
+Vault first, then a Function App, private PostgreSQL Flexible Server, private
+Azure Managed Redis, virtual network and DNS resources, Application Insights,
+storage, and a private Container Apps ingestion job.
 Every secret-bearing app setting—including Functions runtime storage—uses a
 versionless Key Vault reference so ordinary credential rotation
-does not require rewriting application configuration. Session-key rotation uses
-the optional secure `previousSessionSecret` deployment parameter: deploy the old
-key as previous and the new key as current, wait for active sessions and queued
-revocations to drain, then remove the previous key. Encrypted records carry a
-key identifier, and the server can read both keys during that window. The
-template outputs only non-secret host names, redirect URI, Redis database name,
-and Key Vault URI. Redis access keys
-are an unavoidable path for Azure Managed Redis client authentication today;
-store the `rediss://` URL in Key Vault, rotate the Redis key in Azure, publish a
-new Key Vault secret version, and allow the platform to refresh the reference.
+does not require rewriting application configuration. The main deployment reads
+the PostgreSQL administrator password from Key Vault, creates the database URL
+there, and creates the Redis URL from the deployed database key without
+outputting either value. Session-key rotation can temporarily enable the
+versionless `cao-session-secret-previous` reference while active sessions and
+queued revocations drain. Encrypted records carry a key identifier, and the
+server can read both keys during that window. Template outputs contain only
+non-secret resource names, host names, and redirect information.
 
 ### Azure secure-computing baseline
 
@@ -1198,7 +1276,7 @@ hosting:
 - Keep HTTPS-only Functions, TLS-only Redis, disabled FTPS, disabled Redis
   public network access, storage HTTPS enforcement, Key Vault soft delete, and
   non-secret Bicep outputs enabled for compliance review.
-- Treat the Redis projection as disposable derived state. Compliance evidence
+- Treat the Postgres entity store as rebuildable from authoritative inputs. Compliance evidence
   comes from the checked-in Bicep, GitHub OAuth authorization policy, Key Vault
   access controls, Azure activity logs, Application Insights without secrets,
   and the CAO source artifacts that feed Redis.
@@ -1242,6 +1320,53 @@ go -C server run ./cmd/cao-dashboard ingest \
 
 go -C server run ./cmd/cao-dashboard serve
 ```
+
+To inspect local traces and metrics, start the optional
+[OpenObserve self-hosted instance](https://openobserve.ai/docs/getting-started/)
+on `http://127.0.0.1:5080` via the separate `server/otel-compose.yml`.
+It is not started by the Redis/Postgres Compose stack.
+Set an email and a locally held password (8–128 characters with uppercase,
+lowercase, digit, and special characters) before its first startup
+(do not commit them or put them in command-line arguments):
+
+```bash
+read -rp 'OpenObserve email: ' CAO_LOCAL_OTEL_EMAIL
+read -rsp 'OpenObserve password: ' CAO_LOCAL_OTEL_PASSWORD; echo
+export CAO_LOCAL_OTEL_EMAIL CAO_LOCAL_OTEL_PASSWORD
+npm run dashboard:server:otel-up
+```
+
+In the same shell, configure the Go server's OTLP/HTTP exporters before
+running `serve` or `ingest`. OpenObserve requires Basic authentication and
+uses signal-specific endpoints; the shared base OTLP endpoint would append
+the wrong paths. The credentials are needed again after a restart to export
+telemetry, even though OpenObserve only uses them for account creation on
+first startup.
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:5080/api/default/v1/traces
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://127.0.0.1:5080/api/default/v1/metrics
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf '%s' "$CAO_LOCAL_OTEL_EMAIL:$CAO_LOCAL_OTEL_PASSWORD" | base64 | tr -d '\n')"
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=local
+go -C server run ./cmd/cao-dashboard serve
+```
+
+To exercise both exporters from the local Go server integration test (after
+starting OpenObserve and setting the variables above in the same shell):
+
+```bash
+CAO_LOCAL_OTEL_INTEGRATION=1 go -C server test ./internal/telemetry -run '^TestLocalOpenObserveExport$' -count=1
+```
+
+The test skips during ordinary `go test ./...` runs; when enabled it fails if
+either the trace or metric export is rejected or unreachable.
+
+Sign in to OpenObserve with the same credentials and select the `default`
+organization. The local instance stores data in the `openobserve-data` Docker
+volume; `docker-compose -f server/otel-compose.yml down` stops it without
+deleting that volume. Do not use `down -v` unless you intend to erase its data.
+For hosted deployments, supply exporter authentication through the deployment
+secret manager instead of exporting it from an interactive shell.
 
 `serve` prints a capability URL such as:
 

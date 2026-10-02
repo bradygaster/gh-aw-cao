@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 )
 
 func TestRepositoryMemoryHandlers(t *testing.T) {
+	database := integrationDatabase(t)
 	content := []byte("# Context\n")
 	sum := sha256.Sum256(content)
 	manifest, err := json.Marshal(repositorymemory.Manifest{
@@ -34,8 +37,8 @@ func TestRepositoryMemoryHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &repositoryMemoryClient{manifest: manifest, content: content}
-	app := &App{store: redisx.NewStore(client, "test")}
+	directory := repositoryMemoryArtifact(t, manifest, "security-review/notes/context.md", content)
+	app := &App{database: database, config: Config{SourceDirectory: directory}}
 
 	list := httptest.NewRecorder()
 	listRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/memory/security-review", nil)
@@ -58,8 +61,10 @@ func TestRepositoryMemoryHandlers(t *testing.T) {
 }
 
 func TestRepositoryMemoryHandlersRejectInvalidAndMissingRequests(t *testing.T) {
+	database := integrationDatabase(t)
 	manifest := []byte(`{"version":1,"campaigns":[]}`)
-	app := &App{store: redisx.NewStore(&repositoryMemoryClient{manifest: manifest}, "test")}
+	directory := repositoryMemoryArtifact(t, manifest, "", nil)
+	app := &App{database: database, config: Config{SourceDirectory: directory}}
 
 	invalid := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/memory/INVALID", nil)
@@ -79,11 +84,13 @@ func TestRepositoryMemoryHandlersRejectInvalidAndMissingRequests(t *testing.T) {
 }
 
 func TestRepositoryMemoryHandlerReportsConcurrentRefresh(t *testing.T) {
-	store := redisx.NewStore(
-		&repositoryMemoryClient{manifest: []byte(`{"version":1,"campaigns":[]}`)}, "test")
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
+	store := redisx.NewStore(&repositoryMemoryClient{}, "test")
 	app := &App{
-		store:  store,
-		memory: &repositorymemory.RemoteResolver{Cache: store},
+		store:    store,
+		database: database,
+		memory:   &repositorymemory.RemoteResolver{Cache: store},
 	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/memory/example", nil)
@@ -144,6 +151,7 @@ func TestRepositoryMemoryIntegrityFailureIsCaseInsensitiveForSHA256(t *testing.T
 }
 
 func TestRepositoryMemoryContentRejectsIntegrityFailure(t *testing.T) {
+	database := integrationDatabase(t)
 	content := []byte("# Context\n")
 	manifest, err := json.Marshal(repositorymemory.Manifest{
 		Version: 1,
@@ -162,8 +170,8 @@ func TestRepositoryMemoryContentRejectsIntegrityFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &repositoryMemoryClient{manifest: manifest, content: content}
-	app := &App{store: redisx.NewStore(client, "test")}
+	directory := repositoryMemoryArtifact(t, manifest, "security-review/notes/context.md", content)
+	app := &App{database: database, config: Config{SourceDirectory: directory}}
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequestWithContext(
@@ -178,33 +186,38 @@ func TestRepositoryMemoryContentRejectsIntegrityFailure(t *testing.T) {
 }
 
 type repositoryMemoryClient struct {
-	manifest []byte
-	content  []byte
 }
 
 func (c *repositoryMemoryClient) Do(_ context.Context, arguments ...string) (any, error) {
-	switch arguments[0] {
-	case "HGETALL":
-		return []any{
-			"generation", "g1",
-			"revision", "1",
-			"counts", "{}",
-			"activatedAt", "2026-01-01T00:00:00Z",
-			"evaluatedAt", "2026-01-01T00:00:00Z",
-		}, nil
-	case "HGET":
-		if strings.HasSuffix(arguments[2], "manifest") {
-			return string(c.manifest), nil
-		}
-		if len(c.content) == 0 {
-			return nil, nil
-		}
-		return string(c.content), nil
-	default:
-		return nil, nil
-	}
+	return nil, nil
 }
 
 func (*repositoryMemoryClient) DoMany(context.Context, [][]string) ([]any, error) {
 	return nil, nil
+}
+
+func repositoryMemoryArtifact(t *testing.T, manifest []byte, fileID string, content []byte) string {
+	t.Helper()
+	directory, err := os.MkdirTemp(".", "memory-artifact-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	root := filepath.Join(directory, "memory")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if fileID != "" {
+		path := filepath.Join(root, filepath.FromSlash(fileID))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return directory
 }

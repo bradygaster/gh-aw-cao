@@ -101,6 +101,10 @@ Run the same read-only validator locally and in CI:
 
 Validation checks the policy with the production resolver, the installed gh-aw compiler version, strict compilation and generated workflow drift, campaign workflow identity and enablement, `gh aw doctor`, and bounded trust-boundary security rules. GitHub workflow state is reported as unknown when API access is unavailable. Warnings do not fail by default; use `--strict-warnings` to make them fail.
 
+Strict compilation runs against a committed temporary snapshot of the current
+workflow files. Normal uncommitted local edits are still validated, but they do
+not produce an unrelated dirty-working-tree warning from `gh aw`.
+
 Exit code `0` means no validation errors, `1` means validation findings failed the requested threshold, and `2` means the validator itself could not complete. Validation never rewrites workflow artifacts; run `npm run compile:locks` to regenerate stale locks.
 
 ## Run and Watch a Campaign
@@ -113,6 +117,15 @@ gh aw run CAMPAIGN --ref BRANCH \
   --raw-field max_repos="1" \
   --raw-field rollout_percent="100" \
   --raw-field safe_output_mode="review"
+```
+
+CAO Activity and CAO Dashboard are conventional GitHub Actions workflows, not
+Agentic Workflows, so operate them with GitHub CLI instead of `gh aw`:
+
+```bash
+gh workflow run cao-activity.yml
+gh run list --workflow cao-activity.yml
+gh run list --workflow cao-dashboard.yml
 ```
 
 Then use GitHub CLI to find and watch the orchestrator:
@@ -145,6 +158,8 @@ Use the gh-like query surface for common questions:
 Check runtime health or query canonical records:
 
 ```bash
+./cao.sh computation intelligence
+./cao.sh computation intelligence --campaign dependabot --previous prior-intelligence.json --feedback decision-feedback.json
 ./cao.sh computation runtime-health --campaign dependabot
 ./cao.sh computation runtime-health --campaign dependabot --diagnose
 
@@ -153,6 +168,44 @@ Check runtime health or query canonical records:
   --where conclusion=failure \
   --limit 20
 ```
+
+For the computation model and result semantics, see
+[Intelligence](intelligence.md),
+[Runtime Health Computation](computation-runtime-health.md), and
+[Portfolio Intelligence Computation](computation-intelligence.md).
+
+The `intelligence` computation fingerprints canonical runtime-health evidence,
+correlates matching failure signals, suppresses ineligible or recovering
+candidates, and emits advisory Decisions. It never dispatches workers or grants
+execution authority. Passing a prior result with `--previous` reuses unchanged
+nonterminal Decisions. A versioned `--feedback` file binds dispositions to a
+Decision ID and input fingerprint; unchanged terminal Decisions are suppressed,
+while stale feedback remains inspectable and cannot affect changed evidence.
+
+The result also includes partial Campaign intelligence contracts compiled from
+declared canonical inventory. Undeclared problem, outcome, schedule, overlap,
+attention, and operational-value fields remain `null`; descriptions and READMEs
+are not reinterpreted as those contracts.
+
+Feedback uses this shape:
+
+```json
+{
+  "contractVersion": "1.0.0",
+  "records": [{
+    "decisionId": "runtime-health-decision:...",
+    "inputFingerprint": "sha256:...",
+    "disposition": "deferred",
+    "observedAt": "2026-10-01T11:00:00Z",
+    "actor": "operator:octocat",
+    "authority": "control-repository-review"
+  }]
+}
+```
+
+Allowed dispositions are `accepted`, `rejected`, `deferred`, `superseded`,
+`recovered`, `expired`, and `unresolved`. Feedback never grants execution
+authority.
 
 Render a named dashboard query as an editable agent prompt with the same template as the UI:
 

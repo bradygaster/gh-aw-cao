@@ -52,11 +52,26 @@ Repository
 ```
 
 The static deployment SHALL maintain this canonical model in IndexedDB. The
-local server profile SHALL maintain an equivalent disposable generation in
-Redis and SHALL execute dashboard queries in its Go HTTP(S) server.
+Go server profile SHALL transactionally replace current dashboard sources in
+Postgres and SHALL execute Dashboard Language queries server-side. Redis SHALL
+hold only operational caches, queues, and sessions, not dashboard entities.
 
-IndexedDB and Redis generations SHALL be treated exclusively as disposable,
-reconstructable, derived state and MUST NOT become authoritative storage.
+The Go query boundary MAY cache expensive queries with compact output in Redis
+using cache-aside lookup by a query ETag (SHA-256 of the query contract, parameters,
+pagination, schema version, and current authorization class). It MUST NOT key
+these results by ingestion revision or invalidate them on ingestion or data
+egress. Results SHALL expire five minutes after admission, without sliding
+renewal; their original evidence revision and evaluation time MUST remain
+visible. Cache hits MUST NOT imply newly evaluated evidence or charge the
+original execution's query-plan work. Admission MUST bound each encoded result,
+total Redis result/index memory, and entry count, retiring expired and then
+oldest entries atomically. Current authentication and authorization MUST still
+be enforced before cache lookup. Canonical entity APIs and readiness probes
+MUST NOT use this result cache. Query ETags identify internal cache entries;
+they do not change the HTTP query response contract.
+
+IndexedDB and Postgres dashboard sources SHALL be reconstructable from
+authoritative inputs and MUST NOT become authoritative evidence storage.
 
 Domain records SHALL contain allowed and blocked firewall observations. Tool
 records SHALL contain MCP, Bash, and skill calls, with skills identified as a
@@ -251,8 +266,9 @@ flowchart LR
   sqlite --> cli["CLI"]
   source --> indexeddb["IndexedDB<br/>browser"]
   indexeddb --> views["Dashboard views"]
-  source --> redis["Redis<br/>local server"]
-  redis --> go["Go HTTP(S) query server"]
+  source --> postgres["Postgres<br/>hosted dashboard sources"]
+  postgres --> go["Go HTTP(S) query server"]
+  redis["Redis<br/>operational state"] --> go
   go --> views
 ```
 
@@ -315,15 +331,15 @@ The implementation profile defined by this specification is:
 
 | Layer | Version | Physical structure |
 | --- | ---: | --- |
-| Canonical model | 24 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
-| Browser IndexedDB | 32 | Eighteen canonical entity stores, `transactions`, `dailyOverviewAggregates`, and `overviewAggregateMetadata` |
-| Local SQLite projection | IndexedDB 32 | `__idb_databases`, `__idb_stores`, `__idb_indexes`, and `__idb_records` for the same logical stores, plus six transactional relational evidence mirrors |
-| Local Redis server projection | Canonical model 14 | Immutable active generation of logical-source row sets, queried only through the loopback Go HTTP(S) server |
+| Canonical model | 25 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
+| Browser IndexedDB | 33 | Eighteen canonical entity stores, `transactions`, `dailyOverviewAggregates`, and `overviewAggregateMetadata` |
+| Local SQLite projection | IndexedDB 33 | `__idb_databases`, `__idb_stores`, `__idb_indexes`, and `__idb_records` for the same logical stores, plus six transactional relational evidence mirrors |
+| Go server Postgres sources | Canonical model 14 | Eighteen fresh TypeSpec-defined entity tables with query-required native columns, compact presence bits, entity-owned relational child values, and transactional diagnostics/revision state; no stored JSON documents or duplicate scalar row formats |
 | Static SQL export | 3 | Versioned JSON interchange produced from upstream SQL tables or views |
 
-## 5.2 Local Redis server profile
+## 5.2 Go server profile
 
-The local Redis profile SHALL be implemented independently of the existing
+The Go server profile SHALL be implemented independently of the existing
 Node.js dashboard preview server. It SHALL:
 
 * ingest `inventory-sources.json`, `payload-hashes.json`, and compacted
@@ -331,18 +347,30 @@ Node.js dashboard preview server. It SHALL:
   dashboard artifact;
 * verify every manifested shard hash and require run-information shards before
   activating a new generation;
-* activate a complete Redis generation atomically and preserve the prior active
-  generation when ingestion fails;
+* replace current Postgres sources, diagnostics, and revision atomically and
+  preserve the prior committed state when ingestion fails, without persistent
+  generations;
+* initialize the fresh physical schema defined by `server/spec/storage.tsp`
+  and emitted as `server/internal/postgresx/schema.sql`; preserve only fields
+  consumed by declared queries plus identity/storage keys, use native SQL
+  scalar types and relational child values, and never persist JSON/JSONB or
+  serialized canonical row documents;
+* provide no legacy conversion, backfill, old-layout import, or dual-format
+  canonical storage path; incompatible database layouts require a fresh
+  database rebuilt from authoritative deployed inputs;
 * serve the built dashboard and its query API over HTTP on loopback by default,
   or HTTPS only when the operator provides a certificate and key;
-* keep the Redis URL and any Redis credentials exclusively in the Go process;
-* execute Dashboard Language queries on the server against Redis row sets using
-  the same bounded Go query engine as unsupported dashboard stages;
-* keep active browser views subscribed to generation changes and return fresh,
+* keep Postgres and Redis credentials exclusively in the Go process; use Redis
+  for operational state only;
+* validate Dashboard Language before executing proven equivalent, bounded,
+  parameterized SQL plans in a repeatable-read Postgres transaction; evaluate
+  unsupported shapes in the bounded Go query engine without exposing raw SQL;
+* keep active browser views subscribed to revision changes and return fresh,
   bounded query payloads after successful ingestion.
 
-This profile is for local testing. Remote exposure, GitHub authentication, live
-GitHub querying, and webhook-driven ingestion are outside this version.
+The default local profile is loopback-only. The separate hosted profile requires
+GitHub OAuth and explicit organization/team authorization; neither profile
+grants database access to clients.
 
 `gh-aw-cao-dashboard-data` is the logical database name. Every implemented
 store uses `id` as its key path. The implemented secondary indexes are:
@@ -416,6 +444,17 @@ starter campaign. `campaign-update-state` MUST be `update-available`,
 normalize to `unknown`. The campaign slug remains the stable identity, and a
 refresh MUST enrich the existing Campaign record rather than create a
 version-specific Campaign.
+
+Campaign inventory inputs MAY also report a normalized
+`campaign-intelligence-declaration` object from the Campaign-owned
+`.github/cao/intelligence/<campaign>.json` materialized declaration. The canonical
+Campaign record MUST preserve that envelope as `intelligenceDeclaration`
+without reinterpreting Campaign descriptions, READMEs, workflow execution, or
+policy as semantic declarations. The database projection MUST return the same
+object without field loss. A malformed, mismatched, unsupported, or conflicting
+declaration MUST fail inventory construction closed. The declaration is
+descriptive evidence and MUST NOT grant rollout, target, credential, tool, or
+write authority.
 
 Workflow inventory inputs SHALL continue to report `gh-aw-version`,
 `gh-aw-current-version`, and `gh-aw-update-state` as compiler evidence.
@@ -1818,7 +1857,7 @@ The canonical browser database SHALL use:
 
 ```js
 const DATABASE_NAME = "gh-aw-cao-dashboard-data";
-const DATABASE_VERSION = 32;
+const DATABASE_VERSION = 33;
 ```
 
 The name MAY be scoped by deployment path to prevent unrelated dashboard
@@ -1830,7 +1869,7 @@ rows.
 
 # 27. Object Stores
 
-IndexedDB version 32 SHALL define:
+IndexedDB version 33 SHALL define:
 
 ```text
 campaigns
@@ -1894,7 +1933,7 @@ conclusion
 
 The generation-ordered runtime-computation indexes described by Section 73 are
 reserved for the physical version that implements the computation projection.
-They are not part of IndexedDB version 32. That implementation MUST increment
+They are not part of IndexedDB version 33. That implementation MUST increment
 the physical version and update Section 5.1 before relying on those indexes.
 
 ### run-linked tables

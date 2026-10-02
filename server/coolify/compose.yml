@@ -14,7 +14,7 @@ services:
       - --site
       - /app/site
       - --dashboard-queries
-      - /app/dashboard.json
+      - /app/agent/queries.json
       - --database-queries
       - /app/queries/database.json
       - --mcp-enabled
@@ -23,23 +23,37 @@ services:
       - --mcp-contract
       - /app/agent/mcp-contract.json
     environment:
+      CAO_POSTGRES_URL: ${CAO_POSTGRES_URL:?Configure the PostgreSQL connection URL}
       REDIS_URL: ${REDIS_URL:-}
       REDIS_NAMESPACE: ${REDIS_NAMESPACE:-coolify-dashboard}
       CAO_POLICY_PATH: /app/.github/workflows/cao.coolify.json
       CAO_ALLOWED_HOSTS: ${CAO_ALLOWED_HOSTS:?Configure the public dashboard host}
       CAO_TRUSTED_PROXY_CIDRS: ${CAO_TRUSTED_PROXY_CIDRS:?Configure the exact Coolify proxy network CIDR}
       CAO_GITHUB_CLIENT_ID: ${CAO_GITHUB_CLIENT_ID:?Configure the GitHub OAuth client ID}
-      CAO_GITHUB_CLIENT_SECRET: ${CAO_GITHUB_CLIENT_SECRET:?Configure the GitHub OAuth client secret}
+      CAO_GITHUB_CLIENT_SECRET: ${CAO_GITHUB_CLIENT_SECRET_ROTATED:-}
       CAO_GITHUB_REDIRECT_URL: ${CAO_GITHUB_REDIRECT_URL:?Configure the OAuth callback URL}
-      CAO_SESSION_SECRET: ${CAO_SESSION_SECRET:?Configure the session secret}
+      CAO_SESSION_SECRET: ${CAO_SESSION_SECRET_ROTATED:-}
       CAO_SESSION_SECRET_PREVIOUS: ${CAO_SESSION_SECRET_PREVIOUS:-}
       CAO_GITHUB_ALLOWED_ORGS: ${CAO_GITHUB_ALLOWED_ORGS:-}
       CAO_GITHUB_ALLOWED_TEAMS: ${CAO_GITHUB_ALLOWED_TEAMS:-}
       CAO_GITHUB_ADMIN_USERS: ${CAO_GITHUB_ADMIN_USERS:?Configure at least one administrator}
-      CAO_GITHUB_WEBHOOK_SECRET: ${CAO_GITHUB_WEBHOOK_SECRET:?Configure the webhook secret}
+      CAO_GITHUB_WEBHOOK_SECRET: ${CAO_GITHUB_WEBHOOK_SECRET_ROTATED:-}
       CAO_MCP_ACTIONS_REPOSITORY: ${CAO_MCP_ACTIONS_REPOSITORY:?Configure the GitHub repository selected as this Coolify resource's source}
       CAO_SOURCE_DIRECTORY: /app/source
       CAO_BUILD_VERSION: ${SOURCE_COMMIT:-unknown}
+      DEBUG: ${DEBUG:-cao:server,cao:query,cao:ingest,cao:telemetry}
+      CAO_OTEL_LOGS_ENABLED: ${CAO_OTEL_LOGS_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: ${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${OTEL_EXPORTER_OTLP_TRACES_HEADERS:-}
+      OTEL_EXPORTER_OTLP_METRICS_HEADERS: ${OTEL_EXPORTER_OTLP_METRICS_HEADERS:-}
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: ${OTEL_EXPORTER_OTLP_LOGS_HEADERS:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-cao-dashboard}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment.name=production}
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
     expose:
       - "8080"
     healthcheck:

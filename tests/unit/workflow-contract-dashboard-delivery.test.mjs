@@ -264,6 +264,7 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.match(activityWorkflow, /REPORT_RUN_WINDOW_DAYS: "30"/);
   assert.doesNotMatch(dashboardWorkflow, /workflow_call:|cao-dashboard-build|dispatch-workflow/);
   assert.match(dashboardWorkflow, /workflow_dispatch:/);
+  assert.match(dashboardWorkflow, /workflow_run:[\s\S]*?workflows:[\s\S]*?- CAO Activity[\s\S]*?types:[\s\S]*?- completed/);
   assert.doesNotMatch(dashboardWorkflow, /DISPATCH_WORKFLOW: activity\.yml|Dispatch activity refresh|inputs\.mode/);
   assert.match(dashboardBuildJob, /actions: read[\s\S]*?contents: read/);
   assert.match(dashboardWorkflow, /Restore collected activity data[\s\S]*?id: activity-cache[\s\S]*?actions\/cache\/restore@[0-9a-f]{40}[\s\S]*?restore-keys: \|[\s\S]*?cao-activity-v5-/);
@@ -290,6 +291,7 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.match(activityCollectJob, /secrets\[fromJSON\(vars\.GH_AW_GITHUB_READ_PAT_REPOSITORIES \|\| '\{\}'\)\[matrix\.credentialRepository\]\]/);
   assert.doesNotMatch(activityCollectJob, /GH_AW_GITHUB_READ_PAT \|\||GH_AW_GITHUB_TOKEN \|\||\|\| github\.token/);
   assert.match(activityIndexJob, /Fetch repository memory refs into a separate checkout[\s\S]*?path: cao-memory-source[\s\S]*?fetch-depth: 0[\s\S]*?persist-credentials: false/);
+  assert.match(activityIndexJob, /const directFragment = path\.join\(root, "inventory-sources\.json"\)[\s\S]*?existsSync\(directFragment\)[\s\S]*?No owner-scoped inventory fragments were downloaded/);
   assert.match(activityIndexJob, /Collect campaign repository memory[\s\S]*?activity\/repository-memory\.mjs[\s\S]*?cao-memory-source[\s\S]*?cao-activity\/memory/);
   assert.match(repositoryMemory, /for-each-ref[\s\S]*?MEMORY_REF_PREFIX/);
   assert.match(repositoryMemory, /ls-tree[\s\S]*?cat-file/);
@@ -364,8 +366,7 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.doesNotMatch(dashboardNotifyFailureJob, /cancelled/);
   assert.match(dashboardWorkflow, /name: CAO Dashboard/);
   assert.match(dashboardWorkflow, /workflow_dispatch:[\s\S]*?push:[\s\S]*?\.github\/workflows\/cao\.json[\s\S]*?dashboard\/\*\*/);
-  assert.doesNotMatch(dashboardWorkflow, /workflow_run:/);
-  assert.doesNotMatch(dashboardWorkflow, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(dashboardWorkflow, /github\.event_name == 'workflow_run'[\s\S]*?github\.event\.workflow_run\.conclusion == 'success'[\s\S]*?github\.event\.workflow_run\.head_branch == github\.event\.repository\.default_branch/);
   assert.doesNotMatch(dashboardWorkflow, /\.github\/aw\/dashboards|\.github\/aw\/dashboard/);
   assert.match(dashboardWorkflow, /"\*\/dashboard\.json"/);
   assert.match(dashboardWorkflow, /github\.event_name == 'push' && github\.ref_name == github\.event\.repository\.default_branch/);
@@ -616,6 +617,19 @@ test("mobile dashboard integration downloads deployed dashboard data", () => {
   }
   assert.doesNotMatch(workflow, /actions\/cache|cao-dashboard-/);
   assert.doesNotMatch(workflow, /GH_TOKEN:/);
+});
+
+test("deployed integration rejects a stale hosted dashboard backfill", () => {
+  const workflow = readFileSync(join(root, ".github", "workflows", "dashboard-deployed-integration.yml"), "utf8");
+  const backfillTest = readFileSync(join(root, "tests", "integration", "dashboard-hosted-backfill.test.mjs"), "utf8");
+
+  assert.match(workflow, /Test hosted dashboard backfill freshness[\s\S]*?node --test tests\/integration\/dashboard-hosted-backfill\.test\.mjs/);
+  assert.match(workflow, /steps\.backfill\.outcome == 'failure' \|\| steps\.test\.outcome == 'failure'/);
+  assert.match(backfillTest, /https:\/\/cao\.githubnext\.com\/api\/v1\/health/);
+  assert.match(backfillTest, /https:\/\/githubnext\.github\.io\/gh-aw-cao\/cao\/agent-summary\.json/);
+  assert.match(backfillTest, /HOSTED_BACKFILL_MAX_LAG_MINUTES/);
+  assert.match(backfillTest, /hostedEvaluatedAt/);
+  assert.match(backfillTest, /publishedGeneratedAt/);
 });
 
 test("Documentation site uses stock Starlight without external themes", () => {

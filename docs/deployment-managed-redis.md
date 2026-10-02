@@ -1,6 +1,6 @@
 ---
 title: Managed Redis in one minute
-description: Connect the hosted CAO dashboard to AWS ElastiCache, Redis Cloud, GCP Memorystore, Railway, Render, or DigitalOcean.
+description: Connect operational Redis alongside Postgres dashboard entity storage on a hosted CAO dashboard.
 sidebar:
   order: 1325
 ---
@@ -12,6 +12,11 @@ The hosted server reads non-secret host capabilities from
 variables. Redis provider modules only select conventional environment-variable names
 and consistency constraints;
 they do not add provider SDKs or weaken TLS verification.
+Configure a Postgres connection separately for current dashboard entity storage
+and queries. Redis supports operational caches, queues, and sessions; the
+server does not store dashboard entities, RediSearch
+indexes, or generations in Redis. Postgres replacements are transactional and
+have no generations, projections, or snapshots.
 To keep hosting settings separate from rollout policy, you can instead use a
 reviewed [deployment-specific host extension](configuration.md#deployment-specific-host-extensions).
 
@@ -130,20 +135,98 @@ compatible Redis module:
 }
 ```
 
-Azure Functions can use the same Redis modules without changing its listener
-adapter:
+The Azure reference deployment pairs the Azure Functions listener with its
+fixed Azure Managed Redis module. The module uses `CAO_REDIS_URL`, preserves
+pooled semantics and collection support, and cannot disable TLS:
 
 ```json
 {
   "target": { "module": "azure-functions" },
-  "redis": { "module": "gcp-memorystore", "tls": { "mode": "required" } }
+  "redis": {
+    "module": "azure-managed-redis",
+    "url-env": "CAO_REDIS_URL",
+    "namespace-env": "CAO_REDIS_NAMESPACE",
+    "tls": { "mode": "required" }
+  }
 }
 ```
+
+Azure Functions can also compose with another compatible reviewed Redis module
+without changing its listener adapter.
 
 Local development remains the `cao-dashboard serve` example with loopback Redis;
 the `local` Redis module describes its ordinary pooled semantics. Upstash pairs
 the `container` target with the constrained `upstash` Redis module; see the
 [Upstash deployment guide](deployment-upstash.md).
+
+## Bounded query-result caching
+
+HTTP and MCP queries share a Redis cache-aside layer. Queries taking at least
+100 ms are admitted only when their output fits both a conservative in-memory
+size preflight and the compact JSON byte limit. Defaults are **1 MiB per result**,
+**64 MiB total**, and **1,024 entries**. Set
+`CAO_QUERY_CACHE_MAX_RESULT_BYTES` and `CAO_QUERY_CACHE_MAX_BYTES` to positive byte
+counts before starting any server profile; the per-result limit cannot exceed
+the total. Go embedders can additionally use `server.Config.QueryCache` to
+disable caching or adjust the minimum execution duration.
+Set `CAO_QUERY_CACHE_DISABLED=true` to disable result caching at startup without
+changing application code. This emergency switch does not disable Redis-backed
+authentication, request limits, or other operational dependencies. Invalid
+switch values fail startup. Cache debug logs report the effective admission
+threshold and limits at startup.
+
+Query ETags are SHA-256 hashes of definitions, parameters, pagination, schema version, and
+authorization class, but not data revisions. Cached evidence keeps its original
+revision and evaluation time for a fixed **five-minute TTL**. Ingestion, rebuilds,
+and result reads do not invalidate or renew entries. Readiness and canonical
+entity APIs remain uncached. ETags index the internal result cache; the HTTP
+query response contract is unchanged.
+
+A namespaced Redis hash holds only bounded result documents, with a sorted-set
+expiry index using Redis server time. One Lua operation prunes expired entries
+and evicts the oldest admissions until `MEMORY USAGE` for both keys is within
+the budget. Budget reductions evict proportional oldest-first batches and
+remeasure actual allocation, avoiding a full hash/index memory scan after every
+individual eviction. Both keys also expire after five minutes without new admissions.
+This bounds live result and index allocation, including metadata; it is not a
+limit on Redis process overhead or other operational state. No global
+`maxmemory` or eviction policy is changed, and session/queue keys are untouched.
+Partial key eviction discards the remaining cache structure rather than losing
+its accounting. Redis errors surface as a query 503, never as empty results or
+an unbounded local-cache fallback.
+Restricted Redis ACLs must allow the cache's `EVAL` and the commands called by
+its script: `TIME`, `EXISTS`, `DEL`, `MEMORY USAGE`, `HGET`, `HSET`, `HDEL`,
+`HSTRLEN`, `HEXISTS`, `ZADD`, `ZREM`, `ZRANGE`, `ZRANGEBYSCORE`, `ZSCORE`,
+`ZCARD`, and `PEXPIRE`, scoped to the application namespace.
+
+Enable cache debug logs with `DEBUG=cao:server:query-cache` (or
+`DEBUG=cao:server:*`). Logs contain only fixed decisions, timings, byte counts,
+entry counts, expiry, and eviction counts—not query ETags, parameters, results,
+Redis keys, or errors containing connection details.
+
+The existing standard `OTEL_*` configuration exports
+`cao_dashboard.query.cache.lookup` and `.store` spans. Metrics under
+`cao_dashboard.query.cache.` include `operations` and `duration` by fixed
+operation/outcome, `result.bytes`, last-observed `memory.bytes` and `entries`,
+and `retired` counts by `expired`/`evicted`. Lookup outcomes distinguish
+hit/miss/error; admissions distinguish stored/result-size/capacity/error;
+bypasses identify cheap queries, disabled caching, missing Redis, and readiness
+probes. Occupancy gauges are observations at cache operations, not continuously
+polled Redis state.
+
+Run the cache integration regressions and bounded performance samples against
+an isolated local Redis with:
+
+```bash
+REDIS_URL=redis://127.0.0.1:6379/0 go -C server test ./internal/redisx \
+  -run '^TestQueryCache' -bench '^BenchmarkQueryCache' -benchmem -benchtime=5x
+```
+
+The benchmarks measure a full 1,024-entry hit and a full-cache budget reduction.
+They exclude fixture ingestion from the measured time. The regression suite
+checks measured allocator memory, namespace isolation, unrelated operational
+keys, concurrent duplicate admissions, expiry, malformed replies, and retirement
+under a one-second operation deadline.
 
 ## 2. Pick a Redis provider module
 
@@ -267,8 +350,8 @@ curl -fsS https://YOUR_HOST/api/health
 curl -fsS https://YOUR_HOST/api/readiness
 ```
 
-Both endpoints include Redis dependency state. Never use them as process-only
-liveness probes.
+Both endpoints reflect dependency state, including Postgres data readiness and
+Redis operations. Never use them as process-only liveness probes.
 
 ## Provider references
 

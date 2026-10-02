@@ -6,16 +6,25 @@ namespace Cao;
 model DataState {
   available: boolean;
   rebuildRequired: boolean;
+  /** Authoritative source time of the active canonical dataset, when available. */
+  evaluatedAt?: utcDateTime;
 }
 model RedisState { connected: boolean; }
-@example(#{status: "healthy", redis: #{connected: true}, data: #{available: true, rebuildRequired: false}})
+@example(#{
+  status: "healthy",
+  redis: #{connected: true},
+  data: #{
+    available: true,
+    rebuildRequired: false,
+    evaluatedAt: utcDateTime.fromISO("2026-10-02T14:25:38.957Z")
+  }
+})
 model HealthResponse {
   status: "healthy" | "unhealthy";
   redis: RedisState;
   data: DataState;
   /** Details are present only for an authorized caller. */
   revision?: int64;
-  generation?: string;
   counts?: Record<int32>;
   sourceCount?: int32;
   rowCount?: int32;
@@ -36,7 +45,7 @@ model NotReady {
 
 @tag("Health")
 namespace Health {
-  /** Public liveness and storage health, including when no projection exists. */
+  /** Public liveness and storage health, including before the first data ingestion. */
   @route("/api/health")
   /** An externally hosted handler also returns an Unavailable error until startup completes or after shutdown. */
   @get op health(): HealthResponse | UnhealthyHealth | Unavailable;
@@ -45,7 +54,7 @@ namespace Health {
   @route("/api/v1/health")
   @get op healthV1(): HealthResponse | UnhealthyHealth | Unavailable;
 
-  /** Public readiness; an empty Redis is healthy but not ready. */
+  /** Public readiness; Redis must be connected and Postgres must contain dashboard data. */
   @route("/api/readiness")
   @get op readiness(): ReadinessResponse | NotReady | Unavailable;
 }

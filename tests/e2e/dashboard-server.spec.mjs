@@ -11,6 +11,11 @@ import {
   mergeDashboardPage,
   normalizeDashboardPageChunk,
 } from "../../dashboard/site/src/dashboard-chunks.js";
+import { scrollRenderedViewsIntoView } from "./dashboard-deployed-refresh-helpers.mjs";
+
+const SERVER_LOCAL_ONLY_PAGES = new Map([
+  ["configuration", "configuration-policy is provided by the local preview fixture, not the PostgreSQL server"],
+]);
 
 const accessToken = process.env.DASHBOARD_SERVER_ACCESS_TOKEN
   || "0123456789abcdef0123456789abcdef";
@@ -42,7 +47,7 @@ const populatedViews = [
 test("deployed shards populate server-backed dashboard views", async ({ context, page }) => {
   await page.goto(`/?access_token=${accessToken}`);
   await expect(page).toHaveURL("http://127.0.0.1:8443/");
-  await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "redis-http");
+  await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "server-http");
   const headers = { Authorization: `Bearer ${accessToken}` };
 
   const health = await context.request.get("/api/v1/health", { headers });
@@ -51,13 +56,13 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
   expect(healthPayload.redis).toEqual({ connected: true });
   expect(healthPayload.revision).toBeGreaterThan(0);
   expect(healthPayload.counts).toMatchObject({
-    repositories: 1,
-    workflows: 1,
-    runs: 1,
-    domains: 1,
-    tools: 1,
-    audits: 1,
-    issues: 1,
+    $repositories: 1,
+    $workflows: 1,
+    $runs: 1,
+    $domains: 1,
+    $tools: 1,
+    $audits: 1,
+    $issues: 1,
   });
   expect(JSON.stringify(healthPayload)).not.toMatch(/redis:\/\/|password|credential/i);
 
@@ -82,15 +87,17 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
     await expect(tableMode).toBeVisible();
     await tableMode.click();
     await expect(tableMode).toHaveAttribute("aria-pressed", "true");
-    const view = page.locator(`[data-view-id="${expected.view}"]`);
-    await view.scrollIntoViewIfNeeded();
+    const activePage = page.locator(`[data-page-id="${expected.page}"]`);
+    await expect(activePage).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
+    await scrollRenderedViewsIntoView(activePage);
+    const view = activePage.locator(`[data-view-id="${expected.view}"]`);
     await expect(view).toBeVisible();
     await expect(view.locator(`td[data-field="${expected.field}"]`, { hasText: expected.value })).toBeVisible();
     await expect(view).not.toContainText("Unavailable");
   }
 });
 
-  test("every dashboard page resolves its queries against the Go Redis server", async ({ context, page }) => {
+  test("every server-backed dashboard page resolves its queries against the Go Postgres server", async ({ context, page }) => {
     test.setTimeout(1_600_000);
     const outputDirectory = resolve("test-results/dashboard-server");
     await mkdir(outputDirectory, { recursive: true });
@@ -104,7 +111,7 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
       };
       page.on("response", onInitialResponse);
       await page.goto(`/?access_token=${accessToken}`);
-      await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "redis-http");
+      await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "server-http");
       await expect(page.locator('[data-page-id="overview"]')).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
       page.off("response", onInitialResponse);
       const dashboardResponse = await context.request.get("/dashboard.json");
@@ -124,6 +131,11 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
       expect(pages.length).toBeGreaterThan(0);
 
       for (const definition of pages) {
+        const localOnlyReason = SERVER_LOCAL_ONLY_PAGES.get(definition.id);
+        if (localOnlyReason) {
+          results.push({ pageId: definition.id, status: "skipped", queries: 0, errors: [localOnlyReason] });
+          continue;
+        }
         const result = { pageId: definition.id, status: "failed", queries: 0, errors: [] };
         results.push(result);
         const queryResponses = definition.id === "overview" ? [...initialQueryResponses] : [];
@@ -144,16 +156,36 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
             dashboardAssessmentPageHash(definition, dashboard));
           const activePage = page.locator(`[data-page-id="${definition.id}"]`);
           await expect(activePage).toBeVisible({ timeout: 30_000 });
+          await expect(activePage).not.toHaveAttribute("data-page-pending", "", { timeout: 30_000 });
           await expect(activePage).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
           await activePage.locator("details.view-disclosure").evaluateAll((items) => {
             for (const item of items) item.open = true;
           });
           const views = activePage.locator("[data-view-id]");
           const declared = declaredDashboardViewIds(definition, dashboard.dashboard.views);
+          const pageViews = (definition.views ?? []).map((view) => (
+            typeof view === "string"
+              ? dashboard.dashboard.views.find((candidate) => candidate.id === view)
+              : view
+          ));
+          const expectsQueries = pageViews.some((view) => (
+            view?.data && (typeof view.data.source === "string" || Array.isArray(view.data.sources))
+          ));
           const rendered = await views.evaluateAll((items) =>
             items.map((item) => item.getAttribute("data-view-id")));
-          for (const viewId of declared) {
-            if (!rendered.includes(viewId)) result.errors.push(`Missing view: ${viewId}`);
+          const unavailable = activePage.locator('[data-view-state="unavailable"][role="alert"]');
+          if (definition.route?.["availability-view"] && await unavailable.isVisible()) {
+            expect(rendered, "Unavailable detail pages replace their views with recovery actions").toEqual([]);
+            await expect(unavailable).toContainText(definition.route["availability-message"]);
+            await expect(unavailable.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+            await expect(unavailable.getByRole("link")).toHaveAttribute(
+              "href", `#page-${definition.route["navigation-page"]}`,
+            );
+            result.availability = "unavailable";
+          } else {
+            for (const viewId of declared) {
+              if (!rendered.includes(viewId)) result.errors.push(`Missing view: ${viewId}`);
+            }
           }
           for (let index = 0; index < await views.count(); index += 1) {
             const view = views.nth(index);
@@ -182,7 +214,7 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
               }
             }
           }
-          if (declared.length > 0 && result.queries === 0) result.errors.push("No Go server queries observed");
+          if (expectsQueries && result.queries === 0) result.errors.push("No Go server queries observed");
           result.status = result.errors.length === 0 ? "passed" : "failed";
         } catch (error) {
           result.errors.push(error instanceof Error ? error.message : String(error));
@@ -198,10 +230,12 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
       blocker = error instanceof Error ? error.message : String(error);
     } finally {
       const passed = results.filter((result) => result.status === "passed").length;
+      const skipped = results.filter((result) => result.status === "skipped").length;
+      const failed = results.some((result) => result.status === "failed");
       const summary = [
-        "### Go Redis dashboard page checks",
+        "### Go Postgres dashboard page checks",
         "",
-        `**${blocker || results.some((result) => result.status !== "passed") ? "FAILED" : "PASSED"}** — ${passed}/${results.length} pages passed.`,
+        `**${blocker || failed ? "FAILED" : "PASSED"}** — ${passed}/${results.length - skipped} server-backed pages passed; ${skipped} local-only page(s) skipped.`,
         ...(blocker ? ["", `Setup failed: ${blocker.replaceAll("\n", " ")}`] : []),
         "",
         "| Page | Status | Queries | Errors |",
@@ -215,5 +249,5 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
     }
     expect(blocker, "Dashboard setup must succeed").toBeUndefined();
     expect(results.length, "Every declared page must be assessed").toBeGreaterThan(0);
-    expect(results.filter((result) => result.status !== "passed"), "Every Go Redis dashboard page must load").toEqual([]);
+    expect(results.filter((result) => result.status === "failed"), "Every server-backed dashboard page must load").toEqual([]);
 });

@@ -11,8 +11,30 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-aw-cao/server/internal/server"
 	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
 )
+
+func TestServeHostedLoadsMaterializedDashboardQueriesByDefault(t *testing.T) {
+	cmd := newServeHostedCommand()
+	path, err := cmd.Flags().GetString("dashboard-queries")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "../dashboard/site/src/agent/queries.generated.json" {
+		t.Fatalf("unexpected dashboard queries default: %q", path)
+	}
+	definitions, err := server.ParseDashboardQueries("../../" + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range definitions {
+		if definition.Name == "database-campaign-count" {
+			return
+		}
+	}
+	t.Fatal("default dashboard query definitions omit database-campaign-count")
+}
 
 func TestResolveRedisEndpoint(t *testing.T) {
 	const defaultValue = "redis://127.0.0.1:6379/0"
@@ -566,7 +588,7 @@ func TestActionsEnvironmentPresentReportsPresenceNotValues(t *testing.T) {
 }
 
 func TestRootCommandRegistersEverySubcommand(t *testing.T) {
-	want := []string{"backfill", "collect", "doctor", "ingest", "serve", "serve-hosted", "simulate-api", "simulate-webhooks"}
+	want := []string{"backfill", "benchmark-queries", "collect", "compile-queries", "doctor", "ingest", "serve", "serve-hosted", "simulate-api", "simulate-webhooks"}
 	root := newRootCommand()
 
 	got := make([]string, 0, len(want))

@@ -96,6 +96,8 @@ func TestGitHubQuotaUsageReportsUnavailableStore(t *testing.T) {
 }
 
 func TestGitHubQuotaUsageQueryRunsThroughServerQueryEngine(t *testing.T) {
+	database := integrationDatabase(t)
+	seedDatabase(t, database, nil)
 	address, closeServer := fakeRedis(t)
 	defer closeServer()
 	client, err := redisx.New("redis://" + address)
@@ -103,8 +105,9 @@ func TestGitHubQuotaUsageQueryRunsThroughServerQueryEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{
-		store: redisx.NewStore(client, "quota-query-test"),
-		quota: newUsageQuota(t, usageQuotaStore{samples: usageSamples(), now: usageNow}),
+		store:    redisx.NewStore(client, "quota-query-test"),
+		database: database,
+		quota:    newUsageQuota(t, usageQuotaStore{samples: usageSamples(), now: usageNow}),
 	}
 	input := queryRequest{
 		Queries:     []query.Definition{{Name: "github-api-usage", From: gitHubQuotaUsageSourceName}},
@@ -133,12 +136,12 @@ func TestGitHubQuotaUsageQueryRunsThroughServerQueryEngine(t *testing.T) {
 			}
 			aggregate := source.Rows[0]
 			if aggregate["scope"] != "aggregate" || aggregate["bucket"] != gitHubQuotaAggregateBucket ||
-				aggregate["observed-at"] != "2026-09-30T15:00:00Z" || aggregate["usage-percent"] != 50.0 {
+				aggregate["observed-at"] != "2026-09-30T15:00:00Z" || aggregate["usage-percent"] != json.Number("50") {
 				t.Fatalf("unexpected aggregate row %+v", aggregate)
 			}
 			bucket := source.Rows[2]
 			if bucket["scope"] != "bucket" || bucket["bucket"] != "collector/123/core" ||
-				bucket["installation"] != int64(123) || bucket["used"] != 1000 || bucket["usage-percent"] != 20.0 {
+				bucket["installation"] != json.Number("123") || bucket["used"] != json.Number("1000") || bucket["usage-percent"] != json.Number("20") {
 				t.Fatalf("unexpected bucket row %+v", bucket)
 			}
 		})
