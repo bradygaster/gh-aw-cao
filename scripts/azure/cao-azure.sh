@@ -61,8 +61,10 @@ load_config() {
   ALLOWED_TEAMS="$(config_value '.githubAllowedTeams | select(type == "array") | @json')"
   INGESTION_IMAGE="$(config_value '.ingestionImage | select(type == "string" and length > 0)')"
   PURGE_PROTECTION="$(
-    jq -er 'if has("enablePurgeProtection") then .enablePurgeProtection else true end | select(type == "boolean")' "$CONFIG"
+    jq -r 'if has("enablePurgeProtection") then .enablePurgeProtection else true end' "$CONFIG"
   )"
+  [[ "$PURGE_PROTECTION" == true || "$PURGE_PROTECTION" == false ]] ||
+    fail "enablePurgeProtection must be a boolean"
   ALLOWED_HOSTS="[\"${FUNCTION_APP_NAME}.azurewebsites.net\"]"
 }
 

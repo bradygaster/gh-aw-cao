@@ -66,6 +66,7 @@ test("Azure operator command keeps secrets out of configuration and automates th
   assert.match(script, /main deployment failed after three attempts/);
   assert.match(script, /package builds require a clean Git worktree/);
   assert.match(script, /if has\("enablePurgeProtection"\)/);
+  assert.match(script, /enablePurgeProtection must be a boolean/);
   assert.match(script, /trap 'rm -rf "\$secret_dir"' EXIT/);
   assert.match(script, /secret_exists cao-session-secret/);
   assert.match(script, /az functionapp deployment source config-zip/);
