@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "CAO dashboard server",
-    "description": "The Go dashboard server HTTP contract. Local mode uses a loopback bearer capability; hosted mode uses an authorized GitHub OAuth session and X-CSRF-Token on mutations. MCP and dashboard static assets are outside this contract.",
-    "version": "0.0.0"
+    "version": "1.0.0",
+    "description": "The Go dashboard server HTTP contract. Local mode uses a loopback bearer capability; hosted mode uses an authorized GitHub OAuth session and X-CSRF-Token on protected mutations. The optional MCP HTTP transport is covered, but its protocol messages and tool schemas are owned by the MCP contract; dashboard static assets are outside this contract."
   },
   "tags": [
     {
@@ -23,6 +23,9 @@
     },
     {
       "name": "Ingestion and administration"
+    },
+    {
+      "name": "MCP transport"
     }
   ],
   "paths": {
@@ -2602,6 +2605,187 @@
         "security": [
           {
             "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "operationId": "Mcp_exchange",
+        "description": "Optional stateless streamable HTTP transport, present only when MCP is enabled. Local mode accepts the dashboard bearer capability or a configured GitHub Actions identity; hosted mode requires a repository-scoped GitHub Actions identity (bearer token, actor and signed OIDC token). MCP message formats and tool schemas are maintained by the MCP contract, not this HTTP contract.",
+        "parameters": [
+          {
+            "name": "X-GitHub-Actor",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-GitHub-OIDC-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "unevaluatedProperties": {}
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The request has been accepted for processing, but processing has not yet completed."
+          },
+          "400": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "MCP transport"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "unevaluatedProperties": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
           }
         ]
       }
