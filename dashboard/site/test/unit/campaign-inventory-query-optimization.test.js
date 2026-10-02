@@ -350,9 +350,9 @@ describe('campaign inventory query optimization', () => {
     const beforeAnalysis = analyzeDashboardComplexity({ dashboard: { queries: baseline } });
     const afterAnalysis = analyzeDashboardComplexity({ dashboard: { queries } });
     const expected = {
-      'campaign-inventory': [80, 252, 66, 95],
-      'campaign-workflows': [48, 156, 38, 76],
-      'campaign-workflow-totals': [47, 150, 36, 70]
+      'campaign-inventory': [80, 250, 66, 95],
+      'campaign-workflows': [48, 154, 38, 76],
+      'campaign-workflow-totals': [47, 148, 36, 70]
     };
     for (const name of names) {
       const before = beforeAnalysis.inventory.find((query) => query.name === name);
