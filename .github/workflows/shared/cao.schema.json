@@ -186,7 +186,7 @@
           "type": "string",
           "enum": [
             "generic", "local", "upstash", "aws-elasticache", "redis-cloud", "gcp-memorystore",
-            "railway", "render", "digitalocean"
+            "railway", "render", "digitalocean", "azure-managed-redis"
           ]
         },
         "url-env": { "$ref": "#/$defs/environmentVariable" },

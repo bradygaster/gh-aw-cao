@@ -187,3 +187,16 @@ func TestResolveRedisProviderModuleRejectsUnknownModule(t *testing.T) {
 		t.Fatal("expected an error for an unknown Redis provider module")
 	}
 }
+
+func TestAzureManagedRedisModuleRequiresTLS(t *testing.T) {
+	resolved, err := resolveRedisProviderModule(redisPolicy{Module: "azure-managed-redis"})
+	if err != nil {
+		t.Fatalf("resolve Azure Managed Redis provider: %v", err)
+	}
+	if resolved.urlEnv != "CAO_REDIS_URL" ||
+		resolved.session != HostRedisPooled ||
+		!resolved.supportsCollection ||
+		resolved.tlsMode != redisTLSRequired {
+		t.Fatalf("unexpected Azure Managed Redis capabilities: %+v", resolved)
+	}
+}

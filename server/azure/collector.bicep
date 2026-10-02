@@ -18,6 +18,9 @@ param tags object
 @description('Name prefix for the collection resources.')
 param namePrefix string
 
+@description('Subnet resource ID for the internal Container Apps environment.')
+param infrastructureSubnetId string
+
 @description('Container image running the collection role.')
 param collectorImage string
 
@@ -120,6 +123,10 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
     // unset rather than pointing at a sink that was never created.
     appLogsConfiguration: empty(logAnalyticsWorkspaceResourceId) ? {} : {
       destination: 'azure-monitor'
+    }
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: true
     }
     zoneRedundant: false
   }

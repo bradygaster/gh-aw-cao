@@ -272,6 +272,7 @@ test("control policy validates every deployment module and rejects incompatible 
   const redisModules = [
     "generic", "local", "upstash", "aws-elasticache", "redis-cloud",
     "gcp-memorystore", "railway", "render", "digitalocean",
+    "azure-managed-redis",
   ];
   assert.deepEqual(schema.$defs.hostTarget.properties.module.enum, ["generic", ...targetModules]);
   assert.deepEqual(schema.$defs.redisModule.properties.module.enum, redisModules);

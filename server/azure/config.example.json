@@ -1,0 +1,17 @@
+{
+  "subscriptionId": "00000000-0000-0000-0000-000000000000",
+  "location": "eastus2",
+  "resourceGroup": "rg-cao-dashboard-eus2",
+  "functionAppName": "cao-example-unique",
+  "storageAccountName": "stcaoexampleunique",
+  "keyVaultName": "kv-cao-example-unique",
+  "redisEnterpriseName": "redis-cao-example-unique",
+  "postgresServerName": "psql-cao-example-unique",
+  "githubClientId": "YOUR_GITHUB_OAUTH_CLIENT_ID",
+  "githubAllowedOrganizations": [],
+  "githubAllowedTeams": [
+    "YOUR_ORGANIZATION/YOUR_TEAM_SLUG"
+  ],
+  "ingestionImage": "ghcr.io/githubnext/gh-aw-cao/cao-server:sha-YOUR_TRUSTED_COMMIT_SHA",
+  "enablePurgeProtection": true
+}

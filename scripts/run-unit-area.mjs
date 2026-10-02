@@ -8,7 +8,7 @@ const unitDirectory = join(root, "tests", "unit");
 
 export const unitTestAreas = {
   activity: [/^activity-/, /^actions-log\./, /^github-telemetry\./],
-  dashboard: [/^dashboard-/, /^coolify-deployment-/, /^server-azure-/],
+  dashboard: [/^dashboard-/, /^coolify-deployment-/, /^server-azure-/, /^azure-deployment-/],
   workflows: [
     /^workflow-contract-/, /^control-/, /^campaign-/, /^contoso-/,
     /^setup-github-apps\./, /^gh-aw-version-/, /^release-workflow\./,

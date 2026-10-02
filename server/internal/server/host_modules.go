@@ -50,6 +50,12 @@ var redisProviderModules = map[string]redisProviderModule{
 	"upstash":         {urlEnv: "REDIS_URL", session: HostRedisSerialized, isolateProcessNamespace: true, singleReplica: true, tlsMode: redisTLSRequired},
 	"aws-elasticache": {urlEnv: "REDIS_URL", session: HostRedisPooled, supportsCollection: true},
 	"redis-cloud":     {urlEnv: "REDIS_URL", session: HostRedisPooled, supportsCollection: true},
+	"azure-managed-redis": {
+		urlEnv:             "CAO_REDIS_URL",
+		session:            HostRedisPooled,
+		supportsCollection: true,
+		tlsMode:            redisTLSRequired,
+	},
 	"gcp-memorystore": {hostEnv: "REDISHOST", portEnv: "REDISPORT", usernameEnv: "REDIS_USERNAME", passwordEnv: "REDIS_PASSWORD", session: HostRedisPooled, supportsCollection: true},
 	"railway":         {urlEnv: "REDIS_URL", session: HostRedisPooled, supportsCollection: true},
 	"render":          {urlEnv: "REDIS_URL", session: HostRedisPooled, supportsCollection: true},
