@@ -552,8 +552,10 @@ invalid, expired, and unauthenticated requests cannot bypass Redis enforcement.
 
 The Azure Functions profile keeps the dashboard browser isolated from Postgres,
 Redis, GitHub tokens, refresh tokens, database credentials, and Key Vault secret values.
-The Function App is the only public application boundary and the only component
-that talks to GitHub APIs, Key Vault references, Postgres, and Azure Managed Redis.
+The Function App is the only public application boundary. It talks to GitHub
+APIs and resolves Key Vault references, then reaches Postgres and Azure Managed
+Redis through the deployment virtual network. A private Container Apps job is
+the separate, explicitly triggered ingestion boundary.
 
 ```mermaid
 flowchart LR
@@ -561,10 +563,11 @@ flowchart LR
   Edge["Azure HTTPS edge / App Service front end<br/>sets forwarded host + proto"]
   Function["Function App<br/>Go dashboard HTTP handler<br/>GitHub OAuth sessions + CSRF"]
   GitHubOAuth["GitHub OAuth + API<br/>login, refresh, org/team membership"]
-  KeyVault["Azure Key Vault<br/>OAuth secret, session secret, Redis URL"]
-  Postgres["Postgres<br/>current dashboard entities"]
-  Redis["Azure Managed Redis<br/>TLS<br/>operational state"]
-  Storage["Functions storage account<br/>runtime state only"]
+  KeyVault["Azure Key Vault<br/>OAuth, session, Postgres, Redis secrets"]
+  Postgres["Private Postgres<br/>current dashboard entities"]
+  Redis["Private Azure Managed Redis<br/>TLS<br/>operational state"]
+  Storage["Storage account<br/>Functions state + ingestion share"]
+  Ingest["Private Container Apps job<br/>explicit artifact ingestion"]
   Insights["Application Insights<br/>non-secret operational telemetry"]
   Operators["Control-plane operators<br/>deploy Bicep + rotate secrets"]
 
@@ -575,6 +578,9 @@ flowchart LR
   Function -->|"rediss:// operational commands"| Redis
   Function -->|"entity source reads/writes"| Postgres
   Function -->|"runtime binding state"| Storage
+  Storage -->|"read-only verified artifact mount"| Ingest
+  Ingest -->|"transactional entity replacement"| Postgres
+  Ingest -->|"operational coordination"| Redis
   Function -->|"no tokens, no Redis URL, no source records"| Insights
   Operators -->|"reviewed Bicep + secret rotation"| KeyVault
   Operators -->|"deploy package + app settings"| Function
@@ -1238,20 +1244,20 @@ scale in, or terminate long-running requests. Cold starts rebuild the Go app
 from app settings and check Redis before serving requests.
 Request cancellation propagates through `request.Context()` to Redis queries.
 
-The Bicep deployment in `server/azure/main.bicep` provisions a Function App,
-Key Vault, Application Insights, storage, and module-free Azure Managed Redis.
+The bootstrap and main Bicep deployments under `server/azure/` provision Key
+Vault first, then a Function App, private PostgreSQL Flexible Server, private
+Azure Managed Redis, virtual network and DNS resources, Application Insights,
+storage, and a private Container Apps ingestion job.
 Every secret-bearing app setting—including Functions runtime storage—uses a
 versionless Key Vault reference so ordinary credential rotation
-does not require rewriting application configuration. Session-key rotation uses
-the optional secure `previousSessionSecret` deployment parameter: deploy the old
-key as previous and the new key as current, wait for active sessions and queued
-revocations to drain, then remove the previous key. Encrypted records carry a
-key identifier, and the server can read both keys during that window. The
-template outputs only non-secret host names, redirect URI, Redis database name,
-and Key Vault URI. Redis access keys
-are an unavoidable path for Azure Managed Redis client authentication today;
-store the `rediss://` URL in Key Vault, rotate the Redis key in Azure, publish a
-new Key Vault secret version, and allow the platform to refresh the reference.
+does not require rewriting application configuration. The main deployment reads
+the PostgreSQL administrator password from Key Vault, creates the database URL
+there, and creates the Redis URL from the deployed database key without
+outputting either value. Session-key rotation can temporarily enable the
+versionless `cao-session-secret-previous` reference while active sessions and
+queued revocations drain. Encrypted records carry a key identifier, and the
+server can read both keys during that window. Template outputs contain only
+non-secret resource names, host names, and redirect information.
 
 ### Azure secure-computing baseline
 

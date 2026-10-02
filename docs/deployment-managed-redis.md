@@ -135,15 +135,24 @@ compatible Redis module:
 }
 ```
 
-Azure Functions can use the same Redis modules without changing its listener
-adapter:
+The Azure reference deployment pairs the Azure Functions listener with its
+fixed Azure Managed Redis module. The module uses `CAO_REDIS_URL`, preserves
+pooled semantics and collection support, and cannot disable TLS:
 
 ```json
 {
   "target": { "module": "azure-functions" },
-  "redis": { "module": "gcp-memorystore", "tls": { "mode": "required" } }
+  "redis": {
+    "module": "azure-managed-redis",
+    "url-env": "CAO_REDIS_URL",
+    "namespace-env": "CAO_REDIS_NAMESPACE",
+    "tls": { "mode": "required" }
+  }
 }
 ```
+
+Azure Functions can also compose with another compatible reviewed Redis module
+without changing its listener adapter.
 
 Local development remains the `cao-dashboard serve` example with loopback Redis;
 the `local` Redis module describes its ordinary pooled semantics. Upstash pairs

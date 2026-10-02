@@ -1,26 +1,38 @@
 targetScope = 'resourceGroup'
 
-// Experimental Azure Functions deployment baseline for the Go dashboard server.
-// Review and validate tenant-specific security, compliance, networking,
-// monitoring, cost, rotation, and rollback requirements before live use.
+// Staging-ready Azure Functions deployment for the Go dashboard server.
+// Tenant-specific security, compliance, cost, monitoring, and availability
+// requirements still require review before live use.
 
 @description('Azure region for all dashboard resources.')
 param location string = resourceGroup().location
 
-@description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
+@description('Globally unique Function App name.')
 param functionAppName string
 
 @description('Azure App Service plan name for the Function App.')
 param hostingPlanName string = '${functionAppName}-plan'
 
-@description('Globally unique storage account name for Azure Functions runtime state.')
+@description('Globally unique storage account name for Functions state and the ingestion artifact share.')
 param storageAccountName string
 
-@description('Key Vault name used for GitHub OAuth, session, and Redis connection secrets.')
+@description('Existing Key Vault name created by bootstrap.bicep.')
 param keyVaultName string
 
 @description('Azure Managed Redis cache name.')
 param redisEnterpriseName string
+
+@description('PostgreSQL Flexible Server name.')
+param postgresServerName string
+
+@description('PostgreSQL administrator login.')
+param postgresAdministratorLogin string = 'caoadmin'
+
+@description('Virtual network name.')
+param virtualNetworkName string = '${functionAppName}-vnet'
+
+@description('Immutable CAO server image used by the private ingestion job.')
+param ingestionImage string
 
 @allowed([
   'Balanced_B0'
@@ -30,70 +42,46 @@ param redisEnterpriseName string
   'Balanced_B10'
   'MemoryOptimized_M10'
 ])
-@description('Redis SKU. Size for retained JSON generations and their search indexes.')
+@description('Redis SKU for operational state.')
 param redisSkuName string = 'Balanced_B0'
 
 @minValue(1)
-@description('Redis capacity. Increase when retained JSON generations and search indexes need more memory or throughput.')
+@description('Redis capacity.')
 param redisCapacity int = 1
 
-@description('Public host names that Azure Front Door/App Service is allowed to forward to the Go dashboard handler.')
+@description('PostgreSQL compute SKU.')
+param postgresSkuName string = 'Standard_B1ms'
+
+@description('PostgreSQL compute tier.')
+param postgresSkuTier string = 'Burstable'
+
+@minValue(32)
+@description('PostgreSQL storage size in GiB.')
+param postgresStorageSizeGB int = 32
+
+@description('Public host names that App Service is allowed to forward to the Go handler.')
 param allowedHosts array
 
 @description('GitHub organizations whose active members are authorized.')
-param githubAllowedOrganizations array
+param githubAllowedOrganizations array = []
 
 @description('GitHub teams whose active members are authorized, expressed as org/team-slug.')
 param githubAllowedTeams array = []
 
-@description('GitHub OAuth App client ID. Do not use a PAT; the server only supports the OAuth authorization-code flow.')
+@description('GitHub OAuth App client ID.')
 param githubClientId string
 
-@secure()
-@description('GitHub OAuth App client secret. It is written only to Key Vault and consumed by the Function App through a Key Vault reference.')
-param githubClientSecret string
+@description('Reference the optional previous session secret during a controlled rotation.')
+param usePreviousSessionSecret bool = false
 
-@secure()
-@minLength(32)
-@description('At least 32 characters of random session secret material used to encrypt server-side OAuth sessions.')
-param sessionSecret string
-
-@secure()
-@description('Optional previous session secret retained during controlled key rotation until active sessions and pending revocations are drained.')
-param previousSessionSecret string = ''
-
-@secure()
-@description('TLS Redis URL, for example rediss://:<access-key>@cache.region.redisenterprise.cache.azure.net:10000/0. Store a rotated value here rather than outputting Redis keys.')
-param redisConnectionString string
-
-@description('Optional Log Analytics workspace resource ID for Application Insights. Leave empty to create classic component-only telemetry.')
+@description('Optional Log Analytics workspace resource ID for Application Insights and Container Apps logs.')
 param logAnalyticsWorkspaceResourceId string = ''
 
-// Optional server collection profile.
-//
-// Leaving collectorImage empty deploys the default profile unchanged: the
-// dashboard serves snapshots published by the Activity workflow and the server
-// collects nothing. Supplying an image selects the alternative profile, in
-// which this deployment collects evidence itself. The two profiles are
-// alternatives, never layers.
-
-@description('Optional container image running the collection role. Empty deploys no collection.')
+@description('Optional container image running the server collection role. Empty keeps the default artifact-ingestion profile.')
 param collectorImage string = ''
 
 @description('GitHub App identifier whose installations define ingestion scope. Required with collectorImage.')
 param collectorGithubAppId string = ''
-
-@secure()
-@description('GitHub App private key in PEM form. Required with collectorImage.')
-param collectorPrivateKey string = ''
-
-@secure()
-@description('Shared secret verifying GitHub webhook deliveries. Required with collectorImage.')
-param githubWebhookSecret string = ''
-
-@secure()
-@description('Redis access key used only by the collection autoscaler to read stream backlog. Required with collectorImage.')
-param collectorRedisPassword string = ''
 
 @description('GitHub logins permitted to run administrative operations.')
 param githubAdminUsers array = []
@@ -104,127 +92,146 @@ param collectorControlRepository string = ''
 @description('Maximum number of collection workers.')
 param collectorMaximumWorkers int = 20
 
-@description('Evidence lake file share tier. Premium is provisioned SSD; Standard is IOPS-throttled by share size.')
 @allowed([
   'Premium_LRS'
   'Premium_ZRS'
   'Standard_LRS'
   'Standard_ZRS'
 ])
+@description('Evidence lake file share tier for the optional collection profile.')
 param collectorLakeStorageSku string = 'Premium_LRS'
 
 var collectionEnabled = !empty(collectorImage)
-
+var redisNamespace = 'azure-dashboard'
 var tags = {
   workload: 'gh-aw-cao-dashboard'
   hostingMode: 'azure-functions'
 }
 var githubRedirectUri = 'https://${functionAppName}.azurewebsites.net/auth/callback'
 
-resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: storageAccountName
-  location: location
-  tags: tags
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    allowBlobPublicAccess: false
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
-  }
-}
-
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
+}
+
+resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: virtualNetworkName
   location: location
   tags: tags
   properties: {
-    tenantId: subscription().tenantId
-    sku: {
-      family: 'A'
-      name: 'standard'
+    addressSpace: {
+      addressPrefixes: [
+        '10.42.0.0/16'
+      ]
     }
-    enableRbacAuthorization: true
-    enabledForTemplateDeployment: false
-    enableSoftDelete: true
-    enablePurgeProtection: true
-    softDeleteRetentionInDays: 90
-    publicNetworkAccess: 'Enabled'
   }
 }
 
-resource githubClientSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'github-oauth-client-secret'
+resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: network
+  name: 'functions'
   properties: {
-    value: githubClientSecret
-    contentType: 'GitHub OAuth client secret for CAO dashboard Azure Functions mode'
+    addressPrefix: '10.42.0.0/24'
+    delegations: [
+      {
+        name: 'web'
+        properties: {
+          serviceName: 'Microsoft.Web/serverFarms'
+        }
+      }
+    ]
   }
 }
 
-resource sessionSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'cao-session-secret'
+resource postgresSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: network
+  name: 'postgres'
   properties: {
-    value: sessionSecret
-    contentType: 'CAO dashboard session encryption secret'
+    addressPrefix: '10.42.1.0/24'
+    delegations: [
+      {
+        name: 'postgres'
+        properties: {
+          serviceName: 'Microsoft.DBforPostgreSQL/flexibleServers'
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    functionsSubnet
+  ]
+}
+
+resource privateEndpointsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: network
+  name: 'private-endpoints'
+  properties: {
+    addressPrefix: '10.42.2.0/24'
+    privateEndpointNetworkPolicies: 'Disabled'
+  }
+  dependsOn: [
+    postgresSubnet
+  ]
+}
+
+resource ingestionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: network
+  name: 'ingestion'
+  properties: {
+    addressPrefix: '10.42.4.0/23'
+  }
+  dependsOn: [
+    privateEndpointsSubnet
+  ]
+}
+
+resource collectorsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = if (collectionEnabled) {
+  parent: network
+  name: 'collectors'
+  properties: {
+    addressPrefix: '10.42.6.0/23'
+  }
+  dependsOn: [
+    ingestionSubnet
+  ]
+}
+
+resource postgresPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'private.postgres.database.azure.com'
+  location: 'global'
+  tags: tags
+}
+
+resource postgresPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: postgresPrivateDns
+  name: '${virtualNetworkName}-link'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: network.id
+    }
   }
 }
 
-resource previousSessionSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(previousSessionSecret)) {
-  parent: keyVault
-  name: 'cao-session-secret-previous'
-  properties: {
-    value: previousSessionSecret
-    contentType: 'Previous CAO dashboard session encryption secret retained during rotation'
+module postgres 'postgres.bicep' = {
+  name: 'postgres'
+  params: {
+    location: location
+    tags: tags
+    serverName: postgresServerName
+    administratorLogin: postgresAdministratorLogin
+    administratorLoginPassword: keyVault.getSecret('cao-postgres-admin-password')
+    delegatedSubnetResourceId: postgresSubnet.id
+    privateDnsZoneResourceId: postgresPrivateDns.id
+    keyVaultName: keyVault.name
+    skuName: postgresSkuName
+    skuTier: postgresSkuTier
+    storageSizeGB: postgresStorageSizeGB
   }
-}
-
-resource redisConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'cao-redis-url'
-  properties: {
-    value: redisConnectionString
-    contentType: 'CAO dashboard Redis rediss URL'
-  }
-}
-
-resource collectorPrivateKeyValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (collectionEnabled) {
-  parent: keyVault
-  name: 'cao-collect-private-key'
-  properties: {
-    value: collectorPrivateKey
-    contentType: 'GitHub App private key for the collection profile'
-  }
-}
-
-resource collectorRedisPasswordValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (collectionEnabled) {
-  parent: keyVault
-  name: 'cao-redis-password'
-  properties: {
-    value: collectorRedisPassword
-    contentType: 'Redis access key for the collection autoscaler'
-  }
-}
-
-resource githubWebhookSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (collectionEnabled) {
-  parent: keyVault
-  name: 'cao-github-webhook-secret'
-  properties: {
-    value: githubWebhookSecret
-    contentType: 'GitHub webhook shared secret'
-  }
-}
-
-resource functionsStorageConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'azure-webjobs-storage'
-  properties: {
-    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
-    contentType: 'Azure Functions runtime storage connection'
-  }
+  dependsOn: [
+    postgresPrivateDnsLink
+  ]
 }
 
 resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = {
@@ -255,6 +262,125 @@ resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = 
   }
 }
 
+resource redisPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.redisenterprise.cache.azure.net'
+  location: 'global'
+  tags: tags
+}
+
+resource redisPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: redisPrivateDns
+  name: '${virtualNetworkName}-link'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: network.id
+    }
+  }
+}
+
+resource redisPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: '${redisEnterpriseName}-pe'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: privateEndpointsSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'redis'
+        properties: {
+          privateLinkServiceId: redisEnterprise.id
+          groupIds: [
+            'redisEnterprise'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource redisPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: redisPrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'redis'
+        properties: {
+          privateDnsZoneId: redisPrivateDns.id
+        }
+      }
+    ]
+  }
+}
+
+resource redisConnectionString 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'cao-redis-url'
+  properties: {
+    value: 'rediss://:${uriComponent(redisDatabase.listKeys().primaryKey)}@${redisEnterprise.properties.hostName}:10000/0'
+    contentType: 'CAO dashboard Azure Managed Redis URL'
+  }
+}
+
+resource collectorRedisPassword 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (collectionEnabled) {
+  parent: keyVault
+  name: 'cao-redis-password'
+  properties: {
+    value: redisDatabase.listKeys().primaryKey
+    contentType: 'Redis access key for the CAO collection autoscaler'
+  }
+}
+
+resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: storageAccountName
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: true
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
+  properties: {
+    shareDeleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+  }
+}
+
+resource ingestionShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
+  parent: fileService
+  name: 'dashboard-ingest'
+  properties: {
+    shareQuota: 32
+    enabledProtocols: 'SMB'
+  }
+}
+
+resource functionsStorageConnectionString 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'azure-webjobs-storage'
+  properties: {
+    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+    contentType: 'Azure Functions runtime storage connection'
+  }
+}
+
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: hostingPlanName
   location: location
@@ -280,16 +406,40 @@ resource insights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
+resource functionIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${functionAppName}-identity'
+  location: location
+  tags: tags
+}
+
+resource functionSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, functionIdentity.id, 'Key Vault Secrets User')
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '4633458b-17de-408a-b874-0445c86b69e6'
+    )
+    principalId: functionIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   name: functionAppName
   location: location
   tags: tags
   kind: 'functionapp,linux'
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${functionIdentity.id}': {}
+    }
   }
   properties: {
     serverFarmId: plan.id
+    virtualNetworkSubnetId: functionsSubnet.id
+    keyVaultReferenceIdentity: functionIdentity.id
     httpsOnly: true
     clientAffinityEnabled: false
     siteConfig: {
@@ -298,6 +448,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       http20Enabled: true
+      vnetRouteAllEnabled: true
       appSettings: concat([
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -320,16 +471,28 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'azure-functions'
         }
         {
+          name: 'CAO_POLICY_PATH'
+          value: '.github/workflows/cao.azure.json'
+        }
+        {
           name: 'CAO_AZURE_ALLOWED_HOSTS'
           value: join(allowedHosts, ',')
         }
         {
-          name: 'CAO_AZURE_REQUIRE_HTTPS'
-          value: 'true'
+          name: 'CAO_AZURE_DASHBOARD_QUERIES'
+          value: 'site/src/agent/queries.generated.json'
+        }
+        {
+          name: 'CAO_DATABASE_QUERIES'
+          value: 'queries/database.json'
+        }
+        {
+          name: 'CAO_POSTGRES_URL'
+          value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/cao-postgres-url)'
         }
         {
           name: 'CAO_REDIS_NAMESPACE'
-          value: 'azure-dashboard'
+          value: redisNamespace
         }
         {
           name: 'CAO_REDIS_URL'
@@ -359,15 +522,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           name: 'CAO_SESSION_SECRET'
           value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/cao-session-secret)'
         }
-      ], empty(previousSessionSecret) ? [] : [
+      ], usePreviousSessionSecret ? [
         {
           name: 'CAO_SESSION_SECRET_PREVIOUS'
           value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/cao-session-secret-previous)'
         }
-      ], !collectionEnabled ? [] : [
-        // With collection configured the Function App admits webhook
-        // deliveries into the collection queue. It performs no collection of
-        // its own, so its per-request work stays constant.
+      ] : [], !collectionEnabled ? [] : [
         {
           name: 'CAO_GITHUB_WEBHOOK_SECRET'
           value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/cao-github-webhook-secret)'
@@ -381,10 +541,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: collectorGithubAppId
         }
         {
-          // The Function App verifies deliveries and enqueues work. It never
-          // calls GitHub and never projects, so it is given no App private key
-          // and no evidence lake: the internet-facing front end holds no
-          // credential it cannot use.
           name: 'CAO_COLLECT_ADMIT_ONLY'
           value: 'true'
         }
@@ -396,22 +552,36 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     }
   }
   dependsOn: [
-    functionsStorageConnectionStringValue
-    githubClientSecretValue
-    redisConnectionStringValue
-    sessionSecretValue
-    previousSessionSecretValue
+    functionsStorageConnectionString
+    functionSecretsUser
+    postgres
+    redisConnectionString
+    redisPrivateDnsGroup
   ]
 }
 
-resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, functionApp.name, 'Key Vault Secrets User')
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6c')
-    principalId: functionApp.identity.principalId
-    principalType: 'ServicePrincipal'
+module ingestion 'ingestion.bicep' = {
+  name: 'ingestion'
+  params: {
+    location: location
+    tags: tags
+    namePrefix: functionAppName
+    infrastructureSubnetId: ingestionSubnet.id
+    keyVaultName: keyVault.name
+    keyVaultUri: keyVault.properties.vaultUri
+    storageAccountName: storage.name
+    storageAccountKey: storage.listKeys().keys[0].value
+    fileShareName: ingestionShare.name
+    ingestionImage: ingestionImage
+    redisNamespace: redisNamespace
+    applicationInsightsConnectionString: insights.properties.ConnectionString
+    logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
   }
+  dependsOn: [
+    postgres
+    redisConnectionString
+    redisPrivateDnsGroup
+  ]
 }
 
 module collection 'collector.bicep' = if (collectionEnabled) {
@@ -420,11 +590,12 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     location: location
     tags: tags
     namePrefix: functionAppName
+    infrastructureSubnetId: collectorsSubnet.id
     collectorImage: collectorImage
     keyVaultUri: keyVault.properties.vaultUri
     keyVaultName: keyVault.name
     redisHost: redisEnterprise.properties.hostName
-    redisNamespace: 'azure-dashboard'
+    redisNamespace: redisNamespace
     controlRepository: collectorControlRepository
     githubAppId: collectorGithubAppId
     maximumWorkers: collectorMaximumWorkers
@@ -433,15 +604,18 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
   }
   dependsOn: [
-    collectorPrivateKeyValue
-    collectorRedisPasswordValue
-    redisConnectionStringValue
+    collectorRedisPassword
+    redisConnectionString
+    redisPrivateDnsGroup
   ]
 }
 
 output collectionEnabled bool = collectionEnabled
 output functionHostName string = functionApp.properties.defaultHostName
 output githubOAuthRedirectUri string = githubRedirectUri
+output ingestionJobName string = ingestion.outputs.jobName
+output ingestionShareName string = ingestionShare.name
+output keyVaultUri string = keyVault.properties.vaultUri
+output postgresHostName string = postgres.outputs.hostName
 output redisEnterpriseHostName string = redisEnterprise.properties.hostName
 output redisDatabaseName string = redisDatabase.name
-output keyVaultUri string = keyVault.properties.vaultUri

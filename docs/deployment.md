@@ -23,7 +23,7 @@ You can host the dashboard in three ways. The GitHub Actions only option has two
 | --- | --- | --- | --- | --- |
 | [GitHub Actions only with GitHub Apps](deployment-actions-github-app.md) | GitHub Pages | In each viewer's browser | Anyone who can read the Pages site | Two private GitHub Apps |
 | [GitHub Actions only with a fine-grained PAT](deployment-actions-pat.md) | GitHub Pages | In each viewer's browser | Anyone who can read the Pages site | Two fine-grained personal access tokens (PATs) owned by one user |
-| [Azure](deployment-azure.md) | Azure Functions | On the server, over PostgreSQL | Members of allowed GitHub organizations or teams | Function App, PostgreSQL, Key Vault, Azure Managed Redis, storage account, and Application Insights |
+| [Azure](deployment-azure.md) | Azure Functions | On the server, over PostgreSQL | Members of allowed GitHub organizations or teams | Function App, PostgreSQL, Key Vault, Azure Managed Redis, VNet/private DNS, storage account, Container Apps ingestion job, and Application Insights |
 | [Coolify](deployment-coolify.md) | A container on your Coolify server | On the server, over PostgreSQL | Members of allowed GitHub organizations or teams | Coolify server, PostgreSQL, Redis or [Upstash Redis](deployment-upstash.md), container image, and a deployment adapter |
 
 ## Choosing an option

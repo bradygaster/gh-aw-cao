@@ -348,8 +348,8 @@ func TestDeploymentModuleRegistry(t *testing.T) {
 	}
 	sort.Strings(providers)
 	if !slices.Equal(providers, []string{
-		"aws-elasticache", "digitalocean", "gcp-memorystore", "generic", "local",
-		"railway", "redis-cloud", "render", "upstash",
+		"aws-elasticache", "azure-managed-redis", "digitalocean", "gcp-memorystore",
+		"generic", "local", "railway", "redis-cloud", "render", "upstash",
 	}) {
 		t.Fatalf("unexpected Redis provider modules: %v", providers)
 	}

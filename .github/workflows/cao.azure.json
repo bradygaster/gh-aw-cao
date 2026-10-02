@@ -1,0 +1,20 @@
+{
+  "extends": "cao.json",
+  "control-plane": {
+    "web": {
+      "host": {
+        "target": {
+          "module": "azure-functions"
+        },
+        "redis": {
+          "module": "azure-managed-redis",
+          "url-env": "CAO_REDIS_URL",
+          "namespace-env": "CAO_REDIS_NAMESPACE",
+          "tls": {
+            "mode": "required"
+          }
+        }
+      }
+    }
+  }
+}

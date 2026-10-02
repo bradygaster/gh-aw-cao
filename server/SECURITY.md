@@ -494,12 +494,13 @@ credentials restricted to the deployment namespace for separate trust
 boundaries.
 
 For Azure, use encrypted Redis client protocol. `server/azure/main.bicep` sets
-Redis public network access to disabled and expects the Redis URL to be
-delivered through Key Vault-backed app settings. Redis client authentication
-currently relies on access keys; do not output them. To rotate, regenerate the
-Redis access key, update
-the `cao-redis-url` Key Vault secret with the new `rediss://` URL, then restart
-the Function App so Key Vault references resolve the latest secret version.
+Redis public network access to disabled, creates a private endpoint and private
+DNS link, and writes the generated TLS URL directly to Key Vault without an ARM
+output. Redis client authentication currently relies on access keys; do not
+output them. To rotate, regenerate the Redis access key, update the
+`cao-redis-url` Key Vault secret with the new `rediss://` URL, then restart the
+Function App so its versionless Key Vault reference resolves the latest secret
+version.
 
 ## Artifact ingestion protections
 

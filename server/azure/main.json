@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.47.16.16243",
-      "templateHash": "16663024274036363741"
+      "version": "0.44.1.10279",
+      "templateHash": "18218052559794414475"
     }
   },
   "parameters": {
@@ -19,7 +19,7 @@
     "functionAppName": {
       "type": "string",
       "metadata": {
-        "description": "Globally unique Function App name for the experimental Azure Functions dashboard profile."
+        "description": "Globally unique Function App name."
       }
     },
     "hostingPlanName": {
@@ -32,19 +32,45 @@
     "storageAccountName": {
       "type": "string",
       "metadata": {
-        "description": "Globally unique storage account name for Azure Functions runtime state."
+        "description": "Globally unique storage account name for Functions state and the ingestion artifact share."
       }
     },
     "keyVaultName": {
       "type": "string",
       "metadata": {
-        "description": "Key Vault name used for GitHub OAuth, session, and Redis connection secrets."
+        "description": "Existing Key Vault name created by bootstrap.bicep."
       }
     },
     "redisEnterpriseName": {
       "type": "string",
       "metadata": {
         "description": "Azure Managed Redis cache name."
+      }
+    },
+    "postgresServerName": {
+      "type": "string",
+      "metadata": {
+        "description": "PostgreSQL Flexible Server name."
+      }
+    },
+    "postgresAdministratorLogin": {
+      "type": "string",
+      "defaultValue": "caoadmin",
+      "metadata": {
+        "description": "PostgreSQL administrator login."
+      }
+    },
+    "virtualNetworkName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-vnet', parameters('functionAppName'))]",
+      "metadata": {
+        "description": "Virtual network name."
+      }
+    },
+    "ingestionImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Immutable CAO server image used by the private ingestion job."
       }
     },
     "redisSkuName": {
@@ -59,7 +85,7 @@
         "MemoryOptimized_M10"
       ],
       "metadata": {
-        "description": "Redis SKU. The server uses only core key-value commands (HSET/HGET/SMEMBERS/EVAL) and no Redis modules, so the smallest SKU that holds the retained generations is sufficient. Size this from retained dashboard data volume, not from feature requirements."
+        "description": "Redis SKU for operational state."
       }
     },
     "redisCapacity": {
@@ -67,17 +93,40 @@
       "defaultValue": 1,
       "minValue": 1,
       "metadata": {
-        "description": "Redis capacity. The module-free default uses the smallest capacity; increase only when retained generations need more memory or throughput."
+        "description": "Redis capacity."
+      }
+    },
+    "postgresSkuName": {
+      "type": "string",
+      "defaultValue": "Standard_B1ms",
+      "metadata": {
+        "description": "PostgreSQL compute SKU."
+      }
+    },
+    "postgresSkuTier": {
+      "type": "string",
+      "defaultValue": "Burstable",
+      "metadata": {
+        "description": "PostgreSQL compute tier."
+      }
+    },
+    "postgresStorageSizeGB": {
+      "type": "int",
+      "defaultValue": 32,
+      "minValue": 32,
+      "metadata": {
+        "description": "PostgreSQL storage size in GiB."
       }
     },
     "allowedHosts": {
       "type": "array",
       "metadata": {
-        "description": "Public host names that Azure Front Door/App Service is allowed to forward to the Go dashboard handler."
+        "description": "Public host names that App Service is allowed to forward to the Go handler."
       }
     },
     "githubAllowedOrganizations": {
       "type": "array",
+      "defaultValue": [],
       "metadata": {
         "description": "GitHub organizations whose active members are authorized."
       }
@@ -92,47 +141,28 @@
     "githubClientId": {
       "type": "string",
       "metadata": {
-        "description": "GitHub OAuth App client ID. Do not use a PAT; the server only supports the OAuth authorization-code flow."
+        "description": "GitHub OAuth App client ID."
       }
     },
-    "githubClientSecret": {
-      "type": "securestring",
+    "usePreviousSessionSecret": {
+      "type": "bool",
+      "defaultValue": false,
       "metadata": {
-        "description": "GitHub OAuth App client secret. It is written only to Key Vault and consumed by the Function App through a Key Vault reference."
-      }
-    },
-    "sessionSecret": {
-      "type": "securestring",
-      "minLength": 32,
-      "metadata": {
-        "description": "At least 32 characters of random session secret material used to encrypt server-side OAuth sessions."
-      }
-    },
-    "previousSessionSecret": {
-      "type": "securestring",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Optional previous session secret retained during controlled key rotation until active sessions and pending revocations are drained."
-      }
-    },
-    "redisConnectionString": {
-      "type": "securestring",
-      "metadata": {
-        "description": "TLS Redis URL, for example rediss://:<access-key>@cache.region.redisenterprise.cache.azure.net:10000/0. Store a rotated value here rather than outputting Redis keys."
+        "description": "Reference the optional previous session secret during a controlled rotation."
       }
     },
     "logAnalyticsWorkspaceResourceId": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional Log Analytics workspace resource ID for Application Insights. Leave empty to create classic component-only telemetry."
+        "description": "Optional Log Analytics workspace resource ID for Application Insights and Container Apps logs."
       }
     },
     "collectorImage": {
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional container image running the collection role. Empty deploys no collection."
+        "description": "Optional container image running the server collection role. Empty keeps the default artifact-ingestion profile."
       }
     },
     "collectorGithubAppId": {
@@ -140,27 +170,6 @@
       "defaultValue": "",
       "metadata": {
         "description": "GitHub App identifier whose installations define ingestion scope. Required with collectorImage."
-      }
-    },
-    "collectorPrivateKey": {
-      "type": "securestring",
-      "defaultValue": "",
-      "metadata": {
-        "description": "GitHub App private key in PEM form. Required with collectorImage."
-      }
-    },
-    "githubWebhookSecret": {
-      "type": "securestring",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Shared secret verifying GitHub webhook deliveries. Required with collectorImage."
-      }
-    },
-    "collectorRedisPassword": {
-      "type": "securestring",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Redis access key used only by the collection autoscaler to read stream backlog. Required with collectorImage."
       }
     },
     "githubAdminUsers": {
@@ -194,12 +203,13 @@
         "Standard_ZRS"
       ],
       "metadata": {
-        "description": "Evidence lake file share tier. Premium is provisioned SSD; Standard is IOPS-throttled by share size."
+        "description": "Evidence lake file share tier for the optional collection profile."
       }
     }
   },
   "variables": {
     "collectionEnabled": "[not(empty(parameters('collectorImage')))]",
+    "redisNamespace": "azure-dashboard",
     "tags": {
       "workload": "gh-aw-cao-dashboard",
       "hostingMode": "azure-functions"
@@ -208,140 +218,118 @@
   },
   "resources": [
     {
-      "type": "Microsoft.Storage/storageAccounts",
-      "apiVersion": "2023-05-01",
-      "name": "[parameters('storageAccountName')]",
-      "location": "[parameters('location')]",
-      "tags": "[variables('tags')]",
-      "sku": {
-        "name": "Standard_LRS"
-      },
-      "kind": "StorageV2",
-      "properties": {
-        "allowBlobPublicAccess": false,
-        "minimumTlsVersion": "TLS1_2",
-        "supportsHttpsTrafficOnly": true
-      }
-    },
-    {
-      "type": "Microsoft.KeyVault/vaults",
-      "apiVersion": "2023-07-01",
-      "name": "[parameters('keyVaultName')]",
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[parameters('virtualNetworkName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
       "properties": {
-        "tenantId": "[subscription().tenantId]",
-        "sku": {
-          "family": "A",
-          "name": "standard"
-        },
-        "enableRbacAuthorization": true,
-        "enabledForTemplateDeployment": false,
-        "enableSoftDelete": true,
-        "enablePurgeProtection": true,
-        "softDeleteRetentionInDays": 90,
-        "publicNetworkAccess": "Enabled"
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.42.0.0/16"
+          ]
+        }
       }
     },
     {
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'github-oauth-client-secret')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('virtualNetworkName'), 'functions')]",
       "properties": {
-        "value": "[parameters('githubClientSecret')]",
-        "contentType": "GitHub OAuth client secret for CAO dashboard Azure Functions mode"
+        "addressPrefix": "10.42.0.0/24",
+        "delegations": [
+          {
+            "name": "web",
+            "properties": {
+              "serviceName": "Microsoft.Web/serverFarms"
+            }
+          }
+        ]
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]"
       ]
     },
     {
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-session-secret')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('virtualNetworkName'), 'postgres')]",
       "properties": {
-        "value": "[parameters('sessionSecret')]",
-        "contentType": "CAO dashboard session encryption secret"
+        "addressPrefix": "10.42.1.0/24",
+        "delegations": [
+          {
+            "name": "postgres",
+            "properties": {
+              "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
+            }
+          }
+        ]
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'functions')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]"
       ]
     },
     {
-      "condition": "[not(empty(parameters('previousSessionSecret')))]",
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-session-secret-previous')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('virtualNetworkName'), 'private-endpoints')]",
       "properties": {
-        "value": "[parameters('previousSessionSecret')]",
-        "contentType": "Previous CAO dashboard session encryption secret retained during rotation"
+        "addressPrefix": "10.42.2.0/24",
+        "privateEndpointNetworkPolicies": "Disabled"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'postgres')]"
       ]
     },
     {
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-url')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('virtualNetworkName'), 'ingestion')]",
       "properties": {
-        "value": "[parameters('redisConnectionString')]",
-        "contentType": "CAO dashboard Redis rediss URL"
+        "addressPrefix": "10.42.4.0/23"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
-      ]
-    },
-    {
-      "condition": "[variables('collectionEnabled')]",
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-collect-private-key')]",
-      "properties": {
-        "value": "[parameters('collectorPrivateKey')]",
-        "contentType": "GitHub App private key for the collection profile"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
-      ]
-    },
-    {
-      "condition": "[variables('collectionEnabled')]",
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-password')]",
-      "properties": {
-        "value": "[parameters('collectorRedisPassword')]",
-        "contentType": "Redis access key for the collection autoscaler"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'private-endpoints')]"
       ]
     },
     {
       "condition": "[variables('collectionEnabled')]",
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-github-webhook-secret')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('virtualNetworkName'), 'collectors')]",
       "properties": {
-        "value": "[parameters('githubWebhookSecret')]",
-        "contentType": "GitHub webhook shared secret"
+        "addressPrefix": "10.42.6.0/23"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'ingestion')]",
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]"
       ]
     },
     {
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'azure-webjobs-storage')]",
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "private.postgres.database.azure.com",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', 'private.postgres.database.azure.com', format('{0}-link', parameters('virtualNetworkName')))]",
+      "location": "global",
+      "tags": "[variables('tags')]",
       "properties": {
-        "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', parameters('storageAccountName'), environment().suffixes.storage, listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value)]",
-        "contentType": "Azure Functions runtime storage connection"
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]"
+        }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', 'private.postgres.database.azure.com')]"
       ]
     },
     {
@@ -366,10 +354,169 @@
       "properties": {
         "clientProtocol": "Encrypted",
         "clusteringPolicy": "EnterpriseCluster",
-        "evictionPolicy": "NoEviction"
+        "evictionPolicy": "NoEviction",
+        "modules": [
+          {
+            "name": "RedisJSON"
+          },
+          {
+            "name": "RediSearch"
+          }
+        ]
       },
       "dependsOn": [
         "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2024-06-01",
+      "name": "privatelink.redisenterprise.cache.azure.net",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2024-06-01",
+      "name": "[format('{0}/{1}', 'privatelink.redisenterprise.cache.azure.net', format('{0}-link', parameters('virtualNetworkName')))]",
+      "location": "global",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redisenterprise.cache.azure.net')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}-pe', parameters('redisEnterpriseName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'private-endpoints')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "redis",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]",
+              "groupIds": [
+                "redisEnterprise"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'private-endpoints')]",
+        "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "redis",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redisenterprise.cache.azure.net')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.redisenterprise.cache.azure.net')]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-pe', parameters('redisEnterpriseName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-url')]",
+      "properties": {
+        "value": "[format('rediss://:{0}@{1}:10000/0', uriComponent(listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2024-11-01').primaryKey), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName)]",
+        "contentType": "CAO dashboard Azure Managed Redis URL"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default')]",
+        "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"
+      ]
+    },
+    {
+      "condition": "[variables('collectionEnabled')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-password')]",
+      "properties": {
+        "value": "[listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2024-11-01').primaryKey]",
+        "contentType": "Redis access key for the CAO collection autoscaler"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": true,
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('storageAccountName'), 'default')]",
+      "properties": {
+        "shareDeleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
+      "properties": {
+        "shareQuota": 32,
+        "enabledProtocols": "SMB"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('storageAccountName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'azure-webjobs-storage')]",
+      "properties": {
+        "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', parameters('storageAccountName'), environment().suffixes.storage, listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value)]",
+        "contentType": "Azure Functions runtime storage connection"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
@@ -400,6 +547,27 @@
       }
     },
     {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-identity', parameters('functionAppName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Key Vault Secrets User')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]"
+      ]
+    },
+    {
       "type": "Microsoft.Web/sites",
       "apiVersion": "2023-12-01",
       "name": "[parameters('functionAppName')]",
@@ -407,10 +575,15 @@
       "tags": "[variables('tags')]",
       "kind": "functionapp,linux",
       "identity": {
-        "type": "SystemAssigned"
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))))]": {}
+        }
       },
       "properties": {
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'functions')]",
+        "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
         "httpsOnly": true,
         "clientAffinityEnabled": false,
         "siteConfig": {
@@ -419,33 +592,572 @@
           "ftpsState": "Disabled",
           "minTlsVersion": "1.2",
           "http20Enabled": true,
-          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName'))), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/azure-webjobs-storage)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_REQUIRE_HTTPS', 'value', 'true'), createObject('name', 'CAO_REDIS_NAMESPACE', 'value', 'azure-dashboard'), createObject('name', 'CAO_REDIS_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-redis-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(empty(parameters('previousSessionSecret')), createArray(), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)))), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
+          "vnetRouteAllEnabled": true,
+          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName'))), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/azure-webjobs-storage)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_POLICY_PATH', 'value', '.github/workflows/cao.azure.json'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_DASHBOARD_QUERIES', 'value', 'site/src/agent/queries.generated.json'), createObject('name', 'CAO_DATABASE_QUERIES', 'value', 'queries/database.json'), createObject('name', 'CAO_POSTGRES_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-postgres-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_REDIS_NAMESPACE', 'value', variables('redisNamespace')), createObject('name', 'CAO_REDIS_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-redis-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(parameters('usePreviousSessionSecret'), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), createArray()), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
         }
       },
       "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Key Vault Secrets User'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'azure-webjobs-storage')]",
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'github-oauth-client-secret')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'functions')]",
         "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-session-secret-previous')]",
+        "[resourceId('Microsoft.Resources/deployments', 'postgres')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-url')]",
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-session-secret')]"
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]"
       ]
     },
     {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
-      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('functionAppName'), 'Key Vault Secrets User')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "postgres",
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6c')]",
-        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-12-01', 'full').identity.principalId]",
-        "principalType": "ServicePrincipal"
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('tags')]"
+          },
+          "serverName": {
+            "value": "[parameters('postgresServerName')]"
+          },
+          "administratorLogin": {
+            "value": "[parameters('postgresAdministratorLogin')]"
+          },
+          "administratorLoginPassword": {
+            "reference": {
+              "keyVault": {
+                "id": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              },
+              "secretName": "cao-postgres-admin-password"
+            }
+          },
+          "delegatedSubnetResourceId": {
+            "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'postgres')]"
+          },
+          "privateDnsZoneResourceId": {
+            "value": "[resourceId('Microsoft.Network/privateDnsZones', 'private.postgres.database.azure.com')]"
+          },
+          "keyVaultName": {
+            "value": "[parameters('keyVaultName')]"
+          },
+          "skuName": {
+            "value": "[parameters('postgresSkuName')]"
+          },
+          "skuTier": {
+            "value": "[parameters('postgresSkuTier')]"
+          },
+          "storageSizeGB": {
+            "value": "[parameters('postgresStorageSizeGB')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "6942428660892407195"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for PostgreSQL."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags."
+              }
+            },
+            "serverName": {
+              "type": "string",
+              "metadata": {
+                "description": "PostgreSQL Flexible Server name."
+              }
+            },
+            "administratorLogin": {
+              "type": "string",
+              "metadata": {
+                "description": "PostgreSQL administrator login."
+              }
+            },
+            "administratorLoginPassword": {
+              "type": "securestring",
+              "metadata": {
+                "description": "PostgreSQL administrator password read from Key Vault by the parent deployment."
+              }
+            },
+            "delegatedSubnetResourceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Delegated subnet resource ID for PostgreSQL Flexible Server."
+              }
+            },
+            "privateDnsZoneResourceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Private DNS zone resource ID for PostgreSQL Flexible Server."
+              }
+            },
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Existing Key Vault name where the PostgreSQL URL is stored."
+              }
+            },
+            "skuName": {
+              "type": "string",
+              "defaultValue": "Standard_B1ms",
+              "metadata": {
+                "description": "PostgreSQL compute SKU."
+              }
+            },
+            "skuTier": {
+              "type": "string",
+              "defaultValue": "Burstable",
+              "metadata": {
+                "description": "PostgreSQL compute tier."
+              }
+            },
+            "storageSizeGB": {
+              "type": "int",
+              "defaultValue": 32,
+              "minValue": 32,
+              "metadata": {
+                "description": "PostgreSQL storage size in GiB."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+              "apiVersion": "2024-08-01",
+              "name": "[parameters('serverName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "[parameters('skuName')]",
+                "tier": "[parameters('skuTier')]"
+              },
+              "properties": {
+                "administratorLogin": "[parameters('administratorLogin')]",
+                "administratorLoginPassword": "[parameters('administratorLoginPassword')]",
+                "version": "16",
+                "network": {
+                  "delegatedSubnetResourceId": "[parameters('delegatedSubnetResourceId')]",
+                  "privateDnsZoneArmResourceId": "[parameters('privateDnsZoneResourceId')]",
+                  "publicNetworkAccess": "Disabled"
+                },
+                "storage": {
+                  "storageSizeGB": "[parameters('storageSizeGB')]",
+                  "autoGrow": "Enabled"
+                },
+                "highAvailability": {
+                  "mode": "Disabled"
+                },
+                "backup": {
+                  "backupRetentionDays": 7,
+                  "geoRedundantBackup": "Disabled"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+              "apiVersion": "2024-08-01",
+              "name": "[format('{0}/{1}', parameters('serverName'), 'cao')]",
+              "properties": {
+                "charset": "UTF8",
+                "collation": "en_US.utf8"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-postgres-url')]",
+              "properties": {
+                "value": "[format('postgresql://{0}:{1}@{2}:5432/{3}?sslmode=require', parameters('administratorLogin'), uriComponent(parameters('administratorLoginPassword')), reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName')), '2024-08-01').fullyQualifiedDomainName, 'cao')]",
+                "contentType": "CAO dashboard PostgreSQL connection URL"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers/databases', parameters('serverName'), 'cao')]",
+                "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "hostName": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('serverName')), '2024-08-01').fullyQualifiedDomainName]"
+            },
+            "databaseName": {
+              "type": "string",
+              "value": "cao"
+            }
+          }
+        }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]",
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.Network/privateDnsZones', 'private.postgres.database.azure.com')]",
+        "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', 'private.postgres.database.azure.com', format('{0}-link', parameters('virtualNetworkName')))]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'postgres')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "ingestion",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[variables('tags')]"
+          },
+          "namePrefix": {
+            "value": "[parameters('functionAppName')]"
+          },
+          "infrastructureSubnetId": {
+            "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'ingestion')]"
+          },
+          "keyVaultName": {
+            "value": "[parameters('keyVaultName')]"
+          },
+          "keyVaultUri": {
+            "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+          },
+          "storageAccountName": {
+            "value": "[parameters('storageAccountName')]"
+          },
+          "storageAccountKey": {
+            "value": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value]"
+          },
+          "fileShareName": {
+            "value": "dashboard-ingest"
+          },
+          "ingestionImage": {
+            "value": "[parameters('ingestionImage')]"
+          },
+          "redisNamespace": {
+            "value": "[variables('redisNamespace')]"
+          },
+          "applicationInsightsConnectionString": {
+            "value": "[reference(resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName'))), '2020-02-02').ConnectionString]"
+          },
+          "logAnalyticsWorkspaceResourceId": {
+            "value": "[parameters('logAnalyticsWorkspaceResourceId')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "5390647224909671031"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for ingestion resources."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Resource tags."
+              }
+            },
+            "namePrefix": {
+              "type": "string",
+              "metadata": {
+                "description": "Name prefix for ingestion resources."
+              }
+            },
+            "infrastructureSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Subnet resource ID for the internal Container Apps environment."
+              }
+            },
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Existing Key Vault name containing CAO connection secrets."
+              }
+            },
+            "keyVaultUri": {
+              "type": "string",
+              "metadata": {
+                "description": "Existing Key Vault URI containing CAO connection secrets."
+              }
+            },
+            "storageAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Storage account name that holds the ingestion file share."
+              }
+            },
+            "storageAccountKey": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Storage account key used only by the Container Apps environment mount."
+              }
+            },
+            "fileShareName": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure Files share containing the verified dashboard artifact."
+              }
+            },
+            "ingestionImage": {
+              "type": "string",
+              "metadata": {
+                "description": "Immutable CAO server image used for ingestion."
+              }
+            },
+            "redisNamespace": {
+              "type": "string",
+              "metadata": {
+                "description": "Redis namespace shared with the Function App."
+              }
+            },
+            "applicationInsightsConnectionString": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Application Insights connection string for ingestion telemetry."
+              }
+            },
+            "logAnalyticsWorkspaceResourceId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional Log Analytics workspace resource ID receiving job logs."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[format('{0}-ingest-identity', parameters('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), 'Key Vault Secrets User')]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}-ingest', parameters('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "appLogsConfiguration": "[if(empty(parameters('logAnalyticsWorkspaceResourceId')), createObject(), createObject('destination', 'azure-monitor'))]",
+                "vnetConfiguration": {
+                  "infrastructureSubnetId": "[parameters('infrastructureSubnetId')]",
+                  "internal": true
+                },
+                "zoneRedundant": false
+              }
+            },
+            {
+              "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]",
+              "name": "ingestion-logs",
+              "properties": {
+                "workspaceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
+                "logs": [
+                  {
+                    "categoryGroup": "allLogs",
+                    "enabled": true
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/managedEnvironments/storages",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}/{1}', format('{0}-ingest', parameters('namePrefix')), 'dashboard-artifact')]",
+              "properties": {
+                "azureFile": {
+                  "accountName": "[parameters('storageAccountName')]",
+                  "shareName": "[parameters('fileShareName')]",
+                  "accessMode": "ReadOnly",
+                  "accountKey": "[parameters('storageAccountKey')]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/jobs",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}-ingest', parameters('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))))]": {}
+                }
+              },
+              "properties": {
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]",
+                "configuration": {
+                  "triggerType": "Manual",
+                  "replicaTimeout": 7200,
+                  "replicaRetryLimit": 1,
+                  "manualTriggerConfig": {
+                    "parallelism": 1,
+                    "replicaCompletionCount": 1
+                  },
+                  "secrets": [
+                    {
+                      "name": "cao-postgres-url",
+                      "keyVaultUrl": "[format('{0}secrets/cao-postgres-url', parameters('keyVaultUri'))]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+                    },
+                    {
+                      "name": "cao-redis-url",
+                      "keyVaultUrl": "[format('{0}secrets/cao-redis-url', parameters('keyVaultUri'))]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+                    },
+                    {
+                      "name": "application-insights-connection-string",
+                      "value": "[parameters('applicationInsightsConnectionString')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "ingest",
+                      "image": "[parameters('ingestionImage')]",
+                      "command": [
+                        "/app/cao-dashboard"
+                      ],
+                      "args": [
+                        "ingest",
+                        "--source",
+                        "/ingest",
+                        "--database-queries",
+                        "/app/queries/database.json"
+                      ],
+                      "env": [
+                        {
+                          "name": "CAO_POSTGRES_URL",
+                          "secretRef": "cao-postgres-url"
+                        },
+                        {
+                          "name": "CAO_REDIS_URL",
+                          "secretRef": "cao-redis-url"
+                        },
+                        {
+                          "name": "CAO_REDIS_NAMESPACE",
+                          "value": "[parameters('redisNamespace')]"
+                        },
+                        {
+                          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                          "secretRef": "application-insights-connection-string"
+                        },
+                        {
+                          "name": "OTEL_SERVICE_NAME",
+                          "value": "[format('{0}-ingest', parameters('namePrefix'))]"
+                        },
+                        {
+                          "name": "DEBUG",
+                          "value": "cao:ingest"
+                        }
+                      ],
+                      "resources": {
+                        "cpu": "[json('1.0')]",
+                        "memory": "2Gi"
+                      },
+                      "volumeMounts": [
+                        {
+                          "volumeName": "artifact",
+                          "mountPath": "/ingest"
+                        }
+                      ]
+                    }
+                  ],
+                  "volumes": [
+                    {
+                      "name": "artifact",
+                      "storageType": "AzureFile",
+                      "storageName": "dashboard-artifact"
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments/storages', format('{0}-ingest', parameters('namePrefix')), 'dashboard-artifact')]",
+                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]",
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]",
+                "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), 'Key Vault Secrets User'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "environmentName": {
+              "type": "string",
+              "value": "[format('{0}-ingest', parameters('namePrefix'))]"
+            },
+            "jobName": {
+              "type": "string",
+              "value": "[format('{0}-ingest', parameters('namePrefix'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'ingestion')]",
+        "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.Resources/deployments', 'postgres')]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-url')]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
@@ -468,6 +1180,9 @@
           "namePrefix": {
             "value": "[parameters('functionAppName')]"
           },
+          "infrastructureSubnetId": {
+            "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'collectors')]"
+          },
           "collectorImage": {
             "value": "[parameters('collectorImage')]"
           },
@@ -481,7 +1196,7 @@
             "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
           },
           "redisNamespace": {
-            "value": "azure-dashboard"
+            "value": "[variables('redisNamespace')]"
           },
           "controlRepository": {
             "value": "[parameters('collectorControlRepository')]"
@@ -508,8 +1223,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.47.16.16243",
-              "templateHash": "947882728126865901"
+              "version": "0.44.1.10279",
+              "templateHash": "18349012163860638096"
             }
           },
           "parameters": {
@@ -530,6 +1245,12 @@
               "minLength": 3,
               "metadata": {
                 "description": "Name prefix for the collection resources."
+              }
+            },
+            "infrastructureSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Subnet resource ID for the internal Container Apps environment."
               }
             },
             "collectorImage": {
@@ -751,6 +1472,10 @@
               "tags": "[parameters('tags')]",
               "properties": {
                 "appLogsConfiguration": "[if(empty(parameters('logAnalyticsWorkspaceResourceId')), createObject(), createObject('destination', 'azure-monitor'))]",
+                "vnetConfiguration": {
+                  "infrastructureSubnetId": "[parameters('infrastructureSubnetId')]",
+                  "internal": true
+                },
                 "zoneRedundant": false
               }
             },
@@ -1017,12 +1742,12 @@
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-collect-private-key')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-password')]",
+        "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'collectors')]",
         "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-url')]",
-        "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"
+        "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]"
       ]
     }
   ],
@@ -1039,6 +1764,22 @@
       "type": "string",
       "value": "[variables('githubRedirectUri')]"
     },
+    "ingestionJobName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'ingestion'), '2025-04-01').outputs.jobName.value]"
+    },
+    "ingestionShareName": {
+      "type": "string",
+      "value": "dashboard-ingest"
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+    },
+    "postgresHostName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'postgres'), '2025-04-01').outputs.hostName.value]"
+    },
     "redisEnterpriseHostName": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
@@ -1046,10 +1787,6 @@
     "redisDatabaseName": {
       "type": "string",
       "value": "default"
-    },
-    "keyVaultUri": {
-      "type": "string",
-      "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
     }
   }
 }
