@@ -4,6 +4,7 @@ using TypeSpec.Reflection;
 namespace Cao.Postgres;
 
 extern dec parent(target: ModelProperty, entity: valueof string, required?: valueof boolean);
+extern dec runPartition(target: Model);
 
 model campaigns {
   aiCreditAllowance?: decimal;
@@ -41,6 +42,7 @@ model repositories {
   visibility?: string;
 }
 
+@runPartition
 model jobs {
   id: string;
   @parent("runs")
@@ -52,6 +54,7 @@ model jobs {
   completedAt?: utcDateTime;
 }
 
+@runPartition
 model sessions {
   id: string;
   @parent("runs")
@@ -61,6 +64,7 @@ model sessions {
   completedAt?: utcDateTime;
 }
 
+@runPartition
 model events {
   id: string;
   @parent("sessions")
@@ -107,6 +111,7 @@ model workflows {
 }
 
 /** Run facts and scalar metrics; nested context, usage, and assessment payloads remain upstream. */
+@runPartition
 model runs {
   actionMinutes?: decimal;
   admissionReason?: string;
@@ -173,6 +178,7 @@ model runs {
   workflowPath?: string;
 }
 
+@runPartition
 model domains {
   correlationId?: string;
   decision?: string;
@@ -192,6 +198,7 @@ model domains {
 }
 
 /** Run-linked tool events, including separate call/outcome records; not configured tool definitions. */
+@runPartition
 model tools {
   correlationId?: string;
   failedCount?: int64;
@@ -219,6 +226,7 @@ model tools {
 }
 
 /** Separate skill activity; collection membership replaces the unused isSkill flag. */
+@runPartition
 model skills {
   activationSource?: string;
   correlationId?: string;
@@ -239,6 +247,7 @@ model skills {
   type?: string;
 }
 
+@runPartition
 model friction {
   aic?: decimal;
   inputTokens?: int64;
@@ -294,6 +303,7 @@ model friction {
  * Numeric summaries must match in full, be at most 1,024 ASCII characters,
  * and use at most three exponent digits; larger or malformed summaries remain.
  */
+@runPartition
 model audits {
   acceptedAt?: utcDateTime;
   activationSource?: string;
@@ -366,6 +376,7 @@ model audits {
   type?: string;
 }
 
+@runPartition
 model issues {
   closed?: boolean;
   closedAt?: utcDateTime;
@@ -451,6 +462,7 @@ model experiments {
   workflowId: string;
 }
 
+@runPartition
 model experimentAssignments {
   artifactLink?: string;
   campaign?: string;
@@ -484,6 +496,7 @@ model graders {
   workflowId: string;
 }
 
+@runPartition
 model graderObservations {
   auditId?: string;
   baselineValue?: decimal;
@@ -528,6 +541,7 @@ model evals {
   workflowId: string;
 }
 
+@runPartition
 model evalObservations {
   direction?: string;
   @parent("evals")

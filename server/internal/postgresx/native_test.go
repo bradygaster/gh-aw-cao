@@ -257,3 +257,138 @@ func TestNativeInventoryEnrichment(t *testing.T) {
 		t.Fatalf("native observation precedence lost: %s %s", owner, visibility)
 	}
 }
+
+func TestWeeklyRunPartitionsAndRetention(t *testing.T) {
+	store, _ := nativeTestStore(t)
+	now := time.Now().UTC()
+	old := now.AddDate(0, 0, -28).Format(time.RFC3339)
+	current := now.Format(time.RFC3339)
+	writer, err := store.BeginIngestion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Abort(t.Context())
+	for _, record := range []struct {
+		source string
+		row    model.Row
+	}{
+		{"$repositories", model.Row{"id": "repository"}},
+		{"$workflows", model.Row{"id": "workflow", "repositoryId": "repository"}},
+		{"$experiments", model.Row{"id": "experiment", "workflowId": "workflow"}},
+		{"$graders", model.Row{"id": "grader", "workflowId": "workflow"}},
+		{"$evals", model.Row{"id": "eval", "workflowId": "workflow"}},
+		{"$runs", model.Row{"id": "old", "repositoryId": "repository", "workflowId": "workflow", "createdAt": old}},
+		{"$runs", model.Row{"id": "current", "repositoryId": "repository", "workflowId": "workflow", "createdAt": current}},
+		{"$sessions", model.Row{"id": "old-session", "runId": "old"}},
+		{"$events", model.Row{"id": "old-event", "sessionId": "old-session"}},
+		{"$sessions", model.Row{"id": "current-session", "runId": "current"}},
+		{"$events", model.Row{"id": "current-event", "sessionId": "current-session"}},
+	} {
+		if err := writer.Append(t.Context(), record.source, record.row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, source := range []string{"$audits", "$domains", "$evalObservations", "$experimentAssignments", "$friction", "$graderObservations", "$issues", "$jobs", "$skills", "$tools"} {
+		for _, run := range []string{"old", "current"} {
+			row := model.Row{"id": source + run, "runId": run}
+			switch source {
+			case "$evalObservations":
+				row["evalId"] = "eval"
+			case "$experimentAssignments":
+				row["experimentId"] = "experiment"
+			case "$graderObservations":
+				row["graderId"] = "grader"
+			}
+			if err := writer.Append(t.Context(), source, row); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := writer.Publish(t.Context(), "weekly"); err != nil {
+		t.Fatal(err)
+	}
+	var partitions int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT count(DISTINCT tableoid) FROM runs WHERE namespace=$1", store.namespace).Scan(&partitions); err != nil || partitions != 2 {
+		t.Fatalf("runs did not route to two weekly partitions: %d %v", partitions, err)
+	}
+	var future bool
+	if err := store.db.QueryRowContext(t.Context(), `SELECT to_regclass('runs_w' || to_char(date_trunc('week', now() AT TIME ZONE 'UTC') + interval '3 weeks','YYYYMMDD')) IS NOT NULL`).Scan(&future); err != nil || !future {
+		t.Fatalf("future weekly partition was not pre-created: %v %v", future, err)
+	}
+	result, _, err := store.ExecuteSQLPlan(t.Context(), []query.Definition{{Name: "runs", From: "$runs", Select: []query.SelectedField{{Field: "id"}}}}, []string{"runs"})
+	if err != nil || len(result["runs"].Rows) != 2 {
+		t.Fatalf("parent query lost partitions: %v %v", result, err)
+	}
+	active, err := store.BeginIngestion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance := make(chan error, 1)
+	go func() { maintenance <- store.RunPartitionMaintenance(t.Context(), now, 14) }()
+	select {
+	case err := <-maintenance:
+		t.Fatalf("maintenance raced an active ingestion: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	active.Abort(t.Context())
+	if err := <-maintenance; err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.State(t.Context())
+	if err != nil || state.Revision <= 1 || state.Counts["$runs"] != 1 || state.Counts["$events"] != 1 {
+		t.Fatalf("retention did not publish updated counts and revision: %+v %v", state, err)
+	}
+	for _, table := range []string{"runs", "sessions", "events", "audits", "domains", "eval_observations", "experiment_assignments", "friction", "grader_observations", "issues", "jobs", "skills", "tools"} {
+		var count int
+		if err := store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE namespace=$1", store.namespace).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("%s coordinated retention count = %d, err = %v", table, count, err)
+		}
+	}
+	if _, err := store.db.ExecContext(t.Context(), `INSERT INTO runs(namespace,ordinal,present_fields,id,repository_id,workflow_id,run_at)
+		VALUES($1,2,repeat('0',73)::bit varying,'unroutable','repository','workflow','1900-01-01')`, store.namespace); err == nil || !strings.Contains(err.Error(), "no partition") {
+		t.Fatalf("write unexpectedly created an out-of-window partition: %v", err)
+	}
+	var before, after int
+	if err := store.db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_inherits WHERE inhparent='runs'::regclass`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	for _, day := range []time.Time{now, now.AddDate(0, 0, 1)} {
+		if err := store.RunPartitionMaintenance(t.Context(), day, 14); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.db.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_inherits WHERE inhparent='runs'::regclass`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after < before || after > before+1 {
+		t.Fatalf("repeated daily maintenance duplicated partitions: before=%d after=%d", before, after)
+	}
+	if repeat, err := store.State(t.Context()); err != nil || repeat.Revision != state.Revision || repeat.Counts["$runs"] != 1 {
+		t.Fatalf("repeated maintenance changed logical state: %+v %v", repeat, err)
+	}
+	missingWeek := now.AddDate(0, 0, 7*futureRunWeeks)
+	missingWeek = missingWeek.AddDate(0, 0, -((int(missingWeek.Weekday()) + 6) % 7))
+	missingName := "tools_w" + missingWeek.Format("20060102")
+	if _, err := store.db.ExecContext(t.Context(), "DROP TABLE "+missingName); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunPartitionMaintenance(t.Context(), now, 14); err != nil {
+		t.Fatal(err)
+	}
+	var restored bool
+	if err := store.db.QueryRowContext(t.Context(), `SELECT EXISTS(
+		SELECT 1 FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid
+		WHERE i.inhparent='tools'::regclass AND c.relname=$1)`, missingName).Scan(&restored); err != nil || !restored {
+		t.Fatalf("missing child partition was not restored: %v %v", restored, err)
+	}
+	later := now.AddDate(0, 0, 7)
+	if err := store.RunPartitionMaintenance(t.Context(), later, 14); err != nil {
+		t.Fatal(err)
+	}
+	futureWeek := later.AddDate(0, 0, 7*futureRunWeeks)
+	futureWeek = futureWeek.AddDate(0, 0, -((int(futureWeek.Weekday()) + 6) % 7))
+	var ready bool
+	if err := store.db.QueryRowContext(t.Context(), "SELECT to_regclass($1) IS NOT NULL", "runs_w"+futureWeek.Format("20060102")).Scan(&ready); err != nil || !ready {
+		t.Fatalf("weekly rollover did not pre-create the next future partition: %v %v", ready, err)
+	}
+}

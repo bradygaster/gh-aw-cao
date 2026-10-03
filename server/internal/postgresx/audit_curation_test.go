@@ -523,7 +523,7 @@ func TestAuditCurationSharedFixture(t *testing.T) {
 				if err := writer.Flush(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := writer.tx.Exec(t.Context(), "UPDATE audits SET name=$3 WHERE namespace=$1 AND id=$2", store.namespace, test.Name, "legacy seed guard"); err != nil {
+				if _, err := writer.tx.Exec(t.Context(), "UPDATE audits_stage SET name=$3 WHERE namespace=$1 AND id=$2", store.namespace, test.Name, "legacy seed guard"); err != nil {
 					t.Fatal(err)
 				}
 			}

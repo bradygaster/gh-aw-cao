@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,9 +31,11 @@ type State struct {
 }
 
 type Store struct {
-	db        *sql.DB
-	config    *pgx.ConnConfig
-	namespace string
+	db              *sql.DB
+	config          *pgx.ConnConfig
+	namespace       string
+	stopMaintenance context.CancelFunc
+	maintenanceDone sync.WaitGroup
 }
 
 type NativeReader interface {
@@ -94,12 +98,49 @@ func NewConfig(ctx context.Context, config *pgx.ConnConfig, namespaces ...string
 		_ = db.Close()
 		return nil, fmt.Errorf("postgres connection or fresh schema initialization failed: %w", err)
 	}
+	retention, err := configuredRetentionDays()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	store := &Store{db: db, config: config.Copy(), namespace: namespace}
+	if err := store.RunPartitionMaintenance(ctx, time.Now(), retention); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize run partitions: %w", err)
+	}
 	if _, err := store.CurateAudits(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("maintain existing native audits: %w", err)
 	}
+	maintenanceCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
+	store.stopMaintenance = stop
+	store.maintenanceDone.Add(1)
+	go func() {
+		defer store.maintenanceDone.Done()
+		ticker := time.NewTicker(partitionMaintenanceInterval)
+		defer ticker.Stop()
+		runPartitionMaintenanceLoop(maintenanceCtx, ticker.C, func(ctx context.Context, now time.Time) error {
+			return store.RunPartitionMaintenance(ctx, now, retention)
+		})
+	}()
 	return store, nil
+}
+
+func runPartitionMaintenanceLoop(ctx context.Context, ticks <-chan time.Time, run func(context.Context, time.Time) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now, ok := <-ticks:
+			if !ok {
+				return
+			}
+			if err := run(ctx, now); err != nil && ctx.Err() == nil {
+				// A later maintenance tick retries; ingestion never creates partitions.
+				log.Printf("postgres partition maintenance failed")
+			}
+		}
+	}
 }
 
 func validateTransport(config *pgx.ConnConfig) error {
@@ -121,7 +162,13 @@ func validateTransport(config *pgx.ConnConfig) error {
 	return nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.stopMaintenance != nil {
+		s.stopMaintenance()
+		s.maintenanceDone.Wait()
+	}
+	return s.db.Close()
+}
 
 func (s *Store) DeleteNamespace(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -130,6 +177,9 @@ func (s *Store) DeleteNamespace(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, "SET CONSTRAINTS ALL DEFERRED"); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared(712083241, 17484)`); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))`, s.namespace); err != nil {

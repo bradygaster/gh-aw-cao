@@ -26,8 +26,8 @@ func TestUnchangedArtifactRevisionCuratesExistingAudits(t *testing.T) {
 	}
 	admin := stdlib.OpenDB(*config.Copy())
 	defer func() { _ = admin.Close() }()
-	if _, err := admin.ExecContext(ctx, `INSERT INTO audits(namespace,ordinal,present_fields,id,run_id,source,type,status,summary,timestamp)
-		SELECT namespace,ordinal+1,present_fields,'legacy-metadata',run_id,'agent','agent.session','completed','',timestamp
+	if _, err := admin.ExecContext(ctx, `INSERT INTO audits(namespace,ordinal,present_fields,id,run_id,run_at,source,type,status,summary,timestamp)
+		SELECT namespace,ordinal+1,present_fields,'legacy-metadata',run_id,run_at,'agent','agent.session','completed','',timestamp
 		FROM audits WHERE id='audit:424242:complete'`); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestAuditCurationDoesNotHideTransportedOrphan(t *testing.T) {
 	}
 	writeTestFile(t, filepath.Join(directory, "payload-hashes.json"), manifestContent)
 	writeTestFile(t, filepath.Join(directory, "inventory-sources.json"), []byte("{}"))
-	if _, err := Run(ctx, store, directory, options); err == nil || !strings.Contains(err.Error(), "validate canonical relationships") {
+	if _, err := Run(ctx, store, directory, options); err == nil || !strings.Contains(err.Error(), "run-owned audits references a missing or ambiguous parent") {
 		t.Fatalf("eligible orphan bypassed transported-record parent validation: %v", err)
 	}
 	after, err := store.State(ctx)
