@@ -264,11 +264,6 @@ func rawSourceDefinitions(definitions []query.Definition) []query.Definition {
 		}
 	}
 	result := make([]query.Definition, 0, 9)
-	for _, name := range []string{"jobs", "sessions", "events"} {
-		if !declared[name] {
-			result = append(result, query.Definition{Name: name, From: "$" + name})
-		}
-	}
 	if recordQuery != nil {
 		for _, name := range []string{"domains", "tools", "skills", "friction", "audits", "issues"} {
 			if declared[name] {
@@ -610,9 +605,6 @@ func (a *App) Handler() http.Handler {
 	register("GET /api/repositories/{id}", a.repository)
 	register("GET /api/repositories/{id}/runs", a.repositoryRuns)
 	register("GET /api/workflows/{id}/runs", a.workflowRuns)
-	register("GET /api/runs/{id}/jobs", a.runJobs)
-	register("GET /api/runs/{id}/sessions", a.runSessions)
-	register("GET /api/sessions/{id}/events", a.sessionEvents)
 	register("POST /api/github/webhook", a.githubWebhook)
 	register("POST /api/admin/rebuild", a.rebuild)
 	register("GET /api/admin/rebuild/status", a.rebuildStatus)
