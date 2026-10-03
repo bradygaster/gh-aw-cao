@@ -251,6 +251,44 @@ func (w Worker) process(ctx context.Context, lease Lease) bool {
 		workerLog.Printf("erased retained evidence repository=%s", task.Repository)
 		return true
 	}
+	if task.Lifecycle != "" {
+		if w.Projector.Data == nil {
+			workerLog.Printf("repository lifecycle update requires Postgres")
+			return false
+		}
+		if err := w.Projector.Data.UpdateRepositoryLifecycle(ctx, task.RepositoryID, task.Repository, task.Lifecycle, task.EnqueuedAt); err != nil {
+			workerLog.Printf("repository lifecycle update failed")
+			if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
+				workerLog.Printf("task retry failed")
+			}
+			return false
+		}
+		if err := w.Queue.Complete(ctx, lease); err != nil {
+			workerLog.Printf("task acknowledgement failed")
+		}
+		if w.OnProjection != nil {
+			state, err := w.Projector.Data.State(ctx)
+			if err == nil {
+				w.OnProjection(state.Revision)
+			}
+		}
+		return false
+	}
+	if w.Projector.Data != nil {
+		active, err := w.Projector.Data.RepositoryActive(ctx, task.Repository)
+		if err != nil {
+			if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
+				workerLog.Printf("task retry failed")
+			}
+			return false
+		}
+		if !active {
+			if err := w.Queue.Complete(ctx, lease); err != nil {
+				workerLog.Printf("task acknowledgement failed")
+			}
+			return false
+		}
+	}
 	if err := w.Runner.Collect(ctx, task); err != nil {
 		workerLog.Printf("collection failed attempt=%d", task.Attempt)
 		if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
