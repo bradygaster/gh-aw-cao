@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "15344322365936770311"
+      "templateHash": "867837934176310498"
     }
   },
   "parameters": {
@@ -354,7 +354,15 @@
       "properties": {
         "clientProtocol": "Encrypted",
         "clusteringPolicy": "EnterpriseCluster",
-        "evictionPolicy": "NoEviction"
+        "evictionPolicy": "NoEviction",
+        "modules": [
+          {
+            "name": "RedisJSON"
+          },
+          {
+            "name": "RediSearch"
+          }
+        ]
       },
       "dependsOn": [
         "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"

@@ -255,6 +255,10 @@ resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = 
     clientProtocol: 'Encrypted'
     clusteringPolicy: 'EnterpriseCluster'
     evictionPolicy: 'NoEviction'
+    modules: [
+      { name: 'RedisJSON' }
+      { name: 'RediSearch' }
+    ]
   }
 }
 
