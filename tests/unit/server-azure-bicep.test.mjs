@@ -14,6 +14,7 @@ test("Azure bootstrap creates an RBAC Key Vault without accepting secret values"
   assert.match(bootstrap, /enableSoftDelete:\s*true/);
   assert.match(bootstrap, /enabledForTemplateDeployment:\s*true/);
   assert.match(bootstrap, /param enablePurgeProtection bool = true/);
+  assert.match(bootstrap, /enablePurgeProtection \? \{\s*enablePurgeProtection:\s*true/);
   assert.match(bootstrap, /Key Vault Secrets Officer/);
   assert.doesNotMatch(bootstrap, /clientSecret|sessionSecret|administratorLoginPassword/);
 });

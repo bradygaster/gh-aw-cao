@@ -21,19 +21,23 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
   tags: tags
-  properties: {
-    tenantId: subscription().tenantId
-    sku: {
-      family: 'A'
-      name: 'standard'
-    }
-    enableRbacAuthorization: true
-    enabledForTemplateDeployment: true
-    enableSoftDelete: true
-    enablePurgeProtection: enablePurgeProtection
-    softDeleteRetentionInDays: 7
-    publicNetworkAccess: 'Enabled'
-  }
+  properties: union(
+    {
+      tenantId: subscription().tenantId
+      sku: {
+        family: 'A'
+        name: 'standard'
+      }
+      enableRbacAuthorization: true
+      enabledForTemplateDeployment: true
+      enableSoftDelete: true
+      softDeleteRetentionInDays: 7
+      publicNetworkAccess: 'Enabled'
+    },
+    enablePurgeProtection ? {
+      enablePurgeProtection: true
+    } : {}
+  )
 }
 
 resource deployerSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
