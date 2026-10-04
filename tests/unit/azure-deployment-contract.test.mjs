@@ -64,6 +64,8 @@ test("Azure operator command keeps secrets out of configuration and automates th
   assert.match(script, /az account get-access-token/);
   assert.match(script, /payload\.oid/);
   assert.doesNotMatch(script, /az ad signed-in-user/);
+  assert.match(script, /--name cao-bootstrap[\s\S]*--no-wait/);
+  assert.match(script, /az deployment group wait[\s\S]*--name cao-bootstrap[\s\S]*--timeout 600/);
   assert.match(script, /az containerapp job start/);
   assert.match(script, /did not finish within 125 minutes/);
   assert.match(script, /main deployment failed after three attempts/);

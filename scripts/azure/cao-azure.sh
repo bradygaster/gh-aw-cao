@@ -187,7 +187,14 @@ bootstrap() {
       keyVaultName="$KEY_VAULT_NAME" \
       deployerObjectId="$deployer_object_id" \
       enablePurgeProtection="$PURGE_PROTECTION" \
+    --no-wait \
     --output none
+  az deployment group wait \
+    --resource-group "$RESOURCE_GROUP" \
+    --name cao-bootstrap \
+    --created \
+    --interval 5 \
+    --timeout 600
   wait_for_vault_access
 
   local secret_dir oauth_file session_file postgres_file
