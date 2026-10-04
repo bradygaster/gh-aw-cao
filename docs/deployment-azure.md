@@ -17,8 +17,8 @@ flowchart LR
   Function -->|"Key Vault references"| Vault["Azure Key Vault"]
   Function -->|"private network"| Postgres["PostgreSQL Flexible Server<br/>dashboard entities + queries"]
   Function -->|"private endpoint + TLS"| Redis["Azure Managed Redis<br/>operational state"]
-  Operator["Operator"] -->|"upload verified artifact"| Files["Azure Files<br/>ingestion staging"]
-  Files --> Job["Container Apps Job<br/>manual ingestion"]
+  Operator["Operator"] -->|"Entra-authenticated upload"| Blobs["Blob container<br/>ingestion staging"]
+  Blobs -->|"managed identity download"| Job["Container Apps Job<br/>manual ingestion"]
   Job -->|"private network"| Postgres
   Job -->|"private endpoint + TLS"| Redis
   Function --> Insights["Application Insights"]
@@ -36,12 +36,12 @@ This split lets you generate a GitHub OAuth secret after the vault exists withou
 
 | Service | Configuration | Purpose |
 | --- | --- | --- |
-| Azure Functions | Linux custom handler on Elastic Premium `EP1`, HTTPS only, TLS 1.2, FTPS off, always on, user-assigned identity, VNet integration, route-all enabled | Hosts the CAO dashboard server |
+| Azure Functions | Linux custom handler on Flex Consumption `FC1`, HTTPS only, TLS 1.2, FTPS off, user-assigned identity, VNet integration, route-all enabled | Hosts the CAO dashboard server without dedicated VM quota |
 | PostgreSQL Flexible Server | PostgreSQL 16, private delegated subnet, private DNS, public access disabled, `Standard_B1ms` and 32 GiB by default, seven-day backup retention | Stores authoritative dashboard entities and executes Dashboard Language queries |
 | Azure Managed Redis | `Balanced_B0` by default, encrypted client protocol, TLS 1.2, `NoEviction`, RedisJSON and RediSearch, public access disabled, private endpoint and private DNS | Stores sessions, rate limits, queues, deduplication, coordination, quota state, and bounded caches |
-| Azure Container Apps job | Internal environment, manual trigger, user-assigned identity, read-only Azure Files mount | Ingests a verified dashboard artifact without exposing PostgreSQL |
-| Key Vault | RBAC, soft delete, optional purge protection, ARM template secret retrieval enabled | Stores OAuth, session, PostgreSQL, Redis, and Functions storage secrets |
-| Storage account | HTTPS only, TLS 1.2, no public blob access | Stores Functions runtime state and the temporary ingestion artifact |
+| Azure Container Apps job | Internal environment, manual trigger, user-assigned identity, ephemeral artifact volume | Downloads and ingests a verified dashboard artifact without exposing PostgreSQL |
+| Key Vault | RBAC, soft delete, optional purge protection, ARM template secret retrieval enabled | Stores OAuth, session, PostgreSQL, and Redis secrets |
+| Storage account | HTTPS only, TLS 1.2, no public blob access, shared-key authentication disabled | Stores Functions runtime state and the temporary ingestion artifact through Microsoft Entra identities |
 | Application Insights | Optional Log Analytics linkage | Receives Functions and ingestion telemetry |
 
 The virtual network has separate subnets for Functions integration, PostgreSQL, Redis private endpoints, ingestion, and optional collection workers.
@@ -172,7 +172,7 @@ scripts/azure/cao-azure.sh validate .cao/azure/config.json
 The command first runs `az deployment group validate`, then prints `az deployment group what-if`. It does not apply the main deployment. Review the what-if output for:
 
 - The expected resource group and region.
-- The Function App, EP1 plan, PostgreSQL, Redis, VNet, private endpoint, DNS zones, storage, Key Vault secrets, Application Insights, and ingestion job.
+- The Function App, FC1 plan, PostgreSQL, Redis, VNet, private endpoint, DNS zones, storage, Key Vault secrets, Application Insights, and ingestion job.
 - No unexpected role assignments, public database access, or resources outside the configured resource group.
 - The expected SKUs and storage sizes.
 
@@ -180,7 +180,7 @@ The command first runs `az deployment group validate`, then prints `az deploymen
 
 Complete the [GitHub Actions only deployment](deployment-actions.md) in the control repository and download a successful `cao-dashboard.yml` artifact. Verify the workflow run, repository, commit, and artifact provenance before ingestion.
 
-Extract the artifact into a directory. The ingestion command uploads the directory contents to the deployment's `dashboard-ingest` file share, mounts the share read-only, and transactionally replaces the PostgreSQL dataset. A failed ingestion leaves the previous committed dataset active.
+Extract the artifact into a directory. The ingestion command uploads the directory contents to the deployment's `dashboard-ingest` Blob container with your Microsoft Entra identity. The private ingestion job downloads those blobs with its managed identity into an ephemeral volume, then transactionally replaces the PostgreSQL dataset. A failed ingestion leaves the previous committed dataset active.
 
 ## Deploy and test
 
@@ -260,7 +260,11 @@ The main template configures these application settings:
 | `CAO_GITHUB_ALLOWED_TEAMS` | Configured team allow list |
 | `CAO_SESSION_SECRET` | Versionless Key Vault reference |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Application Insights |
-| `AzureWebJobsStorage` | Versionless Key Vault reference |
+| `AzureWebJobsStorage__blobServiceUri` | Blob service endpoint |
+| `AzureWebJobsStorage__queueServiceUri` | Queue service endpoint |
+| `AzureWebJobsStorage__tableServiceUri` | Table service endpoint |
+| `AzureWebJobsStorage__credential` | `managedidentity` |
+| `AzureWebJobsStorage__clientId` | Function App user-assigned identity |
 
 Hosted health and readiness probes (including HEAD requests on the `GET` routes) share a 600-requests-per-minute bucket keyed by client address. The loopback local profile leaves these probes unmetered.
 
@@ -334,6 +338,6 @@ This reference deliberately does not claim:
 - Point-in-time operational recovery objectives beyond the configured PostgreSQL backup retention.
 - Automatic scheduled artifact retrieval and ingestion.
 - Per-repository authorization inside one dashboard dataset.
-- Low idle cost. EP1 and Azure Managed Redis are provisioned services.
+- Low idle cost. Flex Consumption scales to zero; Azure Managed Redis remains provisioned.
 
 Make those decisions explicitly for the tenant rather than hiding them behind deployment defaults.

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "867837934176310498"
+      "templateHash": "9629848547977473654"
     }
   },
   "parameters": {
@@ -29,10 +29,24 @@
         "description": "Azure App Service plan name for the Function App."
       }
     },
+    "hostingPlanSkuName": {
+      "type": "string",
+      "defaultValue": "FC1",
+      "metadata": {
+        "description": "Linux App Service plan SKU for the Function App."
+      }
+    },
+    "hostingPlanSkuTier": {
+      "type": "string",
+      "defaultValue": "FlexConsumption",
+      "metadata": {
+        "description": "Linux App Service plan tier for the Function App."
+      }
+    },
     "storageAccountName": {
       "type": "string",
       "metadata": {
-        "description": "Globally unique storage account name for Functions state and the ingestion artifact share."
+        "description": "Globally unique storage account name for Functions state and the ingestion artifact container."
       }
     },
     "keyVaultName": {
@@ -71,6 +85,12 @@
       "type": "string",
       "metadata": {
         "description": "Immutable CAO server image used by the private ingestion job."
+      }
+    },
+    "deployerObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Microsoft Entra object ID allowed to upload verified ingestion artifacts."
       }
     },
     "redisSkuName": {
@@ -476,17 +496,17 @@
       "kind": "StorageV2",
       "properties": {
         "allowBlobPublicAccess": false,
-        "allowSharedKeyAccess": true,
+        "allowSharedKeyAccess": false,
         "minimumTlsVersion": "TLS1_2",
         "supportsHttpsTrafficOnly": true
       }
     },
     {
-      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
       "apiVersion": "2023-05-01",
       "name": "[format('{0}/{1}', parameters('storageAccountName'), 'default')]",
       "properties": {
-        "shareDeleteRetentionPolicy": {
+        "deleteRetentionPolicy": {
           "enabled": true,
           "days": 7
         }
@@ -496,39 +516,37 @@
       ]
     },
     {
-      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
       "apiVersion": "2023-05-01",
       "name": "[format('{0}/{1}/{2}', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
       "properties": {
-        "shareQuota": 32,
-        "enabledProtocols": "SMB"
+        "publicAccess": "None"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('storageAccountName'), 'default')]"
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]"
       ]
     },
     {
-      "type": "Microsoft.KeyVault/vaults/secrets",
-      "apiVersion": "2023-07-01",
-      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'azure-webjobs-storage')]",
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('storageAccountName'), 'default', 'function-deployments')]",
       "properties": {
-        "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};EndpointSuffix={1};AccountKey={2}', parameters('storageAccountName'), environment().suffixes.storage, listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value)]",
-        "contentType": "Azure Functions runtime storage connection"
+        "publicAccess": "None"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', parameters('storageAccountName'), 'default')]"
       ]
     },
     {
       "type": "Microsoft.Web/serverfarms",
-      "apiVersion": "2023-12-01",
+      "apiVersion": "2024-04-01",
       "name": "[parameters('hostingPlanName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
-      "kind": "elastic",
+      "kind": "functionapp",
       "sku": {
-        "name": "EP1",
-        "tier": "ElasticPremium"
+        "name": "[parameters('hostingPlanSkuName')]",
+        "tier": "[parameters('hostingPlanSkuTier')]"
       },
       "properties": {
         "reserved": true
@@ -568,8 +586,67 @@
       ]
     },
     {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Blob Data Owner')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Queue Data Contributor')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Table Data Contributor')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', 'dashboard-ingest'), parameters('deployerObjectId'), 'Storage Blob Data Contributor')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
+        "principalId": "[parameters('deployerObjectId')]",
+        "principalType": "User"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', 'dashboard-ingest')]"
+      ]
+    },
+    {
       "type": "Microsoft.Web/sites",
-      "apiVersion": "2023-12-01",
+      "apiVersion": "2024-04-01",
       "name": "[parameters('functionAppName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -586,26 +663,49 @@
         "keyVaultReferenceIdentity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
         "httpsOnly": true,
         "clientAffinityEnabled": false,
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[format('{0}{1}', reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.blob, 'function-deployments')]",
+              "authentication": {
+                "type": "UserAssignedIdentity",
+                "userAssignedIdentityResourceId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]"
+              }
+            }
+          },
+          "scaleAndConcurrency": {
+            "maximumInstanceCount": 10,
+            "instanceMemoryMB": 2048
+          },
+          "runtime": {
+            "name": "custom",
+            "version": "1.0"
+          }
+        },
         "siteConfig": {
-          "alwaysOn": true,
-          "minimumElasticInstanceCount": 1,
+          "alwaysOn": false,
           "ftpsState": "Disabled",
           "minTlsVersion": "1.2",
           "http20Enabled": true,
           "vnetRouteAllEnabled": true,
-          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName'))), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/azure-webjobs-storage)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_POLICY_PATH', 'value', '.github/workflows/cao.azure.json'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_DASHBOARD_QUERIES', 'value', 'site/src/agent/queries.generated.json'), createObject('name', 'CAO_DATABASE_QUERIES', 'value', 'queries/database.json'), createObject('name', 'CAO_POSTGRES_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-postgres-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_REDIS_NAMESPACE', 'value', variables('redisNamespace')), createObject('name', 'CAO_REDIS_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-redis-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(parameters('usePreviousSessionSecret'), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), createArray()), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
+          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName'))), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage__blobServiceUri', 'value', reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.blob), createObject('name', 'AzureWebJobsStorage__queueServiceUri', 'value', reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.queue), createObject('name', 'AzureWebJobsStorage__tableServiceUri', 'value', reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').primaryEndpoints.table), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'AzureWebJobsStorage__clientId', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), '2023-01-31').clientId), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_POLICY_PATH', 'value', '.github/workflows/cao.azure.json'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_DASHBOARD_QUERIES', 'value', 'site/src/agent/queries.generated.json'), createObject('name', 'CAO_DATABASE_QUERIES', 'value', 'queries/database.json'), createObject('name', 'CAO_POSTGRES_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-postgres-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_REDIS_NAMESPACE', 'value', variables('redisNamespace')), createObject('name', 'CAO_REDIS_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-redis-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(parameters('usePreviousSessionSecret'), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), createArray()), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
         }
       },
       "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', 'function-deployments')]",
         "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName')))]",
         "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Key Vault Secrets User'))]",
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'azure-webjobs-storage')]",
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'functions')]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Blob Data Owner'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Queue Data Contributor'))]",
+        "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-identity', parameters('functionAppName'))), 'Storage Table Data Contributor'))]",
         "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
         "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
         "[resourceId('Microsoft.Resources/deployments', 'postgres')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-url')]",
-        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]"
+        "[resourceId('Microsoft.Network/privateEndpoints/privateDnsZoneGroups', format('{0}-pe', parameters('redisEnterpriseName')), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
     },
     {
@@ -847,10 +947,7 @@
           "storageAccountName": {
             "value": "[parameters('storageAccountName')]"
           },
-          "storageAccountKey": {
-            "value": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01').keys[0].value]"
-          },
-          "fileShareName": {
+          "artifactContainerName": {
             "value": "dashboard-ingest"
           },
           "ingestionImage": {
@@ -873,7 +970,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "5390647224909671031"
+              "templateHash": "17867826167767902996"
             }
           },
           "parameters": {
@@ -916,25 +1013,26 @@
             "storageAccountName": {
               "type": "string",
               "metadata": {
-                "description": "Storage account name that holds the ingestion file share."
+                "description": "Storage account name that holds the ingestion artifact container."
               }
             },
-            "storageAccountKey": {
-              "type": "securestring",
-              "metadata": {
-                "description": "Storage account key used only by the Container Apps environment mount."
-              }
-            },
-            "fileShareName": {
+            "artifactContainerName": {
               "type": "string",
               "metadata": {
-                "description": "Azure Files share containing the verified dashboard artifact."
+                "description": "Blob container containing the verified dashboard artifact."
               }
             },
             "ingestionImage": {
               "type": "string",
               "metadata": {
                 "description": "Immutable CAO server image used for ingestion."
+              }
+            },
+            "artifactTransferImage": {
+              "type": "string",
+              "defaultValue": "mcr.microsoft.com/azure-cli:2.78.0",
+              "metadata": {
+                "description": "Azure CLI image used to download artifacts with managed identity."
               }
             },
             "redisNamespace": {
@@ -980,6 +1078,20 @@
               ]
             },
             {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), 'Storage Blob Data Reader')]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1')]",
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+              ]
+            },
+            {
               "type": "Microsoft.App/managedEnvironments",
               "apiVersion": "2024-03-01",
               "name": "[format('{0}-ingest', parameters('namePrefix'))]",
@@ -1008,22 +1120,6 @@
                     "enabled": true
                   }
                 ]
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]"
-              ]
-            },
-            {
-              "type": "Microsoft.App/managedEnvironments/storages",
-              "apiVersion": "2024-03-01",
-              "name": "[format('{0}/{1}', format('{0}-ingest', parameters('namePrefix')), 'dashboard-artifact')]",
-              "properties": {
-                "azureFile": {
-                  "accountName": "[parameters('storageAccountName')]",
-                  "shareName": "[parameters('fileShareName')]",
-                  "accessMode": "ReadOnly",
-                  "accountKey": "[parameters('storageAccountKey')]"
-                }
               },
               "dependsOn": [
                 "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]"
@@ -1069,6 +1165,43 @@
                   ]
                 },
                 "template": {
+                  "initContainers": [
+                    {
+                      "name": "artifact-download",
+                      "image": "[parameters('artifactTransferImage')]",
+                      "command": [
+                        "/bin/sh",
+                        "-c"
+                      ],
+                      "args": [
+                        "az login --identity --client-id \"$AZURE_CLIENT_ID\" --output none && az storage blob download-batch --auth-mode login --account-name \"$STORAGE_ACCOUNT_NAME\" --source \"$ARTIFACT_CONTAINER\" --destination /ingest --overwrite --output none"
+                      ],
+                      "env": [
+                        {
+                          "name": "AZURE_CLIENT_ID",
+                          "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), '2023-01-31').clientId]"
+                        },
+                        {
+                          "name": "STORAGE_ACCOUNT_NAME",
+                          "value": "[parameters('storageAccountName')]"
+                        },
+                        {
+                          "name": "ARTIFACT_CONTAINER",
+                          "value": "[parameters('artifactContainerName')]"
+                        }
+                      ],
+                      "resources": {
+                        "cpu": "[json('0.25')]",
+                        "memory": "0.5Gi"
+                      },
+                      "volumeMounts": [
+                        {
+                          "volumeName": "artifact",
+                          "mountPath": "/ingest"
+                        }
+                      ]
+                    }
+                  ],
                   "containers": [
                     {
                       "name": "ingest",
@@ -1124,14 +1257,13 @@
                   "volumes": [
                     {
                       "name": "artifact",
-                      "storageType": "AzureFile",
-                      "storageName": "dashboard-artifact"
+                      "storageType": "EmptyDir"
                     }
                   ]
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments/storages', format('{0}-ingest', parameters('namePrefix')), 'dashboard-artifact')]",
+                "[extensionResourceId(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), 'Storage Blob Data Reader'))]",
                 "[resourceId('Microsoft.App/managedEnvironments', format('{0}-ingest', parameters('namePrefix')))]",
                 "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]",
                 "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), 'Key Vault Secrets User'))]"
@@ -1151,7 +1283,7 @@
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', 'dashboard-ingest')]",
         "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), 'ingestion')]",
         "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
         "[resourceId('Microsoft.Resources/deployments', 'postgres')]",
@@ -1758,7 +1890,7 @@
     },
     "functionHostName": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2023-12-01').defaultHostName]"
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2024-04-01').defaultHostName]"
     },
     "githubOAuthRedirectUri": {
       "type": "string",
@@ -1768,7 +1900,7 @@
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'ingestion'), '2025-04-01').outputs.jobName.value]"
     },
-    "ingestionShareName": {
+    "ingestionContainerName": {
       "type": "string",
       "value": "dashboard-ingest"
     },

@@ -36,6 +36,10 @@ test("Azure main deploys private PostgreSQL and Azure Managed Redis dependencies
   assert.match(main, /groupIds:\s*\[\s*'redisEnterprise'\s*]/);
   assert.match(main, /redisDatabase\.listKeys\(\)\.primaryKey/);
   assert.match(main, /name:\s*'cao-redis-url'/);
+  assert.match(main, /allowSharedKeyAccess:\s*false/);
+  assert.doesNotMatch(main, /storage\.listKeys\(\)/);
+  assert.match(main, /Microsoft\.Storage\/storageAccounts\/blobServices\/containers@/);
+  assert.match(main, /Storage Blob Data Contributor/);
 });
 
 test("Azure Function App uses VNet integration and versionless Key Vault references", () => {
@@ -53,7 +57,6 @@ test("Azure Function App uses VNet integration and versionless Key Vault referen
   assert.match(main, /Key Vault Secrets User/);
 
   for (const setting of [
-    "AzureWebJobsStorage",
     "CAO_POSTGRES_URL",
     "CAO_REDIS_URL",
     "CAO_GITHUB_CLIENT_SECRET",
@@ -64,6 +67,20 @@ test("Azure Function App uses VNet integration and versionless Key Vault referen
     );
     assert.match(main, pattern, `${setting} must use a Key Vault reference`);
   }
+  assert.match(main, /AzureWebJobsStorage__blobServiceUri[\s\S]*primaryEndpoints\.blob/);
+  assert.match(main, /AzureWebJobsStorage__queueServiceUri[\s\S]*primaryEndpoints\.queue/);
+  assert.match(main, /AzureWebJobsStorage__tableServiceUri[\s\S]*primaryEndpoints\.table/);
+  assert.match(main, /AzureWebJobsStorage__credential[\s\S]*managedidentity/);
+  assert.match(main, /AzureWebJobsStorage__clientId[\s\S]*functionIdentity\.properties\.clientId/);
+  assert.match(main, /Storage Blob Data Owner/);
+  assert.match(main, /Storage Queue Data Contributor/);
+  assert.match(main, /Storage Table Data Contributor/);
+  assert.match(main, /param hostingPlanSkuName string = 'FC1'/);
+  assert.match(main, /param hostingPlanSkuTier string = 'FlexConsumption'/);
+  assert.match(main, /functionAppConfig:/);
+  assert.match(main, /type:\s*'UserAssignedIdentity'/);
+  assert.match(main, /runtime:\s*\{\s*name:\s*'custom'\s*version:\s*'1\.0'/);
+  assert.doesNotMatch(main, /minimumElasticInstanceCount/);
   assert.doesNotMatch(main, /secretUriWithVersion/);
 });
 
@@ -75,9 +92,13 @@ test("Azure deployment includes a private manually triggered ingestion job", () 
   assert.match(ingestion, /internal:\s*true/);
   assert.match(ingestion, /Microsoft\.App\/jobs@/);
   assert.match(ingestion, /triggerType:\s*'Manual'/);
+  assert.match(ingestion, /initContainers:/);
+  assert.match(ingestion, /az storage blob download-batch --auth-mode login/);
+  assert.match(ingestion, /Storage Blob Data Reader/);
   assert.match(ingestion, /command:\s*\['\/app\/cao-dashboard']/);
   assert.match(ingestion, /'ingest'/);
-  assert.match(ingestion, /storageType:\s*'AzureFile'/);
+  assert.match(ingestion, /storageType:\s*'EmptyDir'/);
+  assert.doesNotMatch(ingestion, /accountKey|AzureFile/);
   assert.match(ingestion, /keyVaultUrl:\s*'\$\{keyVaultUri}secrets\/cao-postgres-url'/);
   assert.match(ingestion, /keyVaultUrl:\s*'\$\{keyVaultUri}secrets\/cao-redis-url'/);
 });

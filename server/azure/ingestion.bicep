@@ -16,18 +16,17 @@ param keyVaultName string
 @description('Existing Key Vault URI containing CAO connection secrets.')
 param keyVaultUri string
 
-@description('Storage account name that holds the ingestion file share.')
+@description('Storage account name that holds the ingestion artifact container.')
 param storageAccountName string
 
-@description('Storage account key used only by the Container Apps environment mount.')
-@secure()
-param storageAccountKey string
-
-@description('Azure Files share containing the verified dashboard artifact.')
-param fileShareName string
+@description('Blob container containing the verified dashboard artifact.')
+param artifactContainerName string
 
 @description('Immutable CAO server image used for ingestion.')
 param ingestionImage string
+
+@description('Azure CLI image used to download artifacts with managed identity.')
+param artifactTransferImage string = 'mcr.microsoft.com/azure-cli:2.78.0'
 
 @description('Redis namespace shared with the Function App.')
 param redisNamespace string
@@ -43,6 +42,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
+resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageAccountName
+}
+
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${namePrefix}-ingest-identity'
   location: location
@@ -56,6 +59,19 @@ resource secretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',
       '4633458b-17de-408a-b874-0445c86b69e6'
+    )
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource artifactReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, identity.id, 'Storage Blob Data Reader')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
     )
     principalId: identity.properties.principalId
     principalType: 'ServicePrincipal'
@@ -89,19 +105,6 @@ resource environmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-0
         enabled: true
       }
     ]
-  }
-}
-
-resource artifactStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
-  parent: environment
-  name: 'dashboard-artifact'
-  properties: {
-    azureFile: {
-      accountName: storageAccountName
-      shareName: fileShareName
-      accessMode: 'ReadOnly'
-      accountKey: storageAccountKey
-    }
   }
 }
 
@@ -143,6 +146,43 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
       ]
     }
     template: {
+      initContainers: [
+        {
+          name: 'artifact-download'
+          image: artifactTransferImage
+          command: [
+            '/bin/sh'
+            '-c'
+          ]
+          args: [
+            'az login --identity --client-id "$AZURE_CLIENT_ID" --output none && az storage blob download-batch --auth-mode login --account-name "$STORAGE_ACCOUNT_NAME" --source "$ARTIFACT_CONTAINER" --destination /ingest --overwrite --output none'
+          ]
+          env: [
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: identity.properties.clientId
+            }
+            {
+              name: 'STORAGE_ACCOUNT_NAME'
+              value: storageAccountName
+            }
+            {
+              name: 'ARTIFACT_CONTAINER'
+              value: artifactContainerName
+            }
+          ]
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          volumeMounts: [
+            {
+              volumeName: 'artifact'
+              mountPath: '/ingest'
+            }
+          ]
+        }
+      ]
       containers: [
         {
           name: 'ingest'
@@ -196,13 +236,13 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
       volumes: [
         {
           name: 'artifact'
-          storageType: 'AzureFile'
-          storageName: artifactStorage.name
+          storageType: 'EmptyDir'
         }
       ]
     }
   }
   dependsOn: [
+    artifactReader
     secretsUser
   ]
 }

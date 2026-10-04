@@ -243,6 +243,9 @@ require_bootstrap_secrets() {
 
 main_deployment_args=()
 build_main_deployment_args() {
+  local deployer_object_id
+  deployer_object_id="$(signed_in_object_id)" ||
+    fail "Azure Resource Manager token does not identify the signed-in user"
   main_deployment_args=(
     --resource-group "$RESOURCE_GROUP"
     --template-file "$ROOT/server/azure/main.bicep"
@@ -258,6 +261,7 @@ build_main_deployment_args() {
     githubAllowedTeams="$ALLOWED_TEAMS"
     githubClientId="$GITHUB_CLIENT_ID"
     ingestionImage="$INGESTION_IMAGE"
+    deployerObjectId="$deployer_object_id"
   )
 }
 
@@ -404,33 +408,29 @@ ingest() {
   [[ -d "$artifact_dir" ]] || fail "artifact directory not found: $artifact_dir"
   artifact_dir="$(cd "$artifact_dir" && pwd)"
 
-  local storage_key job_name share_name execution_name status deadline
-  storage_key="$(az storage account keys list \
-    --resource-group "$RESOURCE_GROUP" \
-    --account-name "$STORAGE_ACCOUNT_NAME" \
-    --query '[0].value' -o tsv)"
+  local job_name container_name execution_name status deadline
   job_name="$(az deployment group show \
     --resource-group "$RESOURCE_GROUP" \
     --name cao-main \
     --query properties.outputs.ingestionJobName.value -o tsv)"
-  share_name="$(az deployment group show \
+  container_name="$(az deployment group show \
     --resource-group "$RESOURCE_GROUP" \
     --name cao-main \
-    --query properties.outputs.ingestionShareName.value -o tsv)"
+    --query properties.outputs.ingestionContainerName.value -o tsv)"
 
-  az storage file delete-batch \
+  az storage blob delete-batch \
     --account-name "$STORAGE_ACCOUNT_NAME" \
-    --account-key "$storage_key" \
-    --source "$share_name" \
+    --auth-mode login \
+    --source "$container_name" \
     --pattern '*' \
     --output none
-  az storage file upload-batch \
+  az storage blob upload-batch \
     --account-name "$STORAGE_ACCOUNT_NAME" \
-    --account-key "$storage_key" \
-    --destination "$share_name" \
+    --auth-mode login \
+    --destination "$container_name" \
     --source "$artifact_dir" \
+    --overwrite \
     --output none
-  unset storage_key
 
   execution_name="$(az containerapp job start \
     --resource-group "$RESOURCE_GROUP" \

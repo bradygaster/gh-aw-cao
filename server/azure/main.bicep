@@ -13,7 +13,13 @@ param functionAppName string
 @description('Azure App Service plan name for the Function App.')
 param hostingPlanName string = '${functionAppName}-plan'
 
-@description('Globally unique storage account name for Functions state and the ingestion artifact share.')
+@description('Linux App Service plan SKU for the Function App.')
+param hostingPlanSkuName string = 'FC1'
+
+@description('Linux App Service plan tier for the Function App.')
+param hostingPlanSkuTier string = 'FlexConsumption'
+
+@description('Globally unique storage account name for Functions state and the ingestion artifact container.')
 param storageAccountName string
 
 @description('Existing Key Vault name created by bootstrap.bicep.')
@@ -33,6 +39,9 @@ param virtualNetworkName string = '${functionAppName}-vnet'
 
 @description('Immutable CAO server image used by the private ingestion job.')
 param ingestionImage string
+
+@description('Microsoft Entra object ID allowed to upload verified ingestion artifacts.')
+param deployerObjectId string
 
 @allowed([
   'Balanced_B0'
@@ -346,49 +355,47 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   kind: 'StorageV2'
   properties: {
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: true
+    allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
   }
 }
 
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storage
   name: 'default'
   properties: {
-    shareDeleteRetentionPolicy: {
+    deleteRetentionPolicy: {
       enabled: true
       days: 7
     }
   }
 }
 
-resource ingestionShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
-  parent: fileService
+resource ingestionContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
   name: 'dashboard-ingest'
   properties: {
-    shareQuota: 32
-    enabledProtocols: 'SMB'
+    publicAccess: 'None'
   }
 }
 
-resource functionsStorageConnectionString 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'azure-webjobs-storage'
+resource functionDeploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: 'function-deployments'
   properties: {
-    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
-    contentType: 'Azure Functions runtime storage connection'
+    publicAccess: 'None'
   }
 }
 
-resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
+resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: hostingPlanName
   location: location
   tags: tags
-  kind: 'elastic'
+  kind: 'functionapp'
   sku: {
-    name: 'EP1'
-    tier: 'ElasticPremium'
+    name: hostingPlanSkuName
+    tier: hostingPlanSkuTier
   }
   properties: {
     reserved: true
@@ -425,7 +432,59 @@ resource functionSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
-resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
+resource functionStorageBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionIdentity.id, 'Storage Blob Data Owner')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+    )
+    principalId: functionIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionIdentity.id, 'Storage Queue Data Contributor')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+    )
+    principalId: functionIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionIdentity.id, 'Storage Table Data Contributor')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+    )
+    principalId: functionIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource deployerArtifactContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(ingestionContainer.id, deployerObjectId, 'Storage Blob Data Contributor')
+  scope: ingestionContainer
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+    )
+    principalId: deployerObjectId
+    principalType: 'User'
+  }
+}
+
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   name: functionAppName
   location: location
   tags: tags
@@ -442,9 +501,28 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     keyVaultReferenceIdentity: functionIdentity.id
     httpsOnly: true
     clientAffinityEnabled: false
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${functionDeploymentContainer.name}'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: functionIdentity.id
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 10
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'custom'
+        version: '1.0'
+      }
+    }
     siteConfig: {
-      alwaysOn: true
-      minimumElasticInstanceCount: 1
+      alwaysOn: false
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       http20Enabled: true
@@ -463,8 +541,24 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: insights.properties.ConnectionString
         }
         {
-          name: 'AzureWebJobsStorage'
-          value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/azure-webjobs-storage)'
+          name: 'AzureWebJobsStorage__blobServiceUri'
+          value: storage.properties.primaryEndpoints.blob
+        }
+        {
+          name: 'AzureWebJobsStorage__queueServiceUri'
+          value: storage.properties.primaryEndpoints.queue
+        }
+        {
+          name: 'AzureWebJobsStorage__tableServiceUri'
+          value: storage.properties.primaryEndpoints.table
+        }
+        {
+          name: 'AzureWebJobsStorage__credential'
+          value: 'managedidentity'
+        }
+        {
+          name: 'AzureWebJobsStorage__clientId'
+          value: functionIdentity.properties.clientId
         }
         {
           name: 'CAO_DASHBOARD_HOSTING'
@@ -552,8 +646,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     }
   }
   dependsOn: [
-    functionsStorageConnectionString
     functionSecretsUser
+    functionStorageBlobOwner
+    functionStorageQueueContributor
+    functionStorageTableContributor
     postgres
     redisConnectionString
     redisPrivateDnsGroup
@@ -570,8 +666,7 @@ module ingestion 'ingestion.bicep' = {
     keyVaultName: keyVault.name
     keyVaultUri: keyVault.properties.vaultUri
     storageAccountName: storage.name
-    storageAccountKey: storage.listKeys().keys[0].value
-    fileShareName: ingestionShare.name
+    artifactContainerName: ingestionContainer.name
     ingestionImage: ingestionImage
     redisNamespace: redisNamespace
     applicationInsightsConnectionString: insights.properties.ConnectionString
@@ -614,7 +709,7 @@ output collectionEnabled bool = collectionEnabled
 output functionHostName string = functionApp.properties.defaultHostName
 output githubOAuthRedirectUri string = githubRedirectUri
 output ingestionJobName string = ingestion.outputs.jobName
-output ingestionShareName string = ingestionShare.name
+output ingestionContainerName string = ingestionContainer.name
 output keyVaultUri string = keyVault.properties.vaultUri
 output postgresHostName string = postgres.outputs.hostName
 output redisEnterpriseHostName string = redisEnterprise.properties.hostName
