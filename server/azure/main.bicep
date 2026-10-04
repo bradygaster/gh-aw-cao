@@ -54,10 +54,6 @@ param deployerObjectId string
 @description('Redis SKU. Size for operational caches, queues, sessions, and rate limits.')
 param redisSkuName string = 'Balanced_B0'
 
-@minValue(1)
-@description('Redis capacity. Increase when operational state needs more memory or throughput.')
-param redisCapacity int = 1
-
 @description('PostgreSQL compute SKU.')
 param postgresSkuName string = 'Standard_B1ms'
 
@@ -249,7 +245,6 @@ resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   tags: tags
   sku: {
     name: redisSkuName
-    capacity: redisCapacity
   }
   properties: {
     minimumTlsVersion: '1.2'
