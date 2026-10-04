@@ -61,6 +61,9 @@ test("Azure operator command keeps secrets out of configuration and automates th
   assert.match(script, /az provider show --namespace/);
   assert.match(script, /registration is still converging/);
   assert.match(script, /az containerapp job --help/);
+  assert.match(script, /az account get-access-token/);
+  assert.match(script, /payload\.oid/);
+  assert.doesNotMatch(script, /az ad signed-in-user/);
   assert.match(script, /az containerapp job start/);
   assert.match(script, /did not finish within 125 minutes/);
   assert.match(script, /main deployment failed after three attempts/);

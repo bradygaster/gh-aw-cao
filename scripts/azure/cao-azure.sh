@@ -75,6 +75,29 @@ select_subscription() {
   [[ "$selected" == "$SUBSCRIPTION_ID" ]] || fail "Azure CLI selected unexpected subscription $selected"
 }
 
+signed_in_object_id() {
+  az account get-access-token \
+    --resource https://management.azure.com/ \
+    --query accessToken \
+    -o tsv |
+    node -e '
+      let token = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => {
+        token += chunk;
+      });
+      process.stdin.on("end", () => {
+        const payload = JSON.parse(
+          Buffer.from(token.trim().split(".")[1], "base64url").toString("utf8"),
+        );
+        if (typeof payload.oid !== "string" || payload.oid.length === 0) {
+          process.exit(1);
+        }
+        process.stdout.write(payload.oid + "\n");
+      });
+    '
+}
+
 preflight() {
   local command
   for command in az curl go jq node npm openssl zip; do
@@ -153,7 +176,8 @@ bootstrap() {
   az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 
   local deployer_object_id
-  deployer_object_id="$(az ad signed-in-user show --query id -o tsv)"
+  deployer_object_id="$(signed_in_object_id)" ||
+    fail "Azure Resource Manager token does not identify the signed-in user"
   az deployment group create \
     --name cao-bootstrap \
     --resource-group "$RESOURCE_GROUP" \
