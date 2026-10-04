@@ -29,7 +29,8 @@ test("Azure main deploys private PostgreSQL and Azure Managed Redis dependencies
   assert.match(postgres, /name:\s*'cao-postgres-url'/);
   assert.match(postgres, /sslmode=require/);
 
-  assert.match(main, /Microsoft\.Cache\/redisEnterprise@/);
+  assert.match(main, /Microsoft\.Cache\/redisEnterprise@2025-07-01/);
+  assert.match(main, /Microsoft\.Cache\/redisEnterprise\/databases@2025-07-01/);
   assert.match(main, /modules:\s*\[\s*{\s*name:\s*'RedisJSON'\s*}\s*{\s*name:\s*'RediSearch'\s*}\s*]/);
   assert.match(main, /publicNetworkAccess:\s*'Disabled'/);
   assert.match(main, /privatelink\.redisenterprise\.cache\.azure\.net/);

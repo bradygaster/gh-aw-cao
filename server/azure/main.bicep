@@ -243,7 +243,7 @@ module postgres 'postgres.bicep' = {
   ]
 }
 
-resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = {
+resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2025-07-01' = {
   name: redisEnterpriseName
   location: location
   tags: tags
@@ -257,7 +257,7 @@ resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = {
   }
 }
 
-resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = {
+resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-07-01' = {
   parent: redisEnterprise
   name: 'default'
   properties: {

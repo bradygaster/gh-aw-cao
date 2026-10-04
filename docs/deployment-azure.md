@@ -84,6 +84,7 @@ Edit `.cao/azure/config.json`. The file contains names, location, authorization,
   "storageAccountName": "stcaoexampleunique",
   "keyVaultName": "kv-cao-example-unique",
   "redisEnterpriseName": "redis-cao-example-unique",
+  "redisSkuName": "Balanced_B0",
   "postgresServerName": "psql-cao-example-unique",
   "githubClientId": "YOUR_GITHUB_OAUTH_CLIENT_ID",
   "githubAllowedOrganizations": [],
@@ -96,6 +97,7 @@ Edit `.cao/azure/config.json`. The file contains names, location, authorization,
 ```
 
 Keep purge protection enabled for retained environments. Set it to `false` only for a disposable test resource group that must be purged immediately after deletion.
+`redisSkuName` defaults to `Balanced_B0`; choose another allowed Azure Managed Redis SKU when subscription or regional availability requires it.
 
 ## Review before creating resources
 

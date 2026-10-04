@@ -75,12 +75,15 @@ test("Azure operator command keeps secrets out of configuration and automates th
   assert.match(script, /package builds require a clean Git worktree/);
   assert.match(script, /if has\("enablePurgeProtection"\)/);
   assert.match(script, /enablePurgeProtection must be a boolean/);
+  assert.match(script, /\.redisSkuName \/\/ "Balanced_B0"/);
+  assert.match(script, /redisSkuName="\$REDIS_SKU_NAME"/);
   assert.match(script, /trap 'rm -rf "\$secret_dir"' EXIT/);
   assert.match(script, /secret_exists cao-session-secret/);
   assert.match(script, /az functionapp deployment source config-zip/);
   assert.equal("githubClientSecret" in example, false);
   assert.equal("sessionSecret" in example, false);
   assert.equal("postgresAdministratorPassword" in example, false);
+  assert.equal(example.redisSkuName, "Balanced_B0");
 });
 
 test("generated Azure operator artifacts stay outside repository lint inputs", async () => {

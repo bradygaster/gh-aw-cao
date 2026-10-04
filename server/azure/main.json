@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "9629848547977473654"
+      "templateHash": "7137402358665665087"
     }
   },
   "parameters": {
@@ -354,7 +354,7 @@
     },
     {
       "type": "Microsoft.Cache/redisEnterprise",
-      "apiVersion": "2024-11-01",
+      "apiVersion": "2025-07-01",
       "name": "[parameters('redisEnterpriseName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
@@ -369,7 +369,7 @@
     },
     {
       "type": "Microsoft.Cache/redisEnterprise/databases",
-      "apiVersion": "2024-11-01",
+      "apiVersion": "2025-07-01",
       "name": "[format('{0}/{1}', parameters('redisEnterpriseName'), 'default')]",
       "properties": {
         "clientProtocol": "Encrypted",
@@ -463,7 +463,7 @@
       "apiVersion": "2023-07-01",
       "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-url')]",
       "properties": {
-        "value": "[format('rediss://:{0}@{1}:10000/0', uriComponent(listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2024-11-01').primaryKey), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName)]",
+        "value": "[format('rediss://:{0}@{1}:10000/0', uriComponent(listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2025-07-01').primaryKey), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName)]",
         "contentType": "CAO dashboard Azure Managed Redis URL"
       },
       "dependsOn": [
@@ -477,7 +477,7 @@
       "apiVersion": "2023-07-01",
       "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-password')]",
       "properties": {
-        "value": "[listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2024-11-01').primaryKey]",
+        "value": "[listKeys(resourceId('Microsoft.Cache/redisEnterprise/databases', parameters('redisEnterpriseName'), 'default'), '2025-07-01').primaryKey]",
         "contentType": "Redis access key for the CAO collection autoscaler"
       },
       "dependsOn": [
@@ -1325,7 +1325,7 @@
             "value": "[parameters('keyVaultName')]"
           },
           "redisHost": {
-            "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
+            "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName]"
           },
           "redisNamespace": {
             "value": "[variables('redisNamespace')]"
@@ -1914,7 +1914,7 @@
     },
     "redisEnterpriseHostName": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
+      "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName]"
     },
     "redisDatabaseName": {
       "type": "string",

@@ -6,6 +6,7 @@
   "storageAccountName": "stcaoexampleunique",
   "keyVaultName": "kv-cao-example-unique",
   "redisEnterpriseName": "redis-cao-example-unique",
+  "redisSkuName": "Balanced_B0",
   "postgresServerName": "psql-cao-example-unique",
   "githubClientId": "YOUR_GITHUB_OAUTH_CLIENT_ID",
   "githubAllowedOrganizations": [],
