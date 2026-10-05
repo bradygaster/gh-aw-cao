@@ -100,6 +100,17 @@ describe('browser first-load presentation', () => {
     expect(dialog?.textContent).toContain('building a local database');
     expect(dialog?.querySelector('.first-load-description .first-load-compact-copy')?.textContent)
       .toBe('Preparing a local copy of activity data. First visits can take a few minutes.');
+    const serverOption = dialog?.querySelector('.first-load-server-option');
+    expect(serverOption?.textContent).toContain('deploy a CAO backend server');
+    expect(serverOption?.textContent).toContain('avoid this browser import');
+    expect([...serverOption?.querySelectorAll('a') ?? []].map((link) => [link.textContent, link.href])).toEqual([
+      ['deployment options', 'https://githubnext.github.io/gh-aw-cao/deployment/']
+    ]);
+    for (const link of serverOption?.querySelectorAll('a') ?? []) {
+      expect(link.target).toBe('_blank');
+      expect(link.rel).toBe('noopener noreferrer');
+      expect(link.getAttribute('aria-label')).toBe(`${link.textContent} (opens in a new tab)`);
+    }
     expect(dialog?.querySelector('.first-load-background')?.getAttribute('aria-hidden')).toBe('true');
     expect(dialog?.querySelector('.first-load-background')?.childElementCount).toBe(0);
     expect(dialog?.querySelector('progress')?.hasAttribute('value')).toBe(false);
@@ -142,6 +153,7 @@ describe('browser first-load presentation', () => {
     browserFirstLoad.set({ status: 'failed', dismissed: false });
     expect(dialog?.open).toBe(true);
     expect(dialog?.textContent).toContain('first import could not finish');
+    expect(dialog?.querySelector('.first-load-server-option')?.textContent).toContain('deploy a CAO backend server');
     expect(dialog?.querySelector('progress')).toBeNull();
     const button = [...dialog?.querySelectorAll('button') ?? []].find((candidate) => candidate.textContent === 'Retry import');
     button?.click();
