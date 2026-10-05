@@ -100,6 +100,14 @@ export async function buildDashboardSite({
     await mkdir(routeDirectory, { recursive: true });
     await writeFile(join(routeDirectory, "index.html"), redirectDocument(page.id));
   }
+  const appAssets = ["./", ...(await listFiles(destinationPath))
+    .filter((file) => !file.endsWith(".map")
+      && !file.endsWith(".jsonl")
+      && !file.startsWith("gh-aw-logs-")
+      && !["service-worker.js", "llms.txt", "payload-hashes.json", "inventory-sources.json"].includes(file))];
+  const workerPath = join(destinationPath, "service-worker.js");
+  await writeFile(workerPath, (await readFile(workerPath, "utf8"))
+    .replace("const APP_ASSETS = [];", `const APP_ASSETS = ${JSON.stringify(appAssets)};`));
 
   async function writeDashboardPageChunks(destinationPath, pageChunks) {
     for (const [pageId, chunk] of pageChunks) {
@@ -214,7 +222,7 @@ async function cacheBustSiteImports(destinationPath) {
   const serviceWorker = await readFile(serviceWorkerPath, "utf8");
   await Promise.all([
     writeFile(indexPath, index.replace(
-      /(<script\b[^>]*\bsrc=["'])(\.\/src\/main\.js)(["'][^>]*>)/,
+      /(script\.src = ["'])(\.\/src\/main\.js)(["'];)/,
       `$1$2?sha=${sha}$3`,
     )),
     writeFile(

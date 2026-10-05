@@ -6,7 +6,7 @@ import { isDebugEnabled as pageIsDebugEnabled } from '../../src/debug.js';
 
 const source = readFileSync(resolve('service-worker.js'), 'utf8');
 
-/** @param {string[]} [cacheKeys] @param {{ search?: string, clientUrl?: string }} [options] */
+/** @param {string[]} [cacheKeys] @param {{ search?: string, clientUrl?: string, appAssets?: string[] }} [options] */
 function serviceWorkerHarness(cacheKeys = [], options = {}) {
   /** @type {Record<string, (event: any) => void>} */
   const listeners = {};
@@ -38,7 +38,7 @@ function serviceWorkerHarness(cacheKeys = [], options = {}) {
     },
     registration: { scope: 'https://example.test/dashboard/' },
     navigator: {
-      connection: { type: 'wifi', saveData: false }
+      connection: { type: 'wifi', saveData: false, effectiveType: '4g' }
     },
     clients: {
       claim: vi.fn().mockResolvedValue(undefined),
@@ -70,7 +70,8 @@ function serviceWorkerHarness(cacheKeys = [], options = {}) {
     JSON,
     console: debugConsole
   };
-  vm.runInNewContext(source, sandbox);
+  vm.runInNewContext(source.replace('const APP_ASSETS = [];',
+    `const APP_ASSETS = ${JSON.stringify(options.appAssets ?? [])};`), sandbox);
   return {
     listeners,
     worker,
@@ -92,6 +93,78 @@ async function dispatchExtendedEvent(listener, event) {
 }
 
 describe('dashboard service worker', () => {
+  it('prepares the shell and lazy page chunks before installation completes', async () => {
+    const { listeners, entries, fetch } = serviceWorkerHarness([], {
+      appAssets: ['./', 'dashboard.json', 'dashboard-pages/overview.json']
+    });
+    await dispatchExtendedEvent(listeners.install, {});
+    expect(entries.has('https://example.test/dashboard/')).toBe(true);
+    expect(entries.has('https://example.test/dashboard/dashboard.json')).toBe(true);
+    expect(entries.has('https://example.test/dashboard/dashboard-pages/overview.json')).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses the precached script when its versioned URL cannot be fetched offline', async () => {
+    const { listeners, entries, fetch } = serviceWorkerHarness();
+    const script = new Request('https://example.test/dashboard/src/main.js?sha=abc');
+    entries.set('https://example.test/dashboard/src/main.js', new Response('cached script'));
+    fetch.mockRejectedValueOnce(new TypeError('offline'));
+    /** @type {Promise<Response> | undefined} */
+    let response;
+    listeners.fetch({
+      request: script,
+      respondWith: (/** @type {Promise<Response>} */ value) => { response = value; }
+    });
+    await expect((await response)?.text()).resolves.toBe('cached script');
+  });
+
+  it('loads the precached data worker when offline debugging parameters are set', async () => {
+    const { listeners, entries, fetch } = serviceWorkerHarness();
+    const script = new Request('https://example.test/dashboard/src/data-worker.js?debug=1&debug-shard-limit=2&debug-eager-ingest=1');
+    entries.set('https://example.test/dashboard/src/data-worker.js', new Response('cached worker'));
+    fetch.mockRejectedValueOnce(new TypeError('offline'));
+    /** @type {Promise<Response> | undefined} */
+    let response;
+    listeners.fetch({
+      request: script,
+      respondWith: (/** @type {Promise<Response>} */ value) => { response = value; }
+    });
+    await expect((await response)?.text()).resolves.toBe('cached worker');
+  });
+  it('prefers cached assets and data on slow connections without network requests', async () => {
+    const { listeners, worker, fetch, entries } = serviceWorkerHarness();
+    worker.navigator.connection.effectiveType = '2g';
+    const asset = new Request('https://example.test/dashboard/dashboard.json', { cache: 'no-store' });
+    const data = new Request('https://example.test/dashboard/payload-hashes.json');
+    entries.set(asset.url, new Response('cached dashboard'));
+    entries.set(String(data), new Response('cached data'));
+    for (const request of [asset, data]) {
+      /** @type {Promise<Response> | undefined} */
+      let response;
+      listeners.fetch({
+        request,
+        respondWith: (/** @type {Promise<Response>} */ value) => { response = value; },
+        waitUntil: () => {}
+      });
+      await expect((await response)?.text()).resolves.toBe(request === asset ? 'cached dashboard' : 'cached data');
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('prefers the cached manifest on slow connections even for no-store data requests', async () => {
+    const { listeners, worker, fetch, entries } = serviceWorkerHarness();
+    worker.navigator.connection.effectiveType = 'slow-2g';
+    const request = new Request('https://example.test/dashboard/payload-hashes.json', { cache: 'no-store' });
+    entries.set(String(request), new Response('cached manifest'));
+    /** @type {Promise<Response> | undefined} */
+    let response;
+    listeners.fetch({
+      request,
+      respondWith: (/** @type {Promise<Response>} */ value) => { response = value; }
+    });
+    await expect((await response)?.text()).resolves.toBe('cached manifest');
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('leaves the server-side data API outside application caches', () => {
     expect(source).toContain("!url.pathname.startsWith('/api/')");
   });
