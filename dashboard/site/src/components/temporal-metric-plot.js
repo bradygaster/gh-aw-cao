@@ -46,6 +46,7 @@ const MAX_TICKS = 5;
  *   outcomes?: OutcomeContext[],
  *   trend?: TemporalTrend,
  *   provisional?: boolean
+ *   connectPoints?: boolean
  * }} options
  * @returns {HTMLElement}
  */
@@ -91,7 +92,9 @@ export function renderTemporalMetricPlot(options) {
   ));
   const ticks = selectTicks(observationTimes, MAX_TICKS);
   const sameDay = firstObservation.slice(0, 10) === lastObservation.slice(0, 10);
-  const unit = metrics.length === 1 ? (metrics[0]?.unit ?? 'value') : 'native value';
+  const unit = metrics.every((metric) => metric.unit === metrics[0]?.unit)
+    ? (metrics[0]?.unit ?? 'value')
+    : 'native value';
   const direction = metrics.length === 1 ? metrics[0]?.direction : undefined;
   const directionLabel = direction === 'decrease'
     ? 'Lower is better'
@@ -165,10 +168,10 @@ export function renderTemporalMetricPlot(options) {
   h('svg', {
     viewBox: '0 0 1280 366',
     role: 'img',
-    'aria-label': `${options.title} workflow ${modeLabel} timeline${options.provisional ? ', not yet mature' : ''}`
+    'aria-label': `${options.title} ${options.connectPoints === false ? 'repository daily change' : `workflow ${modeLabel}`} timeline${options.provisional ? ', not yet mature' : ''}`
   },
-  h('title', null, `${options.title} workflow ${modeLabel} timeline`),
-  h('desc', null, `Native repository outcome metric with nearby daily run outcomes shown as a green success and red failure rail below the x-axis. The rail shows temporal proximity and does not imply causation.${provisionalDescription}`),
+  h('title', null, `${options.title} ${options.connectPoints === false ? 'repository daily change' : `workflow ${modeLabel}`} timeline`),
+  h('desc', null, `${options.connectPoints === false ? 'Discrete repository daily changes' : 'Repository outcome metric'} (${displayUnit(unit)}) with nearby daily run outcomes shown as a green success and red failure rail below the x-axis. The rail shows temporal proximity and does not imply causation.${provisionalDescription}`),
   options.mode === 'baseline-comparable' && showAdoption
     ? h('rect', {
       className: 'temporal-plot-baseline',
@@ -207,7 +210,7 @@ export function renderTemporalMetricPlot(options) {
   ...metrics.flatMap((metric, index) => {
     const className = `chart-series-${(index % 12) + 1}`;
     return [
-      h('polyline', {
+      options.connectPoints === false ? null : h('polyline', {
         className: `temporal-plot-metric ${className}`,
         points: metric.points.map((point) => `${x(point.x)},${y(point.y)}`).join(' '),
         fill: 'none',
@@ -340,6 +343,8 @@ function formatDelta(value, unit) {
 function displayUnit(unit) {
   if (unit === 'percent') return '';
   if (unit === 'aic-per-run') return 'AIC/run';
+  if (unit === 'percent/day') return 'pp/day';
+  if (unit === 'aic-per-run/day') return 'AIC/run/day';
   return unit;
 }
 

@@ -166,6 +166,7 @@ import { findDeadDashboardQueries } from './query-usage.js';
 import { executeDashboardQueries, resolveDashboardQuerySources } from './data/queries/declarative.js';
 import { SIMULATION_DAYS, simulationDaysSource } from './data/queries/simulation-days.js';
 import { compileDashboardViewPayloadQueries } from './data/queries/view-payload-compiler.js';
+import { validateQueryWindow } from './query-window-validator.js';
 
 const debugValidator = createDebug('validator');
 
@@ -4760,6 +4761,13 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
         declareField(prediction.as, `${predictionPath}.as`);
       }
     }
+  }
+
+  if (query.window !== undefined) {
+    validateQueryWindow(query.window, getValueNodeByKey(queryNode, 'window'), path, errors, {
+      isPlainObject, getValueNodeByKey, getSequenceItemNode, validateObjectKeys,
+      validateStringField, createError, requireField, requireSchemaType, declareField
+    });
   }
 
   if (query.select !== undefined) {

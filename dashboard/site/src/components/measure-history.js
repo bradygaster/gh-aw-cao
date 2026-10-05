@@ -143,13 +143,14 @@ function renderOperationalValueHistory(context, rows) {
         adoptionAt,
         metrics: group.series,
         outcomes: campaignOutcomes,
-        provisional: onlyInterimEvidence
+        provisional: onlyInterimEvidence,
+        connectPoints: false
       }),
     group.series.length > 1
       ? renderChartLegend(group.series.map((series, index) => ({
         name: series.label,
         className: `chart-series-${(index % 12) + 1}`
-      })), 'line')
+      })), 'dot')
       : null));
 
   return h('section', { className: 'measure-history measure-history-operational-value', 'aria-label': context.title },
@@ -158,8 +159,8 @@ function renderOperationalValueHistory(context, rows) {
         h('div', { className: 'insights-measure-heading' },
           h('h2', null, 'Operational value')),
         h('p', null, onlyInterimEvidence
-          ? `${formatNumber(observationCount)} interim observations. Dashed amber lines are not mature evidence.`
-          : 'Repository-level evidence only. Each metric compares repository series directly; campaign rollups are omitted so anomalies remain visible.'))),
+          ? `${formatNumber(observationCount)} interim observations. Rates use each measure’s native units per day. Amber points are not mature evidence.`
+          : 'Repository-level daily changes in each measure’s native units per day; campaign rollups are omitted so anomalies remain visible. Points are not connected across missing rates.'))),
     ...panels);
 }
 
@@ -186,7 +187,7 @@ function operationalValueMetricGroups(rows) {
       const series = group.series.get(repository) ?? {
         id: `${metricId}:${repository}`,
         label: repository,
-        unit: String(row['operational-value-unit'] || 'value'),
+        unit: `${String(row['operational-value-unit'] || 'value')}/day`,
         direction: /** @type {'increase'|'decrease'|'maintain'|'target'} */ (
           ['increase', 'decrease', 'maintain', 'target'].includes(String(row['operational-value-direction']))
             ? row['operational-value-direction']
