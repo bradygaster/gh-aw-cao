@@ -88,8 +88,10 @@ async function selectTable(page, mobile) {
  * @param {{ context: import('@playwright/test').BrowserContext, page: import('@playwright/test').Page }} fixture
  * @param {boolean} mobile
  * @param {boolean} [upgrade]
+ * @param {'light'|'dark'} [colorScheme]
  */
-async function exerciseFirstImport({ context, page }, mobile, upgrade = false) {
+async function exerciseFirstImport({ context, page }, mobile, upgrade = false, colorScheme = 'light') {
+  await page.emulateMedia({ colorScheme });
   if (mobile) await page.setViewportSize({ width: 390, height: 844 });
   const shardCount = 12;
   const runsPerShard = 10;
@@ -191,17 +193,28 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false) {
   await page.goto(`${origin}/`);
   const importScreen = page.getByRole('dialog', { name: 'Preparing your dashboard' });
   await expect(importScreen).toBeVisible();
+  const expectTheme = async (/** @type {'light'|'dark'} */ theme) => {
+    await expect(importScreen).toHaveCSS('background-color', theme === 'dark' ? 'rgb(21, 27, 35)' : 'rgb(246, 248, 250)');
+    await expect(importScreen.locator('.first-load-card')).toHaveCSS('background-color', theme === 'dark' ? 'rgb(13, 17, 23)' : 'rgb(255, 255, 255)');
+  };
+  await expectTheme(colorScheme);
+  await expect(importScreen.locator('header')).toHaveText('Central Agentic Ops');
+  await expect(importScreen.locator('header')).toBeInViewport({ ratio: 1 });
+  await expect(importScreen.getByRole('button')).toHaveCount(1);
+  await expect(importScreen.locator('.first-load-server-option')).not.toBeVisible();
   await expect(importScreen).toContainText(upgrade
     ? 'This update can take several minutes'
     : 'The first import can take several minutes');
   if (upgrade) {
-    await expect(importScreen).toContainText('rebuild the local database');
+    await expect(importScreen).toContainText('refreshing your browser copy');
     await expect(importScreen.locator('.first-load-eyebrow')).toHaveText('Dashboard update');
   }
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   if (mobile) {
     for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
       await page.setViewportSize(viewport);
+      await expectTheme(colorScheme);
+      await expect(importScreen.locator('header')).toBeInViewport({ ratio: 1 });
       await expect(importScreen.getByRole('heading', { name: 'Preparing your dashboard.' })).toBeVisible();
       await expect(importScreen.locator('.first-load-steps')).not.toBeVisible();
       await expect(importScreen.getByRole('button', { name: 'Explore data' })).toBeInViewport({ ratio: 1 });
@@ -211,8 +224,18 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false) {
         vertical: element.scrollHeight > element.clientHeight
       }))).toEqual({ horizontal: false, vertical: false });
     }
+    const alternateTheme = colorScheme === 'dark' ? 'light' : 'dark';
+    await page.emulateMedia({ colorScheme: alternateTheme });
+    await expectTheme(alternateTheme);
+    await page.emulateMedia({ colorScheme });
+    await expectTheme(colorScheme);
     await page.setViewportSize({ width: 390, height: 844 });
   }
+  await importScreen.locator('summary').click();
+  await expect(importScreen.locator('.first-load-server-option')).toBeVisible();
+  await expect(importScreen.getByRole('link', { name: 'deployment options (opens in a new tab)' })).toBeVisible();
+  await importScreen.locator('summary').click();
+  await expect(importScreen.locator('.first-load-server-option')).not.toBeVisible();
   const readBackground = (/** @type {Element} */ element) => {
     const css = getComputedStyle(element, '::before');
     return { image: css.backgroundImage, size: css.backgroundSize, border: css.borderRightColor };
@@ -271,10 +294,12 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false) {
   await expectRunsLoadOnScroll(page, shardCount * runsPerShard);
 }
 
-for (const mobile of [false, true]) {
-  test(`First import stays honest while browsing on ${mobile ? 'mobile' : 'desktop'}`, async ({ context, page }) => {
-    await exerciseFirstImport({ context, page }, mobile);
-  });
+for (const colorScheme of /** @type {const} */ (['light', 'dark'])) {
+  for (const mobile of [false, true]) {
+    test(`First import stays honest while browsing on ${mobile ? 'mobile' : 'desktop'} in ${colorScheme} mode`, async ({ context, page }) => {
+      await exerciseFirstImport({ context, page }, mobile, false, colorScheme);
+    });
+  }
 }
 
 test('An existing database upgrade immediately reuses the import dialog', async ({ context, page }) => {
