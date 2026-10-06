@@ -6,6 +6,9 @@ import { createInterface } from 'node:readline/promises';
 
 const DEFAULT_POLICY_PATH = '.github/workflows/cao.json';
 const REPOSITORY_COORDINATE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const REPOSITORY_PATTERN = /^([A-Za-z0-9_.*-]+)\/([A-Za-z0-9_.*-]+)$/;
+const REPOSITORY_LIST_LIMIT = 1000;
+const ORGANIZATION_PAGE_SIZE = 100;
 
 function commandFailureMessage(result, fallback) {
   return (result.stderr || '').trim() || result.error?.message || fallback;
@@ -45,13 +48,102 @@ function parseRepositoryList(value, fallback, UsageError) {
     .split(',')
     .map((repository) => repository.trim())
     .filter(Boolean);
-  const selected = repositories.length > 0 ? repositories : fallback;
+  const selected = (repositories.length > 0 ? repositories : fallback)
+    .map((repository) => repository === '*' ? '*/*' : repository);
   for (const repository of selected) {
-    if (!REPOSITORY_COORDINATE.test(repository)) {
-      throw new UsageError(`Repository must use owner/name format: ${repository}`);
+    if (!REPOSITORY_PATTERN.test(repository)) {
+      throw new UsageError(`Repository must use owner/repository format with optional * wildcards: ${repository}`);
     }
   }
   return [...new Set(selected)];
+}
+
+function listOrganizations(execute) {
+  const organizations = [];
+  for (let page = 1; page <= REPOSITORY_LIST_LIMIT / ORGANIZATION_PAGE_SIZE; page += 1) {
+    const result = execute('gh', [
+      'api',
+      `/user/orgs?per_page=${ORGANIZATION_PAGE_SIZE}&page=${page}`,
+    ], { encoding: 'utf8' });
+    if (result.error || result.status !== 0) {
+      throw new Error(`Unable to list organizations: ${commandFailureMessage(result, 'gh api failed')}`);
+    }
+    let entries;
+    try {
+      entries = JSON.parse(result.stdout);
+    } catch {
+      throw new Error('Unable to list organizations: GitHub returned invalid JSON');
+    }
+    if (!Array.isArray(entries)) {
+      throw new Error('Unable to list organizations: GitHub returned invalid organization data');
+    }
+    if (entries.some((entry) => !/^[A-Za-z0-9_.-]+$/.test(entry?.login))) {
+      throw new Error('Unable to list organizations: GitHub returned incomplete organization data');
+    }
+    organizations.push(...entries.map(({ login }) => login));
+    if (organizations.length >= REPOSITORY_LIST_LIMIT) {
+      throw new Error(
+        `Unable to expand organization wildcard: the organization list reached ${REPOSITORY_LIST_LIMIT}; use a narrower pattern`,
+      );
+    }
+    if (entries.length < ORGANIZATION_PAGE_SIZE) return organizations;
+  }
+  throw new Error(
+    `Unable to expand organization wildcard: the organization list reached ${REPOSITORY_LIST_LIMIT}; use a narrower pattern`,
+  );
+}
+
+function listOwnerRepositories(owner, execute) {
+  const result = execute('gh', [
+    'repo',
+    'list',
+    owner,
+    '--json',
+    'nameWithOwner,visibility',
+    '--limit',
+    String(REPOSITORY_LIST_LIMIT),
+  ], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Unable to list repositories for ${owner}: ${commandFailureMessage(result, 'gh repo list failed')}`);
+  }
+  let repositories;
+  try {
+    repositories = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Unable to list repositories for ${owner}: gh repo list returned invalid JSON`);
+  }
+  if (!Array.isArray(repositories)) {
+    throw new Error(`Unable to list repositories for ${owner}: gh repo list returned invalid repository data`);
+  }
+  if (repositories.length >= REPOSITORY_LIST_LIMIT) {
+    throw new Error(
+      `Unable to expand wildcard for ${owner}: the repository list reached ${REPOSITORY_LIST_LIMIT}; enter exact repository names instead`,
+    );
+  }
+  return repositories.map((repository) => {
+    if (
+      !REPOSITORY_COORDINATE.test(repository?.nameWithOwner)
+      || typeof repository.visibility !== 'string'
+      || repository.nameWithOwner.split('/')[0].toLowerCase() !== owner.toLowerCase()
+    ) {
+      throw new Error(`Unable to list repositories for ${owner}: gh repo list returned incomplete repository data`);
+    }
+    return {
+      repository: repository.nameWithOwner,
+      owner: repository.nameWithOwner.split('/')[0],
+      visibility: repository.visibility.toLowerCase(),
+    };
+  });
+}
+
+function repositoryPatternMatches(pattern, repository) {
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = (componentPattern, value) => (
+    new RegExp(`^${componentPattern.split('*').map(escapeRegExp).join('.*')}$`, 'i').test(value)
+  );
+  const [ownerPattern, namePattern] = pattern.split('/');
+  const [owner, name] = repository.split('/');
+  return matches(ownerPattern, owner) && matches(namePattern, name);
 }
 
 function inspectRepository(repository, execute) {
@@ -193,19 +285,58 @@ export async function setupCaoControlPlane({
     interactive.note('\nSet up this CAO control plane');
     interactive.note('No campaign will be installed, enabled, or run.\n');
     const targetAnswer = await interactive.text(
-      'Repositories CAO should be able to read (comma-separated owner/name)',
+      'Repositories CAO should be able to read (comma-separated owner/repository names or * wildcards; * means */*)',
       control.repository,
     );
     const requestedRepositories = parseRepositoryList(targetAnswer, [control.repository], UsageError);
-    const inspected = [
-      control,
-      ...requestedRepositories
-        .filter((repository) => repository.toLowerCase() !== control.repository.toLowerCase())
-        .map((repository) => inspectRepository(repository, execute)),
-    ];
-    const repositories = [...new Set(inspected.map(({ repository }) => repository))];
-    const owners = [...new Set(inspected.map(({ owner }) => owner))];
-    const hasNonPublicTarget = inspected.some(({ repository, visibility }) => (
+    const inspected = [control];
+    const ownerRepositories = new Map();
+    let organizations;
+    for (const requestedRepository of requestedRepositories) {
+      const [ownerPattern] = requestedRepository.split('/');
+      if (!requestedRepository.includes('*')) {
+        if (requestedRepository.toLowerCase() !== control.repository.toLowerCase()) {
+          inspected.push(inspectRepository(requestedRepository, execute));
+        }
+        continue;
+      }
+      let owners;
+      if (ownerPattern.includes('*')) {
+        organizations ??= listOrganizations(execute);
+        owners = organizations.filter((owner) => repositoryPatternMatches(
+          `${ownerPattern}/*`,
+          `${owner}/*`,
+        ));
+        if (owners.length === 0) {
+          throw new Error(`Organization pattern ${ownerPattern} matched no accessible organizations`);
+        }
+      } else {
+        owners = [ownerPattern];
+      }
+      const matches = owners.flatMap((owner) => {
+        const key = owner.toLowerCase();
+        if (!ownerRepositories.has(key)) {
+          ownerRepositories.set(key, listOwnerRepositories(owner, execute));
+        }
+        return ownerRepositories.get(key);
+      })
+        .filter(({ repository }) => repositoryPatternMatches(requestedRepository, repository))
+        .sort((left, right) => left.repository.localeCompare(right.repository, 'en'));
+      if (matches.length === 0) {
+        throw new Error(`Repository pattern ${requestedRepository} matched no accessible repositories`);
+      }
+      inspected.push(...matches);
+    }
+    const seenRepositories = new Set();
+    const uniqueInspected = inspected.filter(({ repository }) => {
+      const key = repository.toLowerCase();
+      if (seenRepositories.has(key)) return false;
+      seenRepositories.add(key);
+      return true;
+    });
+    const repositories = uniqueInspected.map(({ repository }) => repository);
+    const owners = [...new Set(uniqueInspected.map(({ owner }) => owner))];
+    const hasNonPublicTarget = uniqueInspected.some(({ repository, visibility }) => (
       repository.toLowerCase() !== control.repository.toLowerCase() && visibility !== 'public'
     ));
     if (control.visibility === 'public' && hasNonPublicTarget) {
