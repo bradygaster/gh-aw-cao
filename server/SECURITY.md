@@ -292,11 +292,13 @@ The Azure deployment may provision Azure Managed Redis or select an externally
 provisioned Redis Cloud endpoint. The infrastructure switch does not change
 runtime authority: external mode still requires the reviewed `redis-cloud`
 module in `control-plane.web.host`, verified `rediss://` transport, and an
-explicit namespace. The complete Redis URL and optional collection scaler ACL
-username/password are written only to Key Vault. Outputs contain only the
-provider name and non-secret host/port. Collection workers receive the full URL
-through a Key Vault reference; KEDA receives separate least-privilege ACL
-credentials and cannot disable TLS verification.
+explicit namespace. Redis Cloud's 30 MB Free database is not compatible because
+it does not expose a configurable TLS endpoint; a public plaintext endpoint
+must not be adapted or exempted for Azure mode. The complete Redis URL and
+optional collection scaler ACL username/password are written only to Key Vault.
+Outputs contain only the provider name and non-secret host/port. Collection
+workers receive the full URL through a Key Vault reference; KEDA receives
+separate least-privilege ACL credentials and cannot disable TLS verification.
 
 The Functions runtime storage account disables shared-key access. The host uses
 the Function App system-assigned identity through

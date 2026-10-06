@@ -84,6 +84,12 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
      URL in your secret manager. The Azure template does not purchase a plan,
      accept Marketplace terms, or create the external database.
 
+     Redis Cloud's 30 MB Free database does not expose a configurable TLS
+     endpoint and therefore cannot satisfy this deployment's verified
+     `rediss://` transport requirement. Use a TLS-capable paid Redis Cloud plan
+     or another compatible provider; do not route the Free endpoint through a
+     plaintext public-network exception.
+
 1. Create the resource group and deploy the template. Replace the placeholders with your own values.
 
    Azure Managed Redis:
@@ -371,6 +377,10 @@ Run this checklist only against a dedicated, disposable Redis Cloud database.
 The tests use unique CAO namespaces, but memory-pressure checks observe the
 whole database and assume no unrelated workload. Keep `REDIS_URL` in the
 process environment and don't paste it into command output, tickets, or logs.
+The database must expose a verified TLS endpoint. Redis Cloud's 30 MB Free
+database is not a valid conformance target because its TLS control is
+unavailable; the suite intentionally rejects its public plaintext endpoint
+before authentication or Redis commands run.
 
 1. Configure the database for `noeviction` and confirm its memory limit leaves
    headroom above `CAO_REDIS_MAX_BYTES`.
