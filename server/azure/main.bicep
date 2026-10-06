@@ -158,6 +158,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   kind: 'StorageV2'
   properties: {
     allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
   }
@@ -254,15 +255,6 @@ resource githubWebhookSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01'
   }
 }
 
-resource functionsStorageConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'azure-webjobs-storage'
-  properties: {
-    value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
-    contentType: 'Azure Functions runtime storage connection'
-  }
-}
-
 resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = if (managedRedisEnabled) {
   name: redisEnterpriseName
   location: location
@@ -344,8 +336,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: insights.properties.ConnectionString
         }
         {
-          name: 'AzureWebJobsStorage'
-          value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/azure-webjobs-storage)'
+          name: 'AzureWebJobsStorage__accountName'
+          value: storage.name
+        }
+        {
+          name: 'AzureWebJobsStorage__credential'
+          value: 'managedidentity'
         }
         {
           name: 'CAO_DASHBOARD_HOSTING'
@@ -432,12 +428,41 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     }
   }
   dependsOn: [
-    functionsStorageConnectionStringValue
     githubClientSecretValue
     redisConnectionStringValue
     sessionSecretValue
     previousSessionSecretValue
   ]
+}
+
+resource functionsStorageBlobDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.name, 'Storage Blob Data Owner')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionsStorageQueueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.name, 'Storage Queue Data Contributor')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionsStorageTableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.name, 'Storage Table Data Contributor')
+  scope: storage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
 }
 
 resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {

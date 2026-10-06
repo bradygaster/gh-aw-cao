@@ -41,8 +41,8 @@ an operator-provisioned compatible Redis service such as Redis Cloud.
 | App Service plan | Elastic Premium `EP1` | Keeps the Function App always on |
 | Azure Managed Redis | Created only in `azure-managed-redis` mode. `Microsoft.Cache/redisEnterprise`, default `Balanced_B0` with capacity 1, TLS 1.2, encrypted client protocol, `NoEviction` policy, and public network access off. | Stores sessions, rate limits, webhook and collection queues, deduplication, coordination, quota state, and bounded caches |
 | External Redis | Not provisioned by the template. In `external` mode, the operator supplies a TLS endpoint and credentials from a compatible service such as Redis Cloud. | Provides the same operational state without an Azure Redis resource |
-| Key Vault | Role-based access control, 90-day soft delete, and purge protection | Stores the OAuth client secret, session secrets, Redis URL, Functions storage connection string, and optional collection secrets |
-| Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, and no public blob access | Stores Azure Functions runtime state only |
+| Key Vault | Role-based access control, 90-day soft delete, and purge protection | Stores the OAuth client secret, session secrets, Redis URL, and optional collection secrets |
+| Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, no public blob access, and shared-key access disabled. The Function App uses its managed identity with scoped Blob, Queue, and Table data roles. | Stores Azure Functions runtime state only |
 | Application Insights | Optionally linked to a Log Analytics workspace | Collects operational telemetry that contains no secrets |
 
 ### Other requirements
@@ -232,7 +232,8 @@ The template creates the following app settings.
 | `CAO_SESSION_SECRET` | Key Vault secret `cao-session-secret` | Current session encryption key. At least 32 characters. |
 | `CAO_SESSION_SECRET_PREVIOUS` | Key Vault, only when `previousSessionSecret` is set | Previous session key, used during rotation. |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Application Insights | Where the Functions host sends telemetry. |
-| `AzureWebJobsStorage` | Key Vault secret `azure-webjobs-storage` | Storage for the Functions runtime. |
+| `AzureWebJobsStorage__accountName` | Functions storage account name | Selects identity-based host storage without a connection string or account key. |
+| `AzureWebJobsStorage__credential` | Fixed value `managedidentity` | Uses the Function App system-assigned identity for host storage. |
 
 The `redisMaxBytes` template parameter controls the whole-node Redis memory
 budget; it defaults to **200,000,000 bytes** and populates `CAO_REDIS_MAX_BYTES`
@@ -417,6 +418,9 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 
 - **No secrets in the browser.** The browser never receives Redis URLs or credentials, GitHub access or refresh tokens, or Key Vault secret values.
 - **Secrets in Key Vault.** Every app setting that holds a secret is a versionless Key Vault reference, resolved by managed identity. Template outputs contain no secrets.
+- **Identity-based Functions storage.** The runtime storage account disables
+  shared-key access. The Function App system identity receives only the Blob,
+  Queue, and Table data roles required by `AzureWebJobsStorage`.
 - **Authorized access.** Users must sign in with GitHub OAuth and be active members of an allowed organization or team. Membership is checked again on every token refresh.
 - **Protected sessions.** Session cookies are `Secure`, `HttpOnly`, and `SameSite=Lax`. Requests that change state need a CSRF token bound to the session.
 - **Encrypted Redis traffic.** Redis traffic uses `rediss://` with certificate and host name verification. You can't turn off TLS verification.

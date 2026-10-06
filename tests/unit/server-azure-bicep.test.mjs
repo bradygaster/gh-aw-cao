@@ -82,9 +82,20 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /identity:\s*{\s*type:\s*'SystemAssigned'/);
   assert.match(bicep, /Key Vault Secrets User/);
 
-  for (const setting of ['AzureWebJobsStorage', 'CAO_REDIS_URL', 'CAO_GITHUB_CLIENT_SECRET', 'CAO_SESSION_SECRET']) {
+  for (const setting of ['CAO_REDIS_URL', 'CAO_GITHUB_CLIENT_SECRET', 'CAO_SESSION_SECRET']) {
     const pattern = new RegExp(`name:\\s*'${setting}'[\\s\\S]*?value:\\s*'@Microsoft\\.KeyVault\\(SecretUri=`);
     assert.match(bicep, pattern, `${setting} must use a Key Vault reference`);
+  }
+  assert.match(bicep, /allowSharedKeyAccess:\s*false/);
+  assert.match(bicep, /name:\s*'AzureWebJobsStorage__accountName'\s+value:\s*storage\.name/);
+  assert.match(bicep, /name:\s*'AzureWebJobsStorage__credential'\s+value:\s*'managedidentity'/);
+  assert.doesNotMatch(bicep, /functionsStorageConnectionStringValue|azure-webjobs-storage|storage\.listKeys\(\)/);
+  for (const roleId of [
+    'b7e6dc6d-f1e8-4753-8033-0f276bb0955b',
+    '974c5e8b-45b9-4653-ba55-5f855dd0fb88',
+    '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3',
+  ]) {
+    assert.match(bicep, new RegExp(roleId));
   }
   assert.doesNotMatch(bicep, /secretUriWithVersion/, 'Key Vault references must follow the current secret version for rotation');
 

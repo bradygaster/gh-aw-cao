@@ -298,6 +298,14 @@ provider name and non-secret host/port. Collection workers receive the full URL
 through a Key Vault reference; KEDA receives separate least-privilege ACL
 credentials and cannot disable TLS verification.
 
+The Functions runtime storage account disables shared-key access. The host uses
+the Function App system-assigned identity through
+`AzureWebJobsStorage__accountName` and `AzureWebJobsStorage__credential`, with
+storage-scoped Blob Data Owner, Queue Data Contributor, and Table Data
+Contributor assignments. No storage account key or connection string is
+written to Key Vault. The optional collection evidence lake remains a separate
+Azure Files boundary and is deployed only when collection is enabled.
+
 The trusted-proxy policy is intentionally separate from local `Host` checks.
 Local requests must still use loopback hosts. Azure requests may use forwarded
 host/protocol headers only when the forwarded host exactly matches the
