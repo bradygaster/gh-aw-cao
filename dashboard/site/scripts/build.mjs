@@ -16,6 +16,7 @@ export async function buildDashboardSite({
   destination,
   controlSettings,
   commitSha,
+  caoVersion = process.env.CAO_VERSION,
   activityDataPath,
   githubRepository = process.env.GITHUB_REPOSITORY,
   githubServerUrl = process.env.GITHUB_SERVER_URL,
@@ -48,7 +49,12 @@ export async function buildDashboardSite({
 
   const indexPath = join(destinationPath, "index.html");
   const configuredIndex = configureSite(await readFile(indexPath, "utf8"), controlSettings);
-  await writeFile(indexPath, embedDashboardVersion(configuredIndex, commitSha));
+  const versions = {
+    caoVersion: caoVersion && caoVersion !== "dev" ? caoVersion : commitSha
+      ? `0.0.0-main.${commitSha.slice(0, 12)}` : undefined,
+    ghAwVersion: await loadDashboardGhAwVersion(repositoryPath),
+  };
+  await writeFile(indexPath, embedDashboardVersions(embedDashboardVersion(configuredIndex, commitSha), versions));
 
   const campaignDashboards = await findCampaignDashboards(repositoryPath, controlSettings);
 
@@ -137,6 +143,28 @@ export function embedDashboardVersion(html, commitSha) {
   const declaration = '<meta name="dashboard-version" content="development">';
   if (!html.includes(declaration)) throw new Error("dashboard version declaration is missing");
   return html.replace(declaration, `<meta name="dashboard-version" content="${commitSha}">`);
+}
+
+async function loadDashboardGhAwVersion(repositoryPath) {
+  try {
+    return JSON.parse(await readFile(join(repositoryPath, ".github/workflows/cao.json"), "utf8"))["gh-aw-version"];
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+export function embedDashboardVersions(html, { caoVersion, ghAwVersion }) {
+  for (const [name, value] of [["cao-version", caoVersion], ["gh-aw-version", ghAwVersion]]) {
+    if (value === undefined) continue;
+    if (typeof value !== "string" || !/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(value)) {
+      throw new Error(`${name} must be a semantic version`);
+    }
+    const declaration = `<meta name="${name}" content="">`;
+    if (!html.includes(declaration)) throw new Error(`${name} declaration is missing`);
+    html = html.replace(declaration, `<meta name="${name}" content="${value}">`);
+  }
+  return html;
 }
 
 export function filterExperimentalDashboardViews(document, enabled = false) {
