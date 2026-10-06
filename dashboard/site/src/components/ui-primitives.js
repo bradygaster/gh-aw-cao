@@ -125,11 +125,13 @@ export function renderLabeledSpan(label, value) {
  *   content?: Node | Node[],
  *   trigger?: HTMLElement,
  *   className?: string,
- *   contentClassName?: string
+ *   contentClassName?: string,
+ *   viewportAnchored?: boolean,
+ *   signal?: AbortSignal
  * }} options
  * @returns {HTMLElement}
  */
-export function renderTooltip({ id, label, description, icon, content, trigger, className, contentClassName }) {
+export function renderTooltip({ id, label, description, icon, content, trigger, className, contentClassName, viewportAnchored = false, signal }) {
   const tooltipTrigger = trigger ?? h(
     'button',
     {
@@ -152,10 +154,8 @@ export function renderTooltip({ id, label, description, icon, content, trigger, 
     )
   );
   const tooltipContent = /** @type {HTMLElement} */ (tooltip.lastElementChild);
-  // Every renderPageSection/view-chrome/dashboard-horizon tooltip is rebuilt on
-  // navigation, so viewport-tracking listeners must stop themselves once the
-  // tooltip root leaves the document instead of leaking on every window.
-  const scope = createFactoryScope();
+  if (viewportAnchored) tooltipContent.classList.add('tooltip-content-viewport');
+  const scope = createFactoryScope({ signal });
   let pointerInside = false;
   let focusInside = false;
   let trackingViewport = false;
@@ -176,9 +176,9 @@ export function renderTooltip({ id, label, description, icon, content, trigger, 
     const top = below + contentRect.height <= viewportHeight - margin
       ? below
       : Math.max(margin, above);
-    tooltipContent.style.left = `${left - rootRect.left}px`;
+    tooltipContent.style.left = `${viewportAnchored ? left : left - rootRect.left}px`;
     tooltipContent.style.right = 'auto';
-    tooltipContent.style.top = `${top - rootRect.top}px`;
+    tooltipContent.style.top = `${viewportAnchored ? top : top - rootRect.top}px`;
   };
   const startViewportTracking = () => {
     if (trackingViewport || scope.signal.aborted) return;
@@ -210,6 +210,11 @@ export function renderTooltip({ id, label, description, icon, content, trigger, 
     focusInside = event.relatedTarget instanceof Node && tooltip.contains(event.relatedTarget);
     stopViewportTracking();
   }, { signal: scope.signal });
+  scope.signal.addEventListener('abort', () => {
+    pointerInside = false;
+    focusInside = false;
+    stopViewportTracking();
+  }, { once: true });
   scope.bind(tooltip);
   return tooltip;
 }

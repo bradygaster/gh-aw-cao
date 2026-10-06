@@ -2973,7 +2973,7 @@
       "id": "campaign-operational-value-primary-series",
       "subject": "Project native operational-value observations into repository temporal series.",
       "objective": "Choose a repository and measure whose observed value needs evidence review.",
-      "acceptance": "Each plotted point retains the observed measure's native value and unit, including the first observation; missing values are omitted, not zero. Requery operational-values and campaign-operational-value-evidence-state for point maturity before interpreting trends; do not infer causality.",
+      "acceptance": "Points retain native values, units, and optional run-links partitioned by provenance for tooltip drilldown; missing values are omitted, not zero. Requery operational-values and campaign-operational-value-evidence-state for maturity before interpreting trends; do not infer causality.",
       "description": "Repository observations in native units; point-level maturity and missing values require source observation review.",
       "parameters": [
         {
