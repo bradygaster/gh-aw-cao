@@ -42,6 +42,7 @@ export const USAGE = `Usage:
   cao setup-auth token --repo OWNER/REPO [--write-repository OWNER/REPO...] [--policy PATH] [--expires-in DAYS] [--dry-run] [--no-open] [--keep-existing|--replace-existing]
   cao add CAMPAIGN [GH_AW_ADD_OPTIONS...]
   cao update [--pre-releases] [GH_AW_UPDATE_OPTIONS...]
+  cao update (main|master|latest|COMMIT_SHA) [GH_AW_ADD_OPTIONS...]
   cao upgrade-gh-aw VERSION
   cao mode (live|preview) CAMPAIGN...
   cao enable CAMPAIGN...
@@ -90,6 +91,21 @@ Query local CAO data as JSON. Download the deployed snapshot before querying:
   cao gh runs -R githubnext/gh-aw-cao -w cao-activity --status failure --since 2026-09-01 --until 2026-09-15
   cao gh issues -R githubnext/gh-aw-cao --since 2026-09-01
   cao gh prs -R githubnext/gh-aw-cao -w cao-activity -L 10
+
+Update CAO:
+  cao update                         Latest compatible published release
+  cao update main                    Catalog default-branch HEAD, pinned to a full SHA
+  cao update master                  Alias for the catalog default-branch HEAD
+  cao update latest                  Return to the latest published stable release
+  cao update 0123456789abcdef0123456789abcdef01234567
+  Explicit refs accept main, master, latest, or a 7-40 character commit SHA and reapply every
+  installed CAO package at that commit, replacing campaign-owned files.
+  Options may appear before or after the ref.
+  main and master both use the catalog repository's GitHub default branch.
+  Use latest after an untagged branch/SHA install; subsequent bare updates follow
+  releases again. latest bypasses major-version and cooldown selection.
+  Ref updates accept gh-aw add options (such as --no-security-scanner), not
+  release-update options (--major, --cool-down, or --pre-releases).
 
 Agent analysis:
   Download the current CAO snapshot:
