@@ -5,7 +5,8 @@ The Go dashboard server has three security profiles:
 - the default local profile used by `cao-dashboard serve`, for one trusted
   operator on loopback; and
 - the explicit Azure Functions profile, for remote access through GitHub OAuth,
-  server-side sessions, Azure trusted-proxy headers, and Azure Managed Redis; and
+  server-side sessions, Azure trusted-proxy headers, and either Azure Managed
+  Redis or reviewed external Redis Cloud; and
 - the host-neutral `serve-hosted` profile, with the same GitHub identity boundary
   behind an explicitly trusted HTTPS proxy and any compatible managed Redis.
 
@@ -214,7 +215,8 @@ labels, or health check.
 Coolify-managed Redis service isolated on the same private network, after the
 explicit plaintext opt-in. Network isolation and Redis authentication remain
 operator responsibilities. Azure Functions ignores this hosted opt-in and
-continues to require `rediss://` to Azure Managed Redis.
+continues to require verified `rediss://` transport to either Azure Managed
+Redis or external Redis Cloud.
 
 Deployment uses a Git-backed Coolify resource restricted to protected `main`.
 The Coolify GitHub App supplies source access and the webhook that starts an
@@ -285,6 +287,16 @@ and configuration includes:
 - GitHub OAuth App client ID, client secret, redirect URL, and a session secret
   of at least 32 characters; and
 - at least one allowed GitHub organization or `org/team-slug` value.
+
+The Azure deployment may provision Azure Managed Redis or select an externally
+provisioned Redis Cloud endpoint. The infrastructure switch does not change
+runtime authority: external mode still requires the reviewed `redis-cloud`
+module in `control-plane.web.host`, verified `rediss://` transport, and an
+explicit namespace. The complete Redis URL and optional collection scaler ACL
+username/password are written only to Key Vault. Outputs contain only the
+provider name and non-secret host/port. Collection workers receive the full URL
+through a Key Vault reference; KEDA receives separate least-privilege ACL
+credentials and cannot disable TLS verification.
 
 The trusted-proxy policy is intentionally separate from local `Host` checks.
 Local requests must still use loopback hosts. Azure requests may use forwarded

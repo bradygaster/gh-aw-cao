@@ -296,7 +296,7 @@ flowchart LR
 | Redis operations | `internal/redisx/` | Supports caches, queues, and sessions. |
 | HTTP(S)/API server | `internal/server/` | Enforces loopback binding, optionally terminates operator-configured TLS, serves static dashboard assets, handles API requests, and publishes revision events. |
 | Externally hosted service | `hosting/` | Exposes a listener-independent application lifecycle and the complete hosted HTTP handler to other Go HTTP hosts. |
-| Azure Functions profile | `internal/server/azure.go` | Builds the same HTTP handler without starting a listener, validates Azure app settings, requires `rediss://` Redis, and trusts forwarded host/protocol headers only for configured Azure hosts. |
+| Azure Functions profile | `internal/server/azure.go` | Builds the same HTTP handler without starting a listener, validates Azure app settings, requires `rediss://` Redis from Azure Managed Redis or an external compatible provider, and trusts forwarded host/protocol headers only for configured Azure hosts. |
 | GitHub OAuth sessions | `internal/server/oauth.go` | Implements the GitHub OAuth authorization-code flow, active organization/team authorization, refresh-token rotation, server-side encrypted sessions in Redis, logout revocation, and CSRF protection for mutating requests. |
 | Shared API model | `internal/model/` | Defines logical sources, diagnostics, and query metrics. |
 | Telemetry | `internal/telemetry/` | Configures OpenTelemetry trace, metric, and opt-in log providers, exposes the server's tracer, and writes W3C trace/span id response headers. |
@@ -511,7 +511,11 @@ Use `rediss://` whenever Coolify or an external provider offers TLS. A
 Coolify-managed Redis service may use plaintext only on the private service
 network when `control-plane.web.host.redis.allow-private-plaintext` is `true`
 and the endpoint uses a private service hostname or IP. This policy does not
-affect Azure: Azure Functions continues to require `rediss://`.
+affect Azure: Azure Functions continues to require `rediss://` whether the
+Bicep deployment provisions Azure Managed Redis or connects to external Redis
+Cloud. The external deployment switch changes infrastructure ownership only;
+runtime capabilities still come from the reviewed `redis-cloud` provider
+module in `cao.json`.
 
 The GitHub App webhook starts production delivery after a protected `main`
 update. Coolify checks out that commit, builds the Compose service, and replaces

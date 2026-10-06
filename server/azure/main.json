@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.47.16.16243",
-      "templateHash": "4237051733179278088"
+      "version": "0.44.1.10279",
+      "templateHash": "8860945164809629275"
     }
   },
   "parameters": {
@@ -41,10 +41,38 @@
         "description": "Key Vault name used for GitHub OAuth, session, and Redis connection secrets."
       }
     },
+    "redisProvider": {
+      "type": "string",
+      "defaultValue": "azure-managed-redis",
+      "allowedValues": [
+        "azure-managed-redis",
+        "external"
+      ],
+      "metadata": {
+        "description": "Redis deployment provider. The default provisions Azure Managed Redis; external uses an operator-provisioned compatible Redis service."
+      }
+    },
     "redisEnterpriseName": {
       "type": "string",
+      "defaultValue": "[format('{0}-redis', parameters('functionAppName'))]",
       "metadata": {
-        "description": "Azure Managed Redis cache name."
+        "description": "Azure Managed Redis cache name. Used only when redisProvider is azure-managed-redis."
+      }
+    },
+    "externalRedisHost": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "External Redis host name without credentials. Required when redisProvider is external and passed to the collection autoscaler."
+      }
+    },
+    "externalRedisPort": {
+      "type": "int",
+      "defaultValue": 10000,
+      "minValue": 1,
+      "maxValue": 65535,
+      "metadata": {
+        "description": "External Redis TLS port. Used only when redisProvider is external."
       }
     },
     "redisSkuName": {
@@ -126,7 +154,7 @@
     "redisConnectionString": {
       "type": "securestring",
       "metadata": {
-        "description": "TLS Redis URL, for example rediss://:<access-key>@cache.region.redisenterprise.cache.azure.net:10000/0. Store a rotated value here rather than outputting Redis keys."
+        "description": "TLS Redis URL, for example rediss://default:<password>@host:port/0. Store a rotated value here rather than outputting Redis credentials."
       }
     },
     "logAnalyticsWorkspaceResourceId": {
@@ -164,11 +192,18 @@
         "description": "Shared secret verifying GitHub webhook deliveries. Required with collectorImage."
       }
     },
+    "collectorRedisUsername": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Redis ACL username used only by the collection autoscaler to read stream backlog. External Redis requires it with collectorImage; Azure Managed Redis defaults it to default."
+      }
+    },
     "collectorRedisPassword": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Redis access key used only by the collection autoscaler to read stream backlog. Required with collectorImage."
+        "description": "Redis ACL password used only by the collection autoscaler to read stream backlog. Required with collectorImage."
       }
     },
     "githubAdminUsers": {
@@ -208,6 +243,9 @@
   },
   "variables": {
     "collectionEnabled": "[not(empty(parameters('collectorImage')))]",
+    "managedRedisEnabled": "[equals(parameters('redisProvider'), 'azure-managed-redis')]",
+    "resolvedRedisPort": "[if(variables('managedRedisEnabled'), 10000, parameters('externalRedisPort'))]",
+    "resolvedCollectorRedisUsername": "[if(and(variables('managedRedisEnabled'), empty(parameters('collectorRedisUsername'))), 'default', parameters('collectorRedisUsername'))]",
     "tags": {
       "workload": "gh-aw-cao-dashboard",
       "hostingMode": "azure-functions"
@@ -320,7 +358,20 @@
       "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-password')]",
       "properties": {
         "value": "[parameters('collectorRedisPassword')]",
-        "contentType": "Redis access key for the collection autoscaler"
+        "contentType": "Redis ACL password for the collection autoscaler"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[variables('collectionEnabled')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-redis-username')]",
+      "properties": {
+        "value": "[variables('resolvedCollectorRedisUsername')]",
+        "contentType": "Redis ACL username for the collection autoscaler"
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
@@ -353,6 +404,7 @@
       ]
     },
     {
+      "condition": "[variables('managedRedisEnabled')]",
       "type": "Microsoft.Cache/redisEnterprise",
       "apiVersion": "2024-11-01",
       "name": "[parameters('redisEnterpriseName')]",
@@ -368,6 +420,7 @@
       }
     },
     {
+      "condition": "[variables('managedRedisEnabled')]",
       "type": "Microsoft.Cache/redisEnterprise/databases",
       "apiVersion": "2024-11-01",
       "name": "[format('{0}/{1}', parameters('redisEnterpriseName'), 'default')]",
@@ -485,8 +538,9 @@
           "keyVaultName": {
             "value": "[parameters('keyVaultName')]"
           },
-          "redisHost": {
-            "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
+          "redisHost": "[if(variables('managedRedisEnabled'), createObject('value', reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName), createObject('value', parameters('externalRedisHost')))]",
+          "redisPort": {
+            "value": "[variables('resolvedRedisPort')]"
           },
           "redisNamespace": {
             "value": "azure-dashboard"
@@ -519,8 +573,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.47.16.16243",
-              "templateHash": "6408876780525573948"
+              "version": "0.44.1.10279",
+              "templateHash": "17776504020195544364"
             }
           },
           "parameters": {
@@ -734,6 +788,11 @@
                 "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
               },
               {
+                "name": "cao-redis-username",
+                "keyVaultUrl": "[format('{0}secrets/cao-redis-username', parameters('keyVaultUri'))]",
+                "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
+              },
+              {
                 "name": "cao-redis-password",
                 "keyVaultUrl": "[format('{0}secrets/cao-redis-password', parameters('keyVaultUri'))]",
                 "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
@@ -939,6 +998,10 @@
                           },
                           "auth": [
                             {
+                              "secretRef": "cao-redis-username",
+                              "triggerParameter": "username"
+                            },
+                            {
                               "secretRef": "cao-redis-password",
                               "triggerParameter": "password"
                             }
@@ -1042,6 +1105,7 @@
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-collect-private-key')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-password')]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-username')]",
         "[resourceId('Microsoft.Insights/components', format('{0}-ai', parameters('functionAppName')))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-redis-url')]",
@@ -1062,13 +1126,17 @@
       "type": "string",
       "value": "[variables('githubRedirectUri')]"
     },
-    "redisEnterpriseHostName": {
+    "redisProvider": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName]"
+      "value": "[parameters('redisProvider')]"
     },
-    "redisDatabaseName": {
+    "redisHostName": {
       "type": "string",
-      "value": "default"
+      "value": "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName, parameters('externalRedisHost'))]"
+    },
+    "redisPort": {
+      "type": "int",
+      "value": "[variables('resolvedRedisPort')]"
     },
     "keyVaultUri": {
       "type": "string",

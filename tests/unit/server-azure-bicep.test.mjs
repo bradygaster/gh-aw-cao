@@ -20,10 +20,16 @@ test('Azure shares one positive Redis memory budget across dashboard and collect
   assert.equal(collection.properties.template.parameters.redisMaxBytes.minValue, 1);
 });
 
-test('Azure dashboard Bicep uses module-free Redis with TLS app settings', () => {
+test('Azure dashboard Bicep defaults to conditional Azure Managed Redis with TLS app settings', () => {
   assert.match(bicep, /Experimental Azure Functions deployment baseline/);
   assert.match(bicep, /Review and validate tenant-specific security, compliance, networking/);
+  assert.match(bicep, /param redisProvider string = 'azure-managed-redis'/);
+  assert.match(bicep, /param externalRedisHost string = ''/);
+  assert.match(bicep, /param externalRedisPort int = 10000/);
+  assert.match(bicep, /var resolvedRedisHost = managedRedisEnabled \? redisEnterprise!\.properties\.hostName : externalRedisHost/);
   assert.match(bicep, /Microsoft\.Cache\/redisEnterprise@/);
+  assert.match(bicep, /resource redisEnterprise '[^']+' = if \(managedRedisEnabled\)/);
+  assert.match(bicep, /resource redisDatabase '[^']+' = if \(managedRedisEnabled\)/);
   assert.doesNotMatch(bicep, /modules:\s*\[/);
   assert.match(bicep, /param redisSkuName string = 'Balanced_B0'/);
   assert.match(bicep, /clientProtocol:\s*'Encrypted'/);
@@ -31,6 +37,15 @@ test('Azure dashboard Bicep uses module-free Redis with TLS app settings', () =>
   assert.match(bicep, /CAO_REDIS_URL/);
   assert.match(bicep, /@Microsoft\.KeyVault\(SecretUri=/);
   assert.match(bicep, /CAO_DASHBOARD_HOSTING[\s\S]*azure-functions/);
+  assert.equal(generated.parameters.redisProvider.defaultValue, 'azure-managed-redis');
+  assert.deepEqual(generated.parameters.redisProvider.allowedValues, ['azure-managed-redis', 'external']);
+  assert.equal(generated.parameters.externalRedisHost.defaultValue, '');
+  assert.equal(generated.parameters.externalRedisPort.defaultValue, 10000);
+  const redisResources = generated.resources.filter((resource) => resource.type.startsWith('Microsoft.Cache/redisEnterprise'));
+  assert.equal(redisResources.length, 2);
+  for (const resource of redisResources) {
+    assert.equal(resource.condition, "[variables('managedRedisEnabled')]");
+  }
 });
 
 test('Azure dashboard Bicep does not output secrets or PAT-based configuration', () => {
@@ -42,6 +57,18 @@ test('Azure dashboard Bicep does not output secrets or PAT-based configuration',
   }
   assert.doesNotMatch(bicep, /CAO_GITHUB_PAT|GITHUB_PAT|PERSONAL_ACCESS_TOKEN/i);
   assert.match(bicep, /OAuth authorization-code flow/);
+  assert.match(bicep, /output redisProvider string = redisProvider/);
+  assert.match(bicep, /output redisHostName string = resolvedRedisHost/);
+  assert.match(bicep, /output redisPort int = resolvedRedisPort/);
+  assert.doesNotMatch(bicep, /output redisEnterpriseHostName|output redisDatabaseName/);
+  assert.deepEqual(
+    Object.keys(generated.outputs).sort(),
+    ['collectionEnabled', 'functionHostName', 'githubOAuthRedirectUri', 'keyVaultUri', 'redisHostName', 'redisPort', 'redisProvider'].sort(),
+  );
+  assert.equal(
+    generated.outputs.redisHostName.value,
+    "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName, parameters('externalRedisHost'))]",
+  );
 });
 
 test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
@@ -67,4 +94,24 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /ftpsState:\s*'Disabled'/);
   assert.match(bicep, /allowBlobPublicAccess:\s*false/);
   assert.match(bicep, /supportsHttpsTrafficOnly:\s*true/);
+});
+
+test('Azure collection scaler uses ACL username and password without exposing the worker URL', () => {
+  assert.match(bicep, /param collectorRedisUsername string = ''/);
+  assert.match(bicep, /var resolvedCollectorRedisUsername = managedRedisEnabled && empty\(collectorRedisUsername\) \? 'default' : collectorRedisUsername/);
+  assert.match(bicep, /name:\s*'cao-redis-username'/);
+  assert.match(bicep, /name:\s*'cao-redis-password'/);
+  assert.match(bicep, /redisHost:\s*resolvedRedisHost/);
+  assert.match(bicep, /redisPort:\s*resolvedRedisPort/);
+  assert.match(collector, /secretRef:\s*'cao-redis-username'\s+triggerParameter:\s*'username'/);
+  assert.match(collector, /secretRef:\s*'cao-redis-password'\s+triggerParameter:\s*'password'/);
+  assert.match(collector, /name:\s*'CAO_REDIS_URL'\s+secretRef:\s*'cao-redis-url'/);
+  assert.match(collector, /enableTLS:\s*'true'/);
+  assert.doesNotMatch(collector, /disableTLS|skipTLS|insecure/i);
+  const collection = generated.resources.find((resource) => resource.type === 'Microsoft.Resources/deployments' && resource.name === 'collection-workers');
+  assert.match(collection.properties.parameters.redisHost, /managedRedisEnabled/);
+  assert.match(collection.properties.parameters.redisHost, /externalRedisHost/);
+  assert.equal(collection.properties.parameters.redisPort.value, "[variables('resolvedRedisPort')]");
+  assert.equal(collection.properties.template.parameters.redisHost.type, 'string');
+  assert.equal(collection.properties.template.parameters.redisPort.type, 'int');
 });

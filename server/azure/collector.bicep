@@ -280,6 +280,11 @@ var collectionSecrets = [
     identity: collectorIdentity.id
   }
   {
+    name: 'cao-redis-username'
+    keyVaultUrl: '${keyVaultUri}secrets/cao-redis-username'
+    identity: collectorIdentity.id
+  }
+  {
     name: 'cao-redis-password'
     keyVaultUrl: '${keyVaultUri}secrets/cao-redis-password'
     identity: collectorIdentity.id
@@ -353,9 +358,12 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
               }
               auth: [
                 {
-                  // The scaler authenticates with the Redis access key alone.
-                  // The full connection URL stays a worker secret so the
-                  // scaler is not given more than it needs to read backlog.
+                  secretRef: 'cao-redis-username'
+                  triggerParameter: 'username'
+                }
+                {
+                  // The scaler receives only the ACL identity needed to read
+                  // backlog. Workers consume the full URL independently.
                   secretRef: 'cao-redis-password'
                   triggerParameter: 'password'
                 }

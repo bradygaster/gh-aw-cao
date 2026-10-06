@@ -19,8 +19,23 @@ param storageAccountName string
 @description('Key Vault name used for GitHub OAuth, session, and Redis connection secrets.')
 param keyVaultName string
 
-@description('Azure Managed Redis cache name.')
-param redisEnterpriseName string
+@allowed([
+  'azure-managed-redis'
+  'external'
+])
+@description('Redis deployment provider. The default provisions Azure Managed Redis; external uses an operator-provisioned compatible Redis service.')
+param redisProvider string = 'azure-managed-redis'
+
+@description('Azure Managed Redis cache name. Used only when redisProvider is azure-managed-redis.')
+param redisEnterpriseName string = '${functionAppName}-redis'
+
+@description('External Redis host name without credentials. Required when redisProvider is external and passed to the collection autoscaler.')
+param externalRedisHost string = ''
+
+@minValue(1)
+@maxValue(65535)
+@description('External Redis TLS port. Used only when redisProvider is external.')
+param externalRedisPort int = 10000
 
 @allowed([
   'Balanced_B0'
@@ -67,7 +82,7 @@ param sessionSecret string
 param previousSessionSecret string = ''
 
 @secure()
-@description('TLS Redis URL, for example rediss://:<access-key>@cache.region.redisenterprise.cache.azure.net:10000/0. Store a rotated value here rather than outputting Redis keys.')
+@description('TLS Redis URL, for example rediss://default:<password>@host:port/0. Store a rotated value here rather than outputting Redis credentials.')
 param redisConnectionString string
 
 @description('Optional Log Analytics workspace resource ID for Application Insights. Leave empty to create classic component-only telemetry.')
@@ -96,7 +111,11 @@ param collectorPrivateKey string = ''
 param githubWebhookSecret string = ''
 
 @secure()
-@description('Redis access key used only by the collection autoscaler to read stream backlog. Required with collectorImage.')
+@description('Redis ACL username used only by the collection autoscaler to read stream backlog. External Redis requires it with collectorImage; Azure Managed Redis defaults it to default.')
+param collectorRedisUsername string = ''
+
+@secure()
+@description('Redis ACL password used only by the collection autoscaler to read stream backlog. Required with collectorImage.')
 param collectorRedisPassword string = ''
 
 @description('GitHub logins permitted to run administrative operations.')
@@ -118,6 +137,10 @@ param collectorMaximumWorkers int = 20
 param collectorLakeStorageSku string = 'Premium_LRS'
 
 var collectionEnabled = !empty(collectorImage)
+var managedRedisEnabled = redisProvider == 'azure-managed-redis'
+var resolvedRedisHost = managedRedisEnabled ? redisEnterprise!.properties.hostName : externalRedisHost
+var resolvedRedisPort = managedRedisEnabled ? 10000 : externalRedisPort
+var resolvedCollectorRedisUsername = managedRedisEnabled && empty(collectorRedisUsername) ? 'default' : collectorRedisUsername
 
 var tags = {
   workload: 'gh-aw-cao-dashboard'
@@ -209,7 +232,16 @@ resource collectorRedisPasswordValue 'Microsoft.KeyVault/vaults/secrets@2023-07-
   name: 'cao-redis-password'
   properties: {
     value: collectorRedisPassword
-    contentType: 'Redis access key for the collection autoscaler'
+    contentType: 'Redis ACL password for the collection autoscaler'
+  }
+}
+
+resource collectorRedisUsernameValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (collectionEnabled) {
+  parent: keyVault
+  name: 'cao-redis-username'
+  properties: {
+    value: resolvedCollectorRedisUsername
+    contentType: 'Redis ACL username for the collection autoscaler'
   }
 }
 
@@ -231,7 +263,7 @@ resource functionsStorageConnectionStringValue 'Microsoft.KeyVault/vaults/secret
   }
 }
 
-resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = {
+resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = if (managedRedisEnabled) {
   name: redisEnterpriseName
   location: location
   tags: tags
@@ -245,7 +277,7 @@ resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = {
   }
 }
 
-resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = {
+resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = if (managedRedisEnabled) {
   parent: redisEnterprise
   name: 'default'
   properties: {
@@ -427,7 +459,8 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     collectorImage: collectorImage
     keyVaultUri: keyVault.properties.vaultUri
     keyVaultName: keyVault.name
-    redisHost: redisEnterprise.properties.hostName
+    redisHost: resolvedRedisHost
+    redisPort: resolvedRedisPort
     redisNamespace: 'azure-dashboard'
     redisMaxBytes: redisMaxBytes
     controlRepository: collectorControlRepository
@@ -440,6 +473,7 @@ module collection 'collector.bicep' = if (collectionEnabled) {
   dependsOn: [
     collectorPrivateKeyValue
     collectorRedisPasswordValue
+    collectorRedisUsernameValue
     redisConnectionStringValue
   ]
 }
@@ -447,6 +481,7 @@ module collection 'collector.bicep' = if (collectionEnabled) {
 output collectionEnabled bool = collectionEnabled
 output functionHostName string = functionApp.properties.defaultHostName
 output githubOAuthRedirectUri string = githubRedirectUri
-output redisEnterpriseHostName string = redisEnterprise.properties.hostName
-output redisDatabaseName string = redisDatabase.name
+output redisProvider string = redisProvider
+output redisHostName string = resolvedRedisHost
+output redisPort int = resolvedRedisPort
 output keyVaultUri string = keyVault.properties.vaultUri

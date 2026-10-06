@@ -1,6 +1,6 @@
 ---
 title: Deploying the dashboard to Azure
-description: Run the Central Agentic Ops dashboard server on Azure Functions, with PostgreSQL for dashboard data and Azure Managed Redis for operational state.
+description: Run the Central Agentic Ops dashboard server on Azure Functions, with PostgreSQL for dashboard data and Azure Managed Redis or external Redis Cloud for operational state.
 ---
 
 > [!WARNING]
@@ -14,7 +14,7 @@ The Azure deployment runs the Go dashboard server from the `server/` directory a
 - Authorizes users by their membership in GitHub organizations or teams that you allow.
 - Reads secrets through Key Vault references.
 - Runs bounded [Dashboard Language](dashboard-language.md) queries against dashboard data in PostgreSQL.
-- Uses Azure Managed Redis only for sessions, rate limits, queues, deduplication, coordination, and bounded caches.
+- Uses the selected Redis provider only for sessions, rate limits, queues, deduplication, coordination, and bounded caches.
 
 ```mermaid
 flowchart LR
@@ -22,7 +22,7 @@ flowchart LR
   Function -->|"OAuth, refresh, membership"| GitHub["GitHub OAuth + API"]
   Function -->|"managed identity"| KeyVault["Key Vault"]
   Function -->|"PostgreSQL protocol"| Postgres["PostgreSQL<br/>dashboard entities + queries"]
-  Function -->|"rediss://"| Redis["Azure Managed Redis<br/>operational state"]
+  Function -->|"rediss://"| Redis["Azure Managed Redis or Redis Cloud<br/>operational state"]
   Function -->|"non-secret telemetry"| Insights["Application Insights"]
 ```
 
@@ -30,13 +30,17 @@ flowchart LR
 
 ### Azure resources
 
-The `server/azure/main.bicep` template creates the following resources in one resource group.
+The `server/azure/main.bicep` template defaults to `redisProvider=azure-managed-redis`
+and creates the following resources in one resource group. Set
+`redisProvider=external` to skip the two Azure Managed Redis resources and use
+an operator-provisioned compatible Redis service such as Redis Cloud.
 
 | Service | Configuration | Purpose |
 | --- | --- | --- |
 | Azure Functions | Linux Function App on runtime `~4` with `FUNCTIONS_WORKER_RUNTIME=custom`. HTTPS only, TLS 1.2 or later, FTPS off, always on, at least one instance, and a system-assigned managed identity. | Hosts the Go HTTP handler |
 | App Service plan | Elastic Premium `EP1` | Keeps the Function App always on |
-| Azure Managed Redis | `Microsoft.Cache/redisEnterprise`. Default `Balanced_B0` with capacity 1, TLS 1.2, encrypted client protocol, `NoEviction` policy, and public network access off. | Stores sessions, rate limits, webhook and collection queues, deduplication, coordination, quota state, and bounded caches |
+| Azure Managed Redis | Created only in `azure-managed-redis` mode. `Microsoft.Cache/redisEnterprise`, default `Balanced_B0` with capacity 1, TLS 1.2, encrypted client protocol, `NoEviction` policy, and public network access off. | Stores sessions, rate limits, webhook and collection queues, deduplication, coordination, quota state, and bounded caches |
+| External Redis | Not provisioned by the template. In `external` mode, the operator supplies a TLS endpoint and credentials from a compatible service such as Redis Cloud. | Provides the same operational state without an Azure Redis resource |
 | Key Vault | Role-based access control, 90-day soft delete, and purge protection | Stores the OAuth client secret, session secrets, Redis URL, Functions storage connection string, and optional collection secrets |
 | Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, and no public blob access | Stores Azure Functions runtime state only |
 | Application Insights | Optionally linked to a Log Analytics workspace | Collects operational telemetry that contains no secrets |
@@ -49,7 +53,7 @@ The `server/azure/main.bicep` template creates the following resources in one re
 - A GitHub OAuth app. Personal access tokens and GitHub App user tokens aren't supported.
 - At least one GitHub organization, or team in `ORGANIZATION/TEAM-SLUG` format, whose active members can read the dashboard.
 - A PostgreSQL database and connection URL. The current Bicep template does not provision PostgreSQL or its secret; configure `CAO_POSTGRES_URL` separately.
-- A private network path from the Function App to PostgreSQL and Azure Managed Redis, and from any host that runs ingestion. The template turns off public network access for Redis but doesn't create a virtual network or private endpoint. You must add private networking that fits your tenant.
+- A network path from the Function App to PostgreSQL and the selected Redis provider, and from any host that runs ingestion. The template turns off public network access for Azure Managed Redis but doesn't create a virtual network or private endpoint. External Redis must expose a TLS endpoint reachable by the Function App and optional collection workers, restricted with the provider's supported network controls.
 - A dashboard payload from the `cao-dashboard.yml` workflow in your control repository. To produce one, first complete [the GitHub Actions only deployment](deployment-actions.md). If you don't want to publish to Pages, set `control-plane.campaigns.dashboard.deploy` to `false`.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
@@ -69,7 +73,20 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
    openssl rand -base64 48
    ```
 
+1. Select one Redis deployment mode.
+
+   - **Azure Managed Redis (default):** the template creates the cache and
+     database. Keep `redisProvider=azure-managed-redis`.
+   - **External Redis Cloud:** provision a dedicated Redis Cloud database
+     separately, configure `noeviction`, create an ACL user permitted to run
+     the commands in the [Redis Cloud conformance checklist](#redis-cloud-conformance-checklist),
+     and record its host, TLS port, username, password, and full `rediss://`
+     URL in your secret manager. The Azure template does not purchase a plan,
+     accept Marketplace terms, or create the external database.
+
 1. Create the resource group and deploy the template. Replace the placeholders with your own values.
+
+   Azure Managed Redis:
 
    ```bash
    az group create --name cao-dashboard --location REGION
@@ -86,20 +103,73 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
        githubClientId=OAUTH-CLIENT-ID
    ```
 
+   External Redis Cloud:
+
+   ```bash
+   az group create --name cao-dashboard --location REGION
+   az deployment group create \
+     --resource-group cao-dashboard \
+     --template-file server/azure/main.bicep \
+     --parameters \
+       redisProvider=external \
+       externalRedisHost=REDIS-CLOUD-HOST \
+       externalRedisPort=REDIS-CLOUD-TLS-PORT \
+       functionAppName=FUNCTION-APP-NAME \
+       storageAccountName=STORAGE-ACCOUNT-NAME \
+       keyVaultName=KEY-VAULT-NAME \
+       allowedHosts='["FUNCTION-APP-NAME.azurewebsites.net"]' \
+       githubAllowedOrganizations='["ORGANIZATION"]' \
+       githubClientId=OAUTH-CLIENT-ID
+   ```
+
    The Azure CLI prompts you for `githubClientSecret`, `sessionSecret`, and `redisConnectionString`. Enter them at the prompt or supply them from your secret manager. Don't store them in a parameters file in your repository.
 
    > [!NOTE]
-   > The Redis access key doesn't exist until Azure creates Azure Managed Redis. For the first deployment, enter a temporary `rediss://` value. After Redis is provisioned, get the database access key and redeploy with `rediss://:ACCESS-KEY@REDIS-HOST:10000/0`. The template stores this URL only as the `cao-redis-url` Key Vault secret.
+   > In Azure Managed Redis mode, the access key doesn't exist until Azure
+   > creates the cache. For the first deployment, enter a temporary `rediss://`
+   > value. After Redis is provisioned, get the database access key and redeploy
+   > with `rediss://default:ACCESS-KEY@REDIS-HOST:10000/0`. In external mode,
+   > enter the provider's complete `rediss://USERNAME:PASSWORD@HOST:PORT/0` URL.
+   > The template writes the URL only to the `cao-redis-url` Key Vault secret.
 
-1. Review the deployment outputs. The template outputs only values that aren't secret: `functionHostName`, `githubOAuthRedirectUri`, `redisEnterpriseHostName`, `redisDatabaseName`, `keyVaultUri`, and `collectionEnabled`. Confirm that `githubOAuthRedirectUri` matches the callback URL of your OAuth app.
+1. Review the deployment outputs. The template outputs only values that aren't
+   secret: `functionHostName`, `githubOAuthRedirectUri`, `redisProvider`,
+   `redisHostName`, `redisPort`, `keyVaultUri`, and `collectionEnabled`. Confirm
+   that the provider-neutral Redis endpoint matches the selected service and
+   that `githubOAuthRedirectUri` matches the callback URL of your OAuth app.
 1. Add the PostgreSQL connection URL as the secret app setting `CAO_POSTGRES_URL`.
-1. Add private networking so that the Function App can reach PostgreSQL and Redis while public access to Redis stays off.
+1. Configure networking so that the Function App can reach PostgreSQL and the
+   selected Redis service. Keep Azure Managed Redis private; for external Redis,
+   allow only the required Azure outbound paths using the provider's supported
+   network controls.
 1. From a trusted checkout of this repository, build the site and the handler.
 
    Before building, verify that `.github/workflows/cao.json` contains
    `control-plane.web.host` with `target.module: "azure-functions"` and the
    selected Redis provider module. Hosted startup rejects a policy without this
    declaration. Configure the host and Redis modules directly in the policy.
+
+   Azure Functions with external Redis Cloud requires:
+
+   ```json
+   {
+     "target": {
+       "module": "azure-functions"
+     },
+     "redis": {
+       "module": "redis-cloud",
+       "url-env": "CAO_REDIS_URL",
+       "namespace-env": "CAO_REDIS_NAMESPACE",
+       "tls": {
+         "mode": "required"
+       }
+     }
+   }
+   ```
+
+   Add this object at `control-plane.web.host`; don't change scope, rollout
+   mode, campaigns, or target authority. The policy records environment
+   mappings only. The URL and credentials remain in Key Vault.
 
    ```bash
    npm --prefix dashboard/site ci
@@ -151,7 +221,7 @@ The template creates the following app settings.
 | `CAO_AZURE_ALLOWED_HOSTS` | `allowedHosts` parameter | Exact public host names that the server trusts in forwarded `Host` headers. |
 | `CAO_AZURE_REQUIRE_HTTPS` | Fixed value `true` | Requires `X-Forwarded-Proto: https`. |
 | `CAO_POSTGRES_URL` | Operator-provided secret app setting | PostgreSQL connection URL for dashboard entities and queries. |
-| `CAO_REDIS_URL` | Key Vault secret `cao-redis-url` | Redis connection string. Must use `rediss://`. Azure always rejects plaintext connections. |
+| `CAO_REDIS_URL` | Key Vault secret `cao-redis-url` | Redis connection string. Must use `rediss://` for both Azure Managed Redis and external Redis Cloud. Azure Functions always rejects plaintext connections. |
 | `CAO_REDIS_NAMESPACE` | Fixed value `azure-dashboard` | Prefix for Redis keys. |
 | `CAO_REDIS_MAX_BYTES` | `redisMaxBytes` parameter, default `200000000` | Shared memory-pressure budget for the dashboard and collection roles. |
 | `CAO_GITHUB_CLIENT_ID` | `githubClientId` parameter | Client ID of the OAuth app. |
@@ -195,7 +265,17 @@ The `cao-functions` handler also reads these optional settings.
 Besides the parameters in the deployment command, the template accepts:
 
 - `location` and `hostingPlanName`.
-- `redisSkuName`, from `Balanced_B0` through `MemoryOptimized_M10`, and `redisCapacity`. Size Redis for sessions, rate limits, queues, deduplication, coordination, quota state, and bounded caches. Dashboard entity volume belongs to PostgreSQL sizing, not Redis sizing.
+- `redisProvider`, default `azure-managed-redis`. Set it to `external` to skip
+  Azure Managed Redis provisioning.
+- `redisEnterpriseName`, `redisSkuName`, from `Balanced_B0` through
+  `MemoryOptimized_M10`, and `redisCapacity`. These apply only to
+  `azure-managed-redis`. Size Redis for sessions, rate limits, queues,
+  deduplication, coordination, quota state, and bounded caches. Dashboard
+  entity volume belongs to PostgreSQL sizing, not Redis sizing.
+- `externalRedisHost` and `externalRedisPort`, required by convention when
+  `redisProvider=external`. They contain no credentials and supply the
+  provider-neutral endpoint output and optional KEDA scaler address. The full
+  URL remains the secure `redisConnectionString` parameter.
 - `logAnalyticsWorkspaceResourceId`.
 - The collection parameters. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
@@ -275,7 +355,54 @@ By default, the server serves the data that the Activity workflow publishes and 
 - A user-assigned managed identity with access to Key Vault.
 - An Azure Files share for collected evidence. The SKU is set by `collectorLakeStorageSku` (default `Premium_LRS`).
 
-The collection profile requires these parameters: `collectorGithubAppId`, `collectorPrivateKey`, `githubWebhookSecret`, `collectorRedisPassword`, `githubAdminUsers`, and `collectorControlRepository`.
+The collection profile requires these parameters: `collectorGithubAppId`,
+`collectorPrivateKey`, `githubWebhookSecret`, `collectorRedisPassword`,
+`githubAdminUsers`, and `collectorControlRepository`. In external mode also
+set `collectorRedisUsername` to the Redis Cloud ACL username. Azure Managed
+Redis defaults the scaler username to `default`. Both scaler credentials are
+written to Key Vault; workers continue to receive only the full
+`CAO_REDIS_URL` Key Vault secret. KEDA always enables TLS and receives the
+separate ACL username and password only for Redis Streams backlog inspection.
+
+## Redis Cloud conformance checklist
+
+Run this checklist only against a dedicated, disposable Redis Cloud database.
+The tests use unique CAO namespaces, but memory-pressure checks observe the
+whole database and assume no unrelated workload. Keep `REDIS_URL` in the
+process environment and don't paste it into command output, tickets, or logs.
+
+1. Configure the database for `noeviction` and confirm its memory limit leaves
+   headroom above `CAO_REDIS_MAX_BYTES`.
+1. Run the existing service-backed Redis tests serially:
+
+   ```bash
+   REDIS_URL="$CAO_REDIS_URL" go -C server test -p 1 \
+     ./internal/redisx ./internal/githubquota ./internal/collect
+   ```
+
+1. Confirm the following capabilities from the test results:
+
+   | Capability | Existing coverage |
+   | --- | --- |
+   | Streams, consumer groups, leasing, abandoned-work recovery, and retry/dead-letter transitions | `internal/collect/queue_integration_test.go` |
+   | Lua execution and atomic operational rate limits | `TestOperationalRateLimitAgainstRedis` and the Redis-backed quota/cache tests |
+   | Multi-key scripts on clustered Redis without `CROSSSLOT` | Query-cache and GitHub-quota integration tests, whose keys use Redis hash tags |
+   | Redis server `TIME` | GitHub quota usage and reservation tests |
+   | Cross-replica quota observations and reservations | `TestServiceCoordinatesReplicasThroughRedis` and `TestGitHubQuotaScriptsAgainstRedis` |
+   | Provider memory behavior and the `noeviction` operating assumption | Redis memory capability/response integration tests plus the provider-side eviction-policy check |
+
+1. If using the collection profile, deploy it with the ACL username/password,
+   enqueue a test collection task, and confirm the KEDA `redis-streams` scaler
+   can read the `${CAO_REDIS_NAMESPACE}:collect:tasks` consumer-group backlog
+   and scale a worker. A passing Go test suite does not prove KEDA's separate
+   ACL has backlog access.
+
+Redis Software and Redis Cloud can reject `INFO` inside Lua. CAO detects that
+capability and disables disposable cache admission and serving while preserving
+protected sessions, queues, quota state, and fresh query execution. This
+degraded cache mode is compatible; failures in Streams, Lua generally,
+same-slot multi-key operations, `TIME`, quota reservations, or KEDA backlog
+access are not.
 
 In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=true`). It verifies and deduplicates deliveries to `POST /api/github/webhook`, then queues the work. It never holds the app's private key.
 
