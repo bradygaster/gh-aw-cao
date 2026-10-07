@@ -57,14 +57,16 @@ The optional collection profile also needs a container image of the collector, a
 
 In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name for your Function App.
 
-1. Register a GitHub OAuth app. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) in the GitHub documentation.
+1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
 
    > [!CAUTION]
    > Never commit the client secret to a repository.
 
-   If an allowed organization restricts third-party OAuth applications, an
-   organization owner must also grant this OAuth app access to the
-   organization. Without that grant, GitHub withholds organization and team
+   A GitHub App used for organization or team authorization must have
+   **Organization members: Read-only**, and its organization installation must
+   accept that permission. A classic OAuth App must be granted organization
+   access when the organization restricts third-party OAuth applications.
+   Without the applicable grant, GitHub withholds organization and team
    membership even for active members, and CAO correctly denies access.
 
 1. Generate a session secret of at least 32 random characters.

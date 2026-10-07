@@ -1330,13 +1330,13 @@ Try an authorized account, or ask your dashboard administrator to check the
 allowed organizations and teams and your active membership. Do not send
 OAuth callback URLs, codes, tokens, or cookies when requesting help.
 
-When an organization restricts third-party OAuth applications, active
-membership is not enough: an organization owner must also grant the dashboard
-OAuth app access to that organization. Open the app under GitHub
-**Settings > Applications > Authorized OAuth Apps**, then grant or request
-access for the organization. Until that grant exists, GitHub returns the user
-identity but withholds the organization and team membership used by CAO's
-authorization policy.
+The client can be a classic OAuth App or a GitHub App using its user
+authorization flow. A GitHub App must request the minimum **Organization
+members: Read-only** permission, and the organization installation must accept
+that permission update. Without it, GitHub returns the user identity but
+withholds the organization and team membership used by CAO's authorization
+policy. For a classic OAuth App, an organization that restricts third-party
+OAuth applications must instead grant the app organization access.
 
 If other open tabs block browser data deletion, close them and wait for the
 signed-out page to finish before signing in. If logout cannot be confirmed,
