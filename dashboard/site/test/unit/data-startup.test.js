@@ -258,6 +258,7 @@ describe("dashboard data startup", () => {
     dataProcessor.loadCanonicalDashboardPage.mockImplementationOnce(() => new Promise((resolve) => {
       finishUpgrade = () => resolve({});
     }));
+    /** @type {(versions: { oldVersion: number, newVersion: number }) => void} */
     let notifyUpgrade = () => {};
     const stopUpgrade = vi.fn();
     dataProcessor.subscribeDatabaseUpgrade.mockImplementation((notify) => {
@@ -266,8 +267,8 @@ describe("dashboard data startup", () => {
     });
     const startup = startDashboardData(options());
     expect(document.querySelector('dialog')).toBeNull();
-    notifyUpgrade();
-    notifyUpgrade();
+    notifyUpgrade({ oldVersion: 36, newVersion: 37 });
+    notifyUpgrade({ oldVersion: 36, newVersion: 37 });
     const dialog = document.querySelector('dialog');
     expect(dialog?.open).toBe(true);
     expect(dialog?.textContent).toContain('We are refreshing your browser copy for this version');
@@ -278,7 +279,7 @@ describe("dashboard data startup", () => {
     finishUpgrade();
     const stop = await startup;
     expect(stopUpgrade).toHaveBeenCalledOnce();
-    expect(browserFirstLoad.get()).toMatchObject({ status: "loading", dismissed: true, reason: "upgrade" });
+    expect(browserFirstLoad.get()).toMatchObject({ status: "loading", dismissed: true, reason: "upgrade", oldVersion: 36, newVersion: 37 });
     expect(document.querySelectorAll('dialog')).toHaveLength(1);
     stop();
     expect(document.querySelector('dialog')).toBeNull();

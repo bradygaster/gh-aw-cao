@@ -200,7 +200,7 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false, c
   await expectTheme(colorScheme);
   await expect(importScreen.locator('header')).toHaveText('Central Agentic Ops');
   await expect(importScreen.locator('header')).toBeInViewport({ ratio: 1 });
-  await expect(importScreen.getByRole('button')).toHaveCount(1);
+  await expect(importScreen.getByRole('button', { name: 'Explore data' })).toHaveCount(1);
   await expect(importScreen.locator('.first-load-server-option')).not.toBeVisible();
   await expect(importScreen).toContainText(upgrade
     ? 'This update can take several minutes'
@@ -233,7 +233,9 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false, c
   }
   await importScreen.locator('summary').click();
   await expect(importScreen.locator('.first-load-server-option')).toBeVisible();
+  await expect(importScreen.locator('.first-load-reason')).toContainText(upgrade ? 'newer browser database format' : 'no completed local copy yet');
   await expect(importScreen.getByRole('link', { name: 'deployment options (opens in a new tab)' })).toBeVisible();
+  await expect(importScreen.getByRole('button', { name: 'Copy preparation details' })).toBeVisible();
   await importScreen.locator('summary').click();
   await expect(importScreen.locator('.first-load-server-option')).not.toBeVisible();
   const readBackground = (/** @type {Element} */ element) => {
