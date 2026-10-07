@@ -33,6 +33,48 @@ test.beforeEach(async ({ page, context }) => {
   await page.goto('http://dashboard.test/');
 });
 
+test('mobile footer hides update details and keeps versions within the viewport', async ({ page }) => {
+  await page.evaluate(async ([stylesUrl, footerUrl]) => {
+    const [{ getPrimerStyles }, { renderDashboardFooter }] = await Promise.all([
+      import(stylesUrl),
+      import(footerUrl)
+    ]);
+    const styles = document.createElement('style');
+    styles.textContent = getPrimerStyles();
+    document.head.append(styles);
+    /** @type {HTMLElement} */ (document.querySelector('#root')).append(renderDashboardFooter({
+      evaluatedAt: '2026-10-07T21:47:00Z',
+      caoVersion: '0.0.0-main.a7a23e16c68c',
+      ghAwVersion: 'v0.91.1',
+      commitSha: 'a7a23e1'.padEnd(40, '0'),
+      githubUrlBase: 'https://github.com',
+      dashboardRepository: 'githubnext/gh-aw-cao'
+    }));
+  }, ['http://dashboard.test/src/styles.js', 'http://dashboard.test/src/components/dashboard-footer.js']);
+
+  const footer = page.locator('.report-footer');
+  const status = footer.locator('.report-footer-status');
+  const versions = footer.locator('.report-footer-versions');
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await expect(status).toBeVisible();
+  await expect(footer.locator('time')).toBeVisible();
+  await expect(footer.locator('.report-footer-provenance')).toBeVisible();
+
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(status).toBeHidden();
+    await expect(versions).toBeVisible();
+    await expect(versions).toContainText('CAO 0.0.0-main.a7a23e16c68c');
+    await expect(versions).toContainText('gh-aw v0.91.1');
+    await expect(versions).toContainText('Dashboard a7a23e1');
+    const versionBox = await versions.boundingBox();
+    expect(versionBox).not.toBeNull();
+    if (!versionBox) throw new Error('Expected footer versions to have a layout box');
+    expect(versionBox.x).toBeGreaterThanOrEqual(0);
+    expect(versionBox.x + versionBox.width).toBeLessThanOrEqual(width);
+  }
+});
+
 test('tiered actions keep visible labels and usable approval on portrait and landscape phones', async ({ page }) => {
   await page.evaluate(async (moduleUrls) => {
     const [{ getPrimerStyles }, { renderCliActions }, { renderPromptPreviewAction }, { normalizeAction }] = await Promise.all(
