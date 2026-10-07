@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "8954601749501525470"
+      "templateHash": "2937511733564439522"
     }
   },
   "parameters": {
@@ -88,14 +88,6 @@
       ],
       "metadata": {
         "description": "Redis SKU. Size for operational caches, queues, sessions, and rate limits."
-      }
-    },
-    "redisCapacity": {
-      "type": "int",
-      "defaultValue": 1,
-      "minValue": 1,
-      "metadata": {
-        "description": "Redis capacity. Increase when operational state needs more memory or throughput."
       }
     },
     "redisMaxBytes": {
@@ -394,15 +386,16 @@
     {
       "condition": "[variables('managedRedisEnabled')]",
       "type": "Microsoft.Cache/redisEnterprise",
-      "apiVersion": "2024-11-01",
+      "apiVersion": "2025-07-01",
       "name": "[parameters('redisEnterpriseName')]",
       "location": "[parameters('location')]",
       "tags": "[variables('tags')]",
       "sku": {
-        "name": "[parameters('redisSkuName')]",
-        "capacity": "[parameters('redisCapacity')]"
+        "name": "[parameters('redisSkuName')]"
       },
       "properties": {
+        "encryption": {},
+        "highAvailability": "Enabled",
         "minimumTlsVersion": "1.2",
         "publicNetworkAccess": "Disabled"
       }
@@ -410,12 +403,14 @@
     {
       "condition": "[variables('managedRedisEnabled')]",
       "type": "Microsoft.Cache/redisEnterprise/databases",
-      "apiVersion": "2024-11-01",
+      "apiVersion": "2025-07-01",
       "name": "[format('{0}/{1}', parameters('redisEnterpriseName'), 'default')]",
       "properties": {
+        "accessKeysAuthentication": "Enabled",
         "clientProtocol": "Encrypted",
-        "clusteringPolicy": "EnterpriseCluster",
-        "evictionPolicy": "NoEviction"
+        "clusteringPolicy": "NoCluster",
+        "evictionPolicy": "NoEviction",
+        "port": 10000
       },
       "dependsOn": [
         "[resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName'))]"
@@ -571,7 +566,7 @@
           "keyVaultName": {
             "value": "[parameters('keyVaultName')]"
           },
-          "redisHost": "[if(variables('managedRedisEnabled'), createObject('value', reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName), createObject('value', parameters('externalRedisHost')))]",
+          "redisHost": "[if(variables('managedRedisEnabled'), createObject('value', reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName), createObject('value', parameters('externalRedisHost')))]",
           "redisPort": {
             "value": "[variables('resolvedRedisPort')]"
           },
@@ -607,7 +602,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "17776504020195544364"
+              "templateHash": "5407610959076899637"
             }
           },
           "parameters": {
@@ -1026,7 +1021,8 @@
                             "address": "[format('{0}:{1}', parameters('redisHost'), parameters('redisPort'))]",
                             "stream": "[variables('streamKey')]",
                             "consumerGroup": "[variables('consumerGroup')]",
-                            "pendingEntriesCount": "[string(parameters('backlogPerWorker'))]",
+                            "lagCount": "[string(parameters('backlogPerWorker'))]",
+                            "activationLagCount": "0",
                             "enableTLS": "true"
                           },
                           "auth": [
@@ -1165,7 +1161,7 @@
     },
     "redisHostName": {
       "type": "string",
-      "value": "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName, parameters('externalRedisHost'))]"
+      "value": "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName, parameters('externalRedisHost'))]"
     },
     "redisPort": {
       "type": "int",

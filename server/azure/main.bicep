@@ -49,10 +49,6 @@ param externalRedisPort int = 10000
 param redisSkuName string = 'Balanced_B0'
 
 @minValue(1)
-@description('Redis capacity. Increase when operational state needs more memory or throughput.')
-param redisCapacity int = 1
-
-@minValue(1)
 @description('Shared Redis memory-pressure budget in bytes. Increase this together with provisioned capacity when operational state requires it.')
 param redisMaxBytes int = 200000000
 
@@ -255,27 +251,30 @@ resource githubWebhookSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01'
   }
 }
 
-resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2024-11-01' = if (managedRedisEnabled) {
+resource redisEnterprise 'Microsoft.Cache/redisEnterprise@2025-07-01' = if (managedRedisEnabled) {
   name: redisEnterpriseName
   location: location
   tags: tags
   sku: {
     name: redisSkuName
-    capacity: redisCapacity
   }
   properties: {
+    encryption: {}
+    highAvailability: 'Enabled'
     minimumTlsVersion: '1.2'
     publicNetworkAccess: 'Disabled'
   }
 }
 
-resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2024-11-01' = if (managedRedisEnabled) {
+resource redisDatabase 'Microsoft.Cache/redisEnterprise/databases@2025-07-01' = if (managedRedisEnabled) {
   parent: redisEnterprise
   name: 'default'
   properties: {
+    accessKeysAuthentication: 'Enabled'
     clientProtocol: 'Encrypted'
-    clusteringPolicy: 'EnterpriseCluster'
+    clusteringPolicy: 'NoCluster'
     evictionPolicy: 'NoEviction'
+    port: 10000
   }
 }
 

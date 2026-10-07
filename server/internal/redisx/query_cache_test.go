@@ -161,6 +161,12 @@ func queryCacheIntegrationStore(t testing.TB) (*Store, []string) {
 		t.Fatal(err)
 	}
 	store := NewStore(client, "query-cache-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := store.InitializeDisposableCaches(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !store.DisposableCachesEnabled() {
+		t.Skip("Redis provider disables disposable caches because script introspection is unavailable")
+	}
 	keys := []string{store.Key("{query-cache:v1}:entries"), store.Key("{query-cache:v1}:expiry")}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

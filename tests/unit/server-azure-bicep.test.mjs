@@ -32,7 +32,14 @@ test('Azure dashboard Bicep defaults to conditional Azure Managed Redis with TLS
   assert.match(bicep, /resource redisDatabase '[^']+' = if \(managedRedisEnabled\)/);
   assert.doesNotMatch(bicep, /modules:\s*\[/);
   assert.match(bicep, /param redisSkuName string = 'Balanced_B0'/);
+  assert.doesNotMatch(bicep, /param redisCapacity/);
+  assert.doesNotMatch(bicep, /name:\s*redisSkuName\s+capacity:\s*redisCapacity/);
+  assert.match(bicep, /encryption:\s*{}/);
+  assert.match(bicep, /highAvailability:\s*'Enabled'/);
+  assert.match(bicep, /accessKeysAuthentication:\s*'Enabled'/);
   assert.match(bicep, /clientProtocol:\s*'Encrypted'/);
+  assert.match(bicep, /clusteringPolicy:\s*'NoCluster'/);
+  assert.match(bicep, /port:\s*10000/);
   assert.match(bicep, /publicNetworkAccess:\s*'Disabled'/);
   assert.match(bicep, /CAO_REDIS_URL/);
   assert.match(bicep, /@Microsoft\.KeyVault\(SecretUri=/);
@@ -67,7 +74,7 @@ test('Azure dashboard Bicep does not output secrets or PAT-based configuration',
   );
   assert.equal(
     generated.outputs.redisHostName.value,
-    "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2024-11-01').hostName, parameters('externalRedisHost'))]",
+    "[if(variables('managedRedisEnabled'), reference(resourceId('Microsoft.Cache/redisEnterprise', parameters('redisEnterpriseName')), '2025-07-01').hostName, parameters('externalRedisHost'))]",
   );
 });
 
@@ -118,6 +125,9 @@ test('Azure collection scaler uses ACL username and password without exposing th
   assert.match(collector, /secretRef:\s*'cao-redis-password'\s+triggerParameter:\s*'password'/);
   assert.match(collector, /name:\s*'CAO_REDIS_URL'\s+secretRef:\s*'cao-redis-url'/);
   assert.match(collector, /enableTLS:\s*'true'/);
+  assert.match(collector, /lagCount:\s*string\(backlogPerWorker\)/);
+  assert.match(collector, /activationLagCount:\s*'0'/);
+  assert.doesNotMatch(collector, /pendingEntriesCount/);
   assert.doesNotMatch(collector, /disableTLS|skipTLS|insecure/i);
   const collection = generated.resources.find((resource) => resource.type === 'Microsoft.Resources/deployments' && resource.name === 'collection-workers');
   assert.match(collection.properties.parameters.redisHost, /managedRedisEnabled/);

@@ -39,7 +39,7 @@ an operator-provisioned compatible Redis service such as Redis Cloud.
 | --- | --- | --- |
 | Azure Functions | Linux Function App on runtime `~4` with `FUNCTIONS_WORKER_RUNTIME=custom`. HTTPS only, TLS 1.2 or later, FTPS off, always on, at least one instance, and a system-assigned managed identity. | Hosts the Go HTTP handler |
 | App Service plan | Elastic Premium `EP1` | Keeps the Function App always on |
-| Azure Managed Redis | Created only in `azure-managed-redis` mode. `Microsoft.Cache/redisEnterprise`, default `Balanced_B0` with capacity 1, TLS 1.2, encrypted client protocol, `NoEviction` policy, and public network access off. | Stores sessions, rate limits, webhook and collection queues, deduplication, coordination, quota state, and bounded caches |
+| Azure Managed Redis | Created only in `azure-managed-redis` mode. `Microsoft.Cache/redisEnterprise`, default `Balanced_B0`, TLS 1.2, encrypted client protocol, non-clustered atomic keyspace, `NoEviction` policy, and public network access off. | Stores sessions, rate limits, webhook and collection queues, deduplication, coordination, quota state, and bounded caches |
 | External Redis | Not provisioned by the template. In `external` mode, the operator supplies a TLS endpoint and credentials from a compatible service such as Redis Cloud. | Provides the same operational state without an Azure Redis resource |
 | Key Vault | Role-based access control, 90-day soft delete, and purge protection | Stores the OAuth client secret, session secrets, Redis URL, and optional collection secrets |
 | Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, no public blob access, and shared-key access disabled. The Function App uses its managed identity with scoped Blob, Queue, and Table data roles. | Stores Azure Functions runtime state only |
@@ -274,9 +274,9 @@ Besides the parameters in the deployment command, the template accepts:
 - `location` and `hostingPlanName`.
 - `redisProvider`, default `azure-managed-redis`. Set it to `external` to skip
   Azure Managed Redis provisioning.
-- `redisEnterpriseName`, `redisSkuName`, from `Balanced_B0` through
-  `MemoryOptimized_M10`, and `redisCapacity`. These apply only to
-  `azure-managed-redis`. Size Redis for sessions, rate limits, queues,
+- `redisEnterpriseName` and `redisSkuName`, from `Balanced_B0` through
+  `MemoryOptimized_M10`. These apply only to `azure-managed-redis`. Current
+  SKU names encode capacity. Size Redis for sessions, rate limits, queues,
   deduplication, coordination, quota state, and bounded caches. Dashboard
   entity volume belongs to PostgreSQL sizing, not Redis sizing.
 - `externalRedisHost` and `externalRedisPort`, required by convention when
@@ -357,7 +357,10 @@ You configure traces for orchestrators and workers separately, in the control re
 By default, the server serves the data that the Activity workflow publishes and doesn't collect anything itself. To have Azure collect the data instead, set the `collectorImage` parameter. The `server/azure/collector.bicep` template then adds:
 
 - An Azure Container Apps environment.
-- Collection workers that KEDA scales on Redis Streams backlog. The minimum is set by `minimumWorkers` (default `0`) and the maximum by `collectorMaximumWorkers` (default `20`).
+- Collection workers that KEDA scales on Redis 7+ consumer-group lag. Lag
+  includes entries not yet delivered to a worker, so `minimumWorkers=0` can
+  activate from an unread stream entry. The maximum is set by
+  `collectorMaximumWorkers` (default `20`).
 - A backfill job.
 - A user-assigned managed identity with access to Key Vault.
 - An Azure Files share for collected evidence. The SKU is set by `collectorLakeStorageSku` (default `Premium_LRS`).
@@ -370,6 +373,8 @@ Redis defaults the scaler username to `default`. Both scaler credentials are
 written to Key Vault; workers continue to receive only the full
 `CAO_REDIS_URL` Key Vault secret. KEDA always enables TLS and receives the
 separate ACL username and password only for Redis Streams backlog inspection.
+The scaler uses `XINFO GROUPS` lag rather than the pending-entry list; external
+providers must support Redis 7+ consumer-group lag.
 
 ## Redis Cloud conformance checklist
 
@@ -395,7 +400,7 @@ before authentication or Redis commands run.
 
    | Capability | Existing coverage |
    | --- | --- |
-   | Streams, consumer groups, leasing, abandoned-work recovery, and retry/dead-letter transitions | `internal/collect/queue_integration_test.go` |
+   | Streams, consumer groups, Redis 7+ lag, leasing, abandoned-work recovery, and retry/dead-letter transitions | `internal/collect/queue_integration_test.go` plus the provider-side `XINFO GROUPS` lag check |
    | Lua execution and atomic operational rate limits | `TestOperationalRateLimitAgainstRedis` and the Redis-backed quota/cache tests |
    | Multi-key scripts on clustered Redis without `CROSSSLOT` | Query-cache and GitHub-quota integration tests, whose keys use Redis hash tags |
    | Redis server `TIME` | GitHub quota usage and reservation tests |
@@ -403,10 +408,11 @@ before authentication or Redis commands run.
    | Provider memory behavior and the `noeviction` operating assumption | Redis memory capability/response integration tests plus the provider-side eviction-policy check |
 
 1. If using the collection profile, deploy it with the ACL username/password,
-   enqueue a test collection task, and confirm the KEDA `redis-streams` scaler
-   can read the `${CAO_REDIS_NAMESPACE}:collect:tasks` consumer-group backlog
-   and scale a worker. A passing Go test suite does not prove KEDA's separate
-   ACL has backlog access.
+   enqueue a test collection task while the worker replica count is zero, and
+   confirm the KEDA `redis-streams` scaler can read the
+   `${CAO_REDIS_NAMESPACE}:collect:tasks` consumer-group lag and activate a
+   worker. A passing Go test suite does not prove KEDA's separate ACL has
+   backlog access.
 
 Redis Software and Redis Cloud can reject `INFO` inside Lua. CAO detects that
 capability and disables disposable cache admission and serving while preserving

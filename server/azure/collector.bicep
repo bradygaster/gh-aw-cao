@@ -353,7 +353,10 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
                 address: '${redisHost}:${redisPort}'
                 stream: streamKey
                 consumerGroup: consumerGroup
-                pendingEntriesCount: string(backlogPerWorker)
+                // Consumer-group lag includes work not yet delivered to a
+                // worker, so a zero-replica deployment can activate.
+                lagCount: string(backlogPerWorker)
+                activationLagCount: '0'
                 enableTLS: 'true'
               }
               auth: [
