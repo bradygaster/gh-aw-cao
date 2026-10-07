@@ -1330,6 +1330,14 @@ Try an authorized account, or ask your dashboard administrator to check the
 allowed organizations and teams and your active membership. Do not send
 OAuth callback URLs, codes, tokens, or cookies when requesting help.
 
+When an organization restricts third-party OAuth applications, active
+membership is not enough: an organization owner must also grant the dashboard
+OAuth app access to that organization. Open the app under GitHub
+**Settings > Applications > Authorized OAuth Apps**, then grant or request
+access for the organization. Until that grant exists, GitHub returns the user
+identity but withholds the organization and team membership used by CAO's
+authorization policy.
+
 If other open tabs block browser data deletion, close them and wait for the
 signed-out page to finish before signing in. If logout cannot be confirmed,
 the page keeps the error visible; clear this site's cookies before retrying,

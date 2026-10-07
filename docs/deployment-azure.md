@@ -62,6 +62,11 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
    > [!CAUTION]
    > Never commit the client secret to a repository.
 
+   If an allowed organization restricts third-party OAuth applications, an
+   organization owner must also grant this OAuth app access to the
+   organization. Without that grant, GitHub withholds organization and team
+   membership even for active members, and CAO correctly denies access.
+
 1. Generate a session secret of at least 32 random characters.
 
    ```bash
