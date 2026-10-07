@@ -5,11 +5,12 @@ import { createCopyControl, createModalDialog, renderCloseButton, renderLiveRegi
 import { createDebug } from '../debug.js';
 import { createFactoryScope } from './factory-elements.js';
 import { effect, state } from '../reactive.js';
+import { assertActionLevel, normalizeAction, actionPresentation } from '../action-model.js';
 
 const debugCliActions = createDebug('cli-actions');
 
 const endpoint = './__cli_action';
-/** @type {Array<{ id: string, label: string, description?: string, icon: string, command: string, placement?: 'toolbar'|'settings'|'view'|'row', 'copy-only'?: boolean, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>} */
+/** @type {Array<{ id: string, level?: import('../action-model.js').ActionLevel, verb?: string, label: string, description?: string, icon: string, command: string, placement?: 'toolbar'|'settings'|'view'|'row', 'copy-only'?: boolean, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>} */
 let declaredCliActions = [];
 let declaredCliActionsCanExecute = true;
 /** @type {Record<string, string>} */
@@ -17,7 +18,8 @@ let declaredCliActionTemplateValues = {};
 
 /** @param {typeof declaredCliActions} actions @param {{ canExecute?: boolean, templateValues?: Record<string, string> }} [options] */
 export function setDeclaredCliActions(actions, options = {}) {
-  declaredCliActions = Array.isArray(actions) ? actions : [];
+  declaredCliActions = Array.isArray(actions)
+    ? actions.map((action) => ({ ...normalizeAction(action, { id: action.id, type: 'cli' }), ...action })) : [];
   declaredCliActionsCanExecute = options.canExecute !== false;
   declaredCliActionTemplateValues = options.templateValues ?? {};
 }
@@ -94,8 +96,10 @@ function resultText(result) {
  * Create the canvas-only control that starts an agent task from a generated prompt.
  * @param {string} actionId
  * @param {() => string} getPrompt
+ * @param {{ level?: import('../action-model.js').ActionLevel, label?: string }} [options]
  */
-export function createPromptCliActionControl(actionId, getPrompt) {
+export function createPromptCliActionControl(actionId, getPrompt, options = {}) {
+  assertActionLevel(options.level ?? 'propose', 'prompt');
   const action = declaredCliActions.find((candidate) => candidate.id === actionId);
   if (!declaredCliActionsCanExecute || !action || action['copy-only'] === true) return null;
   const scope = createFactoryScope();
@@ -131,7 +135,7 @@ export function createPromptCliActionControl(actionId, getPrompt) {
         busy.set(false);
       }
     }
-  }, 'Start agent task'));
+  }, options.level === 'operate' ? `Confirm ${options.label ?? 'operation'}` : 'Start agent task'));
   effect(() => {
     button.disabled = busy.get();
     status.textContent = statusText.get();
@@ -181,6 +185,7 @@ function commandPreview(action, values, templateValues) {
  * @param {{ presentation?: 'menu'|'settings'|'row', templateValues?: Record<string, string>, canExecute?: boolean, showRowLabel?: boolean }} [options]
  */
 function renderCliActionControl(action, options = {}) {
+  const presentation = actionPresentation(normalizeAction(action, { id: action.id, type: 'cli' }));
   const settingsPresentation = options.presentation === 'settings';
   const rowPresentation = options.presentation === 'row';
   const canExecute = options.canExecute !== false && action['copy-only'] !== true;
@@ -256,7 +261,7 @@ function renderCliActionControl(action, options = {}) {
   const statusText = state('');
   const outputVisible = state(false);
   const outputText = state('');
-  const confirmLabel = state('Run action');
+  const confirmLabel = state(presentation.confirmation ? `Confirm ${presentation.label}` : `Run ${presentation.label}`);
 
   const cancel = /** @type {HTMLButtonElement} */ (h('button', {
     type: 'button',
@@ -279,7 +284,7 @@ function renderCliActionControl(action, options = {}) {
           });
           statusText.set(result.ok ? 'Completed' : (result.error || 'Action failed'));
           if (!outputText.get()) outputText.set(resultText(result));
-          confirmLabel.set('Run again');
+          confirmLabel.set(presentation.confirmation ? `Confirm ${presentation.label} again` : `Run ${presentation.label} again`);
           debugCliActions({ event: 'execute-completed', actionId: action.id, ok: result.ok });
         } catch (error) {
           statusText.set(error instanceof Error ? error.message : 'Action failed.');
@@ -319,17 +324,17 @@ function renderCliActionControl(action, options = {}) {
         if (canExecute) {
           statusText.set('');
           outputVisible.set(false);
-          confirmLabel.set('Run action');
+          confirmLabel.set(presentation.confirmation ? `Confirm ${presentation.label}` : `Run ${presentation.label}`);
         }
         resetArguments();
         open();
       }
     },
-    octicon(action.icon),
-    rowPresentation && options.showRowLabel !== true ? null : h(
+    octicon(presentation.icon),
+    h(
       'span',
       { className: 'cli-action-trigger-copy' },
-      h('strong', null, action.label),
+      h('strong', null, presentation.label),
       !rowPresentation && action.description ? h('small', null, action.description) : null
     )
   ));
@@ -341,7 +346,7 @@ function renderCliActionControl(action, options = {}) {
     h(
       'header',
       { className: 'cli-action-dialog-header' },
-      h('h2', null, action.label),
+      h('h2', null, presentation.label),
       renderCloseButton({
         className: 'cli-action-dialog-close',
         label: 'Close action approval',
@@ -358,7 +363,9 @@ function renderCliActionControl(action, options = {}) {
           ...inputs.map(({ element }) => element))
         : null,
       h('p', null, canExecute
-        ? 'Review and approve this GitHub CLI command. Approval applies to this run only. Actions that use gh aw may install the pinned extension first.'
+        ? presentation.confirmation
+          ? `Confirm the exact effect of ${presentation.label} on the selected target. This command will execute once after approval. Actions that use gh aw may install the pinned extension first.`
+          : 'This command is declared as read-only investigation. Review its exact target and command before running.'
         : 'Copy this command and run it in your terminal.'),
       command,
       canExecute ? output : null
@@ -376,12 +383,18 @@ function renderCliActionControl(action, options = {}) {
  * Render one row-scoped CLI action with template values sourced from the row.
  * @param {string} actionId
  * @param {Record<string, string>} templateValues
- * @param {{ showLabel?: boolean }} [options]
+ * @param {{ showLabel?: boolean, level?: import('../action-model.js').ActionLevel, verb?: string, label?: string, icon?: string }} [options]
  */
 export function renderRowCliAction(actionId, templateValues, options = {}) {
   const action = declaredCliActions.find((candidate) => candidate.id === actionId);
   if (!action) return null;
-  const { trigger, dialog } = renderCliActionControl(action, {
+  const { trigger, dialog } = renderCliActionControl({
+    ...action,
+    ...(options.level && { level: options.level }),
+    ...(options.verb && { verb: options.verb }),
+    ...(options.label && { label: options.label }),
+    ...(options.icon && { icon: options.icon })
+  }, {
     presentation: 'row',
     templateValues,
     canExecute: declaredCliActionsCanExecute,
@@ -454,7 +467,8 @@ export function renderCliActions(actions, options = {}) {
   if (!list) return null;
   if (!settingsPresentation) root.append(list);
 
-  for (const action of actions) {
+  for (const declared of actions) {
+    const action = { ...normalizeAction(declared, { id: declared.id, type: 'cli' }), ...declared };
     const { trigger, dialog } = renderCliActionControl(action, options);
     list.append(trigger);
     root.append(dialog);

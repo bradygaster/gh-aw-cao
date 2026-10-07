@@ -1,6 +1,12 @@
 import { parseAllDocuments } from 'yaml';
 import { createDebug } from './debug.js';
 import {
+  isReadOnlyCliAction,
+  parseCliActionTokens,
+  validateActionLevel,
+  validWorkflowDispatchArguments
+} from './action-validator.js';
+import {
   ADDITIVE_MEASURE_FIELDS,
   AGGREGATE_VALUES,
   BUILT_IN_PAGE_KEYS,
@@ -171,80 +177,6 @@ import { dashboardViewSourceNames } from './view-filter-contract.js';
 import { validateViewFilterBar as validateViewFilterBarContract } from './view-filter-validator.js';
 
 const debugValidator = createDebug('validator');
-
-/**
- * @param {string} command
- * @returns {string[] | null}
- */
-function parseCliActionTokens(command) {
-  const tokens = [];
-  let token = '';
-  let quote = null;
-  let escaping = false;
-  let tokenStarted = false;
-  for (const character of command) {
-    if (escaping) {
-      token += character;
-      tokenStarted = true;
-      escaping = false;
-    } else if (character === '\\' && quote !== "'") {
-      escaping = true;
-      tokenStarted = true;
-    } else if (quote) {
-      if (character === quote) quote = null;
-      else token += character;
-      tokenStarted = true;
-    } else if (character === "'" || character === '"') {
-      quote = character;
-      tokenStarted = true;
-    } else if (/\s/.test(character)) {
-      if (tokenStarted) {
-        tokens.push(token);
-        token = '';
-        tokenStarted = false;
-      }
-    } else {
-      token += character;
-      tokenStarted = true;
-    }
-  }
-  if (escaping || quote) return null;
-  if (tokenStarted) tokens.push(token);
-  return tokens;
-}
-
-/**
- * @param {string[]} args
- * @returns {boolean}
- */
-function validWorkflowDispatchArguments(args) {
-  if (!args[0] || args[0].startsWith('-')) return false;
-  const repositoryPattern =
-    /^(?:[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+|\{\{[a-z][a-z0-9-]*\}\})$/;
-  const inputPattern = /^[A-Za-z_][A-Za-z0-9_-]*=.*$/s;
-  for (let index = 1; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === '--repo' || argument === '-R') {
-      if (!repositoryPattern.test(args[index + 1] ?? '')) return false;
-      index += 1;
-    } else if (argument.startsWith('--repo=')) {
-      if (!repositoryPattern.test(argument.slice('--repo='.length))) return false;
-    } else if (argument === '--ref') {
-      if (!args[index + 1] || args[index + 1].startsWith('-')) return false;
-      index += 1;
-    } else if (argument.startsWith('--ref=')) {
-      if (argument.length === '--ref='.length) return false;
-    } else if (argument === '--raw-field' || argument === '-f') {
-      if (!inputPattern.test(args[index + 1] ?? '')) return false;
-      index += 1;
-    } else if (argument.startsWith('--raw-field=')) {
-      if (!inputPattern.test(argument.slice('--raw-field='.length))) return false;
-    } else {
-      return false;
-    }
-  }
-  return true;
-}
 
 /**
  * @typedef {{ code: string, message: string, path: string }} ValidationError
@@ -979,9 +911,13 @@ function validateDashboard(dashboard, dashboardNode, errors) {
         ids.add(action.id);
         declaredCliActions.set(action.id, action);
       }
-      validateStringField(action.label, `${path}.label`, true, errors);
+      validateActionLevel(action.level, `${path}.level`, errors);
+      validateOptionalStringField(action.verb, `${path}.verb`, errors);
+      if (action.label !== undefined || action.level === undefined || action.level === 'operate') {
+        validateStringField(action.label, `${path}.label`, true, errors);
+      }
       validateOptionalStringField(action.description, `${path}.description`, errors);
-      validateStringField(action.icon, `${path}.icon`, true, errors);
+      if (action.icon !== undefined) validateStringField(action.icon, `${path}.icon`, true, errors);
       if (typeof action.icon === 'string' && !PAGE_ICON_VALUES.includes(action.icon)) {
         errors.push(createError(
           ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
@@ -1031,6 +967,13 @@ function validateDashboard(dashboard, dashboardNode, errors) {
           && commandTokens[2] === 'create'
           && commandTokens[3] === '--from-file'
           && commandTokens[4] === '-';
+        if (action.level === 'explore' && !isReadOnlyCliAction(action)) {
+          errors.push(createError(
+            ERROR_CODES.missingOrInvalidRequiredField,
+            'Explore CLI actions must use a supported read-only command.',
+            `${path}.command`
+          ));
+        }
         if (!isCaoCommand && !isGhAwCommand && !isWorkflowDispatchCommand && !isAgentTaskCreateCommand) {
           errors.push(createError(
             ERROR_CODES.missingOrInvalidRequiredField,
@@ -2602,6 +2545,7 @@ function validateView(view, viewNode, path, viewIds, errors) {
       `${path}.prompt`
     ));
   }
+  if (view['prompt-level'] !== undefined) validateActionLevel(view['prompt-level'], `${path}.prompt-level`, errors);
   validateCallout(
     view.callout,
     getValueNodeByKey(viewNode, 'callout'),
@@ -3562,6 +3506,8 @@ function validateTableActions(encoding, encodingNode, mark, sourceName, path, er
       return;
     }
     validateObjectKeys(actionNode, TABLE_ACTION_KEYS, actionPath, errors);
+    validateActionLevel(action.level, `${actionPath}.level`, errors);
+    validateOptionalStringField(action.verb, `${actionPath}.verb`, errors);
     validateStringField(action.presentation, `${actionPath}.presentation`, true, errors);
     if (typeof action.presentation === 'string' && !TABLE_ACTION_PRESENTATION_VALUES.includes(action.presentation)) {
       errors.push(createError(ERROR_CODES.nonCanonicalVocabularyOrIdentifier, 'action presentation must be copy-prompt, cli-action, or external-link.', `${actionPath}.presentation`));
@@ -3577,6 +3523,10 @@ function validateTableActions(encoding, encodingNode, mark, sourceName, path, er
         errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, 'cli-action must reference a row-placed dashboard CLI action.', `${actionPath}.action`));
       } else if (declaredAction.command === 'gh agent-task create --from-file -') {
         errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, 'agent-task actions must use copy-prompt presentation.', `${actionPath}.action`));
+      }
+      if (action.level === 'explore' && declaredAction && !isReadOnlyCliAction(declaredAction)) {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+          'Explore CLI actions must use a supported read-only command.', `${actionPath}.action`));
       }
       if (action.intent !== undefined) {
         errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'cli-action table actions must not declare intent.', `${actionPath}.intent`));
@@ -3609,11 +3559,14 @@ function validateTableActions(encoding, encodingNode, mark, sourceName, path, er
         `${actionPath}.context`
       ));
     }
-    validateStringField(action.icon, `${actionPath}.icon`, true, errors);
+    if (action.icon !== undefined) validateStringField(action.icon, `${actionPath}.icon`, true, errors);
     if (typeof action.icon === 'string' && !PAGE_ICON_VALUES.includes(action.icon)) {
       errors.push(createError(ERROR_CODES.nonCanonicalVocabularyOrIdentifier, 'action icon must use one canonical icon value.', `${actionPath}.icon`));
     }
-    validateStringField(action.label, `${actionPath}.label`, true, errors);
+    if (action.label !== undefined || action.level === 'operate'
+      || action.level === undefined && action.presentation === 'cli-action') {
+      validateStringField(action.label, `${actionPath}.label`, true, errors);
+    }
     if (!Array.isArray(action.context) || action.context.length === 0) {
       errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'action context must be a non-empty sequence of source fields.', `${actionPath}.context`));
     } else {

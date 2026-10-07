@@ -1,0 +1,174 @@
+import { describe, expect, it } from 'vitest';
+import { ACTION_LEVELS, actionIcon, actionPresentation, constrainPrompt, normalizeAction, normalizeViewAction } from '../../src/action-model.js';
+import { semanticViewPrompt } from '../../src/semantic-view-prompt.js';
+import { validateDashboardDocument } from '../../src/validator.js';
+import { authoritativeDashboardSource } from '../authoritative-dashboard.js';
+
+/** @param {any} node @param {string} presentation @returns {any} */
+function findAction(node, presentation) {
+  if (!node || typeof node !== 'object') return null;
+  if (node.presentation === presentation) return node;
+  for (const child of Object.values(node)) {
+    const found = findAction(child, presentation);
+    if (found) return found;
+  }
+  return null;
+}
+
+describe('declarative action levels', () => {
+  it.each(ACTION_LEVELS.filter((level) => level !== 'ui'))('accepts %s on dashboard CLI actions regardless of executor', (level) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    document.dashboard['cli-actions'][0].level = level;
+    if (level === 'explore') {
+      document.dashboard['cli-actions'][0].command = 'gh aw status';
+      delete document.dashboard['cli-actions'][0].arguments;
+    }
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    expect(normalizeAction(document.dashboard['cli-actions'][0], { id: 'test', type: 'cli' }).level).toBe(level);
+  });
+
+  it('rejects mutating CLI commands declared as read-only exploration', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    document.dashboard['cli-actions'][0].level = 'explore';
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Explore CLI actions must use a supported read-only command.' })
+    ]));
+    const rowAction = findAction(document, 'cli-action');
+    rowAction.level = 'explore';
+    expect(validateDashboardDocument(JSON.stringify(document)).errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Explore CLI actions must use a supported read-only command.' })
+    ]));
+  });
+
+  it('rejects invalid CLI and generated view levels', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    document.dashboard['cli-actions'][0].level = 'dangerous';
+    const page = document.dashboard.pages.find((/** @type {{ views?: unknown[] }} */ candidate) => candidate.views?.length);
+    page.views[0]['prompt-level'] = 'dangerous';
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((error) => error.path.endsWith('.level'))).toBe(true);
+    expect(result.errors.some((error) => error.path.endsWith('.prompt-level'))).toBe(true);
+  });
+
+  it.each(['explore', 'propose', 'operate'])('validates a declared row prompt at %s', (level) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const prompt = findAction(document, 'copy-prompt');
+    expect(prompt).toBeTruthy();
+    prompt.level = level;
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    if (level === 'propose') {
+      delete prompt.label;
+      delete prompt.level;
+      expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    }
+    prompt.level = 'invalid';
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
+  });
+
+  it('normalizes explicit prompt, CLI and generated view actions without coupling level to type', () => {
+    for (const type of /** @type {const} */ (['prompt', 'cli'])) {
+      for (const level of ACTION_LEVELS.filter((level) => level !== 'ui')) {
+        expect(normalizeAction({ level }, { id: 'test', type })).toMatchObject({
+          id: 'test', level, type, source: 'explicit'
+        });
+      }
+    }
+    const view = normalizeViewAction({ id: 'cost' }, { subject: 'Cost', objective: 'Reduce cost', acceptance: 'Evidence' });
+    expect(view).toMatchObject({ id: 'cost-prompt', source: 'view', type: 'prompt', level: 'propose',
+      subject: 'Cost', objective: 'Reduce cost', acceptance: 'Evidence' });
+    expect(normalizeViewAction({ 'prompt-level': 'explore' }, { subject: '', objective: '', acceptance: '' }).level).toBe('explore');
+    expect(normalizeAction({}, { id: 'old', type: 'cli' }).level).toBe('operate');
+    expect(normalizeAction({}, { id: 'old', type: 'prompt' }).level).toBe('propose');
+    expect(normalizeAction({}, { id: 'old', type: 'link' }).level).toBe('explore');
+  });
+
+  it('normalizes native UI actions without an agent preview or operational confirmation', () => {
+    const action = normalizeAction({ verb: 'logout', label: 'Log out' }, { id: 'logout', type: 'ui' });
+    expect(action).toMatchObject({ id: 'logout', type: 'ui', source: 'explicit', level: 'ui' });
+    expect(actionPresentation(action)).toEqual({
+      label: 'Log out', icon: 'sign-out', preview: false, confirmation: false
+    });
+    const clear = normalizeAction({ label: 'Clear app', verb: 'clear', confirmation: true },
+      { id: 'clear-app', type: 'ui' });
+    expect(actionPresentation(clear)).toEqual({
+      label: 'Clear app', icon: 'trash', preview: false, confirmation: true
+    });
+    expect(actionPresentation(normalizeAction({}, { id: 'local', type: 'ui' })))
+      .toMatchObject({ label: 'UI action', icon: 'device-desktop' });
+  });
+
+  it.each(['cli-action', 'copy-prompt', 'external-link'])('rejects ui on %s row declarations', (presentation) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const action = findAction(document, presentation);
+    expect(action).toBeTruthy();
+    action.level = 'ui';
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/\.level$/), message: expect.stringContaining('reserved for native dashboard') })
+    ]));
+  });
+
+  it.each([true, false])('rejects ui on dashboard CLI actions even with copy-only: %s', (copyOnly) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    document.dashboard['cli-actions'][0].level = 'ui';
+    document.dashboard['cli-actions'][0]['copy-only'] = copyOnly;
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: '$.dashboard.cli-actions[0].level', message: expect.stringContaining('reserved for native dashboard') })
+    ]));
+  });
+
+  it('rejects ui on generated view prompts', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const page = document.dashboard.pages.find((/** @type {{ views?: unknown[] }} */ candidate) => candidate.views?.length);
+    page.views[0]['prompt-level'] = 'ui';
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/\.prompt-level$/), message: expect.stringContaining('reserved for native dashboard') })
+    ]));
+  });
+
+  it('rejects UI-only levels at runtime outside native controls', () => {
+    for (const type of /** @type {const} */ (['prompt', 'cli', 'link'])) {
+      expect(() => normalizeAction({ level: 'ui' }, { id: 'invalid', type })).toThrow('reserved for native dashboard');
+    }
+    for (const level of ACTION_LEVELS.filter((level) => level !== 'ui')) {
+      expect(() => normalizeAction({ level }, { id: 'invalid', type: 'ui' })).toThrow('reserved for native dashboard');
+    }
+    expect(() => normalizeAction({ level: 'invalid' }, { id: 'invalid', type: 'ui' })).toThrow('Unknown action level');
+    expect(() => normalizeViewAction({ 'prompt-level': 'ui' }, { subject: '', objective: '', acceptance: '' }))
+      .toThrow('reserved for native dashboard');
+    expect(() => constrainPrompt('Log out', 'ui')).toThrow('reserved for native dashboard');
+    expect(() => semanticViewPrompt({ level: 'ui',
+      semantics: { queryIds: [], subject: '', objective: '', acceptance: '' },
+      queryParameters: {}, filters: {}, scope: {}, sources: {} })).toThrow('reserved for native dashboard');
+  });
+
+  it('keeps read-only investigation separate from proposals in generated prompts', () => {
+    const context = { semantics: { queryIds: [], subject: 'Cost', objective: 'Explain spike', acceptance: 'Cite runs' },
+      queryParameters: {}, filters: {}, scope: {}, sources: {} };
+    const explore = semanticViewPrompt({ ...context, level: 'explore' });
+    expect(explore).toContain('Read-only investigation only');
+    expect(explore).not.toContain('Create a PR with the changes.');
+    expect(constrainPrompt('Investigate failure', 'explore')).toContain('Do not modify repositories');
+    expect(semanticViewPrompt({ ...context, level: 'propose' })).toContain('Create a PR with the changes.');
+  });
+
+  it('resolves semantic icons and concrete verbs with deterministic fallback and visible labels', () => {
+    expect(ACTION_LEVELS.map((level) => actionIcon(level))).toEqual(['device-desktop', 'search', 'git-pull-request', 'zap']);
+    expect(actionIcon('operate', 'refresh')).toBe('sync');
+    expect(actionIcon('operate', 'delete')).toBe('trash');
+    expect(actionIcon('operate', 'retry')).toBe('play');
+    expect(actionIcon('operate', 'unknown')).toBe('zap');
+    expect(actionPresentation(normalizeAction({ level: 'explore' }, { id: 'test', type: 'prompt' })).label).toBe('Investigate');
+    expect(actionPresentation(normalizeAction({ level: 'propose' }, { id: 'test', type: 'cli' })).label).toBe('Propose fix');
+    expect(actionPresentation(normalizeAction({ level: 'operate', label: 'Refresh data' }, { id: 'test', type: 'cli' })))
+      .toMatchObject({ label: 'Refresh data', confirmation: true });
+  });
+});
