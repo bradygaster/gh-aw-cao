@@ -564,7 +564,7 @@ settings:
 | `CAO_GITHUB_CLIENT_ID`, `CAO_GITHUB_CLIENT_SECRET`, `CAO_GITHUB_REDIRECT_URL` | GitHub OAuth application. |
 | `CAO_SESSION_SECRET` | Current session encryption/signing secret of at least 32 characters. |
 | `CAO_SESSION_SECRET_PREVIOUS` | Optional previous session secret retained only during controlled rotation. |
-| `CAO_GITHUB_ALLOWED_ORGS`, `CAO_GITHUB_ALLOWED_TEAMS` | Explicit authorization policy. |
+| `CAO_GITHUB_ALLOWED_USERS`, `CAO_GITHUB_ALLOWED_ORGS`, `CAO_GITHUB_ALLOWED_TEAMS` | Explicit authorization policy. Direct users avoid organization OAuth-visibility dependencies. |
 | `CAO_GITHUB_ADMIN_USERS` | Required comma-separated GitHub logins allowed to trigger rebuilds. |
 | `CAO_GITHUB_WEBHOOK_SECRET` | Required GitHub webhook signature secret of at least 32 characters. |
 | `CAO_SOURCE_DIRECTORY` | Required authoritative deployed gh-aw artifact directory used by rebuild/reconciliation. |
@@ -1539,8 +1539,8 @@ mode fails closed unless all of the following are configured:
 - `CAO_AZURE_ALLOWED_HOSTS` and HTTPS forwarded-protocol enforcement;
 - GitHub OAuth App client ID/secret and redirect URL;
 - at least 32 characters of `CAO_SESSION_SECRET`;
-- at least one explicit `CAO_GITHUB_ALLOWED_ORGS` or
-  `CAO_GITHUB_ALLOWED_TEAMS` value.
+- at least one explicit `CAO_GITHUB_ALLOWED_USERS`,
+  `CAO_GITHUB_ALLOWED_ORGS`, or `CAO_GITHUB_ALLOWED_TEAMS` value.
 
 For Linux-only local integration testing, the repository-owned harness starts
 Azure Functions Core Tools, Azurite, and PostgreSQL and drives the Functions HTTP

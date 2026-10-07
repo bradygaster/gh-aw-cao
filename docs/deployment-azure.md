@@ -171,6 +171,7 @@ The template creates the following app settings.
 | `CAO_GITHUB_REDIRECT_URL` | Derived from `functionAppName` | `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback` |
 | `CAO_GITHUB_ALLOWED_ORGS` | `githubAllowedOrganizations` parameter | Organizations whose active members can sign in. |
 | `CAO_GITHUB_ALLOWED_TEAMS` | `githubAllowedTeams` parameter | Teams, in `ORGANIZATION/TEAM-SLUG` format, whose active members can sign in. |
+| `CAO_GITHUB_ALLOWED_USERS` | `githubAllowedUsers` parameter | Exact GitHub logins authorized directly. Use this for narrow access that must not depend on organization OAuth visibility. |
 | `CAO_SESSION_SECRET` | Key Vault secret `cao-session-secret` | Current session encryption key. At least 32 characters. |
 | `CAO_SESSION_SECRET_PREVIOUS` | Key Vault, only when `previousSessionSecret` is set | Previous session key, used during rotation. |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Application Insights | Where the Functions host sends telemetry. |
@@ -209,7 +210,7 @@ In Azure mode, the server doesn't start unless all of the following are configur
 - Allowed hosts and HTTPS enforcement.
 - The OAuth client ID, client secret, and redirect URL.
 - A session secret of at least 32 characters.
-- At least one allowed organization or team.
+- At least one allowed user, organization, or team.
 
 Azure mode never accepts PATs or the local bearer capability.
 
