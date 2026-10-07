@@ -307,10 +307,13 @@ configured allow-list and the forwarded protocol is HTTPS.
 ### GitHub OAuth and authorization
 
 Azure mode implements the GitHub OAuth authorization-code flow. It requests the
-minimum `read:org` scope needed for active organization or team membership
-authorization. Successful GitHub authentication alone is insufficient: the
-server must verify an allowed organization or team membership before creating a
-session. Do not add PAT handling to Azure mode; PATs bypass the required
+minimum `read:org` scope needed when active organization or team membership is
+part of the authorization policy. Successful GitHub authentication alone is
+insufficient: the server must match an explicitly allowed user or verify an
+allowed organization or team membership before creating a session. Direct user
+entries are appropriate for narrow access that must not depend on an
+organization's OAuth application visibility. Do not add PAT handling to Azure
+mode; PATs bypass the required
 browser login, refresh-token rotation, revocation, and explicit membership
 authorization controls.
 

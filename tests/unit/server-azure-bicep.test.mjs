@@ -103,6 +103,7 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /name:\s*'WEBSITES_PORT'\s+value:\s*'8080'/);
   assert.match(bicep, /name:\s*'WEBSITES_ENABLE_APP_SERVICE_STORAGE'\s+value:\s*'false'/);
   assert.match(bicep, /name:\s*'CAO_DATABASE_QUERIES'\s+value:\s*'\/app\/queries\/database\.json'/);
+  assert.match(bicep, /name:\s*'CAO_GITHUB_ALLOWED_USERS'\s+value:\s*join\(githubAllowedUsers,\s*','\)/);
   assert.match(bicep, /alwaysOn:\s*true/);
   assert.match(bicep, /minimumElasticInstanceCount:\s*1/);
   assert.match(bicep, /ftpsState:\s*'Disabled'/);

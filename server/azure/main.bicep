@@ -69,6 +69,9 @@ param githubAllowedOrganizations array
 @description('GitHub teams whose active members are authorized, expressed as org/team-slug.')
 param githubAllowedTeams array = []
 
+@description('GitHub user logins authorized directly, without organization membership lookup.')
+param githubAllowedUsers array = []
+
 @description('GitHub OAuth App client ID. Do not use a PAT; the server only supports the OAuth authorization-code flow.')
 param githubClientId string
 
@@ -388,6 +391,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'CAO_GITHUB_ALLOWED_TEAMS'
           value: join(githubAllowedTeams, ',')
+        }
+        {
+          name: 'CAO_GITHUB_ALLOWED_USERS'
+          value: join(githubAllowedUsers, ',')
         }
         {
           name: 'CAO_SESSION_SECRET'
