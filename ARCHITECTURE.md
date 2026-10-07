@@ -464,7 +464,7 @@ therefore execute one layout. `.github/aw/` remains exclusively gh-aw-owned.
   cannot replace the projection concurrently. Its client exposes the active
   GitHub login and supports explicit account switching through a fresh OAuth
   account-selection flow without combining account authority. Hosted transport
-  is fail-closed: Redis uses TLS by default and always in Azure; a Coolify-managed
+  is fail-closed: Redis uses TLS by default when selected; a Coolify-managed
   Redis service may use private plaintext only through an explicit opt-in and a
   private address. A public listener terminates TLS directly, while a private
   Coolify listener may rely on proxy TLS only when the direct proxy peer belongs

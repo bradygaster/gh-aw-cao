@@ -458,8 +458,8 @@ flowchart LR
 | Redis operations | `internal/redisx/` | Supports caches, queues, and sessions. |
 | HTTP(S)/API server | `internal/server/` | Enforces loopback binding, optionally terminates operator-configured TLS, serves static dashboard assets, handles API requests, and publishes revision events. |
 | Externally hosted service | `hosting/` | Exposes a listener-independent application lifecycle and the complete hosted HTTP handler to other Go HTTP hosts. |
-| Azure Functions profile | `internal/server/azure.go` | Builds the same HTTP handler without starting a listener, validates Azure app settings, requires `rediss://` Redis, and trusts forwarded host/protocol headers only for configured Azure hosts. |
-| GitHub OAuth sessions | `internal/server/oauth.go` | Implements the GitHub OAuth authorization-code flow, active organization/team authorization, refresh-token rotation, server-side encrypted sessions in Redis, logout revocation, and CSRF protection for mutating requests. |
+| Azure Functions profile | `internal/server/azure.go` | Builds the same HTTP handler without starting a listener, validates Azure app settings and reviewed PostgreSQL operational storage, and trusts forwarded host/protocol headers only for configured Azure hosts. |
+| GitHub OAuth sessions | `internal/server/oauth.go` | Implements the GitHub OAuth authorization-code flow, active organization/team authorization, refresh-token rotation, provider-neutral encrypted server-side sessions, logout revocation, and CSRF protection for mutating requests. |
 | Shared API model | `internal/model/` | Defines logical sources, diagnostics, and query metrics. |
 | Telemetry | `internal/telemetry/` | Configures OpenTelemetry trace, metric, and opt-in log providers, exposes the server's tracer, and writes W3C trace/span id response headers. |
 | Local Redis | `docker-compose.yml` | Runs plain Redis on `127.0.0.1:6379`. |
@@ -468,18 +468,16 @@ flowchart LR
 ### Host capability profiles
 
 `internal/server/host_modules.go` independently resolves an app server target
-module and a declarative Redis provider module. Their capabilities compose into
+module and a reviewed operational backend. Their capabilities compose into
 the profile validated by `internal/server/host_profile.go`. Target modules own
-authentication, listener, HTTPS, and proxy behavior; Redis modules own
-environment mappings, connection semantics, namespace isolation, replica
-constraints, and collection support.
+authentication, listener, HTTPS, and proxy behavior; operational adapters own
+storage semantics, namespace isolation, replica coordination, and collection support.
 
 Hosted deployments normally declare these capabilities under
 `control-plane.web.host` in `.github/workflows/cao.json`. The declaration names
-environment variables for Redis connection and verified TLS inputs; secret
+environment variables for backend connections and verified TLS inputs; secret
 values remain in the deployment environment. New hosting platforms add a target
-module without changing Redis providers; new Redis providers add declarative
-environment defaults without changing target modules. `server.New` validates the
+module without changing operational adapters. `server.New` validates the
 composed profile.
 Do not add provider-name branches to shared authentication, proxy, ingestion,
 or Redis enforcement. Startup rejects unsupported capability combinations, a
@@ -603,11 +601,11 @@ Redis](https://github.com/githubnext/gh-aw-cao/blob/main/docs/deployment-upstash
 
 ### Coolify container profile
 
-Coolify is a peer deployment profile to Azure Functions; it does not replace or
-modify the Azure Functions + Azure Managed Redis profile. The image reuses
+Coolify is a peer deployment profile to Azure Functions. Both profiles default
+operational services to PostgreSQL without Redis. The image reuses
 `serve-hosted`, so GitHub OAuth, explicit organization/team authorization,
 server-side encrypted sessions, CSRF checks, webhook signature verification and
-deduplication, shared Redis rate limits, and secret-redacting logging remain the
+deduplication, deployment-scoped rate limits, and secret-redacting logging remain the
 same.
 
 Build from the repository root:
@@ -772,15 +770,15 @@ invalid, expired, and unauthenticated requests cannot bypass Redis enforcement.
 
 > [!WARNING]
 > The hosted Azure architecture is an experimental production-readiness profile,
-> not a turnkey production certification. Treat the Bicep, OAuth policy, Redis
+> not a turnkey production certification. Treat the Bicep, OAuth policy, PostgreSQL
 > topology, and Key Vault access model as a reviewed baseline that must be
 > validated against your organization's Azure, GitHub, compliance, monitoring,
 > incident-response, and data-retention requirements before live use.
 
 The Azure Functions profile keeps the dashboard browser isolated from Postgres,
-Redis, GitHub tokens, refresh tokens, database credentials, and Key Vault secret values.
+GitHub tokens, refresh tokens, database credentials, and Key Vault secret values.
 The Function App is the only public application boundary and the only component
-that talks to GitHub APIs, Key Vault references, Postgres, and Azure Managed Redis.
+that talks to GitHub APIs, Key Vault references, and Postgres.
 
 ```mermaid
 flowchart LR
@@ -788,9 +786,8 @@ flowchart LR
   Edge["Azure HTTPS edge / App Service front end<br/>sets forwarded host + proto"]
   Function["Function App<br/>Go dashboard HTTP handler<br/>GitHub OAuth sessions + CSRF"]
   GitHubOAuth["GitHub OAuth + API<br/>login, refresh, org/team membership"]
-  KeyVault["Azure Key Vault<br/>OAuth secret, session secret, Redis URL"]
-  Postgres["Postgres<br/>current dashboard entities"]
-  Redis["Azure Managed Redis<br/>TLS<br/>operational state"]
+  KeyVault["Azure Key Vault<br/>OAuth secret, session secret, Postgres URL"]
+  Postgres["Postgres<br/>canonical + isolated operational tables"]
   Storage["Functions storage account<br/>runtime state only"]
   Insights["Application Insights<br/>non-secret operational telemetry"]
   Operators["Control-plane operators<br/>deploy Bicep + rotate secrets"]
@@ -799,15 +796,14 @@ flowchart LR
   Edge -->|"trusted forwarded host/proto only when allow-listed"| Function
   Function -->|"OAuth code, refresh, membership checks"| GitHubOAuth
   Function -->|"Key Vault references resolved by managed identity"| KeyVault
-  Function -->|"rediss:// operational commands"| Redis
-  Function -->|"entity source reads/writes"| Postgres
+  Function -->|"canonical + operational transactions"| Postgres
   Function -->|"runtime binding state"| Storage
-  Function -->|"no tokens, no Redis URL, no source records"| Insights
+  Function -->|"no tokens, no database URL, no source records"| Insights
   Operators -->|"reviewed Bicep + secret rotation"| KeyVault
   Operators -->|"deploy package + app settings"| Function
 
   classDef boundary fill:#eef6ff,stroke:#0969da,stroke-width:2px;
-  class Function,KeyVault,Postgres,Redis boundary;
+  class Function,KeyVault,Postgres boundary;
 ```
 
 Primary actors and responsibilities:
@@ -820,10 +816,10 @@ Primary actors and responsibilities:
   scale in, or terminate long-lived SSE requests.
 - **GitHub OAuth/API**: issues expiring access/refresh tokens and confirms
   organization/team membership; GitHub tokens never leave the server.
-- **Postgres**: stores the current dashboard entity sources and diagnostics;
-  replacement is transactional, without generations or snapshots.
-- **Redis**: stores operational queues, caches, and sessions, not
-  dashboard entities.
+- **Postgres**: stores the current dashboard entity sources and diagnostics in
+  canonical tables and restart-persistent queues, caches, sessions, and
+  coordination state in isolated operational tables. Canonical replacement is
+  transactional, without generations or snapshots.
 - **Control-plane operator**: reviews Bicep/app settings, keeps Key Vault
   mandatory, rotates credentials, and validates compliance evidence.
 
@@ -835,8 +831,8 @@ Trust boundaries:
   PATs and no GitHub tokens forwarded to the browser.
 - Function App ↔ Key Vault: managed identity and RBAC only; no secret values in
   Bicep outputs, logs, checked-in parameters, or browser-readable state.
-- Function App ↔ Redis: TLS-only `rediss://` and a deployment
-  namespace for disposable derived data.
+- Function App ↔ Postgres: TLS-only outside loopback, with separate canonical
+  and operational tables and namespaces.
 
 ## Data ingestion
 
@@ -1526,7 +1522,7 @@ the Function App itself never imports an Azure Monitor SDK.
 - Deployed artifact paths and SHA-256 hashes are validated before parsing.
 - Static files are served only from the configured built-site directory, with
   SPA fallback to that directory's `index.html`.
-- Missing Redis, Postgres data, manifests, shards, or diagnostics fail
+- Missing operational storage, Postgres data, manifests, shards, or diagnostics fail
   closed.
 
 The local capability profile is not suitable for remote or multi-user
@@ -1537,9 +1533,9 @@ The Azure Functions profile is the experimental remote profile. It is enabled
 by calling `NewAzureFunctionsHandlerFromEnv`; `serve` does not enable it. Azure
 mode fails closed unless all of the following are configured:
 
-- a readable `cao.json` with the `azure-functions` target and a Redis provider;
-- the policy-selected Redis URL environment variable with a `rediss://` URL;
-- the policy-selected Redis namespace environment variable;
+- a readable `cao.azure.json` profile with the `azure-functions` target and PostgreSQL operational backend;
+- a TLS PostgreSQL URL available through `CAO_POSTGRES_URL`;
+- distinct canonical and operational namespaces;
 - `CAO_AZURE_ALLOWED_HOSTS` and HTTPS forwarded-protocol enforcement;
 - GitHub OAuth App client ID/secret and redirect URL;
 - at least 32 characters of `CAO_SESSION_SECRET`;
@@ -1547,7 +1543,7 @@ mode fails closed unless all of the following are configured:
   `CAO_GITHUB_ALLOWED_TEAMS` value.
 
 For Linux-only local integration testing, the repository-owned harness starts
-Azure Functions Core Tools, Azurite, and Redis and drives the Functions HTTP
+Azure Functions Core Tools, Azurite, and PostgreSQL and drives the Functions HTTP
 surface without Azure credentials:
 
 ```bash
@@ -1557,15 +1553,15 @@ surface without Azure credentials:
 See [`scripts/azure-local/README.md`](../scripts/azure-local/README.md) for
 prerequisites, individual lifecycle commands, logs, process isolation, and the
 local-vs-cloud test boundary. The harness sets the explicit
-`CAO_AZURE_LOCAL_SIMULATION=1` seam, which permits only loopback plaintext Redis
+`CAO_AZURE_LOCAL_SIMULATION=1` seam, which permits loopback plaintext PostgreSQL
 and local HTTP. Without that setting, Azure mode continues to require
-`rediss://` Redis and HTTPS exactly as production does.
+PostgreSQL TLS and HTTPS exactly as production does.
 
 Azure mode does not accept the local bearer capability and does not support
 PATs. Login alone does not grant access: after exchanging the OAuth code, the
 server calls GitHub with the minimum `read:org` scope needed for organization
 or team membership checks. Access and refresh tokens remain server-side,
-encrypted before storage in Redis, and are never written to browser-readable
+encrypted before operational storage, and are never written to browser-readable
 storage, URLs, API payloads, or Bicep outputs. Session cookies are `Secure`,
 `HttpOnly`, and `SameSite=Lax`; mutating API requests must include the
 session-bound CSRF token.
@@ -1574,11 +1570,11 @@ session-bound CSRF token.
 platform keeps the invocation alive. Clients must treat SSE as best-effort and
 fall back to `/api/v1/refresh` because Functions instances may cold-start,
 scale in, or terminate long-running requests. Cold starts rebuild the Go app
-from app settings and check Redis before serving requests.
-Request cancellation propagates through `request.Context()` to Redis queries.
+from app settings and checks PostgreSQL before serving requests.
+Request cancellation propagates through `request.Context()` to operational and canonical queries.
 
 The Bicep deployment in `server/azure/main.bicep` provisions a Function App,
-Key Vault, Application Insights, storage, and module-free Azure Managed Redis.
+Key Vault, Application Insights, and Functions storage.
 Every secret-bearing app setting—including Functions runtime storage—uses a
 versionless Key Vault reference so ordinary credential rotation
 does not require rewriting application configuration. Session-key rotation uses
@@ -1586,11 +1582,10 @@ the optional secure `previousSessionSecret` deployment parameter: deploy the old
 key as previous and the new key as current, wait for active sessions and queued
 revocations to drain, then remove the previous key. Encrypted records carry a
 key identifier, and the server can read both keys during that window. The
-template outputs only non-secret host names, redirect URI, Redis database name,
-and Key Vault URI. Redis access keys
-are an unavoidable path for Azure Managed Redis client authentication today;
-store the `rediss://` URL in Key Vault, rotate the Redis key in Azure, publish a
-new Key Vault secret version, and allow the platform to refresh the reference.
+template outputs only the non-secret host name, redirect URI, collection status,
+and Key Vault URI. Store the PostgreSQL URL in Key Vault, rotate its credential
+through a new secret version, and restart every role so the platform refreshes
+the versionless reference.
 
 ### Azure secure-computing baseline
 
@@ -1600,20 +1595,20 @@ hosting:
 - Do not use PATs. Azure mode supports only the GitHub OAuth
   authorization-code flow and configured organization/team authorization.
 - Keep Key Vault mandatory for every secret-bearing value, including the GitHub
-  OAuth client secret, `CAO_SESSION_SECRET`, and `CAO_REDIS_URL`. Do not replace
+  OAuth client secret, `CAO_SESSION_SECRET`, and `CAO_POSTGRES_URL`. Do not replace
   Key Vault references with literal app settings, deployment outputs, or
   checked-in parameter files.
 - Use the Function App's system-assigned managed identity with Key Vault RBAC
   to read secrets. Do not copy Key Vault secret values into logs, telemetry,
   tickets, dashboard documents, or browser-readable configuration.
-- Keep HTTPS-only Functions, TLS-only Redis, disabled FTPS, disabled Redis
-  public network access, storage HTTPS enforcement, Key Vault soft delete, and
+- Keep HTTPS-only Functions, TLS-only PostgreSQL, disabled FTPS,
+  storage HTTPS enforcement, Key Vault soft delete, and
   non-secret Bicep outputs enabled for compliance review.
 - Treat the Postgres entity store as rebuildable from authoritative inputs. Compliance evidence
   comes from the checked-in Bicep, GitHub OAuth authorization policy, Key Vault
   access controls, Azure activity logs, Application Insights without secrets,
-  and the CAO source artifacts that feed Redis.
-- Rotate OAuth, session, storage, and Redis credentials through Key Vault and
+  and the CAO source artifacts that feed PostgreSQL.
+- Rotate OAuth, session, storage, and PostgreSQL credentials through Key Vault and
   Azure platform controls; then restart the Function App so current secret
   versions are resolved.
 

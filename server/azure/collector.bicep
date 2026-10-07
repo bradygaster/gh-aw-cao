@@ -5,8 +5,7 @@
 // dashboard from snapshots published by the Activity workflow.
 //
 // The workers run the same binary as the server in the `collect` role and
-// scale on the Redis stream backlog, so collection capacity follows event
-// volume instead of being provisioned for the peak.
+// share the durable PostgreSQL operational queue with the Function App.
 
 @description('Location for the collection workers.')
 param location string
@@ -31,18 +30,28 @@ param keyVaultName string
 @minValue(100)
 param lakeQuotaGigabytes int = 1024
 
-@description('Redis host the KEDA scaler polls for stream backlog.')
-param redisHost string
-
-@description('Redis port the KEDA scaler polls.')
-param redisPort int = 10000
-
-@description('Redis key namespace shared with the server.')
-param redisNamespace string
+@minValue(1)
+@description('Maximum bytes retained in the disposable operational cache.')
+param operationalCacheMaxBytes int = 33554432
 
 @minValue(1)
-@description('Shared Redis memory-pressure budget in bytes, matching the dashboard.')
-param redisMaxBytes int = 200000000
+@description('Maximum size of one disposable operational cache value.')
+param operationalCacheMaxValueBytes int = 4194304
+
+@minValue(1)
+@description('Maximum number of disposable operational cache entries.')
+param operationalCacheMaxEntries int = 1024
+
+@minValue(1)
+@description('Maximum bytes retained in protected operational records.')
+param operationalProtectedMaxBytes int = 134217728
+
+@minValue(1)
+@description('Maximum number of protected operational records.')
+param operationalProtectedMaxEntries int = 200000
+
+@description('Operational PostgreSQL namespace shared with the Function App.')
+param operationalNamespace string
 
 @description('Control repository used for logical source discovery.')
 param controlRepository string
@@ -50,17 +59,9 @@ param controlRepository string
 @description('GitHub App identifier whose installations define ingestion scope.')
 param githubAppId string
 
-@description('Minimum number of collection workers. Zero scales to nothing when idle.')
-@minValue(0)
-param minimumWorkers int = 0
-
-@description('Maximum number of collection workers.')
 @minValue(1)
-param maximumWorkers int = 20
-
-@description('Stream backlog per worker before another worker is added.')
-@minValue(1)
-param backlogPerWorker int = 25
+@description('Fixed number of PostgreSQL-backed collection workers.')
+param workerReplicas int = 1
 
 @description('Application Insights connection string. Collection is unobservable without it.')
 @secure()
@@ -88,9 +89,6 @@ param queueMaxLength int = 200000
 // throughput bound, and Standard share IOPS scale only with provisioned size.
 var lakePremium = startsWith(lakeStorageSku, 'Premium')
 var lakeStorageAccountName = '${toLower(take(replace(namePrefix, '-', ''), 7))}lake${uniqueString(resourceGroup().id, namePrefix)}'
-var streamKey = '${redisNamespace}:collect:tasks'
-var consumerGroup = 'collectors'
-
 resource collectorIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${namePrefix}-collector-identity'
   location: location
@@ -217,16 +215,40 @@ resource lakeStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
 
 var collectionEnvironment = [
   {
-    name: 'CAO_REDIS_URL'
-    secretRef: 'cao-redis-url'
+    name: 'CAO_POSTGRES_URL'
+    secretRef: 'cao-postgres-url'
   }
   {
-    name: 'CAO_REDIS_NAMESPACE'
-    value: redisNamespace
+    name: 'CAO_POLICY_PATH'
+    value: '/app/.github/workflows/cao.azure.json'
   }
   {
-    name: 'CAO_REDIS_MAX_BYTES'
-    value: string(redisMaxBytes)
+    name: 'REDIS_NAMESPACE'
+    value: 'azure-dashboard'
+  }
+  {
+    name: 'CAO_OPERATIONAL_NAMESPACE'
+    value: operationalNamespace
+  }
+  {
+    name: 'CAO_OPERATIONAL_CACHE_MAX_BYTES'
+    value: string(operationalCacheMaxBytes)
+  }
+  {
+    name: 'CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES'
+    value: string(operationalCacheMaxValueBytes)
+  }
+  {
+    name: 'CAO_OPERATIONAL_CACHE_MAX_ENTRIES'
+    value: string(operationalCacheMaxEntries)
+  }
+  {
+    name: 'CAO_OPERATIONAL_PROTECTED_MAX_BYTES'
+    value: string(operationalProtectedMaxBytes)
+  }
+  {
+    name: 'CAO_OPERATIONAL_PROTECTED_MAX_ENTRIES'
+    value: string(operationalProtectedMaxEntries)
   }
   {
     name: 'CAO_COLLECT_APP_ID'
@@ -270,18 +292,13 @@ var collectionEnvironment = [
 
 var collectionSecrets = [
   {
-    name: 'cao-redis-url'
-    keyVaultUrl: '${keyVaultUri}secrets/cao-redis-url'
+    name: 'cao-postgres-url'
+    keyVaultUrl: '${keyVaultUri}secrets/cao-postgres-url'
     identity: collectorIdentity.id
   }
   {
     name: 'cao-collect-private-key'
     keyVaultUrl: '${keyVaultUri}secrets/cao-collect-private-key'
-    identity: collectorIdentity.id
-  }
-  {
-    name: 'cao-redis-password'
-    keyVaultUrl: '${keyVaultUri}secrets/cao-redis-password'
     identity: collectorIdentity.id
   }
   {
@@ -334,35 +351,8 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        minReplicas: minimumWorkers
-        maxReplicas: maximumWorkers
-        rules: [
-          {
-            // Scaling on stream backlog, not on request rate: webhooks are
-            // admitted by the server in constant time, and the backlog is the
-            // only signal that reflects outstanding collection work.
-            name: 'collection-backlog'
-            custom: {
-              type: 'redis-streams'
-              metadata: {
-                address: '${redisHost}:${redisPort}'
-                stream: streamKey
-                consumerGroup: consumerGroup
-                pendingEntriesCount: string(backlogPerWorker)
-                enableTLS: 'true'
-              }
-              auth: [
-                {
-                  // The scaler authenticates with the Redis access key alone.
-                  // The full connection URL stays a worker secret so the
-                  // scaler is not given more than it needs to read backlog.
-                  secretRef: 'cao-redis-password'
-                  triggerParameter: 'password'
-                }
-              ]
-            }
-          }
-        ]
+        minReplicas: workerReplicas
+        maxReplicas: workerReplicas
       }
     }
   }
@@ -426,4 +416,3 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
 output collectorIdentityPrincipalId string = collectorIdentity.properties.principalId
 output collectorAppName string = collectors.name
 output backfillJobName string = backfill.name
-output taskStreamKey string = streamKey
