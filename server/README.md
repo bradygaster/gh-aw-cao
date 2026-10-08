@@ -671,7 +671,8 @@ Use `rediss://` whenever Coolify or an external provider offers TLS. A
 Coolify-managed Redis service may use plaintext only on the private service
 network when `control-plane.web.host.redis.allow-private-plaintext` is `true`
 and the endpoint uses a private service hostname or IP. This policy does not
-affect Azure: Azure Functions continues to require `rediss://`.
+affect explicitly selected Redis in Azure, which still requires `rediss://`.
+The default Azure deployment uses PostgreSQL and creates no Redis resource.
 
 The GitHub App webhook starts production delivery after a protected `main`
 update. Coolify checks out that commit, builds the Compose service, and replaces
@@ -1582,8 +1583,14 @@ from app settings and checks PostgreSQL before serving requests.
 Request cancellation propagates through `request.Context()` to operational and canonical queries.
 
 The Bicep deployment in `server/azure/main.bicep` provisions a Function App,
-Key Vault, Application Insights, and Functions storage.
-Every secret-bearing app setting—including Functions runtime storage—uses a
+private PostgreSQL with VNet/DNS, Key Vault, private snapshot ingestion job,
+one workspace-backed Application Insights component, one Log Analytics workspace,
+and one Functions storage account. Optional collection shares the same private
+Container Apps environment and workspace, but needs a separate evidence-lake
+file-storage account because retained evidence and Functions runtime storage have
+different access and retention requirements.
+Functions storage and private ACR pulls use managed identity.
+Every secret-bearing app setting uses a
 versionless Key Vault reference so ordinary credential rotation
 does not require rewriting application configuration. Session-key rotation uses
 the optional secure `previousSessionSecret` deployment parameter: deploy the old

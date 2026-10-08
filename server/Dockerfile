@@ -86,8 +86,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["serve-hosted", "--listen", "0.0.0.0:8080", "--site", "/app/site", "--dashboard-queries", "/app/agent/queries.json", "--database-queries", "/app/queries/database.json"]
 
-FROM dashboard-runtime AS final
-
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS azure-functions-runtime
 
 # hadolint ignore=DL3018
@@ -112,13 +110,11 @@ USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/app/cao-functions"]
 
-FROM dashboard-build AS azure-ingest-data
-
-RUN node activity/cao.mjs download --output /out/cao
-
 FROM dashboard-runtime AS azure-ingest-runtime
 
-COPY --from=azure-ingest-data --chown=cao:cao /out/cao/ /data/
+ARG CAO_INGEST_SOURCE
+RUN test -n "${CAO_INGEST_SOURCE}"
+COPY --chown=cao:cao ${CAO_INGEST_SOURCE}/ /data/
 
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
@@ -188,3 +184,5 @@ USER 65532:65532
 VOLUME ["/app/evidence"]
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["collect", "--database-queries", "/app/queries/database.json"]
+
+FROM dashboard-runtime AS final

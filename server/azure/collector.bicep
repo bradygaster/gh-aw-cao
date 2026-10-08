@@ -20,6 +20,15 @@ param namePrefix string
 @description('Container image running the collection role.')
 param collectorImage string
 
+param environmentName string
+
+@description('Deployment registry containing the private collector image.')
+param containerRegistryName string
+
+@minValue(7)
+@maxValue(3650)
+param postgresRunRetentionDays int = 45
+
 @description('Key Vault URI holding the collection secrets.')
 param keyVaultUri string
 
@@ -67,9 +76,6 @@ param workerReplicas int = 1
 @secure()
 param applicationInsightsConnectionString string
 
-@description('Log Analytics workspace resource ID receiving container console and system logs.')
-param logAnalyticsWorkspaceResourceId string = ''
-
 @description('Evidence lake file share tier. Premium is provisioned SSD; Standard is IOPS-throttled by share size.')
 @allowed([
   'Premium_LRS'
@@ -99,47 +105,29 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
-resource collectorSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, collectorIdentity.id, 'Key Vault Secrets User')
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId(
-      'Microsoft.Authorization/roleDefinitions',
-      '4633458b-17de-408a-b874-0445c86b69e6'
-    )
+resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: environmentName
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: containerRegistryName
+}
+
+module roles 'worker-roles.bicep' = {
+  name: 'collector-roles'
+  params: {
+    keyVaultName: keyVault.name
+    containerRegistryName: registry.name
     principalId: collectorIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
   }
 }
 
-resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: '${namePrefix}-collectors'
-  location: location
-  tags: tags
-  properties: {
-    // Console and system logs go to Azure Monitor, which requires the
-    // diagnostic setting below. Without a workspace the destination is left
-    // unset rather than pointing at a sink that was never created.
-    appLogsConfiguration: empty(logAnalyticsWorkspaceResourceId) ? {} : {
-      destination: 'azure-monitor'
-    }
-    zoneRedundant: false
+var registries = [
+  {
+    server: registry.properties.loginServer
+    identity: collectorIdentity.id
   }
-}
-
-resource environmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (!empty(logAnalyticsWorkspaceResourceId)) {
-  name: 'collection-logs'
-  scope: environment
-  properties: {
-    workspaceId: logAnalyticsWorkspaceResourceId
-    logs: [
-      {
-        categoryGroup: 'allLogs'
-        enabled: true
-      }
-    ]
-  }
-}
+]
 
 // The evidence lake is retained collected evidence, not a cache: cold start
 // replays it without contacting GitHub. It is shared by every worker and by
@@ -219,6 +207,10 @@ var collectionEnvironment = [
     secretRef: 'cao-postgres-url'
   }
   {
+    name: 'CAO_POSTGRES_RUN_RETENTION_DAYS'
+    value: string(postgresRunRetentionDays)
+  }
+  {
     name: 'CAO_POLICY_PATH'
     value: '/app/.github/workflows/cao.azure.json'
   }
@@ -264,7 +256,7 @@ var collectionEnvironment = [
   }
   {
     name: 'CAO_COLLECT_CATALOG_ROOT'
-    value: '/app'
+    value: '/app/catalog'
   }
   {
     name: 'CAO_COLLECT_CONTROL_REPOSITORY'
@@ -321,6 +313,7 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: registries
       secrets: collectionSecrets
     }
     template: {
@@ -329,7 +322,7 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'collector'
           image: collectorImage
           command: ['/app/cao-dashboard']
-          args: ['collect']
+          args: ['collect', '--database-queries', '/app/queries/database.json']
           env: collectionEnvironment
           resources: {
             cpu: json('1.0')
@@ -356,6 +349,7 @@ resource collectors 'Microsoft.App/containerApps@2024-03-01' = {
       }
     }
   }
+  dependsOn: [roles]
 }
 
 // Cold start runs as a job rather than as part of a worker, so repopulating a
@@ -374,6 +368,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
     environmentId: environment.id
     configuration: {
       triggerType: 'Manual'
+      registries: registries
       replicaTimeout: 7200
       replicaRetryLimit: 1
       manualTriggerConfig: {
@@ -388,7 +383,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
           name: 'backfill'
           image: collectorImage
           command: ['/app/cao-dashboard']
-          args: ['backfill']
+          args: ['backfill', '--database-queries', '/app/queries/database.json']
           env: collectionEnvironment
           resources: {
             cpu: json('1.0')
@@ -411,6 +406,7 @@ resource backfill 'Microsoft.App/jobs@2024-03-01' = {
       ]
     }
   }
+  dependsOn: [roles]
 }
 
 output collectorIdentityPrincipalId string = collectorIdentity.properties.principalId

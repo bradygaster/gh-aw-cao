@@ -31,9 +31,23 @@ param functionImageTag string
 @description('Key Vault name used for GitHub OAuth, session, PostgreSQL, and collection secrets.')
 param keyVaultName string
 
+@description('Globally unique name for a new private PostgreSQL Flexible Server.')
+param postgresServerName string = '${functionAppName}-pg'
+
+param postgresAdministratorLogin string = 'caoadmin'
+
 @secure()
-@description('TLS PostgreSQL URL shared by canonical dashboard storage and the isolated operational adapter.')
-param postgresConnectionString string
+@minLength(16)
+@description('PostgreSQL administrator password. Use secret-manager input; never commit it.')
+param postgresAdministratorPassword string
+
+param postgresSkuName string = 'Standard_B2s'
+param postgresSkuTier string = 'Burstable'
+
+@description('Repository of an explicitly built snapshot or empty ingestion image in this deployment registry.')
+param ingestionImageRepository string = 'cao-ingest'
+
+param ingestionImageTag string = functionImageTag
 
 @minValue(1)
 @description('Maximum bytes retained in the disposable operational cache.')
@@ -88,8 +102,8 @@ param sessionSecret string
 @description('Optional previous session secret retained during controlled key rotation until active sessions and pending revocations are drained.')
 param previousSessionSecret string = ''
 
-@description('Optional Log Analytics workspace resource ID for Application Insights. Leave empty to create classic component-only telemetry.')
-param logAnalyticsWorkspaceResourceId string = ''
+@description('Single Log Analytics workspace shared by every role in this deployment.')
+param logAnalyticsWorkspaceName string = '${functionAppName}-logs'
 
 // Optional server collection profile.
 //
@@ -139,6 +153,61 @@ var tags = {
   hostingMode: 'azure-functions'
 }
 var githubRedirectUri = 'https://${functionAppName}.azurewebsites.net/auth/callback'
+
+module network 'network.bicep' = {
+  name: 'private-network-postgres'
+  params: {
+    location: location
+    namePrefix: functionAppName
+    postgresServerName: postgresServerName
+    postgresAdministratorLogin: postgresAdministratorLogin
+    postgresAdministratorPassword: postgresAdministratorPassword
+    postgresSkuName: postgresSkuName
+    postgresSkuTier: postgresSkuTier
+  }
+}
+
+resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logAnalyticsWorkspaceName
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource containerEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: '${functionAppName}-jobs'
+  location: location
+  tags: tags
+  properties: {
+    appLogsConfiguration: {
+      destination: 'azure-monitor'
+    }
+    vnetConfiguration: {
+      infrastructureSubnetId: network.outputs.containerSubnetId
+      internal: true
+    }
+    zoneRedundant: false
+  }
+}
+
+resource containerDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'container-logs'
+  scope: containerEnvironment
+  properties: {
+    workspaceId: workspace.id
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+  }
+}
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -219,7 +288,7 @@ resource postgresConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-0
   parent: keyVault
   name: 'cao-postgres-url'
   properties: {
-    value: postgresConnectionString
+    value: 'postgresql://${uriComponent(postgresAdministratorLogin)}:${uriComponent(postgresAdministratorPassword)}@${network.outputs.postgresHostName}:5432/${network.outputs.databaseName}?sslmode=verify-full'
     contentType: 'CAO dashboard PostgreSQL connection URL'
   }
 }
@@ -263,7 +332,7 @@ resource insights 'Microsoft.Insights/components@2020-02-02' = {
   kind: 'web'
   properties: {
     Application_Type: 'web'
-    WorkspaceResourceId: empty(logAnalyticsWorkspaceResourceId) ? null : logAnalyticsWorkspaceResourceId
+    WorkspaceResourceId: workspace.id
   }
 }
 
@@ -277,6 +346,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   }
   properties: {
     serverFarmId: plan.id
+    virtualNetworkSubnetId: network.outputs.functionSubnetId
     httpsOnly: true
     clientAffinityEnabled: false
     siteConfig: {
@@ -460,7 +530,10 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     location: location
     tags: tags
     namePrefix: functionAppName
+    environmentName: containerEnvironment.name
+    containerRegistryName: registry.name
     collectorImage: collectorImage
+    postgresRunRetentionDays: postgresRunRetentionDays
     keyVaultUri: keyVault.properties.vaultUri
     keyVaultName: keyVault.name
     operationalNamespace: 'azure-dashboard-operational'
@@ -474,12 +547,25 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     workerReplicas: collectorWorkerReplicas
     lakeStorageSku: collectorLakeStorageSku
     applicationInsightsConnectionString: insights.properties.ConnectionString
-    logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceResourceId
   }
   dependsOn: [
     collectorPrivateKeyValue
     postgresConnectionStringValue
   ]
+}
+
+module ingestion 'ingestion.bicep' = {
+  name: 'snapshot-ingestion'
+  params: {
+    location: location
+    namePrefix: functionAppName
+    environmentName: containerEnvironment.name
+    containerRegistryName: registry.name
+    keyVaultName: keyVault.name
+    ingestionImage: '${registry.properties.loginServer}/${ingestionImageRepository}:${ingestionImageTag}'
+    postgresRunRetentionDays: postgresRunRetentionDays
+  }
+  dependsOn: [postgresConnectionStringValue]
 }
 
 output collectionEnabled bool = collectionEnabled
@@ -488,3 +574,7 @@ output functionContainerImage string = '${registry.properties.loginServer}/${fun
 output functionHostName string = functionApp.properties.defaultHostName
 output githubOAuthRedirectUri string = githubRedirectUri
 output keyVaultUri string = keyVault.properties.vaultUri
+output ingestionJobName string = ingestion.outputs.jobName
+output logAnalyticsWorkspaceId string = workspace.id
+output applicationInsightsId string = insights.id
+output postgresHostName string = network.outputs.postgresHostName

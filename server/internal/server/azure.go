@@ -259,6 +259,16 @@ func NewAzureFunctionsHandlerFromEnv(ctx context.Context, siteDirectory, dashboa
 			return nil, err
 		}
 	}
+	store, revocationPrefix, err := newOperationalStore(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	initialized := false
+	defer func() {
+		if !initialized {
+			_ = store.Close()
+		}
+	}()
 	profile := azureLocalSimulationProfile(host.Profile, localSimulation)
 	definitions, err := ParseDashboardQueries(dashboardQueriesPath)
 	if err != nil {
@@ -286,17 +296,6 @@ func NewAzureFunctionsHandlerFromEnv(ctx context.Context, siteDirectory, dashboa
 	if err != nil {
 		return nil, fmt.Errorf("connect to dashboard Postgres: %w", err)
 	}
-	store, revocationPrefix, err := newOperationalStore(ctx, host)
-	if err != nil {
-		_ = database.Close()
-		return nil, err
-	}
-	initialized := false
-	defer func() {
-		if !initialized {
-			_ = store.Close()
-		}
-	}()
 	app, err := New(ctx, store, Config{
 		Database:               database,
 		DatabaseQueriesPath:    databaseQueries,

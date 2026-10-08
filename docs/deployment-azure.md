@@ -38,24 +38,36 @@ The `server/azure/main.bicep` template creates the following resources in one re
 | App Service plan | Elastic Premium `EP1` | Keeps the Function App always on |
 | Key Vault | Role-based access control, 90-day soft delete, and purge protection | Stores the OAuth client secret, session secrets, PostgreSQL URL, and optional collection secrets |
 | Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, and no public blob access | Stores Azure Functions runtime state only |
-| Application Insights | Optionally linked to a Log Analytics workspace | Collects operational telemetry that contains no secrets |
+| PostgreSQL Flexible Server | PostgreSQL 16, private delegated subnet, TLS certificate verification, seven-day backups | Stores canonical data and isolated operational tables without Redis |
+| Virtual network and private DNS | Separate Functions, PostgreSQL, and Container Apps subnets | Provides private database access for all roles |
+| Container Apps environment and manual ingestion job | Internal environment, Key Vault secrets, managed-identity ACR pulls | Runs explicit snapshot ingestion inside the private network |
+| Application Insights and Log Analytics | Exactly one workspace-backed component and one shared workspace | Receives container logs and configured application telemetry |
 
 ### Other requirements
 
 - An Azure subscription and resource group where you can create these resources and assign the **Key Vault Secrets User** role.
 - The Azure CLI with Bicep support.
 - Docker, or an Azure Container Registry build agent.
-- A GitHub OAuth app. Personal access tokens and GitHub App user tokens aren't supported.
-- At least one GitHub organization, or team in `ORGANIZATION/TEAM-SLUG` format, whose active members can read the dashboard.
-- A PostgreSQL database and TLS connection URL. The Bicep template stores the URL in Key Vault but does not provision the database.
-- A private network path from the Function App and optional collection roles to PostgreSQL. The template doesn't create a virtual network or private endpoint. You must add private networking that fits your tenant.
-- A dashboard payload from the `cao-dashboard.yml` workflow in your control repository. To produce one, first complete [the GitHub Actions only deployment](deployment-actions.md). If you don't want to publish to Pages, set `control-plane.campaigns.dashboard.deploy` to `false`.
+- A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
+- At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
+- An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
 ## Deploying the dashboard
 
 In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name for your Function App.
+Use a **new resource group and globally unique names** to create a separate instance.
+Never repoint an existing instance's OAuth callback. Reusing the same names and
+secret inputs makes redeployment update this instance rather than create duplicate
+telemetry resources.
+
+Keep instance configuration and private snapshots outside the public source tree.
+Prepare an isolated build context from the reviewed source revision, replace
+`.github/workflows/cao.json` there with your own reviewed policy, and leave
+`cao.azure.json` as the generic PostgreSQL host overlay. For a zero-campaign
+instance, disable campaigns in your own policy; do not reuse the catalog's
+dogfood policy. Do not commit this build context or its data.
 
 1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
 
@@ -91,12 +103,39 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
    ```bash
    az acr login --name CONTAINER-REGISTRY-NAME
    docker build \
+     --platform linux/amd64 \
+     --build-arg CAO_PROFILE=cao.azure.json \
      --target azure-functions-runtime \
      --file server/Dockerfile \
      --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG \
      .
    docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG
    ```
+
+1. Build and push **one** ingestion image with the same deployment tag.
+   For an empty instance, the ACR task builds and pushes only; it does not ingest:
+
+   ```bash
+   az acr run --registry CONTAINER-REGISTRY-NAME \
+     --file server/azure/empty-ingest-task.yaml \
+     --set tag=DEPLOYMENT-TAG .
+   ```
+
+   For your own verified snapshot, copy it into an `adopter-snapshot/` directory
+   in the isolated build context and use the explicit source argument:
+
+   ```bash
+   docker build --platform linux/amd64 \
+     --target azure-ingest-runtime --file server/Dockerfile \
+     --build-arg CAO_PROFILE=cao.azure.json \
+     --build-arg CAO_INGEST_SOURCE=adopter-snapshot \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG .
+   docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG
+   ```
+
+   The image never downloads upstream data automatically. Missing source input
+   fails the build. Both images are private artifacts: restrict registry access
+   and retention appropriately.
 
 1. Deploy the template. Replace the placeholders with your own values.
 
@@ -110,57 +149,41 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
        containerRegistryName=CONTAINER-REGISTRY-NAME \
        functionImageTag=DEPLOYMENT-TAG \
        keyVaultName=KEY-VAULT-NAME \
+       postgresServerName=POSTGRES-SERVER-NAME \
        allowedHosts='["FUNCTION-APP-NAME.azurewebsites.net"]' \
        githubAllowedOrganizations='["ORGANIZATION"]' \
        githubClientId=OAUTH-CLIENT-ID
    ```
 
-   The Azure CLI prompts you for `githubClientSecret`, `sessionSecret`, and `postgresConnectionString`. Enter them at the prompt or supply them from your secret manager. Don't store them in a parameters file in your repository.
+   The Azure CLI prompts you for `githubClientSecret`, `sessionSecret`, and
+   `postgresAdministratorPassword`. Enter them at the prompt or supply them from
+   your secret manager through a protected parameters file outside the repository.
+   Preserve the database password across deployments. The template constructs a
+   certificate-verified TLS URL and stores it in Key Vault without outputting it.
 
-1. Review the deployment outputs. The template outputs only values that aren't secret, including `functionHostName`, `functionContainerImage`, `containerRegistryLoginServer`, `githubOAuthRedirectUri`, `keyVaultUri`, and `collectionEnabled`. Confirm that `githubOAuthRedirectUri` matches the callback URL of your OAuth app.
-1. Add private networking so that the Function App can reach PostgreSQL.
-1. Load the dashboard data. In the default profile, the Function App doesn't load data by itself. Build the bootstrap image, then run it against the same PostgreSQL database and canonical namespace. Set `CAO_POSTGRES_RUN_RETENTION_DAYS` at least as large as the published snapshot window.
-
-   ```bash
-   az acr login --name CONTAINER-REGISTRY-NAME
-   docker build \
-     --target azure-ingest-runtime \
-     --file server/Dockerfile \
-     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG \
-     .
-   docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG
-
-   CAO_POSTGRES_URL="$(az keyvault secret show \
-     --vault-name KEY-VAULT-NAME \
-     --name cao-postgres-url \
-     --query value \
-     --output tsv)"
-
-   az acr run \
-     --registry CONTAINER-REGISTRY-NAME \
-     --cmd 'docker run --rm -e CAO_POSTGRES_URL={{.Values.pg}} -e CAO_POSTGRES_RUN_RETENTION_DAYS=45 CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG ingest --source /data --database-queries /app/queries/database.json --redis-namespace azure-dashboard' \
-     --set-secret pg="$CAO_POSTGRES_URL" \
-     /dev/null
-   unset CAO_POSTGRES_URL
-   ```
-
-   > [!CAUTION]
-   > Grant the deployment identity temporary Key Vault read access only when necessary, remove it after ingestion, and don't let `CAO_POSTGRES_URL` appear in shell history, tickets, or logs.
-
-   To initialize a ready dashboard with no repositories, organizations, runs,
-   or campaigns, build `azure-empty-ingest-runtime` instead. Running that image
-   replaces the active canonical namespace while collection remains disabled:
+1. Review the non-secret outputs, especially `githubOAuthRedirectUri`,
+   `ingestionJobName`, `logAnalyticsWorkspaceId`, and `applicationInsightsId`.
+   Confirm the OAuth callback matches the **new** app registration.
+1. Load the dashboard data by starting the private ingestion job. Unlike a public
+   ACR build agent, this job has a network path to private PostgreSQL. Its managed
+   identity resolves the URL from Key Vault and pulls the image from private ACR.
+   Set `postgresRunRetentionDays` at least as large as the snapshot window.
 
    ```bash
-   az acr run \
-     --registry CONTAINER-REGISTRY-NAME \
-     --file server/azure/empty-ingest-task.yaml \
-     .
+   az containerapp job start --resource-group cao-dashboard \
+     --name FUNCTION-APP-NAME-ingest
+   az containerapp job execution list --resource-group cao-dashboard \
+     --name FUNCTION-APP-NAME-ingest --output table
    ```
 
-   This is different from leaving PostgreSQL uninitialized: an uninitialized
-   namespace correctly returns `503` readiness, while the empty publication is
-   a valid revision and returns `200`.
+   Wait for that execution to report `Succeeded`; starting a job is not success.
+   On failure, inspect the job logs in the shared workspace and correct the
+   cause before retrying. Do not run overlapping ingestion jobs or run snapshot
+   ingestion while the optional collector is projecting.
+   Every successful ingestion replaces the active canonical namespace. Empty
+   ingestion deliberately publishes no repositories, organizations, runs, or
+   campaigns. An uninitialized namespace returns `503` readiness; a valid empty
+   publication returns `200`.
 
 1. Verify the deployment.
 
@@ -171,6 +194,16 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
 
 > [!TIP]
 > To test the Functions HTTP interface on Linux without Azure credentials, run `./scripts/azure-local/azure-local.sh run`. The script starts Azure Functions Core Tools, Azurite, and PostgreSQL.
+
+### Infrastructure-only bootstrap
+
+If registration of the new OAuth app is pending, deploy
+`server/azure/network.bicep` independently with `location`, `namePrefix` (the
+future Function App name), `postgresServerName`, `postgresAdministratorLogin`,
+and secure `postgresAdministratorPassword`. This creates only the private
+network, DNS, and PostgreSQL database, not an unauthenticated dashboard.
+The full template adopts the same resources when supplied the same values.
+Do not use placeholder OAuth values to bypass application startup requirements.
 
 ## Configuration reference
 
@@ -223,7 +256,10 @@ Besides the parameters in the deployment command, the template accepts:
 - `location`, `hostingPlanName`, `applicationInsightsName`, `containerRegistryName`, `functionImageRepository`, and `functionImageTag`.
 - `postgresRunRetentionDays`; size it to cover the complete dashboard snapshot window.
 - `operationalCacheMaxBytes`, `operationalCacheMaxValueBytes`, `operationalCacheMaxEntries`, `operationalProtectedMaxBytes`, and `operationalProtectedMaxEntries`.
-- `logAnalyticsWorkspaceResourceId`.
+- `logAnalyticsWorkspaceName`, `postgresServerName`, `postgresAdministratorLogin`,
+  `postgresAdministratorPassword`, `postgresSkuName`, and `postgresSkuTier`.
+- `ingestionImageRepository` and `ingestionImageTag` (defaulting to `cao-ingest`
+  and the Function App image tag).
 - The collection parameters. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
 ### Startup checks
@@ -242,7 +278,12 @@ Azure mode never accepts PATs or the local bearer capability.
 
 ### Functions host telemetry
 
-The template sets `APPLICATIONINSIGHTS_CONNECTION_STRING`, so Functions host requests, failures, and logs go to Application Insights. To query and retain telemetry in a workspace, link a Log Analytics workspace with the `logAnalyticsWorkspaceResourceId` parameter.
+The template provisions one workspace-backed Application Insights component and
+one shared Log Analytics workspace, and sets `APPLICATIONINSIGHTS_CONNECTION_STRING`
+on the Function App. The direct Go container does not run the Functions host or
+an Azure Monitor SDK: setting this variable alone does **not** export Go traces.
+Configure the OpenTelemetry exporter described below. Container Apps console and
+system logs are routed to the same workspace through a diagnostic setting.
 
 ### OpenTelemetry traces
 
@@ -297,11 +338,17 @@ You configure traces for orchestrators and workers separately, in the control re
 
 By default, the server serves the data that the Activity workflow publishes and doesn't collect anything itself. To have Azure collect the data instead, set the `collectorImage` parameter. The `server/azure/collector.bicep` template then adds:
 
-- An Azure Container Apps environment.
+- Workers and backfill in the same private Container Apps environment as ingestion.
 - A fixed number of collection workers sharing the PostgreSQL operational queue. Set `collectorWorkerReplicas` to the required replica count; the default is `1`.
 - A backfill job.
-- A user-assigned managed identity with access to Key Vault.
+- A user-assigned managed identity with access to Key Vault and `AcrPull` on this deployment's registry. Build the collector image into that registry.
 - An Azure Files share for collected evidence. The SKU is set by `collectorLakeStorageSku` (default `Premium_LRS`).
+
+The optional evidence lake requires a separate file-storage account with shared
+access across workers and evidence-retention settings; Functions runtime storage
+has different access requirements. With collection disabled, the baseline
+creates only one storage account. It never creates a second Insights component
+or workspace.
 
 The collection profile requires these parameters: `collectorGithubAppId`, `collectorPrivateKey`, `githubWebhookSecret`, `githubAdminUsers`, and `collectorControlRepository`.
 
@@ -318,7 +365,7 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 
 - **No secrets in the browser.** The browser never receives PostgreSQL credentials, GitHub access or refresh tokens, or Key Vault secret values.
 - **Secrets in Key Vault.** Every app setting that holds a secret is a versionless Key Vault reference, resolved by managed identity. Template outputs contain no secrets.
-- **Authorized access.** Users must sign in with GitHub OAuth and be active members of an allowed organization or team. Membership is checked again on every token refresh.
+- **Authorized access.** Users must sign in with GitHub OAuth and match an allowed user, organization, or team. Authorization is checked again on every token refresh.
 - **Protected sessions.** Session cookies are `Secure`, `HttpOnly`, and `SameSite=Lax`. Requests that change state need a CSRF token bound to the session.
 - **Encrypted PostgreSQL traffic.** Non-loopback PostgreSQL connections and every fallback require TLS.
 - **Bounded queries.** Queries have limits on definitions, joins, predicates, rows, and operations. A query never returns a partial result without reporting it.
@@ -328,10 +375,10 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Networking.** The template doesn't create virtual networks, private endpoints, a web application firewall, or Azure Front Door. You're responsible for network isolation and ingress.
+- **Ingress hardening.** The database has private VNet access; the Function App remains public HTTPS with OAuth. The template does not create a web application firewall or Azure Front Door. Review outbound access and ingress for your tenant.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
-- **Durability.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables; CAO does not configure database backups. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).
+- **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).
 - **Per-repository authorization.** Authorized users can read all of the active data. There's no filtering by repository or source.
 - **Low idle cost.** The EP1 plan and PostgreSQL cost money even when no one uses the dashboard.
 - **Credential rollback.** Rolling back the package doesn't roll back OAuth, session, or PostgreSQL credentials.
@@ -341,7 +388,7 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 | Task | Procedure |
 | --- | --- |
 | Rotate the session secret | Redeploy with the old key as `previousSessionSecret` and the new key as `sessionSecret`. Wait for active sessions and queued revocations to finish, then redeploy without `previousSessionSecret`. |
-| Rotate the PostgreSQL credential | Add a new version of the `cao-postgres-url` secret and restart the Function App and collection roles. |
+| Rotate the PostgreSQL credential | Redeploy with the new `postgresAdministratorPassword` so the database and Key Vault URL change together, then restart the Function App and collection roles. |
 | Rotate the OAuth client secret | Generate a new secret in GitHub, add a new version of the Key Vault secret, and restart the Function App. |
 | Roll back the application | Redeploy the last known-good package. If PostgreSQL dashboard data is unusable, ingest the retained artifact again. Use a new operational namespace only when intentionally invalidating operational state and active sessions. |
 

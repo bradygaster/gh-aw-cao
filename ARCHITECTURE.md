@@ -477,6 +477,13 @@ therefore execute one layout. `.github/aw/` remains exclusively gh-aw-owned.
   rotation can retain the previous key until sessions and revocations drain.
   Refreshed sessions use an atomic compare-and-swap so logout cannot be undone
   by a concurrent OAuth refresh.
+- The Azure deployment baseline provisions private PostgreSQL for both canonical
+  and operational storage, without Redis. One Log Analytics workspace and one
+  workspace-backed Application Insights component are shared by the deployment.
+  A private manual ingestion job publishes explicitly selected adopter snapshots
+  or an explicit empty dataset; builds never download a catalog-owned dataset
+  implicitly. Instance policy, credentials, and target enrollment remain
+  adopter-owned inputs, not public deployment defaults.
 - In the durable PostgreSQL or Redis server-collection profiles, delivery deduplication, repository debounce,
   and task append are one atomic admission. Memory provides the same
   atomic admission within one process lifetime, not restart durability. Queue transitions append

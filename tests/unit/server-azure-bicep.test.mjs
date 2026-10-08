@@ -7,6 +7,9 @@ const collector = await readFile(new URL('../../server/azure/collector.bicep', i
 const functionRoles = await readFile(new URL('../../server/azure/function-roles.bicep', import.meta.url), 'utf8');
 const generated = JSON.parse(await readFile(new URL('../../server/azure/main.json', import.meta.url), 'utf8'));
 const profile = JSON.parse(await readFile(new URL('../../.github/workflows/cao.azure.json', import.meta.url), 'utf8'));
+const network = await readFile(new URL('../../server/azure/network.bicep', import.meta.url), 'utf8');
+const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
+const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
 
 test('Azure selects PostgreSQL operational storage without Redis', () => {
   assert.equal(profile.extends, 'cao.json');
@@ -20,6 +23,49 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
   assert.match(collector, /name:\s*'CAO_POLICY_PATH'\s+value:\s*'\/app\/\.github\/workflows\/cao\.azure\.json'/);
 });
 
+  test('Azure baseline provisions one shared telemetry pair and private PostgreSQL', () => {
+    const count = (type) => generated.resources.filter((resource) => resource.type === type).length;
+    assert.equal(count('Microsoft.Insights/components'), 1);
+    assert.equal(count('Microsoft.OperationalInsights/workspaces'), 1);
+    assert.equal(count('Microsoft.Storage/storageAccounts'), 1);
+    assert.equal(count('Microsoft.App/managedEnvironments'), 1);
+    assert.match(bicep, /WorkspaceResourceId:\s*workspace\.id/);
+    assert.match(bicep, /workspaceId:\s*workspace\.id/);
+    assert.match(bicep, /virtualNetworkSubnetId:\s*network\.outputs\.functionSubnetId/);
+    assert.match(bicep, /infrastructureSubnetId:\s*network\.outputs\.containerSubnetId/);
+    assert.match(bicep, /sslmode=verify-full/);
+    assert.match(network, /Microsoft\.DBforPostgreSQL\/flexibleServers@/);
+    assert.match(network, /publicNetworkAccess:\s*'Disabled'/);
+    assert.match(network, /Microsoft\.Network\/privateDnsZones@/);
+    assert.match(network, /backupRetentionDays:\s*7/);
+    assert.doesNotMatch(network, /githubClient|sessionSecret|Microsoft\.Web\/sites@/);
+    assert.doesNotMatch(collector, /resource environment '[^']+' = \{/);
+  });
+
+  test('Private ingestion and collection pull ACR images with managed identity', () => {
+    assert.match(ingestion, /triggerType:\s*'Manual'/);
+    assert.match(ingestion, /registries:\s*\[/);
+    assert.match(ingestion, /server:\s*registry\.properties\.loginServer/);
+    assert.match(ingestion, /identity:\s*identity\.id/);
+    assert.match(ingestion, /keyVaultUrl:.*cao-postgres-url/);
+    assert.match(ingestion, /'--redis-namespace'\s+'azure-dashboard'/);
+    assert.match(ingestion, /dependsOn:\s*\[roles\]/);
+    assert.equal((collector.match(/registries:\s*registries/g) ?? []).length, 2);
+    assert.equal((collector.match(/dependsOn:\s*\[roles\]/g) ?? []).length, 2);
+    assert.equal((collector.match(/'--database-queries', '\/app\/queries\/database.json'/g) ?? []).length, 2);
+    assert.match(collector, /name:\s*'CAO_COLLECT_CATALOG_ROOT'\s+value:\s*'\/app\/catalog'/);
+    assert.match(collector, /name:\s*'CAO_POSTGRES_RUN_RETENTION_DAYS'/);
+  });
+
+  test('Azure image inputs are explicit and default Docker target remains hosted dashboard', () => {
+    const stages = dockerfile.split('\n').filter((line) => line.startsWith('FROM '));
+    assert.equal(stages.at(-1), 'FROM dashboard-runtime AS final');
+    assert.doesNotMatch(dockerfile, /cao\.mjs download/);
+    assert.match(dockerfile, /ARG CAO_INGEST_SOURCE\nRUN test -n "\$\{CAO_INGEST_SOURCE\}"/);
+    assert.match(dockerfile, /COPY --chown=cao:cao \$\{CAO_INGEST_SOURCE\}\/ \/data\//);
+    assert.match(dockerfile, /FROM dashboard-runtime AS azure-empty-ingest-runtime/);
+    assert.match(dockerfile, /COPY --chown=cao:cao server\/azure\/empty-data\/ \/data\//);
+  });
 test('Azure shares PostgreSQL and operational budgets across dashboard and collection roles', () => {
   for (const source of [bicep, collector]) {
     assert.match(source, /name:\s*'CAO_POSTGRES_URL'\s+secretRef:|'CAO_POSTGRES_URL'[\s\S]*?cao-postgres-url/);

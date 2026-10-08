@@ -64,15 +64,6 @@ type Store struct {
 
 var _ operational.Store = (*Store)(nil)
 
-func (s *Store) OperationalServices() operational.OperationalServices {
-	return operational.OperationalServices{
-		Backend: s, Cache: s, RequestLimiter: s, Sessions: s,
-		SessionInvalidator: s, Revocations: s, Leases: s, State: s,
-		Deliveries: s, Queue: s, Admission: s, Collection: s,
-		GitHubQuota: s, RateLimits: s, Health: s, IngestionMetrics: s,
-	}
-}
-
 func New(ctx context.Context, dsn, namespace string, config Config) (*Store, error) {
 	return open(ctx, dsn, namespace, config, true)
 }

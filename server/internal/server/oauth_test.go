@@ -67,7 +67,7 @@ func TestGitHubOAuthAllowsExplicitUserWithoutMembershipLookup(t *testing.T) {
 	if err := config.validate(); err != nil {
 		t.Fatal(err)
 	}
-	account, err := newGitHubOAuth(*config, nil).authorizedAccount(t.Context(), "access")
+	account, err := newGitHubOAuth(*config, nil, nil, nil).authorizedAccount(t.Context(), "access")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "6645644450184782035"
+      "templateHash": "5924881790044452425"
     }
   },
   "parameters": {
@@ -67,11 +67,42 @@
         "description": "Key Vault name used for GitHub OAuth, session, PostgreSQL, and collection secrets."
       }
     },
-    "postgresConnectionString": {
-      "type": "securestring",
+    "postgresServerName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-pg', parameters('functionAppName'))]",
       "metadata": {
-        "description": "TLS PostgreSQL URL shared by canonical dashboard storage and the isolated operational adapter."
+        "description": "Globally unique name for a new private PostgreSQL Flexible Server."
       }
+    },
+    "postgresAdministratorLogin": {
+      "type": "string",
+      "defaultValue": "caoadmin"
+    },
+    "postgresAdministratorPassword": {
+      "type": "securestring",
+      "minLength": 16,
+      "metadata": {
+        "description": "PostgreSQL administrator password. Use secret-manager input; never commit it."
+      }
+    },
+    "postgresSkuName": {
+      "type": "string",
+      "defaultValue": "Standard_B2s"
+    },
+    "postgresSkuTier": {
+      "type": "string",
+      "defaultValue": "Burstable"
+    },
+    "ingestionImageRepository": {
+      "type": "string",
+      "defaultValue": "cao-ingest",
+      "metadata": {
+        "description": "Repository of an explicitly built snapshot or empty ingestion image in this deployment registry."
+      }
+    },
+    "ingestionImageTag": {
+      "type": "string",
+      "defaultValue": "[parameters('functionImageTag')]"
     },
     "operationalCacheMaxBytes": {
       "type": "int",
@@ -174,11 +205,11 @@
         "description": "Optional previous session secret retained during controlled key rotation until active sessions and pending revocations are drained."
       }
     },
-    "logAnalyticsWorkspaceResourceId": {
+    "logAnalyticsWorkspaceName": {
       "type": "string",
-      "defaultValue": "",
+      "defaultValue": "[format('{0}-logs', parameters('functionAppName'))]",
       "metadata": {
-        "description": "Optional Log Analytics workspace resource ID for Application Insights. Leave empty to create classic component-only telemetry."
+        "description": "Single Log Analytics workspace shared by every role in this deployment."
       }
     },
     "collectorImage": {
@@ -254,6 +285,58 @@
     "githubRedirectUri": "[format('https://{0}.azurewebsites.net/auth/callback', parameters('functionAppName'))]"
   },
   "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[parameters('logAnalyticsWorkspaceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-jobs', parameters('functionAppName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "azure-monitor"
+        },
+        "vnetConfiguration": {
+          "infrastructureSubnetId": "[reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.containerSubnetId.value]",
+          "internal": true
+        },
+        "zoneRedundant": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'private-network-postgres')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "scope": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-jobs', parameters('functionAppName')))]",
+      "name": "container-logs",
+      "properties": {
+        "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]",
+        "logs": [
+          {
+            "categoryGroup": "allLogs",
+            "enabled": true
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-jobs', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    },
     {
       "type": "Microsoft.Storage/storageAccounts",
       "apiVersion": "2023-05-01",
@@ -347,11 +430,12 @@
       "apiVersion": "2023-07-01",
       "name": "[format('{0}/{1}', parameters('keyVaultName'), 'cao-postgres-url')]",
       "properties": {
-        "value": "[parameters('postgresConnectionString')]",
+        "value": "[format('postgresql://{0}:{1}@{2}:5432/{3}?sslmode=verify-full', uriComponent(parameters('postgresAdministratorLogin')), uriComponent(parameters('postgresAdministratorPassword')), reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.postgresHostName.value, reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.databaseName.value)]",
         "contentType": "CAO dashboard PostgreSQL connection URL"
       },
       "dependsOn": [
-        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'private-network-postgres')]"
       ]
     },
     {
@@ -404,8 +488,11 @@
       "kind": "web",
       "properties": {
         "Application_Type": "web",
-        "WorkspaceResourceId": "[if(empty(parameters('logAnalyticsWorkspaceResourceId')), null(), parameters('logAnalyticsWorkspaceResourceId'))]"
-      }
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
     },
     {
       "type": "Microsoft.Web/sites",
@@ -419,6 +506,7 @@
       },
       "properties": {
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
+        "virtualNetworkSubnetId": "[reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.functionSubnetId.value]",
         "httpsOnly": true,
         "clientAffinityEnabled": false,
         "siteConfig": {
@@ -436,6 +524,7 @@
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'github-oauth-client-secret')]",
         "[resourceId('Microsoft.Insights/components', parameters('applicationInsightsName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'private-network-postgres')]",
         "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-postgres-url')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-session-secret-previous')]",
@@ -443,6 +532,215 @@
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-session-secret')]",
         "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "private-network-postgres",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "namePrefix": {
+            "value": "[parameters('functionAppName')]"
+          },
+          "postgresServerName": {
+            "value": "[parameters('postgresServerName')]"
+          },
+          "postgresAdministratorLogin": {
+            "value": "[parameters('postgresAdministratorLogin')]"
+          },
+          "postgresAdministratorPassword": {
+            "value": "[parameters('postgresAdministratorPassword')]"
+          },
+          "postgresSkuName": {
+            "value": "[parameters('postgresSkuName')]"
+          },
+          "postgresSkuTier": {
+            "value": "[parameters('postgresSkuTier')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "14205678585711118420"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "namePrefix": {
+              "type": "string"
+            },
+            "postgresServerName": {
+              "type": "string"
+            },
+            "postgresAdministratorLogin": {
+              "type": "string"
+            },
+            "postgresAdministratorPassword": {
+              "type": "securestring"
+            },
+            "postgresSkuName": {
+              "type": "string",
+              "defaultValue": "Standard_B2s"
+            },
+            "postgresSkuTier": {
+              "type": "string",
+              "defaultValue": "Burstable"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}-vnet', parameters('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "10.42.0.0/16"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "functions",
+                    "properties": {
+                      "addressPrefix": "10.42.0.0/24",
+                      "delegations": [
+                        {
+                          "name": "functions",
+                          "properties": {
+                            "serviceName": "Microsoft.Web/serverFarms"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "postgres",
+                    "properties": {
+                      "addressPrefix": "10.42.1.0/24",
+                      "delegations": [
+                        {
+                          "name": "postgres",
+                          "properties": {
+                            "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "containers",
+                    "properties": {
+                      "addressPrefix": "10.42.2.0/23"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}.private.postgres.database.azure.com', parameters('postgresServerName'))]",
+              "location": "global"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2024-06-01",
+              "name": "[format('{0}/{1}', format('{0}.private.postgres.database.azure.com', parameters('postgresServerName')), format('{0}-postgres', parameters('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', parameters('namePrefix')))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', parameters('postgresServerName')))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', parameters('namePrefix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+              "apiVersion": "2024-08-01",
+              "name": "[parameters('postgresServerName')]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "[parameters('postgresSkuName')]",
+                "tier": "[parameters('postgresSkuTier')]"
+              },
+              "properties": {
+                "version": "16",
+                "administratorLogin": "[parameters('postgresAdministratorLogin')]",
+                "administratorLoginPassword": "[parameters('postgresAdministratorPassword')]",
+                "network": {
+                  "delegatedSubnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', parameters('namePrefix')), 'postgres')]",
+                  "privateDnsZoneArmResourceId": "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', parameters('postgresServerName')))]",
+                  "publicNetworkAccess": "Disabled"
+                },
+                "storage": {
+                  "storageSizeGB": 32,
+                  "autoGrow": "Enabled"
+                },
+                "backup": {
+                  "backupRetentionDays": 7,
+                  "geoRedundantBackup": "Disabled"
+                },
+                "highAvailability": {
+                  "mode": "Disabled"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', format('{0}.private.postgres.database.azure.com', parameters('postgresServerName')))]",
+                "[resourceId('Microsoft.Network/privateDnsZones/virtualNetworkLinks', format('{0}.private.postgres.database.azure.com', parameters('postgresServerName')), format('{0}-postgres', parameters('namePrefix')))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', parameters('namePrefix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.DBforPostgreSQL/flexibleServers/databases",
+              "apiVersion": "2024-08-01",
+              "name": "[format('{0}/{1}', parameters('postgresServerName'), 'cao')]",
+              "properties": {
+                "charset": "UTF8",
+                "collation": "en_US.utf8"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "postgresHostName": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.DBforPostgreSQL/flexibleServers', parameters('postgresServerName')), '2024-08-01').fullyQualifiedDomainName]"
+            },
+            "databaseName": {
+              "type": "string",
+              "value": "cao"
+            },
+            "functionSubnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', parameters('namePrefix')), 'functions')]"
+            },
+            "containerSubnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', parameters('namePrefix')), 'containers')]"
+            }
+          }
+        }
+      }
     },
     {
       "type": "Microsoft.Resources/deployments",
@@ -577,8 +875,17 @@
           "namePrefix": {
             "value": "[parameters('functionAppName')]"
           },
+          "environmentName": {
+            "value": "[format('{0}-jobs', parameters('functionAppName'))]"
+          },
+          "containerRegistryName": {
+            "value": "[parameters('containerRegistryName')]"
+          },
           "collectorImage": {
             "value": "[parameters('collectorImage')]"
+          },
+          "postgresRunRetentionDays": {
+            "value": "[parameters('postgresRunRetentionDays')]"
           },
           "keyVaultUri": {
             "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
@@ -618,9 +925,6 @@
           },
           "applicationInsightsConnectionString": {
             "value": "[reference(resourceId('Microsoft.Insights/components', parameters('applicationInsightsName')), '2020-02-02').ConnectionString]"
-          },
-          "logAnalyticsWorkspaceResourceId": {
-            "value": "[parameters('logAnalyticsWorkspaceResourceId')]"
           }
         },
         "template": {
@@ -630,7 +934,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "6077220315570929548"
+              "templateHash": "9623571400110015185"
             }
           },
           "parameters": {
@@ -658,6 +962,21 @@
               "metadata": {
                 "description": "Container image running the collection role."
               }
+            },
+            "environmentName": {
+              "type": "string"
+            },
+            "containerRegistryName": {
+              "type": "string",
+              "metadata": {
+                "description": "Deployment registry containing the private collector image."
+              }
+            },
+            "postgresRunRetentionDays": {
+              "type": "int",
+              "defaultValue": 45,
+              "minValue": 7,
+              "maxValue": 3650
             },
             "keyVaultUri": {
               "type": "string",
@@ -751,13 +1070,6 @@
                 "description": "Application Insights connection string. Collection is unobservable without it."
               }
             },
-            "logAnalyticsWorkspaceResourceId": {
-              "type": "string",
-              "defaultValue": "",
-              "metadata": {
-                "description": "Log Analytics workspace resource ID receiving container console and system logs."
-              }
-            },
             "lakeStorageSku": {
               "type": "string",
               "defaultValue": "Premium_LRS",
@@ -787,6 +1099,10 @@
               {
                 "name": "CAO_POSTGRES_URL",
                 "secretRef": "cao-postgres-url"
+              },
+              {
+                "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
+                "value": "[string(parameters('postgresRunRetentionDays'))]"
               },
               {
                 "name": "CAO_POLICY_PATH",
@@ -834,7 +1150,7 @@
               },
               {
                 "name": "CAO_COLLECT_CATALOG_ROOT",
-                "value": "/app"
+                "value": "/app/catalog"
               },
               {
                 "name": "CAO_COLLECT_CONTROL_REPOSITORY",
@@ -881,50 +1197,6 @@
               "name": "[format('{0}-collector-identity', parameters('namePrefix'))]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]"
-            },
-            {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
-              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix'))), 'Key Vault Secrets User')]",
-              "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
-                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix'))), '2023-01-31').principalId]",
-                "principalType": "ServicePrincipal"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
-              ]
-            },
-            {
-              "type": "Microsoft.App/managedEnvironments",
-              "apiVersion": "2024-03-01",
-              "name": "[format('{0}-collectors', parameters('namePrefix'))]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "properties": {
-                "appLogsConfiguration": "[if(empty(parameters('logAnalyticsWorkspaceResourceId')), createObject(), createObject('destination', 'azure-monitor'))]",
-                "zoneRedundant": false
-              }
-            },
-            {
-              "condition": "[not(empty(parameters('logAnalyticsWorkspaceResourceId')))]",
-              "type": "Microsoft.Insights/diagnosticSettings",
-              "apiVersion": "2021-05-01-preview",
-              "scope": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
-              "name": "collection-logs",
-              "properties": {
-                "workspaceId": "[parameters('logAnalyticsWorkspaceResourceId')]",
-                "logs": [
-                  {
-                    "categoryGroup": "allLogs",
-                    "enabled": true
-                  }
-                ]
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]"
-              ]
             },
             {
               "type": "Microsoft.Storage/storageAccounts",
@@ -988,7 +1260,7 @@
             {
               "type": "Microsoft.App/managedEnvironments/storages",
               "apiVersion": "2024-03-01",
-              "name": "[format('{0}/{1}', format('{0}-collectors', parameters('namePrefix')), 'evidence-lake')]",
+              "name": "[format('{0}/{1}', parameters('environmentName'), 'evidence-lake')]",
               "properties": {
                 "azureFile": {
                   "accountName": "[variables('lakeStorageAccountName')]",
@@ -998,7 +1270,6 @@
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
                 "[resourceId('Microsoft.Storage/storageAccounts', variables('lakeStorageAccountName'))]",
                 "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', variables('lakeStorageAccountName'), 'default', 'evidence-lake')]"
               ]
@@ -1016,9 +1287,15 @@
                 }
               },
               "properties": {
-                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
                 "configuration": {
                   "activeRevisionsMode": "Single",
+                  "registries": [
+                    {
+                      "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), '2023-07-01').loginServer]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
+                    }
+                  ],
                   "secrets": "[variables('collectionSecrets')]"
                 },
                 "template": {
@@ -1030,7 +1307,9 @@
                         "/app/cao-dashboard"
                       ],
                       "args": [
-                        "collect"
+                        "collect",
+                        "--database-queries",
+                        "/app/queries/database.json"
                       ],
                       "env": "[variables('collectionEnvironment')]",
                       "resources": {
@@ -1060,8 +1339,8 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]",
-                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
-                "[resourceId('Microsoft.App/managedEnvironments/storages', format('{0}-collectors', parameters('namePrefix')), 'evidence-lake')]"
+                "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), 'evidence-lake')]",
+                "[resourceId('Microsoft.Resources/deployments', 'collector-roles')]"
               ]
             },
             {
@@ -1077,9 +1356,15 @@
                 }
               },
               "properties": {
-                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
                 "configuration": {
                   "triggerType": "Manual",
+                  "registries": [
+                    {
+                      "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), '2023-07-01').loginServer]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
+                    }
+                  ],
                   "replicaTimeout": 7200,
                   "replicaRetryLimit": 1,
                   "manualTriggerConfig": {
@@ -1097,7 +1382,9 @@
                         "/app/cao-dashboard"
                       ],
                       "args": [
-                        "backfill"
+                        "backfill",
+                        "--database-queries",
+                        "/app/queries/database.json"
                       ],
                       "env": "[variables('collectionEnvironment')]",
                       "resources": {
@@ -1123,8 +1410,79 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]",
-                "[resourceId('Microsoft.App/managedEnvironments', format('{0}-collectors', parameters('namePrefix')))]",
-                "[resourceId('Microsoft.App/managedEnvironments/storages', format('{0}-collectors', parameters('namePrefix')), 'evidence-lake')]"
+                "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), 'evidence-lake')]",
+                "[resourceId('Microsoft.Resources/deployments', 'collector-roles')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "collector-roles",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "keyVaultName": {
+                    "value": "[parameters('keyVaultName')]"
+                  },
+                  "containerRegistryName": {
+                    "value": "[parameters('containerRegistryName')]"
+                  },
+                  "principalId": {
+                    "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix'))), '2023-01-31').principalId]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.44.1.10279",
+                      "templateHash": "12613689809979352000"
+                    }
+                  },
+                  "parameters": {
+                    "keyVaultName": {
+                      "type": "string"
+                    },
+                    "containerRegistryName": {
+                      "type": "string"
+                    },
+                    "principalId": {
+                      "type": "string"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+                      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('principalId'), 'Key Vault Secrets User')]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName'))]",
+                      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), parameters('principalId'), 'AcrPull')]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-collector-identity', parameters('namePrefix')))]"
               ]
             }
           ],
@@ -1146,9 +1504,247 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-collect-private-key')]",
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-jobs', parameters('functionAppName')))]",
         "[resourceId('Microsoft.Insights/components', parameters('applicationInsightsName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
-        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-postgres-url')]"
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-postgres-url')]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "snapshot-ingestion",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "namePrefix": {
+            "value": "[parameters('functionAppName')]"
+          },
+          "environmentName": {
+            "value": "[format('{0}-jobs', parameters('functionAppName'))]"
+          },
+          "containerRegistryName": {
+            "value": "[parameters('containerRegistryName')]"
+          },
+          "keyVaultName": {
+            "value": "[parameters('keyVaultName')]"
+          },
+          "ingestionImage": {
+            "value": "[format('{0}/{1}:{2}', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), '2023-07-01').loginServer, parameters('ingestionImageRepository'), parameters('ingestionImageTag'))]"
+          },
+          "postgresRunRetentionDays": {
+            "value": "[parameters('postgresRunRetentionDays')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "8940656186767077606"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "namePrefix": {
+              "type": "string"
+            },
+            "environmentName": {
+              "type": "string"
+            },
+            "containerRegistryName": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "ingestionImage": {
+              "type": "string"
+            },
+            "postgresRunRetentionDays": {
+              "type": "int",
+              "defaultValue": 45,
+              "minValue": 7
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[format('{0}-ingest-identity', parameters('namePrefix'))]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "type": "Microsoft.App/jobs",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}-ingest', parameters('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))))]": {}
+                }
+              },
+              "properties": {
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+                "configuration": {
+                  "triggerType": "Manual",
+                  "replicaTimeout": 7200,
+                  "replicaRetryLimit": 0,
+                  "manualTriggerConfig": {
+                    "parallelism": 1,
+                    "replicaCompletionCount": 1
+                  },
+                  "registries": [
+                    {
+                      "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), '2023-07-01').loginServer]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+                    }
+                  ],
+                  "secrets": [
+                    {
+                      "name": "cao-postgres-url",
+                      "keyVaultUrl": "[format('{0}secrets/cao-postgres-url', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "ingest",
+                      "image": "[parameters('ingestionImage')]",
+                      "command": [
+                        "/app/cao-dashboard"
+                      ],
+                      "args": [
+                        "ingest",
+                        "--source",
+                        "/data",
+                        "--database-queries",
+                        "/app/queries/database.json",
+                        "--redis-namespace",
+                        "azure-dashboard"
+                      ],
+                      "env": [
+                        {
+                          "name": "CAO_POSTGRES_URL",
+                          "secretRef": "cao-postgres-url"
+                        },
+                        {
+                          "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
+                          "value": "[string(parameters('postgresRunRetentionDays'))]"
+                        }
+                      ],
+                      "resources": {
+                        "cpu": "[json('1.0')]",
+                        "memory": "2Gi"
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]",
+                "[resourceId('Microsoft.Resources/deployments', 'ingestion-roles')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "ingestion-roles",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "keyVaultName": {
+                    "value": "[parameters('keyVaultName')]"
+                  },
+                  "containerRegistryName": {
+                    "value": "[parameters('containerRegistryName')]"
+                  },
+                  "principalId": {
+                    "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix'))), '2023-01-31').principalId]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.44.1.10279",
+                      "templateHash": "12613689809979352000"
+                    }
+                  },
+                  "parameters": {
+                    "keyVaultName": {
+                      "type": "string"
+                    },
+                    "containerRegistryName": {
+                      "type": "string"
+                    },
+                    "principalId": {
+                      "type": "string"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+                      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('principalId'), 'Key Vault Secrets User')]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName'))]",
+                      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), parameters('principalId'), 'AcrPull')]",
+                      "properties": {
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+                        "principalId": "[parameters('principalId')]",
+                        "principalType": "ServicePrincipal"
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "jobName": {
+              "type": "string",
+              "value": "[format('{0}-ingest', parameters('namePrefix'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-jobs', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'cao-postgres-url')]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName'))]"
       ]
     }
   ],
@@ -1176,6 +1772,22 @@
     "keyVaultUri": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+    },
+    "ingestionJobName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'snapshot-ingestion'), '2025-04-01').outputs.jobName.value]"
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+    },
+    "applicationInsightsId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/components', parameters('applicationInsightsName'))]"
+    },
+    "postgresHostName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.postgresHostName.value]"
     }
   }
 }
