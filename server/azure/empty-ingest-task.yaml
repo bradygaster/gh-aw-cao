@@ -1,0 +1,9 @@
+version: v1.1.0
+steps:
+  - build: >-
+      --target azure-empty-ingest-runtime
+      --file server/Dockerfile
+      --tag {{.Run.Registry}}/cao-ingest:empty
+      .
+  - push:
+      - {{.Run.Registry}}/cao-ingest:empty

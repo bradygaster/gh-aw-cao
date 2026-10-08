@@ -123,6 +123,13 @@ COPY --from=azure-ingest-data --chown=cao:cao /out/cao/ /data/
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
 
+FROM dashboard-runtime AS azure-empty-ingest-runtime
+
+COPY --chown=cao:cao server/azure/empty-data/ /data/
+
+ENTRYPOINT ["/app/cao-dashboard"]
+CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
+
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS collector-runtime
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]

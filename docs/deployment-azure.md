@@ -89,12 +89,13 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
 1. Build the Function App image from a trusted checkout. Use an immutable release or commit tag in production instead of `DEPLOYMENT-TAG`.
 
    ```bash
-   az acr build \
-     --registry CONTAINER-REGISTRY-NAME \
+   az acr login --name CONTAINER-REGISTRY-NAME
+   docker build \
      --target azure-functions-runtime \
      --file server/Dockerfile \
-     --tag cao-functions:DEPLOYMENT-TAG \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG \
      .
+   docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG
    ```
 
 1. Deploy the template. Replace the placeholders with your own values.
@@ -121,12 +122,13 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
 1. Load the dashboard data. In the default profile, the Function App doesn't load data by itself. Build the bootstrap image, then run it against the same PostgreSQL database and canonical namespace. Set `CAO_POSTGRES_RUN_RETENTION_DAYS` at least as large as the published snapshot window.
 
    ```bash
-   az acr build \
-     --registry CONTAINER-REGISTRY-NAME \
+   az acr login --name CONTAINER-REGISTRY-NAME
+   docker build \
      --target azure-ingest-runtime \
      --file server/Dockerfile \
-     --tag cao-ingest:DEPLOYMENT-TAG \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG \
      .
+   docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG
 
    CAO_POSTGRES_URL="$(az keyvault secret show \
      --vault-name KEY-VAULT-NAME \
@@ -144,6 +146,21 @@ In the following steps, replace `FUNCTION-APP-NAME` with a globally unique name 
 
    > [!CAUTION]
    > Grant the deployment identity temporary Key Vault read access only when necessary, remove it after ingestion, and don't let `CAO_POSTGRES_URL` appear in shell history, tickets, or logs.
+
+   To initialize a ready dashboard with no repositories, organizations, runs,
+   or campaigns, build `azure-empty-ingest-runtime` instead. Running that image
+   replaces the active canonical namespace while collection remains disabled:
+
+   ```bash
+   az acr run \
+     --registry CONTAINER-REGISTRY-NAME \
+     --file server/azure/empty-ingest-task.yaml \
+     .
+   ```
+
+   This is different from leaving PostgreSQL uninitialized: an uninitialized
+   namespace correctly returns `503` readiness, while the empty publication is
+   a valid revision and returns `200`.
 
 1. Verify the deployment.
 
