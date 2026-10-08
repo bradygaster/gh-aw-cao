@@ -47,6 +47,20 @@ The `server/azure/main.bicep` template creates the following resources in one re
 
 - An Azure subscription and resource group where you can create these resources and assign the **Key Vault Secrets User** role.
 - The Azure CLI with Bicep support.
+- Register the subscription resource providers before deploying. Container Apps
+  requires both `Microsoft.App` and `Microsoft.ContainerService`, even though
+  this template does not create an AKS cluster. A subscription administrator may
+  need to perform registration:
+
+  ```bash
+  for provider in Microsoft.App Microsoft.ContainerService Microsoft.Web \
+    Microsoft.DBforPostgreSQL Microsoft.Network Microsoft.Storage \
+    Microsoft.ContainerRegistry Microsoft.KeyVault Microsoft.ManagedIdentity \
+    Microsoft.Insights Microsoft.OperationalInsights; do
+    az provider register --namespace "$provider" --wait
+  done
+  ```
+
 - Docker, or an Azure Container Registry build agent.
 - A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
 - At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
