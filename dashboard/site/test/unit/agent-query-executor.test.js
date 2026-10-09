@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_NAMED_QUERY_LIMIT,
@@ -149,8 +149,12 @@ function execute(request) {
 
 describe('named query execution', () => {
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(metadata['as-of']));
     await ingest();
   });
+
+  afterEach(() => vi.useRealTimers());
 
   it('executes a reviewed query and reports its identity', async () => {
     const result = await execute({ queryId: 'all-runs' });
