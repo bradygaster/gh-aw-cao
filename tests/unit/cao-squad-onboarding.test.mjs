@@ -349,10 +349,17 @@ async function activationFixture(t, options = {}) {
       research: { workflow: 'squad-advisory-research', enabled: false },
     } },
   };
+  if (options.rootOnly) configured['control-plane'].campaigns = {};
   const policyPath = path.join(f.root, '.github/workflows/cao.json');
   const save = () => f.write('.github/workflows/cao.json', JSON.stringify(configured));
   save();
-  f.write('squad-advisory/cao.json', JSON.stringify({ campaign: 'squad-advisory', orchestrator: 'squad-advisory', workers: { 'farm-snapshot': 'squad-advisory-farm-snapshot' } }));
+  const declaration = { campaign: 'squad-advisory', orchestrator: 'squad-advisory', workers: { 'farm-snapshot': 'squad-advisory-farm-snapshot' } };
+  const catalog = options.catalog ?? 'bradygaster/gh-aw-cao';
+  if (options.rootOnly) {
+    f.write('.github/aw/packages/root.json', JSON.stringify({ source: `${catalog}@main`, resolvedCommit: head, files: [] }));
+  } else {
+    f.write('squad-advisory/cao.json', JSON.stringify(declaration));
+  }
   if (options.owned) {
     installPreparedSquad(await prepareSquadOnboarding({ ...f.options, policy: configured }));
     f.write('.squad/team.md', 'accepted cast');
@@ -367,8 +374,19 @@ async function activationFixture(t, options = {}) {
   const remoteWorkflows = manifest.workflows.map((workflow, index) => ({ id: index + 1, path: workflow.lock, state: 'disabled_manually' }));
   remoteWorkflows.push({ id: 99, path: '.github/workflows/squad-advisory-farm-snapshot.lock.yml', state: 'disabled_manually' });
   const calls = [];
+  let catalogAdded = false;
   const execute = (executable, args, commandOptions) => {
     calls.push({ executable, args });
+    if (executable === 'git' && catalogAdded) return { status: 0, stdout: '?? squad-advisory/cao.json' };
+    if (args[0] === 'aw' && args[1] === 'add' && args[2].startsWith(`${catalog}/`)) {
+      assert.equal(args[2], `${catalog}/squad-advisory@${head}`);
+      assert.equal(args.length, 3);
+      catalogAdded = true;
+      f.write('squad-advisory/cao.json', JSON.stringify(declaration));
+      f.write('.github/aw/packages/squad-advisory.json', JSON.stringify({ source: args[2], resolvedCommit: head, files: [] }));
+      f.write('.github/skills/agentic-workflows/SKILL.md', 'new catalog-generated router');
+      return { status: 0, stdout: '' };
+    }
     const ok = (value) => ({ status: 0, stdout: JSON.stringify(value), stderr: '' });
     if (args[0] === 'repo') return { status: 0, stdout: 'acme/ops', stderr: '' };
     if (args[0] === 'workflow') {
@@ -515,5 +533,58 @@ test('unsupported native Actions states fail before any workflow is toggled', as
   const f = await activationFixture(t, { owned: true, enabled: true });
   f.remoteWorkflows[7].state = 'disabled_fork';
   await assert.rejects(f.invoke('enable'), /unsupported Actions state/);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+});
+
+for (const catalog of ['bradygaster/gh-aw-cao', 'githubnext/gh-aw-cao']) {
+  test(`root-only enable installs the campaign at the trusted ${catalog} root pin and native Squad in one reviewed change`, async (t) => {
+    const f = await activationFixture(t, { rootOnly: true, catalog });
+    const result = await f.invoke('enable');
+    assert.equal(result.nativeSquad.status, 'pending-review');
+    assert.equal(result.nativeSquad.remotelyActive, null);
+    assert.equal(result.nativeSquad.catalogSource, `${catalog}/squad-advisory@${head}`);
+    assert.equal(f.readPolicy()['control-plane'].campaigns['squad-advisory'].enabled, true);
+    assert.equal(f.readPolicy()['control-plane'].campaigns['squad-advisory'].workers['farm-snapshot'].enabled, false);
+    assert.deepEqual(f.readPolicy()['control-plane'].scope, policy['control-plane'].scope);
+    assert.ok(existsSync(path.join(f.root, 'farm/evidence.json')));
+    assert.ok(existsSync(path.join(f.root, '.github/workflows/squad-bootstrap.lock.yml')));
+    assert.equal(f.calls.filter(({ args }) => args[0] === 'status').length, 1);
+    assert.deepEqual(f.calls.filter(({ args }) => args[1] === 'add').map(({ args }) => args[2]), [
+      `${catalog}/squad-advisory@${head}`, `bradygaster/squad/workflows@${revision}`,
+    ]);
+    assert.equal(f.calls.filter(({ args }) => args[1] === 'repos/bradygaster/squad/commits/dev').length, 1);
+    assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+  });
+}
+
+test('root-only enable rejects missing, untrusted, ambiguous, or unpinned root ownership without side effects', async (t) => {
+  for (const invalid of ['missing', 'untrusted', 'ambiguous', 'unpinned']) {
+    const f = await activationFixture(t, { rootOnly: true });
+    const original = readFileSync(f.policyPath, 'utf8');
+    if (invalid === 'missing') rmSync(path.join(f.root, '.github/aw/packages/root.json'));
+    if (invalid === 'untrusted') f.write('.github/aw/packages/root.json', JSON.stringify({ source: 'foreign/gh-aw-cao@main', resolvedCommit: head }));
+    if (invalid === 'unpinned') f.write('.github/aw/packages/root.json', JSON.stringify({ source: 'bradygaster/gh-aw-cao@main', resolvedCommit: 'main' }));
+    if (invalid === 'ambiguous') f.write('.github/aw/packages/second-root.json', JSON.stringify({ source: 'githubnext/gh-aw-cao@main', resolvedCommit: head }));
+    await assert.rejects(f.invoke('enable'), /exactly one trusted installed CAO root/);
+    assert.equal(readFileSync(f.policyPath, 'utf8'), original);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test('root-only native preflight never deletes an existing router or starts either install', async (t) => {
+  const f = await activationFixture(t, { rootOnly: true });
+  f.write('.github/skills/agentic-workflows/SKILL.md', 'consumer-owned router');
+  const original = readFileSync(f.policyPath, 'utf8');
+  await assert.rejects(f.invoke('enable'), /existing .*SKILL.md/);
+  assert.equal(readFileSync(path.join(f.root, '.github/skills/agentic-workflows/SKILL.md'), 'utf8'), 'consumer-owned router');
+  assert.equal(readFileSync(f.policyPath, 'utf8'), original);
+  assert.equal(f.calls.some(({ args }) => args[1] === 'add' || args[0] === 'workflow'), false);
+});
+
+test('root-only native verification failure leaves campaign policy unchanged and no remote toggles', async (t) => {
+  const f = await activationFixture(t, { rootOnly: true, failVerify: true });
+  const original = readFileSync(f.policyPath, 'utf8');
+  await assert.rejects(f.invoke('enable'), /command failed/);
+  assert.equal(readFileSync(f.policyPath, 'utf8'), original);
   assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
 });
