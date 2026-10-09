@@ -9,6 +9,8 @@ const execFileAsync = promisify(execFile);
 test('Node CLI ingests a gh-aw artifact directory through IndexedDB queries', async () => {
   const fixture = path.resolve('dashboard/site/test/fixtures/gh-aw-logs');
   const { stdout } = await execFileAsync(process.execPath, [
+    '--import',
+    `data:text/javascript,${encodeURIComponent("import { mock } from 'node:test'; mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-09T05:00:00Z') });")}`,
     path.resolve('activity/cao.mjs'),
     path.join(fixture, 'context.json'),
     path.join(fixture, 'run-303'),

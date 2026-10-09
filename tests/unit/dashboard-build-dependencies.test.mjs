@@ -9,9 +9,9 @@ test("Docker installs dashboard build dependencies without test tooling or insta
   const lock = JSON.parse(readFileSync(new URL("dashboard/site/package-lock.json", root), "utf8"));
   const dockerfile = readFileSync(new URL("server/Dockerfile", root), "utf8");
 
-  assert.deepEqual(Object.keys(manifest.dependencies).sort(), ["esbuild", "yaml"]);
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), ["esbuild", "rollup", "yaml"]);
   assert.deepEqual(lock.packages[""].dependencies, manifest.dependencies);
-  for (const name of ["esbuild", "yaml"]) {
+  for (const name of ["esbuild", "rollup", "yaml"]) {
     assert.notEqual(lock.packages[`node_modules/${name}`].dev, true);
   }
   for (const name of ["vitest", "vite", "postcss", "@jridgewell/gen-mapping"]) {

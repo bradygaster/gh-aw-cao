@@ -162,16 +162,16 @@ test("CAO server package installs build dependencies before verifying API artifa
   }
 });
 
-test("Docker dashboard builder installs tooling and local packages without shipping build dependencies", async () => {
+test("Docker dashboard builder installs production tooling without shipping build dependencies", async () => {
   const dockerfile = await text("server/Dockerfile");
   const stages = dockerfile.split(/(?=^FROM )/m);
   const builder = stages.find((stage) => stage.includes(" AS dashboard-build"));
   assert.ok(builder);
-  const install = builder.indexOf("npm --prefix dashboard/site ci --include=dev --ignore-scripts");
+  const install = builder.indexOf("npm --prefix dashboard/site ci --omit=dev --ignore-scripts");
   assert.ok(install >= 0, "the builder must install Rollup even with NODE_ENV=production");
-  const localPackages = builder.indexOf("COPY dashboard/site/packages/ ./dashboard/site/packages/");
-  assert.ok(localPackages >= 0 && localPackages < install, "local file dependencies must exist before npm ci");
-  assert.doesNotMatch(builder, /--omit=dev/);
+  const manifest = JSON.parse(await text("dashboard/site/package.json"));
+  assert.ok(manifest.dependencies.rollup, "Rollup is required by the production build");
+  assert.doesNotMatch(builder, /--include=dev/);
   for (const name of ["dashboard-runtime", "azure-functions-runtime"]) {
     const runtime = stages.find((stage) => stage.includes(` AS ${name}`));
     assert.ok(runtime);
