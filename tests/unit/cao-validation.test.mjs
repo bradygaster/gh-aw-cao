@@ -19,6 +19,16 @@ import {
 const version = "v0.89.22";
 const metadata = `# gh-aw-metadata: {"compiler_version":"${version}"}\n`;
 
+test("installed validation does not require consumer npm manifests or dependencies", async () => {
+  const workflow = parse(await readFile(".github/workflows/cao-validate.yml", "utf8"));
+  const steps = workflow.jobs.validate.steps;
+  const node = steps.find(({ uses }) => uses?.startsWith("actions/setup-node@"));
+  assert.deepEqual(node.with, { "node-version": 24 });
+  assert.doesNotMatch(steps.map(({ run }) => run ?? "").join("\n"), /\bnpm\b/);
+  assert.ok(steps.some(({ uses }) => uses === "./.github/actions/setup-gh-aw"));
+  assert.match(steps.find(({ id }) => id === "validation").run, /\.\/cao\.sh validate --json/);
+});
+
 async function fixture({ lock = metadata, policyCampaign = true, declaration = true } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "cao-validation-test-"));
   await mkdir(path.join(root, ".github", "workflows"), { recursive: true });
