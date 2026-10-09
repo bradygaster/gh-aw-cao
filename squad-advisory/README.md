@@ -66,6 +66,11 @@ Setup fails before package installation for a dirty checkout, existing
 unadopted Squad state, conflicting resource ownership, missing farm access,
 incomplete evidence, or incompatible compiler. Existing user-owned router
 skills are never deleted to satisfy Squad. Resolve those conflicts explicitly.
+The root gh-aw installer can generate
+`.github/skills/agentic-workflows/SKILL.md`, which also conflicts with native
+Squad's router. When preparing a fresh root for native Squad, inspect and
+explicitly reconcile that generated file before committing the clean root
+installation. Do not assume an existing or customized skill is disposable.
 Once package commands start, a command failure may leave a **partial local
 change**: inspect it, do not commit it, and do not push it as a successful install.
 Setup never commits, pushes, dispatches hosted runs, changes settings, or
@@ -140,6 +145,15 @@ The native integrity manifest's compiler version must equal both CAO's reviewed
 by CAO `v0.91.5`. Publish the aligned Squad dev revision before using this flow.
 There is no compatibility fallback. The native verifier, not CAO, owns the
 native integrity/ownership format. CAO never hand-edits those records.
+
+The compiler also reads `.github/workflows/aw.json`. CAO's existing 24-hour
+failure-report expiry is supported through a separately compiled, fully hashed
+native manifest variant; native installations without that setting retain the
+168-hour default. The verifier rejects unsupported expiry values and altered
+locks. Do not delete adopter configuration, rewrite generated locks, or exclude
+expiry bytes from integrity checks. Include any intended compiler configuration
+change in the reviewed installation; native staged verification binds its exact
+bytes.
 
 ### Review and bootstrap gates
 
