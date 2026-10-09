@@ -149,7 +149,14 @@ test("retained squad advisory campaign is disabled and review-capped", () => {
   assert.deepEqual(Object.keys(campaign.workers).sort(), ["farm-snapshot", "research"]);
   for (const [name, worker] of Object.entries(campaign.workers)) {
     assert.equal(worker["max-mode"], "review", name);
-    assert.equal(worker.workflow, declaration.workers[name], name);
+    assert.equal(worker.workflow, name === "research" ? "squad-advisory-research" : declaration.workers[name], name);
+  }
+  assert.deepEqual(declaration.workers, { "farm-snapshot": "squad-advisory-farm-snapshot" });
+  const manifest = parse(readFileSync(join(root, "squad-advisory", "aw.yml"), "utf8"));
+  assert.ok(!manifest.includes.includes(".github/workflows/squad-advisory-research.md"));
+  assert.deepEqual(workflowConfig("squad-advisory.md")["safe-outputs"]["dispatch-workflow"].workflows, ["squad-advisory-farm-snapshot"]);
+  for (const name of ["squad-advisory.md", "squad-advisory-farm-snapshot.md"]) {
+    assert.match(workflowConfig(name).steps[0].run, /native Squad review attribution[\s\S]*exit 1/);
   }
   assert.equal(workflowConfig("squad-advisory.md").on.schedule, "daily");
   assert.equal(workflowConfig("squad-advisory-research.md")["safe-outputs"]["create-issue"].max, 1);
@@ -215,7 +222,8 @@ test("operational workflows use the transitive CAO campaign bundle", () => {
         entry.uses === "shared/control.md"
         && existsSync(join(root, entry.with.campaign, "cao.json"))))
     .sort();
-  assert.deepEqual(operationWorkflows.map((name) => `.github/workflows/${name}`), declaredOperationWorkflows);
+  assert.deepEqual(operationWorkflows.map((name) => `.github/workflows/${name}`),
+    [...declaredOperationWorkflows, ".github/workflows/squad-advisory-research.md"].sort());
   assert.match(control, /name: Upload CAO admission artifact/);
   assert.match(control, /name: cao-admission/);
   assert.match(control, /path: \$\{\{ runner\.temp \}\}\/cao\/admission\.json/);
