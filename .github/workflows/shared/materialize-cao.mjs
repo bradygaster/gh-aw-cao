@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
 const repository = 'githubnext/gh-aw-cao';
+const catalogs = [repository, 'bradygaster/gh-aw-cao'];
 const rootResources = [
   'activity',
   'dashboard',
@@ -49,7 +50,7 @@ function installedRecords(root) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const record = JSON.parse(readFileSync(path.join(recordDirectory, entry.name), 'utf8'));
       const name = packageName(record);
-      if (name === repository || name.startsWith(`${repository}/`)) records.push({ name, record });
+      if (catalogs.some((catalog) => name === catalog || name.startsWith(`${catalog}/`))) records.push({ name, record });
     }
   }
   return records;
@@ -64,8 +65,10 @@ function resolvedRevision(record) {
 }
 
 function exactRecordFor(records, campaign) {
-  const name = campaign === 'root' ? repository : `${repository}/${campaign}`;
-  return records.find((candidate) => candidate.name === name)?.record;
+  const names = catalogs.map((catalog) => campaign === 'root' ? catalog : `${catalog}/${campaign}`);
+  const matches = records.filter((candidate) => names.includes(candidate.name));
+  if (matches.length > 1) throw new Error(`Multiple trusted CAO catalogs own ${campaign}; reconcile ownership before materializing`);
+  return matches[0]?.record;
 }
 
 function recordFor(records, campaign) {
@@ -73,14 +76,14 @@ function recordFor(records, campaign) {
   const exact = exactRecordFor(records, campaign);
   if (exact) return exact;
   if (campaign === 'activity' || campaign === 'dashboard') {
-    const root = records.find((candidate) => candidate.name === repository);
-    if (root) return root.record;
+    const root = exactRecordFor(records, 'root');
+    if (root) return root;
   }
   throw new Error(`No installed CAO package record found for ${name}`);
 }
 
-async function downloadArchive(revision, destination) {
-  const response = await fetch(`https://codeload.github.com/${repository}/tar.gz/${encodeURIComponent(revision)}`);
+async function downloadArchive(revision, destination, catalog = repository) {
+  const response = await fetch(`https://codeload.github.com/${catalog}/tar.gz/${encodeURIComponent(revision)}`);
   if (!response.ok) throw new Error(`Unable to download CAO ${revision}: HTTP ${response.status}`);
   writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
 }
@@ -282,20 +285,23 @@ export async function materializeCao(campaign = 'root', repositoryRoot = process
   try {
     const sourceRoots = new Map();
     for (const [index, plan] of plans.entries()) {
-      let sourceRoot = sourceRoots.get(plan.revision);
+      const catalog = packageName(plan.record).split('/').slice(0, 2).join('/');
+      if (!catalogs.includes(catalog)) throw new Error('CAO materialization requires a trusted catalog identity');
+      const sourceKey = `${catalog}@${plan.revision}`;
+      let sourceRoot = sourceRoots.get(sourceKey);
       if (!sourceRoot) {
         const extractionDirectory = path.join(temporaryDirectory, String(index));
         const archiveName = `${index}.tar.gz`;
         const archive = path.join(temporaryDirectory, archiveName);
         mkdirSync(extractionDirectory);
-        await downloadArchive(plan.revision, archive);
+        await downloadArchive(plan.revision, archive, catalog);
         try {
           extractCaoArchive(archive, extractionDirectory);
         } catch (error) {
           throw new Error(`Unable to extract CAO ${plan.revision}: ${error.message}`, { cause: error });
         }
         sourceRoot = archiveRoot(extractionDirectory);
-        sourceRoots.set(plan.revision, sourceRoot);
+        sourceRoots.set(sourceKey, sourceRoot);
       }
       plan.sourceRoot = sourceRoot;
       validateResources(sourceRoot, plan.resources);
@@ -325,6 +331,9 @@ export function verifyCaoRuntime(bundle, repositoryRoot = process.cwd()) {
       'activity/commands/index.mjs',
       'activity/setup.mjs',
       'activity/upgrade-gh-aw.mjs',
+      'activity/campaign-records.mjs',
+      'activity/squad-onboarding.mjs',
+      'activity/squad-farm.mjs',
       'activity/control-settings.mjs',
       'activity/repository-visibility.mjs',
       'activity/collect-logs.sh',

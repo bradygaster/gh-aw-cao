@@ -82,6 +82,8 @@ import { commandHandlers } from './commands/index.mjs';
 import { parseUpdateArguments, resolveUpdateCommit } from './commands/update.mjs';
 import { setupCaoControlPlane } from './setup.mjs';
 import { upgradeGhAwVersion } from './upgrade-gh-aw.mjs';
+import { installPreparedSquad, prepareSquadOnboarding } from './squad-onboarding.mjs';
+import { CAO_CATALOGS, installedCampaignRecords, resolvePathWithinRoot } from './campaign-records.mjs';
 
 export { setupCaoControlPlane } from './setup.mjs';
 export { formatSetupAuthenticationSummary } from './authentication.mjs';
@@ -518,82 +520,6 @@ function campaignSlugFromSpec(spec) {
   return slug;
 }
 
-function resolvePathWithinRoot(root, destination) {
-  const resolved = path.resolve(root, destination);
-  const canonicalRoot = realpathSync(root);
-  let canonicalPath;
-  try {
-    canonicalPath = realpathSync(resolved);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    const missingSegments = [];
-    let existingAncestor = resolved;
-    while (true) {
-      missingSegments.unshift(path.basename(existingAncestor));
-      existingAncestor = path.dirname(existingAncestor);
-      try {
-        canonicalPath = path.join(realpathSync(existingAncestor), ...missingSegments);
-        break;
-      } catch (ancestorError) {
-        if (ancestorError?.code !== 'ENOENT') throw ancestorError;
-      }
-    }
-  }
-  const relative = path.relative(canonicalRoot, canonicalPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Installed package destination escapes the repository: ${destination}`);
-  }
-  return resolved;
-}
-
-async function installedCampaignRecords(root = process.cwd(), { caoOnly = true } = {}) {
-  const records = new Map();
-  for (const directory of ['campaigns', 'packages']) {
-    let recordsDirectory;
-    let entries;
-    try {
-      recordsDirectory = resolvePathWithinRoot(root, path.join('.github', 'aw', directory));
-      entries = await readdir(recordsDirectory, { withFileTypes: true });
-    } catch (error) {
-      if (error?.code === 'ENOENT') continue;
-      throw error;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory() || !entry.name.endsWith('.json')) continue;
-      const recordPath = resolvePathWithinRoot(root, path.join(recordsDirectory, entry.name));
-      let record;
-      try {
-        record = JSON.parse(await readFile(recordPath, 'utf8'));
-      } catch (error) {
-        if (error instanceof SyntaxError) throw new Error(`${path.relative(root, recordPath)} contains invalid JSON: ${error.message}`);
-        throw error;
-      }
-      const campaignName = typeof record.package === 'string' && record.package.trim()
-        ? record.package.trim()
-        : typeof record.campaign === 'string' && record.campaign.trim()
-          ? record.campaign.trim()
-          : typeof record.source === 'string'
-            ? record.source.split('@')[0].trim()
-            : '';
-      if (!campaignName || (caoOnly
-        && campaignName !== 'githubnext/gh-aw-cao'
-        && !campaignName.startsWith('githubnext/gh-aw-cao/'))) {
-        continue;
-      }
-      records.set(campaignName, {
-        campaign: campaignName,
-        source: typeof record.source === 'string' ? record.source : campaignName,
-        resolvedCommit: typeof record.resolvedCommit === 'string' && record.resolvedCommit.trim()
-          ? record.resolvedCommit.trim()
-          : '',
-        record,
-        recordPath
-      });
-    }
-  }
-  return [...records.values()].sort((left, right) => left.campaign.localeCompare(right.campaign));
-}
-
 function materializeInstalledCao(campaign, execute = spawnSync, sourceRoot) {
   const script = path.join('.github', 'workflows', 'shared', 'materialize-cao.mjs');
   const arguments_ = sourceRoot
@@ -626,12 +552,13 @@ async function prepareInstalledPackageReleaseSource(
   if (sourceIsCommit && !/^[0-9a-f]{40}$/i.test(record.resolvedCommit)) {
     throw new Error(`Installed CAO package record has an invalid resolvedCommit: ${record.resolvedCommit || '(missing)'}`);
   }
-  let releaseTag = sourceIsRelease ? sourceRef : releaseTags.get(record.resolvedCommit);
+  const releaseKey = `${record.campaign.split('/').slice(0, 2).join('/')}@${record.resolvedCommit}`;
+  let releaseTag = sourceIsRelease ? sourceRef : releaseTags.get(releaseKey);
   if (!releaseTag) {
     const tags = execute('gh', [
       'api',
       '--paginate',
-      '/repos/githubnext/gh-aw-cao/tags',
+      `/repos/${record.campaign.split('/').slice(0, 2).join('/')}/tags`,
       '--jq',
       `.[] | select(.commit.sha == "${record.resolvedCommit}") | .name`
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -644,7 +571,7 @@ async function prepareInstalledPackageReleaseSource(
       const prereleaseFilter = includePrereleases ? 'true' : '.prerelease == false';
       const release = execute('gh', [
         'api',
-        `/repos/githubnext/gh-aw-cao/releases/tags/${encodeURIComponent(candidate)}`,
+        `/repos/${record.campaign.split('/').slice(0, 2).join('/')}/releases/tags/${encodeURIComponent(candidate)}`,
         '--jq',
         `select(.draft == false and ${prereleaseFilter}) | .tag_name`
       ], { encoding: 'utf8' });
@@ -656,13 +583,13 @@ async function prepareInstalledPackageReleaseSource(
     if (!releaseTag) {
       throw new Error(`No CAO release tag found for ${record.resolvedCommit}; run "cao update latest" to replace installed CAO packages with the latest stable release`);
     }
-    releaseTags.set(record.resolvedCommit, releaseTag);
+    releaseTags.set(releaseKey, releaseTag);
   }
   if (includePrereleases) {
     const releases = execute('gh', [
       'api',
       '--paginate',
-      '/repos/githubnext/gh-aw-cao/releases?per_page=100',
+      `/repos/${record.campaign.split('/').slice(0, 2).join('/')}/releases?per_page=100`,
       '--jq',
       '.[] | select(.draft == false) | .tag_name'
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -801,12 +728,17 @@ export async function upgradeGhAw(version, {
 
 export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
-  execute = spawnSync
+  execute = spawnSync,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad
 } = {}) {
   if (!campaignSpec || campaignSpec.startsWith('-')) throw new UsageError('cao add requires a campaign');
   const expectedCampaign = campaignSlugFromSpec(campaignSpec);
   if (expectedCampaign === 'gh-aw-cao') {
     throw new UsageError('cao add cannot install the CAO root package; use install.sh');
+  }
+  if (expectedCampaign === 'squad-advisory' && ghAwOptions.some((option) => !['--force', '--no-security-scanner'].includes(option))) {
+    throw new UsageError('Squad onboarding supports only --force and --no-security-scanner; workflow relocation or source customization is not supported');
   }
   let localSourceRoot;
   try {
@@ -817,6 +749,16 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
+  if (expectedCampaign === 'squad-advisory' && !localSourceRoot
+    && !CAO_CATALOGS.some((catalog) => campaignSpec.startsWith(`${catalog}/squad-advisory@`) || campaignSpec === `${catalog}/squad-advisory`)) {
+    throw new UsageError('Native Squad onboarding requires a trusted CAO catalog or an explicit local campaign source');
+  }
+  const squad = expectedCampaign === 'squad-advisory'
+    ? await prepareSquad({
+      policy: await readCaoPolicy(policyPath, 'add squad-advisory'),
+      controlRepository: resolveControlRepository(execute), execute
+    })
+    : undefined;
   const install = execute('gh', ['aw', 'add', campaignSpec, ...ghAwOptions], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024
@@ -843,38 +785,65 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   }
 
   mergeCaoCampaignDeclaration(policy, declaration);
+  // Installation prepares a reviewed change; it never enables recurring farm
+  // automation while native Squad's PR attribution contract is unresolved.
+  if (squad) {
+    policy['control-plane'].campaigns['squad-advisory'].enabled = false;
+    policy['control-plane'].campaigns['squad-advisory'].mode = 'review';
+  }
+  const nativeSquad = squad ? installSquad(squad) : undefined;
   await writeJsonAtomically(absolutePolicyPath, policy);
   return {
     command: 'add',
     campaign: declaration.campaign,
     orchestrator: declaration.orchestrator,
     workers: Object.keys(declaration.workers),
-    policy: policyPath
+    policy: policyPath,
+    ...(nativeSquad ? { nativeSquad } : {})
   };
 }
 
 export async function updateCaoCampaigns(ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
-  execute = spawnSync
+  execute = spawnSync,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad
 } = {}) {
   const { ref, includePrereleases, updateOptions } = parseUpdateArguments(ghAwOptions, UsageError);
   const policy = await readCaoPolicy(policyPath);
-  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
   const campaigns = await installedCampaignRecords();
   if (campaigns.length === 0) {
     throw new Error('No installed gh-aw package records found under .github/aw/packages');
+  }
+  const campaignSlugs = campaigns.map((record) => record.campaign.split('/').slice(2).join('/') || 'root');
+  if (new Set(campaignSlugs).size !== campaignSlugs.length) {
+    throw new Error('Multiple trusted CAO catalogs own the same campaign; reconcile ownership before updating');
   }
   for (const record of campaigns) {
     if (!/^[0-9a-f]{40}$/i.test(record.resolvedCommit)) {
       throw new Error(`Installed CAO package record must contain a full resolvedCommit SHA: ${record.resolvedCommit || '(missing)'}`);
     }
   }
-
-  const resolvedCommit = resolveUpdateCommit(ref, execute, commandFailureMessage, compareGhAwVersions);
+  if (campaigns.some((record) => record.campaign.endsWith('/squad-advisory'))
+    && updateOptions.some((option) => !['--force', '--no-security-scanner'].includes(option))) {
+    throw new UsageError('Squad updates support only --force and --no-security-scanner; workflow relocation or source customization is not supported');
+  }
+  // Complete native prerequisites before any CAO package or compiler mutation.
+  const squad = campaigns.some((record) => record.campaign.endsWith('/squad-advisory'))
+    ? await prepareSquad({ policy, controlRepository: resolveControlRepository(execute), execute })
+    : undefined;
+  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
+  const revisions = new Map();
+  for (const record of campaigns) {
+    const catalog = record.campaign.split('/').slice(0, 2).join('/');
+    if (!revisions.has(catalog)) revisions.set(catalog, resolveUpdateCommit(ref, execute, commandFailureMessage, compareGhAwVersions, catalog));
+  }
+  const resolvedCommit = revisions.values().next().value;
   const updatedCampaigns = [];
   const mergedDeclarations = [];
   const releaseTags = new Map();
   for (const record of campaigns) {
+    const resolvedCommit = revisions.get(record.campaign.split('/').slice(0, 2).join('/'));
     const preparedSource = resolvedCommit ? undefined : await prepareInstalledPackageReleaseSource(record, releaseTags, execute, {
       includePrereleases,
       allowMajor: updateOptions.includes('--major')
@@ -883,7 +852,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     // must be reapplied through add, which also writes the ownership record.
     // Match install.sh: root resources contain an intentional App setup form
     // that gh-aw's Markdown scanner rejects.
-    const addOptions = record.campaign === 'githubnext/gh-aw-cao' && !updateOptions.includes('--no-security-scanner')
+    const addOptions = record.campaign.split('/').length === 2 && !updateOptions.includes('--no-security-scanner')
       ? ['--no-security-scanner', ...updateOptions]
       : updateOptions;
     const updateArguments = resolvedCommit
@@ -903,7 +872,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
         throw new Error(`CAO package ${record.campaign} did not record requested commit ${resolvedCommit}; refusing to materialize`);
       }
     }
-    const campaign = record.campaign === 'githubnext/gh-aw-cao'
+    const campaign = record.campaign.split('/').length === 2
       ? 'root'
       : record.campaign.split('/').at(-1);
     materializeInstalledCao(campaign, execute);
@@ -914,6 +883,11 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     }
     updatedCampaigns.push(record.campaign);
   }
+  if (squad) {
+    policy['control-plane'].campaigns['squad-advisory'].enabled = false;
+    policy['control-plane'].campaigns['squad-advisory'].mode = 'review';
+  }
+  const nativeSquad = squad ? installSquad(squad) : undefined;
   if (mergedDeclarations.length > 0) await writeJsonAtomically(path.resolve(policyPath), policy);
   return {
     command: 'update',
@@ -921,7 +895,8 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     'gh-aw': ghAw,
     ...(resolvedCommit ? { ref, resolvedCommit } : {}),
     campaigns: updatedCampaigns,
-    declarations: mergedDeclarations
+    declarations: mergedDeclarations,
+    ...(nativeSquad ? { nativeSquad } : {})
   };
 }
 

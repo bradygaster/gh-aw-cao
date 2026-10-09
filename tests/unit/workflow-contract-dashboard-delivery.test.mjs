@@ -681,11 +681,19 @@ test("Dashboard inventory links multiline orchestrator worker lists", () => {
       }
       const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8"));
       assert.equal(descriptor.campaign, campaignId, descriptorPath);
+      const policyWorkers = Object.fromEntries(Object.entries(policyCampaigns[campaignId].workers).map(([worker, config]) => [
+        worker,
+        config.workflow,
+      ]));
+      if (campaignId === "squad-advisory") {
+        assert.equal(policyCampaigns[campaignId].enabled, false);
+        assert.equal(policyWorkers.research, "squad-advisory-research");
+        assert.ok(existsSync(join(root, ".github/workflows/squad-advisory-research.md")));
+        assert.equal(descriptor.workers.research, undefined);
+        delete policyWorkers.research;
+      }
       assert.deepEqual(
-        Object.fromEntries(Object.entries(policyCampaigns[campaignId].workers).map(([worker, config]) => [
-          worker,
-          config.workflow,
-        ])),
+        policyWorkers,
         descriptor.workers,
         `${campaignId} policy workers must match its campaign descriptor`,
       );

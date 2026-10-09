@@ -76,6 +76,16 @@ After explicit approval, run the repository-local CLI from the control repositor
 
 Forward additional campaign-installer options only when the user requested them and they do not weaken the reviewed boundary. Do not pass secrets in command arguments.
 
+For `squad-advisory`, native Squad is mandatory: read the campaign README's
+onboarding prerequisites before approval. CAO resolves current Squad dev to one
+immutable SHA, verifies exact compiler compatibility, and prepares bounded
+evidence for every explicitly enrolled repository. Review the native package,
+farm evidence, research scope, farm skill, and policy in one install change
+before its default-branch bootstrap push. Do not replace this flow with direct
+`gh aw add`, a fixed research roster, or an optional Squad adoption step.
+Automatic snapshot refresh remains disabled pending native review attribution;
+use reviewed local updates, preserving native Cast PR/Profile A review gates.
+
 After installation:
 
 1. Parse `.github/workflows/cao.json` and reject unresolved placeholders.

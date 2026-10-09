@@ -123,6 +123,11 @@ safe-outputs:
 timeout-minutes: 20
 
 steps:
+  - name: Require native review attribution before automated refresh
+    run: |
+      echo "Farm refresh automation is blocked pending native Squad review attribution. Use a reviewed cao update change; do not bypass Squad review." >&2
+      exit 1
+
   - name: Resolve farm read scope from control policy
     id: squad_farm_scope
     if: ${{ inputs.target_repo == github.repository }}
