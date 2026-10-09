@@ -47,6 +47,7 @@ test("campaigns and repository workflows pin the supported gh-aw version", () =>
     "repo-assist/aw.yml",
     "self-care/aw.yml",
     "software-development-practices/aw.yml",
+    "squad-advisory/aw.yml",
   ];
   for (const manifest of manifests) {
     assert.equal(parse(readFileSync(join(root, manifest), "utf8"))["min-version"], ghAwVersion, manifest);
@@ -122,6 +123,7 @@ test("catalog campaigns declare their current experimental maturity", () => {
     "repo-assist/aw.yml",
     "self-care/aw.yml",
     "software-development-practices/aw.yml",
+    "squad-advisory/aw.yml",
   ];
   for (const manifest of manifests) {
     const metadata = parse(readFileSync(join(root, manifest), "utf8"));
@@ -134,6 +136,26 @@ test("optimization package includes its README", () => {
   const manifest = parse(readFileSync(join(root, "optimization", "aw.yml"), "utf8"));
 
   assert.ok(manifest.includes.includes("README.md"));
+});
+
+test("retained squad advisory campaign is disabled and review-capped", () => {
+  const policy = JSON.parse(workflow("cao.json"));
+  const campaign = policy["control-plane"].campaigns["squad-advisory"];
+  const declaration = JSON.parse(readFileSync(join(root, "squad-advisory", "cao.json"), "utf8"));
+
+  assert.equal(campaign.enabled, false);
+  assert.equal(campaign.mode, "review");
+  assert.equal(campaign["max-repositories"], 1);
+  assert.deepEqual(Object.keys(campaign.workers).sort(), ["farm-snapshot", "research"]);
+  for (const [name, worker] of Object.entries(campaign.workers)) {
+    assert.equal(worker["max-mode"], "review", name);
+    assert.equal(worker.workflow, declaration.workers[name], name);
+  }
+  assert.equal(workflowConfig("squad-advisory.md").on.schedule, "daily");
+  assert.equal(workflowConfig("squad-advisory-research.md")["safe-outputs"]["create-issue"].max, 1);
+  const snapshot = workflowConfig("squad-advisory-farm-snapshot.md")["safe-outputs"]["create-pull-request"];
+  assert.equal(snapshot.max, 1);
+  assert.deepEqual(snapshot["allowed-files"], ["farm/*.md", "farm/**/*.md"]);
 });
 
 test("operational workflows use the transitive CAO campaign bundle", () => {
@@ -205,7 +227,7 @@ test("operational workflows use the transitive CAO campaign bundle", () => {
 });
 
 test("campaign manifests exclude repository-only tests", () => {
-  for (const relativePath of ["aw.yml", join("uk-ai-advisory", "aw.yml"), join("cao-evolution", "aw.yml"), join("dashboard", "aw.yml"), join("dependabot", "aw.yml"), join("dreaming", "aw.yml"), join("eslint-rules", "aw.yml"), join("eu-cra-compliance", "aw.yml"), join("optimization", "aw.yml"), join("repo-assist", "aw.yml"), join("self-care", "aw.yml"), join("software-development-practices", "aw.yml")]) {
+  for (const relativePath of ["aw.yml", join("uk-ai-advisory", "aw.yml"), join("cao-evolution", "aw.yml"), join("dashboard", "aw.yml"), join("dependabot", "aw.yml"), join("dreaming", "aw.yml"), join("eslint-rules", "aw.yml"), join("eu-cra-compliance", "aw.yml"), join("optimization", "aw.yml"), join("repo-assist", "aw.yml"), join("self-care", "aw.yml"), join("software-development-practices", "aw.yml"), join("squad-advisory", "aw.yml")]) {
     const manifest = readFileSync(join(root, relativePath), "utf8");
     assert.doesNotMatch(manifest, /(?:review-smoke|enterprise-canary|enterprise-stress|tests\/e2e|\.github\/aw\/e2e)/, relativePath);
   }
@@ -279,6 +301,7 @@ test("operational campaigns install declarations matching their workflow identit
     "repo-assist",
     "self-care",
     "software-development-practices",
+    "squad-advisory",
     "uk-ai-advisory",
   ];
 
