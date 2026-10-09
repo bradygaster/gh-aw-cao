@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import path from 'node:path';
 import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from './squad-farm.mjs';
 import { parsePolicy } from '../.github/workflows/shared/policy.mjs';
+import { CAO_CATALOGS, installedCampaignRecords } from './campaign-records.mjs';
 
 export const SQUAD_PACKAGE = 'bradygaster/squad/workflows';
 export const SQUAD_OWNERSHIP = '.github/aw/packages/bradygaster-squad-workflows-3632054824e8.json';
@@ -230,6 +231,27 @@ function verifySquadActivation(root, execute, policy, controlRepository, now) {
   return { receipt, files: [...new Set([...files, ...Object.keys(receipt.files), SQUAD_RECEIPT])] };
 }
 
+function pendingActivation(extra = {}) {
+  return {
+    status: 'pending-review', remotelyActive: null, workflows: [], ...extra,
+    next: 'Review and commit the native package, policy, farm evidence, scope, and skill together; run the native staged-install verifier. Merge to the default branch to trigger bootstrap, then rerun cao enable squad-advisory to confirm native workflow enablement. No commit, push, or bootstrap dispatch was performed.',
+  };
+}
+
+export async function installSquadCampaignFromRoot({ addCampaign, policyPath, execute, prepareSquad, installSquad, now }) {
+  const roots = (await installedCampaignRecords()).filter((record) => CAO_CATALOGS.includes(record.campaign));
+  if (roots.length !== 1 || !/^[0-9a-f]{40}$/i.test(roots[0].resolvedCommit)) {
+    throw new Error('Squad activation requires exactly one trusted installed CAO root with an immutable resolvedCommit; install or reconcile the root package first');
+  }
+  const campaignSpec = `${roots[0].campaign}/squad-advisory@${roots[0].resolvedCommit}`;
+  // add prepares native prerequisites while clean, before either package writes.
+  const result = await addCampaign(campaignSpec, [], {
+    policyPath, execute, installSquad, enableSquad: true,
+    prepareSquad: (options) => prepareSquad({ ...options, now }),
+  });
+  return pendingActivation({ nativeSquad: result.nativeSquad, catalogSource: campaignSpec });
+}
+
 export async function activateSquadCampaign(action, {
   policy, policyPath, controlRepository, writePolicy, root = process.cwd(), execute = spawnSync,
   now = () => new Date(), prepareSquad = prepareSquadOnboarding, installSquad = installPreparedSquad,
@@ -240,16 +262,12 @@ export async function activateSquadCampaign(action, {
   if (run('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Squad activation requires a clean committed worktree; review and commit pending changes first');
   const campaign = policy['control-plane']?.campaigns?.['squad-advisory'];
   if (!campaign) throw new Error('Squad Advisory must be declared in CAO policy before activation');
-  const pending = (extra = {}) => ({
-    status: 'pending-review', remotelyActive: null, workflows: [], ...extra,
-    next: 'Review and commit the native package, policy, farm evidence, scope, and skill together; run the native staged-install verifier. Merge to the default branch to trigger bootstrap, then rerun cao enable squad-advisory to confirm native workflow enablement. No commit, push, or bootstrap dispatch was performed.',
-  });
   if (action === 'enable' && (!existsSync(safePath(root, SQUAD_RECEIPT)) || campaign.enabled !== true)) {
     const prepared = await prepareSquad({ policy, controlRepository, root, execute, now });
     const nativeSquad = installSquad(prepared);
     setSquadPolicy(policy, true);
     await writePolicy(policyPath, policy);
-    return pending({ nativeSquad });
+    return pendingActivation({ nativeSquad });
   }
 
   const api = (endpoint) => JSON.parse(run('gh', ['api', endpoint]));
@@ -260,7 +278,7 @@ export async function activateSquadCampaign(action, {
     setSquadPolicy(policy, true);
     if (previous !== JSON.stringify(campaign)) {
       await writePolicy(policyPath, policy);
-      return pending();
+      return pendingActivation();
     }
     const metadata = api(`repos/${controlRepository}`);
     if (metadata.full_name?.toLowerCase() !== controlRepository.toLowerCase() || !metadata.default_branch || metadata.archived || metadata.has_issues !== true) {
@@ -276,12 +294,12 @@ export async function activateSquadCampaign(action, {
     const tree = api(`repos/${controlRepository}/git/trees/${head}?recursive=1`);
     if (tree.truncated || !Array.isArray(tree.tree)) throw new Error('Squad activation default-branch inventory is incomplete');
     const remoteFiles = new Set(tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path));
-    if (required.some((file) => !remoteFiles.has(file))) return pending({ defaultBranchRevision: head });
+    if (required.some((file) => !remoteFiles.has(file))) return pendingActivation({ defaultBranchRevision: head });
     for (const file of required) {
       const expected = readFileSync(safePath(root, file));
       const remote = api(`repos/${controlRepository}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`);
       if (remote.type !== 'file' || remote.encoding !== 'base64' || typeof remote.content !== 'string') throw new Error(`Squad activation cannot verify reviewed file: ${file}`);
-      if (!Buffer.from(remote.content, 'base64').equals(expected)) return pending({ defaultBranchRevision: head });
+      if (!Buffer.from(remote.content, 'base64').equals(expected)) return pendingActivation({ defaultBranchRevision: head });
     }
   }
   const pages = JSON.parse(run('gh', ['api', `repos/${controlRepository}/actions/workflows?per_page=100`, '--paginate', '--slurp']));
@@ -291,7 +309,7 @@ export async function activateSquadCampaign(action, {
     throw new Error('Squad workflow inventory is incomplete; no workflow state was changed');
   }
   const native = WORKFLOWS.map((name) => workflows.find((workflow) => workflow.path === `.github/workflows/${name}.lock.yml`)).filter(Boolean);
-  if (action === 'enable' && native.length !== WORKFLOWS.length) return pending();
+  if (action === 'enable' && native.length !== WORKFLOWS.length) return pendingActivation();
   if (native.some((workflow) => !Number.isSafeInteger(workflow.id) || !['active', 'disabled_manually', 'disabled_inactivity'].includes(workflow.state))) {
     throw new Error('Squad native workflows have an unsupported Actions state; no workflow state was changed');
   }

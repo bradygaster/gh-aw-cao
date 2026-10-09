@@ -82,7 +82,7 @@ import { commandHandlers } from './commands/index.mjs';
 import { parseUpdateArguments, resolveUpdateCommit } from './commands/update.mjs';
 import { setupCaoControlPlane } from './setup.mjs';
 import { upgradeGhAwVersion } from './upgrade-gh-aw.mjs';
-import { activateSquadCampaign, installPreparedSquad, prepareSquadOnboarding, setSquadPolicy } from './squad-onboarding.mjs';
+import { activateSquadCampaign, installPreparedSquad, installSquadCampaignFromRoot, prepareSquadOnboarding, setSquadPolicy } from './squad-onboarding.mjs';
 import { CAO_CATALOGS, installedCampaignRecords, resolvePathWithinRoot } from './campaign-records.mjs';
 
 export { setupCaoControlPlane } from './setup.mjs';
@@ -730,7 +730,8 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
   execute = spawnSync,
   prepareSquad = prepareSquadOnboarding,
-  installSquad = installPreparedSquad
+  installSquad = installPreparedSquad,
+  enableSquad = false
 } = {}) {
   if (!campaignSpec || campaignSpec.startsWith('-')) throw new UsageError('cao add requires a campaign');
   const expectedCampaign = campaignSlugFromSpec(campaignSpec);
@@ -785,7 +786,7 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   }
 
   mergeCaoCampaignDeclaration(policy, declaration);
-  if (squad) setSquadPolicy(policy);
+  if (squad) setSquadPolicy(policy, enableSquad ? true : undefined);
   const nativeSquad = squad ? installSquad(squad) : undefined;
   await writeJsonAtomically(absolutePolicyPath, policy);
   return {
@@ -955,14 +956,21 @@ export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
   }
 
   const declarations = [];
+  let missingSquad = false;
   for (const campaignName of campaigns) {
     const declaration = await readInstalledCaoDeclaration(campaignName);
     if (!declaration) {
+      if (action === 'enable' && campaignName === 'squad-advisory') {
+        missingSquad = true;
+        continue;
+      }
       throw new Error(`Campaign ${campaignName} is not installed or does not declare CAO workflows`);
     }
     declarations.push(declaration);
   }
-  const nativeSquad = campaigns.includes('squad-advisory')
+  const nativeSquad = missingSquad
+    ? await installSquadCampaignFromRoot({ addCampaign: addCaoCampaign, policyPath, execute, prepareSquad, installSquad, now })
+    : campaigns.includes('squad-advisory')
     ? await activateSquadCampaign(action, {
       policy: await readCaoPolicy(policyPath, action), policyPath,
       controlRepository: resolveControlRepository(execute), execute, prepareSquad, installSquad,

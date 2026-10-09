@@ -16,7 +16,7 @@ The adoption flow is:
 
 1. Configure exact farm enrollment in the operations repository's reviewed
    `.github/workflows/cao.json`, then select Squad Advisory with `cao add` or
-   activate an already declared campaign with `cao enable squad-advisory`.
+   activate it directly with `cao enable squad-advisory`.
 2. Setup resolves current `bradygaster/squad` **dev once to one immutable SHA**,
    validates compatibility and ownership, and reads complete bounded evidence
    for every enrolled repository before installing anything.
@@ -74,12 +74,22 @@ disabled; add/update preserve an explicitly enabled campaign.
 
 ## Activate native Squad
 
-From a clean committed operations checkout with the campaign sources and
-`squad-advisory/cao.json` already present (installed or source-managed), run:
+From a clean committed operations checkout with CAO initialized and exact farm
+enrollment committed, run:
 
 ```bash
 cao enable squad-advisory
 ```
+
+If the campaign is not installed, enable installs it from the exact
+`resolvedCommit` in the installed CAO root package's ownership record, then
+installs native Squad in the same pending-review change. Only the exact trusted
+catalog identities `githubnext/gh-aw-cao` and `bradygaster/gh-aw-cao` are accepted;
+a missing, ambiguous, or unpinned root fails closed. No floating catalog lookup
+or separate manual native installation is required. Native prerequisites,
+including complete farm evidence and existing router ownership checks, run
+before either package writes. Already installed or source-managed campaign
+declarations do not require a root package record.
 
 When native Squad is missing or the campaign is disabled, this is an
 installation operation, not just an Actions toggle. It resolves current dev
