@@ -50,6 +50,17 @@ func TestValidateManifestVerifiesHashesAndRunShard(t *testing.T) {
 		t.Fatalf("hash mismatch accepted: %v", err)
 	}
 }
+
+func TestAzureEmptyDatasetManifest(t *testing.T) {
+	manifest, runs, records, err := ValidateManifest("../../azure/empty-data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest) != 1 || len(runs) != 1 || runs[0] != "gh-aw-logs-runs/empty.jsonl" || len(records) != 0 {
+		t.Fatalf("unexpected empty dataset contract: manifest=%v runs=%v records=%v", manifest, runs, records)
+	}
+}
+
 func TestValidateManifestFailsClosed(t *testing.T) {
 	for _, name := range []string{"../escape", "/absolute", "gh-aw-logs-shards/raw.jsonl", "inventory-sources.json"} {
 		directory := scratchDirectory(t)

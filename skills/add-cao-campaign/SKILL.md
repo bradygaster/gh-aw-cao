@@ -1,6 +1,6 @@
 ---
 name: add-cao-campaign
-description: "Discover, compare, recommend, or install an existing Central Agentic Ops (CAO) catalog campaign. Use when a user wants to browse the CAO catalog, find an operation for an outcome, compare campaigns, or add a campaign to a control repository safely."
+description: "Discover, compare, recommend, or safely install an existing Central Agentic Ops (CAO) catalog campaign in a control repository."
 metadata:
   argument-hint: "Describe the desired operational outcome or name a CAO catalog campaign"
 ---
@@ -15,8 +15,7 @@ metadata:
 4. Require selection and explicit installation approval.
 5. Install through `./cao.sh add`, validate policy preservation, and report.
 
-Choose and install an existing CAO operational campaign from the current
-catalog. Never rely on a hard-coded list or silently select or install one.
+Never use a hard-coded catalog or silently select or install a campaign.
 
 ## Boundaries
 
@@ -49,7 +48,9 @@ When no campaign is named, ask for the operational outcome. Recommend no more th
 - notable permissions, network access, credentials, and safe outputs;
 - the main tradeoff or reason it may not fit.
 
-Include `None of these` as a choice. Require the user to select one exact campaign; do not treat a vague outcome, the first recommendation, or lack of response as consent. If no campaign fits, offer the `create-cao-campaign` handoff without installing anything.
+Include `None of these`. Require explicit selection of one exact campaign;
+a vague outcome or silence is not consent. If none fits, hand off to
+`create-cao-campaign` without installing.
 
 When the user names a campaign, verify it against the same catalog process and still present its safety summary before asking for installation approval.
 
@@ -76,15 +77,11 @@ After explicit approval, run the repository-local CLI from the control repositor
 
 Forward additional campaign-installer options only when the user requested them and they do not weaken the reviewed boundary. Do not pass secrets in command arguments.
 
-For `squad-advisory`, native Squad is mandatory: read the campaign README's
-onboarding prerequisites before approval. CAO resolves current Squad dev to one
-immutable SHA, verifies exact compiler compatibility, and prepares bounded
-evidence for every explicitly enrolled repository. Review the native package,
-farm evidence, research scope, farm skill, and policy in one install change
-before its default-branch bootstrap push. Do not replace this flow with direct
-`gh aw add`, a fixed research roster, or an optional Squad adoption step.
-Automatic snapshot refresh remains disabled pending native review attribution;
-use reviewed local updates, preserving native Cast PR/Profile A review gates.
+For `squad-advisory`, follow its README: native Squad is mandatory, resolved
+from dev to one compatible SHA. Review the package, complete bounded farm
+evidence, scope, skill, and policy together before bootstrap. Preserve native
+review gates; automatic snapshot refresh stays disabled pending attribution.
+Do not substitute direct `gh aw add` or a bespoke research roster.
 
 After installation:
 
