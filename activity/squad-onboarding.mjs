@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { collectFarmEvidence, contentHash, FARM_LIMITS } from './squad-farm.mjs';
+import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from './squad-farm.mjs';
 import { parsePolicy } from '../.github/workflows/shared/policy.mjs';
 
 export const SQUAD_PACKAGE = 'bradygaster/squad/workflows';
@@ -12,12 +12,23 @@ export const SQUAD_RECEIPT = '.github/cao/squad-install.json';
 const ROUTER = '.github/skills/agentic-workflows/SKILL.md';
 const WORKFLOWS = ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'];
 
+export function setSquadPolicy(policy, enabled = policy['control-plane']?.campaigns?.['squad-advisory']?.enabled ?? false) {
+  const campaign = policy['control-plane']?.campaigns?.['squad-advisory'];
+  if (!campaign) throw new Error('Squad Advisory must be declared in CAO policy before activation');
+  campaign.enabled = enabled;
+  campaign.mode = 'review';
+  for (const worker of Object.values(campaign.workers ?? {})) worker.enabled = false;
+}
+
 function command(execute, root, executable, args) {
   const result = execute(executable, args, {
     cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, SQUAD_GH_AW_SCHEDULE_SEED: 'githubnext/gh-aw-cao' },
   });
   if (result.error || result.status !== 0) {
+    if (executable === 'gh' && args[0] === 'workflow') {
+      throw new Error(`Squad workflow ${args[1]} command failed for ID ${args[2]}; earlier workflow toggles may have succeeded. Inspect Actions state before retrying; no successful activation is claimed`);
+    }
     throw new Error(`Squad prerequisite or installation command failed: ${executable} ${args.slice(0, 2).join(' ')} (exit ${result.status ?? 'unknown'}); inspect locally, do not commit a partial install`);
   }
   return (args[0] === 'aw' && args[1] === 'version'
@@ -191,4 +202,113 @@ export function installPreparedSquad(prepared) {
   mkdirSync(path.dirname(destination), { recursive: true });
   writeFileSync(destination, `${JSON.stringify(result, null, 2)}\n`);
   return { sourceRevision: revision, repositories: evidence.repositories, status: 'prepared-for-review', next: 'Review and commit the complete install, farm evidence, scope, and policy together. Run the native staged-install verifier before committing. Bootstrap starts only after the reviewed default-branch installation push.' };
+}
+
+function verifySquadActivation(root, execute, policy, controlRepository, now) {
+  const receipt = readJson(root, SQUAD_RECEIPT);
+  ownedIntegration(root, receipt);
+  const manifest = readJson(root, SQUAD_MANIFEST);
+  const files = destinations(manifest);
+  command(execute, root, process.execPath, [SQUAD_VERIFIER, '--verify-install', '--source-revision', receipt.source_revision, '--strict-compile']);
+  if (manifest.minimum_gh_aw_version !== policy['gh-aw-version'] || receipt.compiler !== policy['gh-aw-version']) throw new Error('Squad activation compiler differs from reviewed CAO policy');
+  for (const file of ['farm/INDEX.md', 'farm/evidence.json', '.squad/research-scope.json', '.squad/skills/cao-farm/SKILL.md']) {
+    if (!receipt.files[file]) throw new Error(`Squad activation is missing owned evidence: ${file}`);
+  }
+  const evidence = readJson(root, 'farm/evidence.json');
+  const age = now().getTime() - Date.parse(evidence.generated_at);
+  if (!Number.isFinite(age) || age < 0 || age > FARM_LIMITS.maxAgeMs) throw new Error('Squad evidence is stale; run cao update and review the fresh evidence before activation');
+  const enrollment = farmEnrollment(policy, controlRepository);
+  if (evidence.schema !== 'cao-squad-farm/v1' || evidence.control_repository !== controlRepository
+    || evidence.enrollment_sha256 !== contentHash(JSON.stringify(policy['control-plane'].scope))
+    || JSON.stringify(evidence.repositories?.map((record) => record.repository)) !== JSON.stringify(enrollment)
+    || JSON.stringify(receipt.repositories) !== JSON.stringify(enrollment)) {
+    throw new Error('Squad farm evidence does not match current authoritative enrollment; refresh before activation');
+  }
+  for (const record of evidence.repositories) {
+    if (!receipt.files[record.destination]) throw new Error(`Squad activation is missing farm coverage for ${record.repository}`);
+  }
+  return { receipt, files: [...new Set([...files, ...Object.keys(receipt.files), SQUAD_RECEIPT])] };
+}
+
+export async function activateSquadCampaign(action, {
+  policy, policyPath, controlRepository, writePolicy, root = process.cwd(), execute = spawnSync,
+  now = () => new Date(), prepareSquad = prepareSquadOnboarding, installSquad = installPreparedSquad,
+}) {
+  if (!['enable', 'disable'].includes(action)) throw new Error('Squad activation action must be enable or disable');
+  parsePolicy(JSON.stringify(policy));
+  const run = (executable, args) => command(execute, root, executable, args);
+  if (run('git', ['status', '--porcelain', '--untracked-files=all'])) throw new Error('Squad activation requires a clean committed worktree; review and commit pending changes first');
+  const campaign = policy['control-plane']?.campaigns?.['squad-advisory'];
+  if (!campaign) throw new Error('Squad Advisory must be declared in CAO policy before activation');
+  const pending = (extra = {}) => ({
+    status: 'pending-review', remotelyActive: null, workflows: [], ...extra,
+    next: 'Review and commit the native package, policy, farm evidence, scope, and skill together; run the native staged-install verifier. Merge to the default branch to trigger bootstrap, then rerun cao enable squad-advisory to confirm native workflow enablement. No commit, push, or bootstrap dispatch was performed.',
+  });
+  if (action === 'enable' && (!existsSync(safePath(root, SQUAD_RECEIPT)) || campaign.enabled !== true)) {
+    const prepared = await prepareSquad({ policy, controlRepository, root, execute, now });
+    const nativeSquad = installSquad(prepared);
+    setSquadPolicy(policy, true);
+    await writePolicy(policyPath, policy);
+    return pending({ nativeSquad });
+  }
+
+  const api = (endpoint) => JSON.parse(run('gh', ['api', endpoint]));
+  let unit;
+  if (action === 'enable') {
+    unit = verifySquadActivation(root, execute, policy, controlRepository, now);
+    const previous = JSON.stringify(campaign);
+    setSquadPolicy(policy, true);
+    if (previous !== JSON.stringify(campaign)) {
+      await writePolicy(policyPath, policy);
+      return pending();
+    }
+    const metadata = api(`repos/${controlRepository}`);
+    if (metadata.full_name?.toLowerCase() !== controlRepository.toLowerCase() || !metadata.default_branch || metadata.archived || metadata.has_issues !== true) {
+      throw new Error('Squad activation requires the active operations repository with Issues and a default branch');
+    }
+    const branch = api(`repos/${controlRepository}/branches/${encodeURIComponent(metadata.default_branch)}`);
+    const head = branch.commit?.sha;
+    if (!/^[0-9a-f]{40}$/.test(head)) throw new Error('Squad activation could not resolve an immutable default-branch revision');
+    const relativePolicy = path.relative(realpathSync(root), realpathSync(path.resolve(root, policyPath))).split(path.sep).join('/');
+    safePath(root, relativePolicy);
+    const required = [...unit.files, relativePolicy];
+    // One immutable default-branch tree proves the whole reviewed unit landed.
+    const tree = api(`repos/${controlRepository}/git/trees/${head}?recursive=1`);
+    if (tree.truncated || !Array.isArray(tree.tree)) throw new Error('Squad activation default-branch inventory is incomplete');
+    const remoteFiles = new Set(tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path));
+    if (required.some((file) => !remoteFiles.has(file))) return pending({ defaultBranchRevision: head });
+    for (const file of required) {
+      const expected = readFileSync(safePath(root, file));
+      const remote = api(`repos/${controlRepository}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`);
+      if (remote.type !== 'file' || remote.encoding !== 'base64' || typeof remote.content !== 'string') throw new Error(`Squad activation cannot verify reviewed file: ${file}`);
+      if (!Buffer.from(remote.content, 'base64').equals(expected)) return pending({ defaultBranchRevision: head });
+    }
+  }
+  const pages = JSON.parse(run('gh', ['api', `repos/${controlRepository}/actions/workflows?per_page=100`, '--paginate', '--slurp']));
+  const workflows = Array.isArray(pages) ? pages.flatMap((page) => page.workflows ?? []) : [];
+  if (!Array.isArray(pages) || !pages.length || pages.some((page) => !Array.isArray(page.workflows) || page.total_count !== workflows.length)
+    || new Set(workflows.map((workflow) => workflow.id)).size !== workflows.length) {
+    throw new Error('Squad workflow inventory is incomplete; no workflow state was changed');
+  }
+  const native = WORKFLOWS.map((name) => workflows.find((workflow) => workflow.path === `.github/workflows/${name}.lock.yml`)).filter(Boolean);
+  if (action === 'enable' && native.length !== WORKFLOWS.length) return pending();
+  if (native.some((workflow) => !Number.isSafeInteger(workflow.id) || !['active', 'disabled_manually', 'disabled_inactivity'].includes(workflow.state))) {
+    throw new Error('Squad native workflows have an unsupported Actions state; no workflow state was changed');
+  }
+  for (const workflow of native) {
+    run('gh', ['workflow', action, String(workflow.id), '--repo', controlRepository]);
+  }
+  if (action === 'disable') {
+    setSquadPolicy(policy, false);
+    await writePolicy(policyPath, policy);
+  }
+  return {
+    status: action === 'enable' ? 'native-workflows-enabled' : 'native-workflows-disabled-pending-policy-review',
+    remotelyActive: action === 'enable',
+    workflows: native.map((workflow) => path.basename(workflow.path, '.lock.yml')),
+    ...(unit ? { sourceRevision: unit.receipt.source_revision } : {}),
+    next: action === 'enable'
+      ? 'Native workflow entrypoints are enabled; this does not prove bootstrap or research completed. Follow the Cast PR/Profile A review gates. No bootstrap dispatch was performed.'
+      : 'Native workflow entrypoints are disabled. Review and commit the disabled CAO policy. Existing runs are not cancelled; native runtime does not consult the CAO enabled flag.',
+  };
 }
