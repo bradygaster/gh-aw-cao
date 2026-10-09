@@ -320,6 +320,11 @@ test('fresh installed campaign inventory contains native Squad and never the ret
   const f = fixture(t);
   const sourceRoot = path.resolve(import.meta.dirname, '../..');
   const campaignManifest = readFileSync(path.join(sourceRoot, 'squad-advisory/aw.yml'), 'utf8');
+  assert.deepEqual(parse(campaignManifest).includes, [
+    '.github/workflows/squad-advisory.md',
+    '.github/workflows/squad-advisory-farm-snapshot.md',
+    'README.md',
+  ], 'Squad requires an initialized CAO root and must not reinstall its owned workflows');
   const declaration = JSON.parse(readFileSync(path.join(sourceRoot, 'squad-advisory/cao.json'), 'utf8'));
   f.write('squad-advisory/aw.yml', campaignManifest);
   f.write('squad-advisory/cao.json', `${JSON.stringify(declaration)}\n`);
