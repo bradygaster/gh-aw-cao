@@ -464,7 +464,7 @@ therefore execute one layout. `.github/aw/` remains exclusively gh-aw-owned.
   cannot replace the projection concurrently. Its client exposes the active
   GitHub login and supports explicit account switching through a fresh OAuth
   account-selection flow without combining account authority. Hosted transport
-  is fail-closed: Redis uses TLS by default and always in Azure; a Coolify-managed
+  is fail-closed: Redis uses TLS by default when selected; a Coolify-managed
   Redis service may use private plaintext only through an explicit opt-in and a
   private address. A public listener terminates TLS directly, while a private
   Coolify listener may rely on proxy TLS only when the direct proxy peer belongs
@@ -477,6 +477,13 @@ therefore execute one layout. `.github/aw/` remains exclusively gh-aw-owned.
   rotation can retain the previous key until sessions and revocations drain.
   Refreshed sessions use an atomic compare-and-swap so logout cannot be undone
   by a concurrent OAuth refresh.
+- The Azure deployment baseline provisions private PostgreSQL for both canonical
+  and operational storage, without Redis. One Log Analytics workspace and one
+  workspace-backed Application Insights component are shared by the deployment.
+  A private manual ingestion job publishes explicitly selected adopter snapshots
+  or an explicit empty dataset; builds never download a catalog-owned dataset
+  implicitly. Instance policy, credentials, and target enrollment remain
+  adopter-owned inputs, not public deployment defaults.
 - In the durable PostgreSQL or Redis server-collection profiles, delivery deduplication, repository debounce,
   and task append are one atomic admission. Memory provides the same
   atomic admission within one process lifetime, not restart durability. Queue transitions append

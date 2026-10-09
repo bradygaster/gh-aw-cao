@@ -8,10 +8,11 @@ ARG CAO_PROFILE=cao.json
 ENV CAO_VERSION=${VERSION}
 WORKDIR /workspace
 COPY dashboard/site/package.json dashboard/site/package-lock.json ./dashboard/site/
+COPY dashboard/site/packages/ ./dashboard/site/packages/
 RUN sed -i \
       's#https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/#https://registry.npmjs.org/#' \
       dashboard/site/package-lock.json \
-    && npm --prefix dashboard/site ci --omit=dev --ignore-scripts
+    && npm --prefix dashboard/site ci --include=dev --ignore-scripts
 COPY . .
 RUN REPORT_ROOT=/workspace \
     REPORT_INVENTORY=/tmp/control-plane-inventory.json \
@@ -38,6 +39,11 @@ RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
     -o /out/cao-dashboard \
     ./cmd/cao-dashboard
+RUN CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
+    -o /out/cao-functions \
+    ./cmd/cao-functions
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS dashboard-runtime
 
@@ -68,6 +74,7 @@ COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/src/a
 COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/src/agent/queries.generated.json /app/agent/queries.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/src/agent/mcp-contract.json /app/agent/mcp-contract.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.json /app/.github/workflows/cao.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.azure.json /app/.github/workflows/cao.azure.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.coolify.json /app/.github/workflows/cao.coolify.json
 
 WORKDIR /app
@@ -79,6 +86,46 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["serve-hosted", "--listen", "0.0.0.0:8080", "--site", "/app/site", "--dashboard-queries", "/app/agent/queries.json", "--database-queries", "/app/queries/database.json"]
+
+FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS azure-functions-runtime
+
+# hadolint ignore=DL3018
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates \
+    && addgroup -S -g 65532 cao \
+    && adduser -S -D -H -u 65532 -G cao cao \
+    && mkdir -p /app/site /app/.github/workflows \
+    && chown -R cao:cao /app
+
+COPY --from=server-build --chown=cao:cao /out/cao-functions /app/cao-functions
+COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/ /app/site/
+COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/src/data/queries/database.json /app/queries/database.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.json /app/.github/workflows/cao.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.azure.json /app/.github/workflows/cao.azure.json
+
+ENV FUNCTIONS_CUSTOMHANDLER_HOST=0.0.0.0 \
+    FUNCTIONS_CUSTOMHANDLER_PORT=8080 \
+    CAO_DATABASE_QUERIES=/app/queries/database.json
+WORKDIR /app
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app/cao-functions"]
+
+FROM dashboard-runtime AS azure-ingest-runtime
+
+ARG CAO_INGEST_SOURCE
+RUN test -n "${CAO_INGEST_SOURCE}"
+COPY --chown=cao:cao ${CAO_INGEST_SOURCE}/ /data/
+
+ENTRYPOINT ["/app/cao-dashboard"]
+CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
+
+FROM dashboard-runtime AS azure-empty-ingest-runtime
+
+COPY --chown=cao:cao server/azure/empty-data/ /data/
+
+ENTRYPOINT ["/app/cao-dashboard"]
+CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
 
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS collector-runtime
 

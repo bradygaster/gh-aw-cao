@@ -5,9 +5,9 @@ The Go dashboard server has three security profiles:
 - the default local profile used by `cao-dashboard serve`, for one trusted
   operator on loopback; and
 - the explicit Azure Functions profile, for remote access through GitHub OAuth,
-  server-side sessions, Azure trusted-proxy headers, and Azure Managed Redis; and
+  server-side sessions, Azure trusted-proxy headers, and PostgreSQL operational storage; and
 - the host-neutral `serve-hosted` profile, with the same GitHub identity boundary
-  behind an explicitly trusted HTTPS proxy and any compatible managed Redis.
+  behind an explicitly trusted HTTPS proxy and a reviewed operational backend.
 
 The hosted single-process memory alternative retains every OAuth, HTTPS,
 organization/team, administrator, CSRF, proxy, signature, and quota boundary.
@@ -88,19 +88,18 @@ authentication, CSRF, host validation, or rate limiting. Unauthenticated
 subresource requests receive `401` instead of a redirect to GitHub OAuth. The
 complete normative contract is `specs/server-cors.md`.
 
-Webhook delivery IDs and projection leases are stored in the deployment Redis
-namespace. Failed reconciliation removes its delivery marker so GitHub can
+Webhook delivery IDs and projection leases are stored in the selected
+operational namespace. Failed reconciliation removes its delivery marker so GitHub can
 retry. Full rebuilds and webhook reconciliation share a distributed lease;
-each Postgres replacement is committed atomically. Redis remains disposable,
+each Postgres replacement is committed atomically. Disposable caches remain rebuildable,
 and health distinguishes an available service from ready data.
 
-`CAO_REDIS_URL`, OAuth secrets, the webhook secret, and session secrets are
+Database URLs, OAuth secrets, the webhook secret, and session secrets are
 process-only configuration resolved by the deployment's secret manager. They
-are never accepted as hosted command-line flags, returned by APIs, or written
-to logs. Hosted Redis uses `rediss://` with certificate and hostname
-verification by default; only the explicit Coolify private-network exception
-permits plaintext. The core service imports no cloud identity or
-secret-management SDK.
+are never returned by APIs or written to logs. Hosted Redis, when explicitly
+selected, uses `rediss://` with certificate and hostname verification by
+default; only the explicit Coolify private-network exception permits plaintext.
+The core service imports no cloud identity or secret-management SDK.
 
 ## Dashboard access capability
 
@@ -227,8 +226,8 @@ labels, or health check.
 `rediss://` remains preferred. `redis://` is acceptable only for a
 Coolify-managed Redis service isolated on the same private network, after the
 explicit plaintext opt-in. Network isolation and Redis authentication remain
-operator responsibilities. Azure Functions ignores this hosted opt-in and
-continues to require `rediss://` to Azure Managed Redis.
+operator responsibilities. The current Azure Functions profile selects
+PostgreSQL operational storage and does not configure Redis.
 
 Deployment uses a Git-backed Coolify resource restricted to protected `main`.
 The Coolify GitHub App supplies source access and the webhook that starts an
@@ -308,10 +307,13 @@ configured allow-list and the forwarded protocol is HTTPS.
 ### GitHub OAuth and authorization
 
 Azure mode implements the GitHub OAuth authorization-code flow. It requests the
-minimum `read:org` scope needed for active organization or team membership
-authorization. Successful GitHub authentication alone is insufficient: the
-server must verify an allowed organization or team membership before creating a
-session. Do not add PAT handling to Azure mode; PATs bypass the required
+minimum `read:org` scope needed when active organization or team membership is
+part of the authorization policy. Successful GitHub authentication alone is
+insufficient: the server must match an explicitly allowed user or verify an
+allowed organization or team membership before creating a session. Direct user
+entries are appropriate for narrow access that must not depend on an
+organization's OAuth application visibility. Do not add PAT handling to Azure
+mode; PATs bypass the required
 browser login, refresh-token rotation, revocation, and explicit membership
 authorization controls.
 
@@ -385,14 +387,14 @@ The Azure Functions profile assumes the following actors:
 
 | Actor | Capabilities | Security expectation |
 | --- | --- | --- |
-| Authorized dashboard user | Opens the hosted dashboard and makes browser API requests. | Must authenticate through GitHub OAuth, satisfy explicit org/team authorization, send CSRF headers for mutation, and receive no Redis credentials or GitHub tokens. |
+| Authorized dashboard user | Opens the hosted dashboard and makes browser API requests. | Must authenticate through GitHub OAuth, satisfy explicit org/team authorization, send CSRF headers for mutation, and receive no database credentials or GitHub tokens. |
 | Unauthenticated or unauthorized user | Can reach the public Function App URL. | Can read only minimal health status; all static dashboard access redirects to login and all data APIs fail closed. |
-| Browser attacker | Can attempt CSRF, stale session reuse, URL injection, or token exfiltration through browser storage. | Session authority is in `Secure`, `HttpOnly`, `SameSite=Lax` cookies; CSRF tokens are session-bound; GitHub tokens and Redis URLs are never browser-readable. |
-| Network attacker | Can observe or interfere with traffic outside Azure/GitHub TLS channels. | HTTPS-only Function App, TLS Redis, verified Redis certificates, and no plaintext remote Redis are required. |
+| Browser attacker | Can attempt CSRF, stale session reuse, URL injection, or token exfiltration through browser storage. | Session authority is in `Secure`, `HttpOnly`, `SameSite=Lax` cookies; CSRF tokens are session-bound; GitHub tokens and database URLs are never browser-readable. |
+| Network attacker | Can observe or interfere with traffic outside Azure/GitHub TLS channels. | HTTPS-only Function App and TLS PostgreSQL transport are required. |
 | Azure platform/operator | Can deploy Bicep, configure app settings, rotate keys, and view platform metadata. | Uses reviewed Bicep, managed identity, Key Vault RBAC, non-secret outputs, and secret rotation procedures; does not copy secret values into logs, tickets, or checked-in files. |
 | GitHub OAuth/API | Issues tokens and reports membership. | OAuth client secret remains in Key Vault, tokens remain server-side, refresh failures clear sessions, and membership is rechecked before session creation. |
-| Redis | Stores operational state, bounded caches, and encrypted OAuth session records. | Does not store dashboard entities or control dashboard-data readiness; access is TLS-only and namespace-scoped. |
-| Telemetry/diagnostics reader | Can view Application Insights and operational logs. | Sees only structured, non-secret operational metadata; no tokens, cookies, Redis URLs, prompt contents, source records, or secret values are logged. |
+| PostgreSQL | Stores canonical dashboard entities and isolated operational state, bounded caches, and encrypted OAuth session records. | Keeps canonical and operational tables and namespaces separate; access is TLS-only outside loopback. |
+| Telemetry/diagnostics reader | Can view Application Insights and operational logs. | Sees only structured, non-secret operational metadata; no tokens, cookies, database URLs, prompt contents, source records, or secret values are logged. |
 
 Protected assets:
 
@@ -400,7 +402,7 @@ Protected assets:
   authorization decisions;
 - `CAO_SESSION_SECRET`, encrypted session records, session cookies, and CSRF
   tokens;
-- Redis URL/access key and the PostgreSQL dashboard projection;
+- PostgreSQL URL and the canonical and operational projections;
 - compacted dashboard source artifacts, logical source rows, diagnostics, and
   query results;
 - Bicep, app settings, Key Vault RBAC assignments, deployment history, and
@@ -429,7 +431,7 @@ Primary threats and mitigations:
   best-effort in Functions and requiring `/api/v1/refresh` polling as the
   reliable revision check.
 - **Over-broad observability**: mitigated by logging only structured
-  operational metadata and excluding tokens, cookies, Redis URLs, source
+  operational metadata and excluding tokens, cookies, database URLs, source
   records, and prompt contents from Application Insights and diagnostics.
 - **Deployment drift**: mitigated by using checked-in Bicep as the reviewed
   contract, focused Bicep contract tests for Key Vault and platform security
@@ -444,8 +446,8 @@ use:
 - The Bicep template is a baseline and does not by itself prove tenant-specific
   network isolation, private endpoint reachability, cost limits, backup
   posture, data residency, or regulatory compliance.
-- PostgreSQL stores the rebuildable dashboard projection; Redis stores only
-  operational state, bounded caches, and encrypted sessions. An organization
+- PostgreSQL stores the rebuildable dashboard projection and, by default,
+  isolated operational state, bounded caches, and encrypted sessions. An organization
   must validate whether its data classification permits those stores and
   retention models.
 - The profile has focused automated tests and Bicep contract checks, but it
@@ -456,8 +458,8 @@ use:
 ### Azure secure-computing and compliance controls
 
 Key Vault is mandatory for every secret-bearing Azure setting. The deployment
-contract keeps the GitHub OAuth client secret, session secret, Redis
-`rediss://` URL, and Functions runtime storage connection in Key Vault and wires
+contract keeps the GitHub OAuth client secret, session secret, and PostgreSQL URL
+in Key Vault and wires
 the Function App through versionless Key Vault references. Do not emit these
 values from Bicep, commit them in parameter files, copy them into app settings
 as literals, or log them during deployment.
@@ -465,7 +467,7 @@ as literals, or log them during deployment.
 Use a system-assigned managed identity and Key Vault RBAC for secret reads.
 Review Key Vault access policies/role assignments, Azure activity logs, and
 Function App configuration changes as part of compliance evidence. Secret
-rotation should happen through GitHub OAuth settings, Azure Redis/storage key
+rotation should happen through GitHub OAuth settings, PostgreSQL/storage credential
 rotation, and new Key Vault secret versions. Versionless references allow the
 platform to resolve current versions without changing application settings.
 
@@ -473,18 +475,18 @@ Keep the Azure secure-computing baseline enabled:
 
 - HTTPS-only Function App, TLS 1.2 or newer, disabled FTPS, and no local bearer
   capability in Azure mode;
-- Redis encrypted client protocol, disabled Redis public network access, and no
-  Redis credentials in browser payloads;
-- storage HTTPS enforcement and no public blob access for Functions runtime
-  state;
+- PostgreSQL TLS for every non-loopback connection and no database credentials
+  in browser payloads;
+- storage HTTPS enforcement, disabled shared-key access, managed-identity data
+  roles, and no public blob access for Functions runtime state;
 - Key Vault RBAC authorization, soft delete, and no secret values in Bicep
   outputs; and
 - Application Insights/telemetry with structured operational metadata only,
-  never GitHub tokens, Redis URLs, session secrets, cookies, authorization
+  never GitHub tokens, database URLs, session secrets, cookies, authorization
   headers, source records, or prompt contents.
 
 The Azure Elastic Premium baseline keeps one always-on instance for the
-process-lifetime revocation worker. Redis remains the durable queue across
+process-lifetime revocation worker. PostgreSQL retains the durable queue across
 process replacement; each startup resumes bounded retry batches before the
 minute interval begins.
 
@@ -510,13 +512,11 @@ It does not replace Redis ACLs. Use a dedicated Redis instance or database and
 credentials restricted to the deployment namespace for separate trust
 boundaries.
 
-For Azure, use encrypted Redis client protocol. `server/azure/main.bicep` sets
-Redis public network access to disabled and expects the Redis URL to be
-delivered through Key Vault-backed app settings. Redis client authentication
-currently relies on access keys; do not output them. To rotate, regenerate the
-Redis access key, update
-the `cao-redis-url` Key Vault secret with the new `rediss://` URL, then restart
-the Function App so Key Vault references resolve the latest secret version.
+For Azure, require TLS in the PostgreSQL URL. `server/azure/main.bicep` delivers
+the URL through the Key Vault-backed `CAO_POSTGRES_URL` setting and selects the
+reviewed PostgreSQL operational backend. To rotate credentials, update the
+`cao-postgres-url` Key Vault secret, then restart the Function App and collection
+roles so Key Vault references resolve the latest secret version.
 
 ## Artifact ingestion protections
 

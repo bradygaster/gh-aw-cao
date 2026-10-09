@@ -100,6 +100,7 @@ type GitHubOAuthConfig struct {
 	RedirectURL           string
 	SessionSecret         string
 	PreviousSessionSecret string
+	AllowedUsers          []string
 	AllowedOrganizations  []string
 	AllowedTeams          []string
 	AuthURL               string
@@ -167,8 +168,8 @@ func (config *GitHubOAuthConfig) validate() error {
 	if config.PreviousSessionSecret != "" && len(config.PreviousSessionSecret) < 32 {
 		return errors.New("previous session secret must contain at least 32 characters")
 	}
-	if len(config.AllowedOrganizations) == 0 && len(config.AllowedTeams) == 0 {
-		return errors.New("GitHub OAuth authorization requires at least one allowed organization or team")
+	if len(config.AllowedUsers) == 0 && len(config.AllowedOrganizations) == 0 && len(config.AllowedTeams) == 0 {
+		return errors.New("GitHub OAuth authorization requires at least one allowed user, organization, or team")
 	}
 	if config.AuthURL == "" {
 		config.AuthURL = "https://github.com/login/oauth/authorize"
@@ -745,6 +746,12 @@ func (oauth *githubOAuth) authorizedAccount(ctx context.Context, accessToken str
 	if err != nil {
 		oauth.logBranch("authorization.identity_failed")
 		return githubAccount{}, err
+	}
+	for _, login := range oauth.config.AllowedUsers {
+		if strings.EqualFold(strings.TrimSpace(login), account.Login) {
+			oauth.logBranch("authorization.user_allowed")
+			return account, nil
+		}
 	}
 	for _, org := range oauth.config.AllowedOrganizations {
 		if oauth.orgAuthorized(ctx, accessToken, org) {
