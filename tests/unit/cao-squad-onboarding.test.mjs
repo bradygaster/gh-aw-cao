@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { collectFarmEvidence, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
 import { installPreparedSquad, prepareSquadOnboarding, SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_RECEIPT, SQUAD_VERIFIER } from '../../activity/squad-onboarding.mjs';
-import { addCaoCampaign, updateCaoCampaigns } from '../../activity/cao.mjs';
+import { addCaoCampaign, setCaoCampaignWorkflowsEnabled, updateCaoCampaigns } from '../../activity/cao.mjs';
 import { planCaoMaterialization } from '../../.github/workflows/shared/materialize-cao.mjs';
 import { discoverInventory } from '../../activity/inventory.mjs';
 import { parse } from 'yaml';
@@ -247,7 +247,8 @@ test('cao add requires native prerequisites before touching the campaign or poli
 });
 
 for (const operation of ['add', 'update']) {
-  test(`cao ${operation} installs native Squad, preserves scope, removes duplicate research and keeps automation disabled`, async (t) => {
+  for (const enabled of [undefined, false, true]) {
+  test(`cao ${operation} preserves explicit enabled=${enabled} while disabling legacy workers`, async (t) => {
     const f = fixture(t);
     const previous = process.cwd();
     const order = [];
@@ -255,7 +256,7 @@ for (const operation of ['add', 'update']) {
     const configured = structuredClone(policy);
     configured['control-plane'].campaigns = {
       existing: { enabled: false, mode: 'review' },
-      'squad-advisory': { enabled: false, mode: 'review', workers: { research: { workflow: 'squad-advisory-research' }, 'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', 'max-mode': 'review' } } },
+      'squad-advisory': { ...(enabled === undefined ? {} : { enabled }), mode: 'review', workers: { research: { workflow: 'squad-advisory-research' }, 'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', 'max-mode': 'review' } } },
     };
     f.write('.github/workflows/cao.json', JSON.stringify(configured));
     f.write('squad-advisory/cao.json', JSON.stringify({ campaign: 'squad-advisory', orchestrator: 'squad-advisory', workers: { 'farm-snapshot': 'squad-advisory-farm-snapshot' } }));
@@ -298,12 +299,13 @@ for (const operation of ['add', 'update']) {
       const saved = JSON.parse(readFileSync(policyPath, 'utf8'));
       assert.deepEqual(saved['control-plane'].scope, configured['control-plane'].scope);
       assert.deepEqual(saved['control-plane'].campaigns.existing, configured['control-plane'].campaigns.existing);
-      assert.equal(saved['control-plane'].campaigns['squad-advisory'].enabled, false);
-      assert.deepEqual(saved['control-plane'].campaigns['squad-advisory'].workers, { 'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', 'max-mode': 'review' } });
+      assert.equal(saved['control-plane'].campaigns['squad-advisory'].enabled, enabled ?? false);
+      assert.deepEqual(saved['control-plane'].campaigns['squad-advisory'].workers, { 'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', 'max-mode': 'review', enabled: false } });
     } finally {
       process.chdir(previous);
     }
   });
+  }
 }
 
 test('materialization accepts only exact trusted fork identity and rejects ambiguous owners', () => {
@@ -336,4 +338,182 @@ test('fresh installed campaign inventory contains native Squad and never the ret
   assert.deepEqual(bundle.workers.map((worker) => worker.id), ['squad-advisory-farm-snapshot']);
   assert.ok(inventory.workflows.some((workflow) => workflow.id === 'squad-bootstrap'));
   assert.equal(inventory.workflows.some((workflow) => workflow.id === 'squad-advisory-research'), false);
+});
+
+async function activationFixture(t, options = {}) {
+  const f = fixture(t, options);
+  const configured = structuredClone(policy);
+  configured['control-plane'].campaigns = {
+    'squad-advisory': { enabled: options.enabled ?? false, mode: 'review', workers: {
+      'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', enabled: false },
+      research: { workflow: 'squad-advisory-research', enabled: false },
+    } },
+  };
+  const policyPath = path.join(f.root, '.github/workflows/cao.json');
+  const save = () => f.write('.github/workflows/cao.json', JSON.stringify(configured));
+  save();
+  f.write('squad-advisory/cao.json', JSON.stringify({ campaign: 'squad-advisory', orchestrator: 'squad-advisory', workers: { 'farm-snapshot': 'squad-advisory-farm-snapshot' } }));
+  if (options.owned) {
+    installPreparedSquad(await prepareSquadOnboarding({ ...f.options, policy: configured }));
+    f.write('.squad/team.md', 'accepted cast');
+    f.write('.squad/decisions.md', 'accepted decisions');
+  }
+  const nativeFiles = [SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_VERIFIER, SQUAD_RECEIPT,
+    '.github/workflows/cao.json', '.github/skills/gh-aw-enlistment/SKILL.md',
+    ...manifest.workflows.flatMap((workflow) => [workflow.destination, workflow.lock]),
+    ...(options.owned ? Object.keys(JSON.parse(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8')).files) : []),
+  ];
+  const remote = Object.fromEntries(nativeFiles.filter((file) => existsSync(path.join(f.root, file))).map((file) => [file, readFileSync(path.join(f.root, file))]));
+  const remoteWorkflows = manifest.workflows.map((workflow, index) => ({ id: index + 1, path: workflow.lock, state: 'disabled_manually' }));
+  remoteWorkflows.push({ id: 99, path: '.github/workflows/squad-advisory-farm-snapshot.lock.yml', state: 'disabled_manually' });
+  const calls = [];
+  const execute = (executable, args, commandOptions) => {
+    calls.push({ executable, args });
+    const ok = (value) => ({ status: 0, stdout: JSON.stringify(value), stderr: '' });
+    if (args[0] === 'repo') return { status: 0, stdout: 'acme/ops', stderr: '' };
+    if (args[0] === 'workflow') {
+      if (options.failToggle) return { status: 1, stderr: 'denied' };
+      return { status: 0, stdout: '' };
+    }
+    if (args[0] === 'api') {
+      if (args[1] === 'repos/acme/ops/branches/main') return ok({ commit: { sha: head } });
+      if (args[1] === `repos/acme/ops/git/trees/${head}?recursive=1`) return ok({ tree: Object.keys(remote).map((file) => ({ path: file, type: 'blob' })), truncated: options.truncated });
+      if (args[1].startsWith('repos/acme/ops/contents/')) {
+        assert.ok(args[1].endsWith(`?ref=${head}`));
+        const file = decodeURIComponent(args[1].slice('repos/acme/ops/contents/'.length).split('?')[0]);
+        return ok({ type: 'file', encoding: 'base64', content: remote[file].toString('base64') });
+      }
+      if (args[1].startsWith('repos/acme/ops/actions/workflows?')) {
+        assert.deepEqual(args.slice(2), ['--paginate', '--slurp']);
+        return ok([{ total_count: options.incompleteInventory ? 100 : remoteWorkflows.length, workflows: remoteWorkflows }]);
+      }
+    }
+    return f.execute(executable, args, commandOptions);
+  };
+  return {
+    ...f, calls, remote, remoteWorkflows, configured, save, policyPath,
+    async invoke(action, overrides = {}) {
+      const previous = process.cwd();
+      try {
+        process.chdir(f.root);
+        return await setCaoCampaignWorkflowsEnabled(action, ['squad-advisory'], { policyPath, execute, now, ...overrides });
+      } finally {
+        process.chdir(previous);
+      }
+    },
+    readPolicy: () => JSON.parse(readFileSync(policyPath, 'utf8')),
+  };
+}
+
+test('enable installs missing native Squad with fresh farm evidence and prepares coherent enabled review policy without remote toggles', async (t) => {
+  const f = await activationFixture(t);
+  const result = await f.invoke('enable');
+  assert.equal(result.nativeSquad.status, 'pending-review');
+  assert.equal(result.nativeSquad.remotelyActive, null);
+  assert.deepEqual(result.workflows, []);
+  assert.ok(existsSync(path.join(f.root, '.github/workflows/squad-bootstrap.lock.yml')));
+  assert.ok(existsSync(path.join(f.root, 'farm/evidence.json')));
+  const campaign = f.readPolicy()['control-plane'].campaigns['squad-advisory'];
+  assert.equal(campaign.enabled, true);
+  assert.equal(campaign.mode, 'review');
+  assert.ok(Object.values(campaign.workers).every((worker) => worker.enabled === false));
+  assert.deepEqual(f.readPolicy()['control-plane'].scope, policy['control-plane'].scope);
+  assert.equal(f.calls.filter(({ args }) => args[1] === 'repos/bradygaster/squad/commits/dev').length, 1);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+  assert.ok(f.calls.find(({ args }) => args.includes('--verify-install')));
+});
+
+test('enable of an existing disabled installation refreshes evidence without replacing accepted team artifacts', async (t) => {
+  const f = await activationFixture(t, { owned: true });
+  f.advance();
+  const result = await f.invoke('enable');
+  assert.equal(result.nativeSquad.nativeSquad.sourceRevision, 'c'.repeat(40));
+  assert.equal(result.nativeSquad.status, 'pending-review');
+  assert.equal(readFileSync(path.join(f.root, '.squad/team.md'), 'utf8'), 'accepted cast');
+  assert.equal(readFileSync(path.join(f.root, '.squad/decisions.md'), 'utf8'), 'accepted decisions');
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+});
+
+test('enable confirms the complete reviewed default-branch unit before enabling exactly eight native workflows', async (t) => {
+  const f = await activationFixture(t, { owned: true, enabled: true });
+  const result = await f.invoke('enable');
+  assert.equal(result.nativeSquad.status, 'native-workflows-enabled');
+  assert.equal(result.nativeSquad.remotelyActive, true);
+  assert.equal(result.workflows.length, 8);
+  const toggles = f.calls.filter(({ args }) => args[0] === 'workflow');
+  assert.deepEqual(toggles.map(({ args }) => args), Array.from({ length: 8 }, (_, i) => ['workflow', 'enable', String(i + 1), '--repo', 'acme/ops']));
+  assert.ok(f.calls.findIndex(({ args }) => args.includes('--verify-install')) < f.calls.findIndex(({ args }) => args[0] === 'workflow'));
+  assert.ok(f.calls.findLastIndex(({ args }) => args[1]?.startsWith('repos/acme/ops/contents/')) < f.calls.findIndex(({ args }) => args[0] === 'workflow'));
+  assert.equal(f.calls.some(({ args }) => args.includes('add') || args.includes('run') || args[1] === 'repos/bradygaster/squad/commits/dev'), false);
+  assert.match(result.nativeSquad.next, /does not prove bootstrap/);
+});
+
+for (const mismatch of ['missing', 'different', 'missing-workflow']) {
+  test(`enable remains pending review for ${mismatch} default-branch evidence without remote mutations`, async (t) => {
+    const f = await activationFixture(t, { owned: true, enabled: true });
+    if (mismatch === 'missing') delete f.remote['farm/INDEX.md'];
+    if (mismatch === 'different') f.remote['farm/INDEX.md'] = Buffer.from('old evidence');
+    if (mismatch === 'missing-workflow') f.remoteWorkflows.splice(0, 1);
+    const result = await f.invoke('enable');
+    assert.equal(result.nativeSquad.status, 'pending-review');
+    assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+  });
+}
+
+test('enable fails closed on stale evidence, changed enrollment, local edits, or incomplete remote inventory', async (t) => {
+  for (const reason of ['stale', 'scope', 'owned-edit', 'inventory', 'tree']) {
+    const f = await activationFixture(t, { owned: true, enabled: true, incompleteInventory: reason === 'inventory', truncated: reason === 'tree' });
+    if (reason === 'scope') { f.configured['control-plane'].scope['allowed-repositories'].pop(); f.save(); }
+    if (reason === 'owned-edit') f.write('farm/INDEX.md', 'local changes');
+    const overrides = reason === 'stale' ? { now: () => new Date(now().getTime() + FARM_LIMITS.maxAgeMs + 1) } : {};
+    await assert.rejects(f.invoke('enable', overrides), /stale|enrollment|ownership conflict|incomplete/);
+    assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
+  }
+});
+
+test('missing-install activation failure leaves policy untouched and never toggles remote workflows', async (t) => {
+  const f = await activationFixture(t, { compiler: 'v0.89.22' });
+  const original = readFileSync(f.policyPath, 'utf8');
+  await assert.rejects(f.invoke('enable'), /exact CAO compiler/);
+  assert.equal(readFileSync(f.policyPath, 'utf8'), original);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow' || args[1] === 'add'), false);
+});
+
+test('disable targets native workflows rather than legacy jobs and records policy pending review', async (t) => {
+  const f = await activationFixture(t, { owned: true, enabled: true });
+  const result = await f.invoke('disable');
+  assert.equal(result.nativeSquad.status, 'native-workflows-disabled-pending-policy-review');
+  assert.equal(result.nativeSquad.remotelyActive, false);
+  assert.equal(f.readPolicy()['control-plane'].campaigns['squad-advisory'].enabled, false);
+  assert.deepEqual(f.calls.filter(({ args }) => args[0] === 'workflow').map(({ args }) => args), Array.from({ length: 8 }, (_, i) => ['workflow', 'disable', String(i + 1), '--repo', 'acme/ops']));
+  assert.equal(f.calls.some(({ args }) => args.includes('add') || args[1] === 'repos/bradygaster/squad/commits/dev'), false);
+});
+
+test('disable with no registered native workflows does not install or toggle legacy workers', async (t) => {
+  const f = await activationFixture(t);
+  f.remoteWorkflows.splice(0, 8);
+  const result = await f.invoke('disable');
+  assert.deepEqual(result.workflows, []);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow' || args[1] === 'add'), false);
+  assert.equal(f.readPolicy()['control-plane'].campaigns['squad-advisory'].enabled, false);
+});
+
+test('remote toggle failure is not reported as successful native activation', async (t) => {
+  const f = await activationFixture(t, { owned: true, enabled: true, failToggle: true });
+  await assert.rejects(f.invoke('enable'), /command failed/);
+});
+
+test('dirty activation stops before installation, policy writes, and remote toggles', async (t) => {
+  const f = await activationFixture(t, { dirty: true });
+  const original = readFileSync(f.policyPath, 'utf8');
+  await assert.rejects(f.invoke('enable'), /clean committed worktree/);
+  assert.equal(readFileSync(f.policyPath, 'utf8'), original);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow' || args[1] === 'add' || args[0] === 'api'), false);
+});
+
+test('unsupported native Actions states fail before any workflow is toggled', async (t) => {
+  const f = await activationFixture(t, { owned: true, enabled: true });
+  f.remoteWorkflows[7].state = 'disabled_fork';
+  await assert.rejects(f.invoke('enable'), /unsupported Actions state/);
+  assert.equal(f.calls.some(({ args }) => args[0] === 'workflow'), false);
 });

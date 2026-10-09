@@ -15,7 +15,8 @@ shared decisions, cross-repository dependencies, and integration checkpoints.
 The adoption flow is:
 
 1. Configure exact farm enrollment in the operations repository's reviewed
-   `.github/workflows/cao.json`, then select Squad Advisory with `cao add`.
+   `.github/workflows/cao.json`, then select Squad Advisory with `cao add` or
+   activate an already declared campaign with `cao enable squad-advisory`.
 2. Setup resolves current `bradygaster/squad` **dev once to one immutable SHA**,
    validates compatibility and ownership, and reads complete bounded evidence
    for every enrolled repository before installing anything.
@@ -67,8 +68,54 @@ incomplete evidence, or incompatible compiler. Existing user-owned router
 skills are never deleted to satisfy Squad. Resolve those conflicts explicitly.
 Once package commands start, a command failure may leave a **partial local
 change**: inspect it, do not commit it, and do not push it as a successful install.
-Setup never commits, pushes, dispatches hosted runs, changes settings, enables a
-campaign, or silently downgrades a compiler.
+Setup never commits, pushes, dispatches hosted runs, changes settings, or
+silently downgrades a compiler. A new `cao add` defaults the campaign to
+disabled; add/update preserve an explicitly enabled campaign.
+
+## Activate native Squad
+
+From a clean committed operations checkout with the campaign sources and
+`squad-advisory/cao.json` already present (installed or source-managed), run:
+
+```bash
+cao enable squad-advisory
+```
+
+When native Squad is missing or the campaign is disabled, this is an
+installation operation, not just an Actions toggle. It resolves current dev
+once, prepares complete fresh farm evidence, installs and verifies the native
+package, then writes `enabled: true`, `mode: review` in CAO policy. All retained
+CAO workers, including `farm-snapshot`, stay explicitly disabled. Scope is
+unchanged. Existing owned installations refresh safely without changing the
+accepted cast or decisions.
+
+The result is **pending-review**, not remotely active. Review and stage the
+coherent local install, policy, farm, scope, skill, and receipt change; run the
+native staged verifier below; then commit and merge through your normal review
+process. The CLI does not stage unrelated files, commit, push, or bypass review.
+The default-branch installation push triggers native bootstrap. A farm-only
+push or local policy bit does not.
+
+After merge, use a clean checkout of that change and rerun
+`cao enable squad-advisory`. For an already enabled owned installation, this
+confirmation does not continually reinstall a newer dev snapshot. It verifies
+the local unit and evidence freshness, then compares the entire package,
+policy, scope, and farm evidence against one immutable default-branch revision
+before enabling exactly the eight registered native workflows. Missing or
+different default-branch files return **pending-review** without toggles.
+Stale evidence requires a reviewed `cao update` before confirmation.
+
+**native-workflows-enabled** confirms Actions entrypoints only, not a completed
+Cast or research run. If bootstrap was disabled when the installation push
+landed, an operator must run native bootstrap after enabling it. The CLI never
+dispatches that run automatically.
+
+`cao disable squad-advisory` disables any registered native workflow entrypoints
+and prepares `enabled: false` in local policy for review. It never enables,
+dispatches, or installs legacy research/snapshot jobs. Existing runs are not
+cancelled. Native Squad does not import CAO admission: the CAO enabled flag is
+the reviewed adoption state, not a runtime kill switch, so disabling policy
+alone does not stop native workflows.
 
 ### Compiler and immutable upstream contract
 
@@ -144,8 +191,9 @@ starting a later research wave; use CAO policy for all target authority.
 
 Native Squad reviews PRs from other automation too. The retained snapshot
 worker does not yet emit compatible native attribution. Both the orchestrator
-and snapshot worker therefore **fail closed before agent execution**, and CAO
-setup leaves the campaign disabled and review-only. Do not enable the retained
+and snapshot worker therefore **fail closed before agent execution**. Native
+campaign activation is supported independently: CAO keeps its workers explicitly
+disabled and never enables the legacy orchestrator or snapshot jobs. Do not enable the retained
 automation, forge agent attribution, or weaken Squad review to work around this.
 The supported refresh path is a human-reviewed local CAO update.
 

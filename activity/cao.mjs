@@ -82,7 +82,7 @@ import { commandHandlers } from './commands/index.mjs';
 import { parseUpdateArguments, resolveUpdateCommit } from './commands/update.mjs';
 import { setupCaoControlPlane } from './setup.mjs';
 import { upgradeGhAwVersion } from './upgrade-gh-aw.mjs';
-import { installPreparedSquad, prepareSquadOnboarding } from './squad-onboarding.mjs';
+import { activateSquadCampaign, installPreparedSquad, prepareSquadOnboarding, setSquadPolicy } from './squad-onboarding.mjs';
 import { CAO_CATALOGS, installedCampaignRecords, resolvePathWithinRoot } from './campaign-records.mjs';
 
 export { setupCaoControlPlane } from './setup.mjs';
@@ -785,12 +785,7 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   }
 
   mergeCaoCampaignDeclaration(policy, declaration);
-  // Installation prepares a reviewed change; it never enables recurring farm
-  // automation while native Squad's PR attribution contract is unresolved.
-  if (squad) {
-    policy['control-plane'].campaigns['squad-advisory'].enabled = false;
-    policy['control-plane'].campaigns['squad-advisory'].mode = 'review';
-  }
+  if (squad) setSquadPolicy(policy);
   const nativeSquad = squad ? installSquad(squad) : undefined;
   await writeJsonAtomically(absolutePolicyPath, policy);
   return {
@@ -883,10 +878,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     }
     updatedCampaigns.push(record.campaign);
   }
-  if (squad) {
-    policy['control-plane'].campaigns['squad-advisory'].enabled = false;
-    policy['control-plane'].campaigns['squad-advisory'].mode = 'review';
-  }
+  if (squad) setSquadPolicy(policy);
   const nativeSquad = squad ? installSquad(squad) : undefined;
   if (mergedDeclarations.length > 0) await writeJsonAtomically(path.resolve(policyPath), policy);
   return {
@@ -944,7 +936,11 @@ export async function setCaoCampaignMode(mode, campaignNames, {
 }
 
 export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
-  execute = spawnSync
+  execute = spawnSync,
+  policyPath = DEFAULT_POLICY_PATH,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad,
+  now = () => new Date()
 } = {}) {
   if (action !== 'enable' && action !== 'disable') {
     throw new UsageError('CAO campaign workflow action must be enable or disable');
@@ -966,7 +962,14 @@ export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
     }
     declarations.push(declaration);
   }
-  const workflows = [...new Set(declarations.flatMap((declaration) => [
+  const nativeSquad = campaigns.includes('squad-advisory')
+    ? await activateSquadCampaign(action, {
+      policy: await readCaoPolicy(policyPath, action), policyPath,
+      controlRepository: resolveControlRepository(execute), execute, prepareSquad, installSquad,
+      writePolicy: writeJsonAtomically, now,
+    })
+    : undefined;
+  const workflows = [...new Set(declarations.filter((declaration) => declaration.campaign !== 'squad-advisory').flatMap((declaration) => [
     declaration.orchestrator,
     ...Object.values(declaration.workers)
   ]))];
@@ -980,7 +983,7 @@ export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
       throw new Error(`gh workflow ${action} failed for ${workflow}: ${commandFailureMessage(result, 'unknown error')}`);
     }
   }
-  return { command: action, campaigns, workflows };
+  return { command: action, campaigns, workflows: [...workflows, ...(nativeSquad?.workflows ?? [])], ...(nativeSquad ? { nativeSquad } : {}) };
 }
 
 async function jsonlFiles(root) {

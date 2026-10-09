@@ -77,11 +77,10 @@ After explicit approval, run the repository-local CLI from the control repositor
 
 Forward additional campaign-installer options only when the user requested them and they do not weaken the reviewed boundary. Do not pass secrets in command arguments.
 
-For `squad-advisory`, follow its README: native Squad is mandatory, resolved
-from dev to one compatible SHA. Review the package, complete bounded farm
-evidence, scope, skill, and policy together before bootstrap. Preserve native
-review gates; automatic snapshot refresh stays disabled pending attribution.
-Do not substitute direct `gh aw add` or a bespoke research roster.
+For `squad-advisory`, follow its README. `cao enable squad-advisory` installs
+mandatory native Squad and farm evidence, pending review/merge; rerun after merge
+to enable verified native workflows. Add defaults disabled; updates preserve
+enablement. Keep snapshot workers disabled and native review gates intact.
 
 After installation:
 
