@@ -6,6 +6,7 @@ import { createDebug } from '../debug.js';
 import { createCopyControl, createModalDialog } from './ui-primitives.js';
 import { restoreDashboardTheme } from './theme-settings.js';
 import { createFirstLoadMessagePicker, FIRST_LOAD_MESSAGE_INTERVAL_MS } from './first-load-messages.js';
+import { updateNotificationActions, updateNotificationDetails } from '../notification-service.js';
 
 const debugFirstLoadOverlay = createDebug('first-load-overlay');
 
@@ -83,10 +84,17 @@ export function mountFirstLoadOverlay({ document, signal: ownerSignal, retry }) 
   const currentMessage = state(nextMessage());
   const rotating = derived(() => {
     const current = browserFirstLoad.get();
-    return current.status === 'loading' && !current.dismissed;
+    return current.status === 'loading' && !current.dismissed && !current.ingestion;
   }, { signal });
   const status = h('p', { className: 'first-load-status', role: 'status' });
   const progress = h('div', { className: 'first-load-progress' });
+  const ingestionSubtitle = h('p', { className: 'dashboard-notification-details-subtitle' });
+  const ingestionHistory = h('ul', { className: 'dashboard-notification-details', 'aria-label': 'Ingestion progress history' });
+  const ingestionActions = h('div', { className: 'dashboard-notification-actions' });
+  const compactIngestionSummary = h('span', { className: 'first-load-compact-copy' });
+  const ingestionDetails = h('details', { className: 'first-load-ingestion-details' },
+    h('summary', null, h('span', { className: 'first-load-wide-copy' }, 'Ingestion progress history'), compactIngestionSummary),
+    ingestionSubtitle, ingestionHistory, ingestionActions);
   const continuationNote = h('p', { className: 'first-load-note' }, responsiveCopy(
     'No need to wait here. The import continues as you explore.',
     'Explore now. The import keeps going.'
@@ -103,6 +111,7 @@ export function mountFirstLoadOverlay({ document, signal: ownerSignal, retry }) 
     progress,
     status,
     message,
+    ingestionDetails,
     durationNote,
     dismissButton,
     retryButton,
@@ -166,12 +175,26 @@ export function mountFirstLoadOverlay({ document, signal: ownerSignal, retry }) 
       'Preparing your dashboard.'
     );
   }, { signal });
-  render(message, () => currentMessage.get(), { signal });
+  render(message, () => browserFirstLoad.get().ingestion?.message ?? currentMessage.get(), { signal });
   effect(() => {
-    message.hidden = !rotating.get();
+    const current = browserFirstLoad.get();
+    message.hidden = current.status === 'failed';
+    message.classList.toggle('first-load-message-ingesting', Boolean(current.ingestion));
+  }, { signal });
+  effect(() => {
     if (!rotating.get()) return;
     const timer = setInterval(() => currentMessage.set(nextMessage()), FIRST_LOAD_MESSAGE_INTERVAL_MS);
     onCleanup(() => clearInterval(timer));
+  }, { signal });
+  effect(() => {
+    const { status: phase, ingestion } = browserFirstLoad.get();
+    ingestionDetails.hidden = phase !== 'loading' || !ingestion;
+    if (!ingestion || phase !== 'loading') return;
+    compactIngestionSummary.textContent = ingestion.message;
+    ingestionSubtitle.textContent = ingestion.detailsSubtitle ?? '';
+    ingestionSubtitle.hidden = !ingestion.detailsSubtitle;
+    updateNotificationDetails(ingestionHistory, ingestion.details ?? []);
+    updateNotificationActions(ingestionActions, ingestion.actions ?? []);
   }, { signal });
   render(status, () => {
     const current = browserFirstLoad.get();
