@@ -1,0 +1,7 @@
+{
+  "campaign": "squad-advisory",
+  "orchestrator": "squad-advisory",
+  "workers": {
+    "farm-snapshot": "squad-advisory-farm-snapshot"
+  }
+}

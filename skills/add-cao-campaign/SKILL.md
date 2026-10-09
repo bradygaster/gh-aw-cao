@@ -1,6 +1,6 @@
 ---
 name: add-cao-campaign
-description: "Discover, compare, recommend, or install an existing Central Agentic Ops (CAO) catalog campaign. Use when a user wants to browse the CAO catalog, find an operation for an outcome, compare campaigns, or add a campaign to a control repository safely."
+description: "Discover, compare, recommend, or safely install an existing Central Agentic Ops (CAO) catalog campaign in a control repository."
 metadata:
   argument-hint: "Describe the desired operational outcome or name a CAO catalog campaign"
 ---
@@ -15,8 +15,7 @@ metadata:
 4. Require selection and explicit installation approval.
 5. Install through `./cao.sh add`, validate policy preservation, and report.
 
-Choose and install an existing CAO operational campaign from the current
-catalog. Never rely on a hard-coded list or silently select or install one.
+Never use a hard-coded catalog or silently select or install a campaign.
 
 ## Boundaries
 
@@ -49,7 +48,9 @@ When no campaign is named, ask for the operational outcome. Recommend no more th
 - notable permissions, network access, credentials, and safe outputs;
 - the main tradeoff or reason it may not fit.
 
-Include `None of these` as a choice. Require the user to select one exact campaign; do not treat a vague outcome, the first recommendation, or lack of response as consent. If no campaign fits, offer the `create-cao-campaign` handoff without installing anything.
+Include `None of these`. Require explicit selection of one exact campaign;
+a vague outcome or silence is not consent. If none fits, hand off to
+`create-cao-campaign` without installing.
 
 When the user names a campaign, verify it against the same catalog process and still present its safety summary before asking for installation approval.
 
@@ -75,6 +76,11 @@ After explicit approval, run the repository-local CLI from the control repositor
 ```
 
 Forward additional campaign-installer options only when the user requested them and they do not weaken the reviewed boundary. Do not pass secrets in command arguments.
+
+For `squad-advisory`, follow its README. `cao enable squad-advisory` installs
+mandatory native Squad and farm evidence, pending review/merge; rerun after merge
+to enable verified native workflows. Add defaults disabled; updates preserve
+enablement. Keep snapshot workers disabled and native review gates intact.
 
 After installation:
 

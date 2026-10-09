@@ -38,10 +38,13 @@ const sources = {
 };
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-09T05:00:00Z'));
   indexedDB.deleteDatabase('cao-dashboard-canonical');
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.doUnmock('../../src/debug.js');
   vi.resetModules();
 });

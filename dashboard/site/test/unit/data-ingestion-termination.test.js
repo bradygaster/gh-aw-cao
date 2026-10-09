@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const debug = vi.hoisted(() => vi.fn());
 vi.mock('../../src/debug.js', () => ({ createDebug: () => debug }));
@@ -76,6 +76,8 @@ function quotaExceededError() {
 }
 
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(metadata['as-of']));
   debug.mockClear();
   readCanonicalBatch.mockClear();
   upsertCanonicalBatch.mockClear();
@@ -98,6 +100,8 @@ beforeEach(async () => {
     request.onerror = () => reject(request.error);
   });
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe('canonical ingestion termination', () => {
   it('does not start storage after ingestion is cancelled', async () => {

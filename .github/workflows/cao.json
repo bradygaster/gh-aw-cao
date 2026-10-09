@@ -193,6 +193,22 @@
           }
         }
       },
+      "squad-advisory": {
+        "enabled": false,
+        "icon": "eye",
+        "mode": "review",
+        "max-repositories": 1,
+        "workers": {
+          "research": {
+            "workflow": "squad-advisory-research",
+            "max-mode": "review"
+          },
+          "farm-snapshot": {
+            "workflow": "squad-advisory-farm-snapshot",
+            "max-mode": "review"
+          }
+        }
+      },
       "self-care": {
         "mode": "review",
         "max-repositories": 1,

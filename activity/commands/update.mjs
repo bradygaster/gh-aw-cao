@@ -1,3 +1,5 @@
+import { CAO_CATALOGS } from '../campaign-records.mjs';
+
 export function runUpdate({ arguments_, updateCaoCampaigns }) {
   return updateCaoCampaigns(arguments_);
 }
@@ -50,13 +52,14 @@ export function parseUpdateArguments(ghAwOptions, UsageError) {
   };
 }
 
-export function resolveUpdateCommit(ref, execute, failureMessage, compareVersions) {
+export function resolveUpdateCommit(ref, execute, failureMessage, compareVersions, catalog = 'githubnext/gh-aw-cao') {
+  if (!CAO_CATALOGS.includes(catalog)) throw new Error('Untrusted CAO catalog identity');
   if (ref === undefined) return undefined;
   let sourceRef = ref;
   if (ref === 'main' || ref === 'master') {
     const repository = execute('gh', [
       'api', '--hostname', 'github.com',
-      '/repos/githubnext/gh-aw-cao', '--jq', '.default_branch'
+      `/repos/${catalog}`, '--jq', '.default_branch'
     ], { encoding: 'utf8' });
     if (repository.error || repository.status !== 0) {
       throw new Error(`Unable to resolve CAO default branch: ${failureMessage(repository, 'gh api failed')}`);
@@ -68,7 +71,7 @@ export function resolveUpdateCommit(ref, execute, failureMessage, compareVersion
   } else if (ref === 'latest') {
     const releases = execute('gh', [
       'api', '--hostname', 'github.com',
-      '/repos/githubnext/gh-aw-cao/releases?per_page=100', '--paginate', '--jq',
+      `/repos/${catalog}/releases?per_page=100`, '--paginate', '--jq',
       '.[] | select(.draft == false and .prerelease == false) | .tag_name'
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
     if (releases.error || releases.status !== 0) {
@@ -83,7 +86,7 @@ export function resolveUpdateCommit(ref, execute, failureMessage, compareVersion
   }
   const result = execute('gh', [
     'api', '--hostname', 'github.com',
-    `/repos/githubnext/gh-aw-cao/commits/${encodeURIComponent(sourceRef)}`, '--jq', '.sha'
+    `/repos/${catalog}/commits/${encodeURIComponent(sourceRef)}`, '--jq', '.sha'
   ], { encoding: 'utf8' });
   if (result.error || result.status !== 0) {
     throw new Error(`Unable to resolve CAO ref ${ref}: ${failureMessage(result, 'gh api failed')}`);

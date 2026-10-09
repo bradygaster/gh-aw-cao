@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const cao = path.resolve('activity/cao.mjs');
+const fixtureDay = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cao-issue-status-'));
@@ -30,9 +31,9 @@ async function fixture() {
         workflow_path: '.github/workflows/dashboard.lock.yml',
         status: 'completed',
         conclusion: 'success',
-        created_at: '2026-09-09T03:59:00Z',
-        started_at: '2026-09-09T04:00:00Z',
-        updated_at: '2026-09-09T04:01:00Z'
+        created_at: `${fixtureDay}T03:59:00Z`,
+        started_at: `${fixtureDay}T04:00:00Z`,
+        updated_at: `${fixtureDay}T04:01:00Z`
       }
     },
     {
@@ -40,7 +41,7 @@ async function fixture() {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:30Z',
+        timestamp: `${fixtureDay}T04:00:30Z`,
         type: 'create_issue',
         provider: 'github',
         url: 'https://github.com/githubnext/gh-aw-cao/issues/42'
@@ -51,7 +52,7 @@ async function fixture() {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:31Z',
+        timestamp: `${fixtureDay}T04:00:31Z`,
         type: 'create_issue',
         provider: 'github',
         url: 'https://github.com/githubnext/gh-aw-cao/issues/43'
@@ -311,9 +312,9 @@ if (args[0] === 'aw' && args[1] === 'logs') {
         workflow_path: '.github/workflows/dashboard.lock.yml',
         status: 'completed',
         conclusion: 'success',
-        created_at: '2026-09-09T03:59:00Z',
-        started_at: '2026-09-09T04:00:00Z',
-        updated_at: '2026-09-09T04:01:00Z'
+        created_at: `${fixtureDay}T03:59:00Z`,
+        started_at: `${fixtureDay}T04:00:00Z`,
+        updated_at: `${fixtureDay}T04:01:00Z`
       }
     }))},
     ${JSON.stringify(JSON.stringify({
@@ -321,7 +322,7 @@ if (args[0] === 'aw' && args[1] === 'logs') {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:30Z',
+        timestamp: `${fixtureDay}T04:00:30Z`,
         type: 'create_issue',
         provider: 'github',
         url: 'https://github.com/githubnext/gh-aw-cao/issues/42'
