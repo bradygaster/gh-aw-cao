@@ -11,6 +11,7 @@ export const SQUAD_MANIFEST = '.github/aw/squad-workflows.manifest.json';
 export const SQUAD_VERIFIER = '.github/workflows/shared/squad-install-verifier.mjs';
 export const SQUAD_RECEIPT = '.github/cao/squad-install.json';
 const ROUTER = '.github/skills/agentic-workflows/SKILL.md';
+const COMPILER_CONFIG = '.github/workflows/aw.json';
 const WORKFLOWS = ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'];
 
 export function setSquadPolicy(policy, enabled = policy['control-plane']?.campaigns?.['squad-advisory']?.enabled ?? false) {
@@ -228,7 +229,10 @@ function verifySquadActivation(root, execute, policy, controlRepository, now) {
   for (const record of evidence.repositories) {
     if (!receipt.files[record.destination]) throw new Error(`Squad activation is missing farm coverage for ${record.repository}`);
   }
-  return { receipt, files: [...new Set([...files, ...Object.keys(receipt.files), SQUAD_RECEIPT])] };
+  return { receipt, files: [...new Set([
+    ...files, ...Object.keys(receipt.files), SQUAD_RECEIPT,
+    ...(existsSync(safePath(root, COMPILER_CONFIG)) ? [COMPILER_CONFIG] : []),
+  ])] };
 }
 
 function pendingActivation(extra = {}) {
@@ -294,6 +298,7 @@ export async function activateSquadCampaign(action, {
     const tree = api(`repos/${controlRepository}/git/trees/${head}?recursive=1`);
     if (tree.truncated || !Array.isArray(tree.tree)) throw new Error('Squad activation default-branch inventory is incomplete');
     const remoteFiles = new Set(tree.tree.filter((entry) => entry.type === 'blob').map((entry) => entry.path));
+    if (remoteFiles.has(COMPILER_CONFIG) !== unit.files.includes(COMPILER_CONFIG)) return pendingActivation({ defaultBranchRevision: head });
     if (required.some((file) => !remoteFiles.has(file))) return pendingActivation({ defaultBranchRevision: head });
     for (const file of required) {
       const expected = readFileSync(safePath(root, file));

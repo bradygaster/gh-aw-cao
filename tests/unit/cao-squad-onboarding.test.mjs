@@ -483,6 +483,22 @@ for (const mismatch of ['missing', 'different', 'missing-workflow']) {
   });
 }
 
+for (const config of ['matching', 'different', 'local-only', 'remote-only']) {
+  test(`activation binds ${config} compiler config to the reviewed default-branch unit`, async (t) => {
+    const f = await activationFixture(t, { owned: true, enabled: true });
+    const file = '.github/workflows/aw.json';
+    const local = '{"maintenance":{"action_failure_issue_expires":24}}\n';
+    if (config !== 'remote-only') f.write(file, local);
+    if (config !== 'local-only') f.remote[file] = Buffer.from(config === 'different' ? '{"maintenance":{"action_failure_issue_expires":168}}\n' : local);
+    const result = await f.invoke('enable');
+    assert.equal(result.nativeSquad.status, config === 'matching' ? 'native-workflows-enabled' : 'pending-review');
+    assert.equal(f.calls.filter(({ args }) => args[0] === 'workflow').length, config === 'matching' ? 8 : 0);
+    if (config === 'matching') {
+      assert.ok(f.calls.some(({ args }) => args[1] === `repos/acme/ops/contents/.github/workflows/aw.json?ref=${head}`));
+    }
+  });
+}
+
 test('enable fails closed on stale evidence, changed enrollment, local edits, or incomplete remote inventory', async (t) => {
   for (const reason of ['stale', 'scope', 'owned-edit', 'inventory', 'tree']) {
     const f = await activationFixture(t, { owned: true, enabled: true, incompleteInventory: reason === 'inventory', truncated: reason === 'tree' });
