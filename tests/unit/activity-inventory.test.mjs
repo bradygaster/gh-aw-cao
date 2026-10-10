@@ -27,14 +27,15 @@ test("attributes adopted native Squad and its bootstrap run without granting CAO
     await write(".github/workflows/cao.json", JSON.stringify(policy));
     for (const name of names) {
       await write(`.github/workflows/${name}.md`,
-        `---\nname: ${name}\nsource: bradygaster/squad/workflows@${revision}\n---\n`);
+        `---\nname: ${name}\nsource: bradygaster/squad/workflows/package/${name}.md@${revision}\n---\n`);
       await write(`.github/workflows/${name}.lock.yml`, '# gh-aw-metadata: {"compiler_version":"0.91.5"}\n');
     }
     assert.ok(discoverInventory(root).workflows.every((workflow) => !workflow.associatedCampaign));
     const manifest = JSON.stringify({
       schema_version: 2, package: "bradygaster/squad/workflows",
       workflows: names.map((name) => ({
-        name, destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
+        name, source: `workflows/package/${name}.md`,
+        destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
       })),
       shared_runtime: [], skills: [],
     });
@@ -91,6 +92,14 @@ test("attributes adopted native Squad and its bootstrap run without granting CAO
     await write(manifestPath, `${manifest}\n`);
     assert.throws(() => discoverInventory(root), /installation records disagree/);
     await write(manifestPath, manifest);
+    for (const coordinate of [
+      `bradygaster/squad/workflows@${revision}`,
+      `bradygaster/squad/workflows/package/squad.md@${revision}`,
+      `bradygaster/squad/workflows/package/squad-bootstrap.md@${"b".repeat(40)}`,
+    ]) {
+      await write(".github/workflows/squad-bootstrap.md", `---\nsource: ${coordinate}\n---\n`);
+      assert.throws(() => discoverInventory(root), /source revision differs/);
+    }
     await write(".github/workflows/squad-bootstrap.md", "---\nname: Unrelated\n---\n");
     assert.throws(() => discoverInventory(root), /source revision differs/);
     await write(".github/workflows/cao.json", '{"control-plane":{"campaigns":{}}}');

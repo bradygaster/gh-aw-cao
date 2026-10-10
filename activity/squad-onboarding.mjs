@@ -89,8 +89,13 @@ export function squadInventoryWorkflowPaths(root) {
     throw new Error('Cannot attribute native Squad inventory: installation records disagree');
   }
   for (const workflow of manifest.workflows) {
+    if (typeof workflow.source !== 'string' || !/^workflows\/(?:[\w.-]+\/)*[\w.-]+\.md$/.test(workflow.source)
+      || workflow.source.split('/').some((part) => part === '.' || part === '..')) {
+      throw new Error(`Cannot attribute native Squad inventory: invalid source path for ${workflow.name}`);
+    }
+    const coordinate = `${SQUAD_PACKAGE.split('/').slice(0, 2).join('/')}/${workflow.source}@${receipt.source_revision}`;
     const source = readFileSync(safePath(root, workflow.destination), 'utf8');
-    if (!source.split(/\r?\n/).includes(`source: ${SQUAD_PACKAGE}@${receipt.source_revision}`)) {
+    if (!source.split(/\r?\n/).includes(`source: ${coordinate}`)) {
       throw new Error(`Cannot attribute native Squad inventory: source revision differs for ${workflow.name}`);
     }
   }
