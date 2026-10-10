@@ -233,7 +233,7 @@ describe('Audit dashboard view', () => {
     ]);
   });
 
-  it('projects only issue outcomes produced by campaign workers', () => {
+  it('projects worker and associated standalone issues but excludes unrelated standalone workflows', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
@@ -244,7 +244,9 @@ describe('Audit dashboard view', () => {
           rows: [
             { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/orchestrator.md', 'safe-output': 'orchestrator-issue', 'outcome-category': 'issue' },
             { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-issue', 'outcome-category': 'issue' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-pr', 'outcome-category': 'pull-request' }
+            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-pr', 'outcome-category': 'pull-request' },
+            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'squad-advisory', workflow: '.github/workflows/squad-bootstrap.md', 'safe-output': 'research-issue', 'outcome-category': 'issue' },
+            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: '', workflow: '.github/workflows/unrelated.md', 'safe-output': 'unrelated-issue', 'outcome-category': 'issue' }
           ],
           metadata
         },
@@ -252,7 +254,9 @@ describe('Audit dashboard view', () => {
           source: 'workflows',
           rows: [
             { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/orchestrator.md', 'workflow-role': 'orchestrator' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/worker.md', 'workflow-role': 'worker' }
+            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/worker.md', 'workflow-role': 'worker' },
+            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/squad-bootstrap.md', campaign: 'squad-advisory', 'workflow-role': 'standalone' },
+            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/unrelated.md', campaign: '', 'workflow-role': 'standalone' }
           ],
           metadata
         }
@@ -260,7 +264,8 @@ describe('Audit dashboard view', () => {
     }));
 
     expect(result['campaign-worker-issues'].rows).toEqual([
-      expect.objectContaining({ campaign: 'ambient-context', 'safe-output': 'worker-issue' })
+      expect.objectContaining({ campaign: 'ambient-context', 'safe-output': 'worker-issue' }),
+      expect.objectContaining({ campaign: 'squad-advisory', 'safe-output': 'research-issue' })
     ]);
   });
 

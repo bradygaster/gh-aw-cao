@@ -3,5 +3,13 @@
   "view": "campaigns-inventory",
   "source": "campaign-inventory",
   "partialSource": "campaign-inventory-preview",
-  "pendingFields": ["workflows", "roles", "modes", "registration", "runs", "dispatches", "covered-repositories", "aic"]
+  "pendingFields": ["workflows", "roles", "modes", "registration", "runs", "dispatches", "covered-repositories", "aic"],
+  "associatedStandalone": {
+    "role": "standalone",
+    "mode": "unknown",
+    "workflowCount": 1,
+    "runCount": 2,
+    "dispatchCount": 0,
+    "coveredRepositories": 0
+  }
 }

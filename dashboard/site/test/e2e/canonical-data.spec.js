@@ -1191,6 +1191,35 @@ test('data worker computes repository and campaign pages with request-scoped das
   });
 });
 
+test('associated standalone workflows contribute campaign activity through the real data worker', async ({ page, context }) => {
+  const sources = databaseTables();
+  sources.workflows.rows[0]['workflow-role'] = 'standalone';
+  sources.workflows.rows[0]['rollout-mode'] = 'unknown';
+  sources.runs.rows[0]['run-conclusion'] = 'success';
+  await context.route('http://dashboard.test/sources.json', (route) => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify(sources)
+  }));
+  const result = await page.evaluate(async () => {
+    const { loadCanonicalDashboardSources } = await import(`${location.origin}/src/data-processor.js`);
+    const { dashboard } = await fetch(`${location.origin}/dashboard.json`).then((response) => response.json());
+    return loadCanonicalDashboardSources(`${location.origin}/sources.json`,
+      ['campaign-inventory', 'campaign-workflows', 'cost-by-campaign'],
+      { githubUrlBase: 'https://github.com', pages: dashboard.pages, queries: dashboard.queries });
+  });
+  expect(result['campaign-inventory'].rows).toEqual([
+    expect.objectContaining({
+      campaign: 'dashboard', workflows: 1, roles: 'standalone', modes: 'unknown',
+      runs: 1, aic: 17, dispatches: 0, 'covered-repositories': 0
+    })
+  ]);
+  expect(result['campaign-workflows'].rows).toEqual([
+    expect.objectContaining({ 'workflow-role': 'standalone', 'rollout-mode': 'unknown', runs: 1, aic: 17 })
+  ]);
+  expect(result['cost-by-campaign'].rows).toEqual([
+    expect.objectContaining({ 'campaign-name': 'CAO Dashboard', aic: 17 })
+  ]);
+});
+
 test('deployed JSONL ingestion includes the published campaign inventory', async ({ page }) => {
   const result = await page.evaluate(async () => {
     const { loadCanonicalDashboardSources } = await import(`${location.origin}/src/data-processor.js`);

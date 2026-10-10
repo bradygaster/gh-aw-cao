@@ -374,12 +374,54 @@
       ]
     },
     {
+      "name": "campaign-workflow-membership",
+      "subject": "Distinguish managed workflows from explicitly associated standalone workflows.",
+      "acceptance": "Retain execution roles unchanged; a standalone workflow needs a nonempty campaign identity to participate in campaign reporting.",
+      "from": "workflows",
+      "compute": [
+        {
+          "as": "membership-campaign",
+          "function": "coalesce",
+          "args": [{ "field": "campaign" }, { "value": "unknown" }]
+        },
+        {
+          "as": "missing-campaign",
+          "function": "equals-any",
+          "args": [{ "field": "membership-campaign" }, { "value": "unknown" }]
+        },
+        {
+          "as": "standalone-workflow",
+          "function": "equals-any",
+          "args": [{ "field": "workflow-role" }, { "value": "standalone" }]
+        },
+        {
+          "as": "unassociated-standalone",
+          "function": "if",
+          "args": [{ "field": "standalone-workflow" }, { "field": "missing-campaign" }, { "value": false }]
+        }
+      ],
+      "select": [
+        { "field": "campaign" },
+        { "field": "campaign-name" },
+        { "field": "organization" },
+        { "field": "repository" },
+        { "field": "workflow" },
+        { "field": "workflow-name" },
+        { "field": "workflow-role" },
+        { "field": "rollout-mode" },
+        { "field": "workflow-active" },
+        { "field": "repository-link" },
+        { "field": "workflow-link" },
+        { "field": "unassociated-standalone" }
+      ]
+    },
+    {
       "name": "campaign-workflow-inventory",
       "subject": "Project declared campaign workflows with lean execution and configuration evidence.",
       "objective": "Provide campaign totals and lists without unused ingestion, failure, or dashboard-link computations.",
-      "acceptance": "Keep all declared orchestrators and workers, including inactive and unobserved entries; preserve inventory ordering, configuration defaults, execution totals, and import-evidence quality.",
+      "acceptance": "Keep orchestrators, workers, and campaign-associated standalone workflows, including inactive and unobserved entries. Preserve execution roles, configuration, totals, and evidence quality; membership grants no authority.",
       "description": "Lean campaign inventory with execution totals that retain the public workflow inventory's evidence-quality dependencies.",
-      "from": "workflows",
+      "from": "campaign-workflow-membership",
       "joins": [
         {
           "source": "campaign-workflow-execution-totals",
@@ -397,7 +439,8 @@
       ],
       "filter": {
         "predicates": [
-          { "field": "workflow-role", "in": ["orchestrator", "worker"] }
+          { "field": "workflow-role", "in": ["orchestrator", "worker", "standalone"] },
+          { "field": "unassociated-standalone", "equals": false }
         ]
       },
       "compute": [

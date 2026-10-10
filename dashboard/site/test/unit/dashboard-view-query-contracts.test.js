@@ -205,7 +205,7 @@ describe('dashboard view query contracts', () => {
       const totals = queriesByName.get('campaign-cost-totals');
       expect(cost?.from).toBe('campaigns');
       expect(cost?.joins?.map((/** @type {{ source: string }} */ join) => join.source)).toEqual(['campaign-cost-totals']);
-      expect(totals?.from).toBe('workflows');
+      expect(totals?.from).toBe('campaign-workflow-membership');
       expect(totals?.joins?.map((/** @type {{ source: string }} */ join) => join.source)).toEqual(['workflow-aic-totals']);
 
       const sources = {
@@ -224,7 +224,8 @@ describe('dashboard view query contracts', () => {
             { organization: 'org', repository: 'repo', workflow: 'one.md', campaign: 'alpha & one', 'workflow-role': 'orchestrator' },
             { organization: 'org', repository: 'repo', workflow: 'two.md', campaign: 'alpha & one', 'workflow-role': 'worker' },
             { organization: 'org', repository: 'repo', workflow: 'three.md', campaign: 'beta', 'workflow-role': 'worker' },
-            { organization: 'org', repository: 'repo', workflow: 'four.md', campaign: 'beta', 'workflow-role': 'standalone' }
+            { organization: 'org', repository: 'repo', workflow: 'four.md', campaign: 'beta', 'workflow-role': 'standalone' },
+            { organization: 'org', repository: 'repo', workflow: 'unrelated.md', campaign: '', 'workflow-role': 'standalone' }
           ]
         },
         runs: {
@@ -233,7 +234,8 @@ describe('dashboard view query contracts', () => {
             { organization: 'org', repository: 'repo', workflow: 'one.md', run: '1', 'run-attempt': 1, 'aic-total': 3 },
             { organization: 'org', repository: 'repo', workflow: 'one.md', run: '1', 'run-attempt': 2, 'aic-total': 5 },
             { organization: 'org', repository: 'repo', workflow: 'three.md', run: '2', 'run-attempt': 1, 'aic-total': 2 },
-            { organization: 'org', repository: 'repo', workflow: 'four.md', run: '3', 'run-attempt': 1, 'aic-total': 100 }
+            { organization: 'org', repository: 'repo', workflow: 'four.md', run: '3', 'run-attempt': 1, 'aic-total': 100 },
+            { organization: 'org', repository: 'repo', workflow: 'unrelated.md', run: '4', 'run-attempt': 1, 'aic-total': 99 }
           ]
         }
       };
@@ -244,20 +246,20 @@ describe('dashboard view query contracts', () => {
       }));
       expect(results['cost-by-campaign'].rows).toEqual([
         {
+          'campaign-name': 'Beta',
+          'campaign-dashboard-link': {
+            'dashboard-href': '#page-campaign-insights?campaign=beta',
+            'dashboard-label': 'View Beta campaign dashboard'
+          },
+          aic: 102
+        },
+        {
           'campaign-name': 'Alpha & One',
           'campaign-dashboard-link': {
             'dashboard-href': '#page-campaign-insights?campaign=alpha%20%26%20one',
             'dashboard-label': 'View Alpha & One campaign dashboard'
           },
           aic: 8
-        },
-        {
-          'campaign-name': 'Beta',
-          'campaign-dashboard-link': {
-            'dashboard-href': '#page-campaign-insights?campaign=beta',
-            'dashboard-label': 'View Beta campaign dashboard'
-          },
-          aic: 2
         },
         {
           'campaign-name': 'Empty',
