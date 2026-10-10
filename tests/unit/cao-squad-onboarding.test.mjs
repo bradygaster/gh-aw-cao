@@ -20,7 +20,8 @@ const policy = {
 const manifest = {
   schema_version: 2, package: 'bradygaster/squad/workflows', minimum_gh_aw_version: 'v0.91.5',
   workflows: ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'].map((name) => ({
-    name, destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
+    name, source: `workflows/package/${name}.md`,
+    destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
   })),
   shared_runtime: [{ destination: SQUAD_VERIFIER, package_destination: SQUAD_VERIFIER }],
   skills: [{ destination: '.github/skills/gh-aw-enlistment/SKILL.md' }],
@@ -67,7 +68,7 @@ function fixture(t, options = {}) {
     else if (args[0] === 'aw' && args[1] === 'add') {
       assert.equal(args[2], `bradygaster/squad/workflows@${resolved}`);
       for (const workflow of manifest.workflows) {
-        write(workflow.destination, `---\nsource: bradygaster/squad/workflows@${resolved}\n---\n`);
+        write(workflow.destination, `---\nsource: bradygaster/squad/${workflow.source}@${resolved}\n---\n`);
         write(workflow.lock, 'compiled lock');
       }
       write(SQUAD_MANIFEST, JSON.stringify(manifest));
