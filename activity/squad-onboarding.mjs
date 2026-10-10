@@ -76,6 +76,33 @@ function readJson(root, file) {
   return JSON.parse(readFileSync(safePath(root, file), 'utf8'));
 }
 
+export function squadInventoryWorkflowPaths(root) {
+  if (!existsSync(safePath(root, SQUAD_RECEIPT))) return new Set();
+  const receipt = readJson(root, SQUAD_RECEIPT);
+  const ownership = readJson(root, SQUAD_OWNERSHIP);
+  const manifest = readJson(root, SQUAD_MANIFEST);
+  destinations(manifest);
+  const ownedManifest = ownership.files?.find((file) => file.destination === SQUAD_MANIFEST);
+  if (receipt.schema !== 'cao-squad-install/v1' || !/^[0-9a-f]{40}$/.test(receipt.source_revision)
+    || ownership.package !== SQUAD_PACKAGE || ownership.resolvedCommit !== receipt.source_revision
+    || ownedManifest?.sha256 !== contentHash(readFileSync(safePath(root, SQUAD_MANIFEST)))) {
+    throw new Error('Cannot attribute native Squad inventory: installation records disagree');
+  }
+  for (const workflow of manifest.workflows) {
+    if (typeof workflow.source !== 'string' || !/^workflows\/(?:[\w.-]+\/)*[\w.-]+\.md$/.test(workflow.source)
+      || workflow.source.split('/').some((part) => part === '.' || part === '..')) {
+      throw new Error(`Cannot attribute native Squad inventory: invalid source path for ${workflow.name}`);
+    }
+    const coordinate = `${SQUAD_PACKAGE.split('/').slice(0, 2).join('/')}/${workflow.source}@${receipt.source_revision}`;
+    const source = readFileSync(safePath(root, workflow.destination), 'utf8');
+    const acceptedSources = [`source: ${coordinate}`, `source: ${SQUAD_PACKAGE}@${receipt.source_revision}`];
+    if (!source.split(/\r?\n/).some((line) => acceptedSources.includes(line))) {
+      throw new Error(`Cannot attribute native Squad inventory: source revision differs for ${workflow.name}`);
+    }
+  }
+  return new Set(manifest.workflows.map((workflow) => workflow.destination));
+}
+
 function ownedIntegration(root, receipt) {
   if (!receipt) return;
   if (receipt.schema !== 'cao-squad-install/v1' || !receipt.files || !/^[0-9a-f]{40}$/.test(receipt.source_revision)) throw new Error('Invalid CAO Squad receipt');

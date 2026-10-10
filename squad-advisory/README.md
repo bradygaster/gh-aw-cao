@@ -33,6 +33,14 @@ The adoption flow is:
 Native task issues, implementation dispatch, and review remain repository-local.
 Planning across the farm never grants authority to implement in its repositories.
 
+Dashboard inventory associates the eight adopted native workflows with Squad
+Advisory using the CAO installation receipt and revision-matched native package
+records. This is reporting membership, not CAO worker admission: native workflows
+retain their standalone execution role and repository-local authority. Bootstrap
+runs can therefore contribute campaign activity before the Cast PR is accepted.
+The dashboard must ingest the refreshed inventory and run evidence to show that
+activity; approving the Cast PR is not a data-publication step.
+
 ## Install through CAO
 
 Use an initialized CAO operations repository with a clean, committed worktree.

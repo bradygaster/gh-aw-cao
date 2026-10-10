@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { collectFarmEvidence, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
+import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
 import { installPreparedSquad, prepareSquadOnboarding, SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_RECEIPT, SQUAD_VERIFIER } from '../../activity/squad-onboarding.mjs';
 import { addCaoCampaign, setCaoCampaignWorkflowsEnabled, updateCaoCampaigns } from '../../activity/cao.mjs';
 import { planCaoMaterialization } from '../../.github/workflows/shared/materialize-cao.mjs';
@@ -20,7 +20,8 @@ const policy = {
 const manifest = {
   schema_version: 2, package: 'bradygaster/squad/workflows', minimum_gh_aw_version: 'v0.91.5',
   workflows: ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'].map((name) => ({
-    name, destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
+    name, source: `workflows/package/${name}.md`,
+    destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
   })),
   shared_runtime: [{ destination: SQUAD_VERIFIER, package_destination: SQUAD_VERIFIER }],
   skills: [{ destination: '.github/skills/gh-aw-enlistment/SKILL.md' }],
@@ -67,11 +68,14 @@ function fixture(t, options = {}) {
     else if (args[0] === 'aw' && args[1] === 'add') {
       assert.equal(args[2], `bradygaster/squad/workflows@${resolved}`);
       for (const workflow of manifest.workflows) {
-        write(workflow.destination, 'package source');
+        write(workflow.destination, `---\nsource: bradygaster/squad/${workflow.source}@${resolved}\n---\n`);
         write(workflow.lock, 'compiled lock');
       }
       write(SQUAD_MANIFEST, JSON.stringify(manifest));
-      write(SQUAD_OWNERSHIP, 'native-owned-record');
+      write(SQUAD_OWNERSHIP, JSON.stringify({
+        package: 'bradygaster/squad/workflows', resolvedCommit: resolved,
+        files: [{ destination: SQUAD_MANIFEST, sha256: contentHash(JSON.stringify(manifest)) }],
+      }));
       write(SQUAD_VERIFIER, 'native verifier');
       write('.github/skills/gh-aw-enlistment/SKILL.md', 'native skill');
       write('.github/skills/agentic-workflows/SKILL.md', 'generated router');
