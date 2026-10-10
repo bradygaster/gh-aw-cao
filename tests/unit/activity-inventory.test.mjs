@@ -26,8 +26,10 @@ test("attributes adopted native Squad and its bootstrap run without granting CAO
   try {
     await write(".github/workflows/cao.json", JSON.stringify(policy));
     for (const name of names) {
+      const source = ["squad", "squad-review", "squad-bootstrap", "squad-command-router"].includes(name)
+        ? "bradygaster/squad/workflows" : `bradygaster/squad/workflows/package/${name}.md`;
       await write(`.github/workflows/${name}.md`,
-        `---\nname: ${name}\nsource: bradygaster/squad/workflows/package/${name}.md@${revision}\n---\n`);
+        `---\nname: ${name}\nsource: ${source}@${revision}\n---\n`);
       await write(`.github/workflows/${name}.lock.yml`, '# gh-aw-metadata: {"compiler_version":"0.91.5"}\n');
     }
     assert.ok(discoverInventory(root).workflows.every((workflow) => !workflow.associatedCampaign));
@@ -93,7 +95,8 @@ test("attributes adopted native Squad and its bootstrap run without granting CAO
     assert.throws(() => discoverInventory(root), /installation records disagree/);
     await write(manifestPath, manifest);
     for (const coordinate of [
-      `bradygaster/squad/workflows@${revision}`,
+      `unrelated/squad/workflows@${revision}`,
+      `bradygaster/squad/workflows@${"b".repeat(40)}`,
       `bradygaster/squad/workflows/package/squad.md@${revision}`,
       `bradygaster/squad/workflows/package/squad-bootstrap.md@${"b".repeat(40)}`,
     ]) {
