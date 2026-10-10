@@ -784,6 +784,23 @@ function workflowCampaignDetails(inventory, controlSettings) {
       });
     }
   }
+  for (const workflow of inventory.workflows || []) {
+    if (!workflow.associatedCampaign) continue;
+    const campaign = (inventory.campaigns || []).find((entry) => entry.id === workflow.associatedCampaign);
+    if (!campaign) throw new Error(`Workflow campaign association is undeclared: ${workflow.associatedCampaign}`);
+    const bundle = (inventory.bundles || []).find(
+      (entry) => (entry.controlCampaign || entry.id) === campaign.id,
+    );
+    details.set(workflow.sourcePath, {
+      ...details.get(workflow.sourcePath),
+      campaign: campaign.id,
+      campaignName: bundle?.name || campaign.name || campaign.id,
+      campaignDescription: bundle?.description,
+      campaignIcon: controlSettings.campaigns?.[campaign.id]?.icon || "goal",
+      campaignReadmePath: bundle?.readmePath,
+      campaignReadme: bundle?.readme,
+    });
+  }
   return details;
 }
 

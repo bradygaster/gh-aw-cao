@@ -76,6 +76,27 @@ function readJson(root, file) {
   return JSON.parse(readFileSync(safePath(root, file), 'utf8'));
 }
 
+export function squadInventoryWorkflowPaths(root) {
+  if (!existsSync(safePath(root, SQUAD_RECEIPT))) return new Set();
+  const receipt = readJson(root, SQUAD_RECEIPT);
+  const ownership = readJson(root, SQUAD_OWNERSHIP);
+  const manifest = readJson(root, SQUAD_MANIFEST);
+  destinations(manifest);
+  const ownedManifest = ownership.files?.find((file) => file.destination === SQUAD_MANIFEST);
+  if (receipt.schema !== 'cao-squad-install/v1' || !/^[0-9a-f]{40}$/.test(receipt.source_revision)
+    || ownership.package !== SQUAD_PACKAGE || ownership.resolvedCommit !== receipt.source_revision
+    || ownedManifest?.sha256 !== contentHash(readFileSync(safePath(root, SQUAD_MANIFEST)))) {
+    throw new Error('Cannot attribute native Squad inventory: installation records disagree');
+  }
+  for (const workflow of manifest.workflows) {
+    const source = readFileSync(safePath(root, workflow.destination), 'utf8');
+    if (!source.split(/\r?\n/).includes(`source: ${SQUAD_PACKAGE}@${receipt.source_revision}`)) {
+      throw new Error(`Cannot attribute native Squad inventory: source revision differs for ${workflow.name}`);
+    }
+  }
+  return new Set(manifest.workflows.map((workflow) => workflow.destination));
+}
+
 function ownedIntegration(root, receipt) {
   if (!receipt) return;
   if (receipt.schema !== 'cao-squad-install/v1' || !receipt.files || !/^[0-9a-f]{40}$/.test(receipt.source_revision)) throw new Error('Invalid CAO Squad receipt');

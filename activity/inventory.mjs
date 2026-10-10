@@ -6,6 +6,7 @@ import { setActionsGlobals } from "./actions-context.mjs";
 import { actionsLog as log } from "./actions-log.mjs";
 import { normalizeCampaignIntelligenceDeclaration } from "./campaign-intelligence.mjs";
 import { compilerVersionFromLock } from "./version.mjs";
+import { squadInventoryWorkflowPaths } from "./squad-onboarding.mjs";
 
 const CAMPAIGN_OWNERSHIP_DIRECTORY = ".github/aw/campaigns";
 const INSTALLED_INTELLIGENCE_DIRECTORY = ".github/cao/intelligence";
@@ -161,6 +162,15 @@ export function discoverInventory(
 ) {
   const workflowDirectory = path.join(root, ".github/workflows");
   const policyPath = path.join(workflowDirectory, "cao.json");
+  let policy = {};
+  try {
+    policy = JSON.parse(readFileSync(policyPath, "utf8"));
+  } catch {
+    policy = {};
+  }
+  const squadWorkflowPaths = Object.hasOwn(policy["control-plane"]?.campaigns || {}, "squad-advisory")
+    ? squadInventoryWorkflowPaths(root)
+    : new Set();
   const installedDeclarations = installedIntelligenceDeclarations(root);
   const manifests = findFiles(root, "aw.yml").map((manifestPath) => {
     const source = normalizeNewlines(readFileSync(manifestPath, "utf8"));
@@ -207,6 +217,7 @@ export function discoverInventory(
         trackerId: scalar(source, "tracker-id"),
         role,
         controlCampaign: role === "standalone" ? "" : controlCampaign(source),
+        ...(squadWorkflowPaths.has(sourcePath) ? { associatedCampaign: "squad-advisory" } : {}),
         maxAiCredits: Number.isFinite(maxAiCredits) && maxAiCredits > 0 ? maxAiCredits : null,
         sourcePath,
         source: scalar(source, "source"),
@@ -249,12 +260,6 @@ export function discoverInventory(
   });
   const campaignNames = new Map(bundles.map((bundle) => [bundle.controlCampaign || bundle.id, bundle.name]));
   const installedById = ownershipByCampaignId(installedCampaignRecords(root));
-  let policy = {};
-  try {
-    policy = JSON.parse(readFileSync(policyPath, "utf8"));
-  } catch {
-    policy = {};
-  }
   const campaigns = Object.keys(policy["control-plane"]?.campaigns || {}).sort().map((id) => {
     const bundle = bundles.find((candidate) => (candidate.controlCampaign || candidate.id) === id);
     const intelligenceDeclaration = resolveIntelligenceDeclaration(
