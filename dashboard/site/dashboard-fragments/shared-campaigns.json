@@ -1251,8 +1251,8 @@
     {
       "name": "campaign-workflow-totals",
       "subject": "Summarize observed workflow and execution totals for each centrally managed campaign.",
-      "objective": "Compare declared orchestrator/worker composition, rollout registration, observed runs, and AI Credit usage by campaign.",
-      "acceptance": "Group only orchestrator and worker workflow-inventory rows by campaign; retain workflow count, distinct roles/modes/registration and summed observed runs and AIC, without inferring successful outcomes.",
+      "objective": "Compare campaign workflow composition, registration, observed runs, and AI Credit usage.",
+      "acceptance": "Group managed and associated standalone workflows by campaign; retain distinct execution roles, modes, registration and observed totals. Membership does not grant authority or prove successful outcomes.",
       "description": "Observed workflow, rollout, run, and AI Credit totals grouped by campaign.",
       "from": "campaign-workflow-inventory",
       "filter": {
@@ -1261,7 +1261,8 @@
             "field": "workflow-role",
             "in": [
               "orchestrator",
-              "worker"
+              "worker",
+              "standalone"
             ]
           }
         ]

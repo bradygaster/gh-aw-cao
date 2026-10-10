@@ -105,7 +105,7 @@ function evidence(scale = 1) {
     { repository: 'other', workflow: 'alpha-worker', campaign: 'alpha', 'workflow-role': 'worker', 'workflow-name': 'Same worker' },
     { repository: 'control', workflow: 'alpha-inactive', campaign: 'alpha', 'workflow-role': 'worker', 'workflow-active': 'false', 'rollout-mode': 'live' },
     { repository: 'control', workflow: 'alpha-unknown', campaign: 'alpha', 'workflow-role': 'worker', 'workflow-active': 'unknown', 'rollout-mode': '' },
-    { repository: 'control', workflow: 'standalone', campaign: 'alpha', 'workflow-role': 'standalone' },
+    { repository: 'control', workflow: 'standalone', campaign: '', 'workflow-role': 'standalone' },
     { repository: 'control', workflow: 'roleless', campaign: 'alpha', 'workflow-role': '' },
     { repository: 'control', workflow: 'beta-worker', campaign: 'beta', 'workflow-role': 'worker', 'workflow-name': '' },
     { repository: 'control', workflow: 'unattributed', campaign: '', 'workflow-role': 'worker', 'workflow-name': '' }
@@ -211,6 +211,47 @@ beforeEach(async () => {
 });
 
 describe('campaign inventory query optimization', () => {
+  it('includes associated standalone activity through the worker and view boundary without granting worker authority', async () => {
+    const contract = previewContract.associatedStandalone;
+    const input = evidence();
+    input.workflows.rows = [
+      {
+        organization: 'example', repository: 'control', workflow: 'squad-bootstrap',
+        campaign: 'alpha', 'workflow-role': contract.role, 'rollout-mode': contract.mode,
+        'workflow-active': 'true'
+      },
+      {
+        organization: 'example', repository: 'control', workflow: 'unrelated',
+        campaign: '', 'workflow-role': 'standalone', 'workflow-active': 'true'
+      }
+    ];
+    input.runs.rows = [1, 2].map((run) => ({
+      organization: 'example', repository: 'control', workflow: 'squad-bootstrap',
+      run: String(run), 'run-attempt': 1, 'run-status': 'completed', 'run-conclusion': 'success',
+      event: 'push', 'started-at': '2026-09-21T12:00:00Z', 'aic-total': 0.5
+    }));
+    const sources = await canonicalSources(input);
+    const result = workerResults(queries, sources);
+    expect(result['campaign-workflows'].rows).toHaveLength(contract.workflowCount);
+    expect(result['campaign-workflows'].rows[0]).toMatchObject({
+      workflow: 'squad-bootstrap', 'workflow-role': contract.role, 'rollout-mode': contract.mode,
+      runs: contract.runCount, aic: 1
+    });
+    expect(result['campaign-inventory'].rows.find((row) => row.campaign === 'alpha')).toMatchObject({
+      workflows: contract.workflowCount, roles: contract.role, modes: contract.mode,
+      runs: contract.runCount, aic: 1, dispatches: contract.dispatchCount,
+      'covered-repositories': contract.coveredRepositories
+    });
+    const page = authoritativeDashboard.dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === previewContract.page);
+    const compiled = compileDashboardViewPayloadQueries(page, previewContract.page, {
+      queries, viewId: previewContract.view
+    });
+    const payload = workerResults(/** @type {Query[]} */ (compiled.queries), sources, compiled.aliases);
+    expect(payload[compiled.aliases[0]].rows.find((row) => row.campaign === 'alpha')).toMatchObject({
+      workflows: contract.workflowCount, roles: contract.role, runs: contract.runCount
+    });
+  });
+
   it('projects campaign identities and navigation without execution inputs while totals are pending', async () => {
     const page = authoritativeDashboard.dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === previewContract.page);
     const view = page?.definition?.views?.find((/** @type {{ id: string }} */ candidate) => candidate.id === previewContract.view);
@@ -241,7 +282,7 @@ describe('campaign inventory query optimization', () => {
       expect.objectContaining({
         campaign: 'alpha', workflows: 5, roles: 'orchestrator, worker',
         modes: 'live, review, unknown', registration: 'false, true, unknown',
-        runs: 8, aic: 5, dispatches: 6, 'covered-repositories': 1
+        runs: 8, aic: 5, dispatches: 5, 'covered-repositories': 1
       }),
       expect.objectContaining({ campaign: 'empty', workflows: 0, runs: 0, aic: 0, dispatches: 0, 'covered-repositories': 0 })
     ]));
@@ -373,9 +414,9 @@ describe('campaign inventory query optimization', () => {
     const beforeAnalysis = analyzeDashboardComplexity({ dashboard: { queries: baseline } });
     const afterAnalysis = analyzeDashboardComplexity({ dashboard: { queries } });
     const expected = {
-      'campaign-inventory': [83, 251, 66, 95],
-      'campaign-workflows': [51, 155, 38, 76],
-      'campaign-workflow-totals': [50, 149, 36, 70]
+      'campaign-inventory': [83, 251, 69, 107],
+      'campaign-workflows': [51, 155, 41, 88],
+      'campaign-workflow-totals': [50, 149, 39, 82]
     };
     for (const name of names) {
       const before = beforeAnalysis.inventory.find((query) => query.name === name);

@@ -113,9 +113,9 @@
     },
     {
       "name": "campaign-workflows",
-      "subject": "List campaign-owned orchestrator and worker workflows with database-backed execution totals.",
+      "subject": "List managed and associated standalone campaign workflows with database-backed execution totals.",
       "objective": "Choose an active campaign workflow whose observed execution warrants inspection.",
-      "acceptance": "Listed workflows match active declared orchestrator or worker inventory entries; runs and AI Credits agree with the selected-horizon inventory, and absence is not evidence of disabled authority or no executions. Rollout mode is context, not permission to change policy.",
+      "acceptance": "List active managed or campaign-associated standalone workflows with selected-horizon runs and AI Credits. Preserve execution roles; membership and rollout context grant no authority. Absence does not prove no executions.",
       "description": "Campaign workflows projected from lean canonical inventory, with display names and drill-down links computed only for the active list.",
       "from": "campaign-workflow-inventory",
       "filter": {
@@ -124,7 +124,8 @@
             "field": "workflow-role",
             "in": [
               "orchestrator",
-              "worker"
+              "worker",
+              "standalone"
             ]
           },
           {
@@ -340,14 +341,14 @@
     },
     {
       "name": "campaign-worker-issues",
-      "subject": "Project issue outcomes created by campaign worker workflows.",
-      "objective": "Choose a campaign worker issue whose current recorded disposition needs review.",
-      "acceptance": "Every included issue outcome joins a declared worker on organization, repository, and workflow and retains its issue, run, and status evidence; missing closing details remain unknown and closure is not proof of resolution.",
-      "description": "Campaign-addressable issue outcomes restricted to declared worker workflows.",
+      "subject": "Project issue outcomes created by campaign workers and associated standalone workflows.",
+      "objective": "Choose a campaign issue whose recorded disposition needs review.",
+      "acceptance": "Join issue outcomes to workers or campaign-associated standalone workflows by exact workflow identity. Preserve issue, run, and status evidence; membership grants no authority and closure does not prove resolution.",
+      "description": "Campaign issue outcomes from declared workers and associated standalone workflows.",
       "from": "outcomes",
       "joins": [
         {
-          "source": "workflows",
+          "source": "campaign-workflow-membership",
           "type": "inner",
           "on": [
             {
@@ -367,6 +368,10 @@
             {
               "field": "workflow-role",
               "as": "declared-workflow-role"
+            },
+            {
+              "field": "unassociated-standalone",
+              "as": "unassociated-standalone"
             }
           ]
         }
@@ -379,7 +384,11 @@
           },
           {
             "field": "declared-workflow-role",
-            "equals": "worker"
+            "in": ["worker", "standalone"]
+          },
+          {
+            "field": "unassociated-standalone",
+            "equals": false
           }
         ]
       },
@@ -474,10 +483,10 @@
     },
     {
       "name": "campaign-issue-tab-counts",
-      "subject": "Count the retained worker issues available for each campaign Reports tab.",
-      "objective": "Decide whether a campaign has retained worker issue reports to inspect.",
+      "subject": "Count retained worker and associated standalone issues for each campaign Reports tab.",
+      "objective": "Decide whether a campaign has retained issue reports to inspect.",
       "acceptance": "For each returned campaign, items equals the number of rows in campaign-worker-issues for that campaign in the same horizon; missing campaigns are not treated as zero issues or verified resolution.",
-      "description": "One campaign row with the number of retained issue outcomes produced by campaign workers.",
+      "description": "Retained issue outcomes produced by campaign workers and associated standalone workflows.",
       "from": "campaign-worker-issues",
       "aggregate": {
         "by": [
@@ -671,7 +680,7 @@
           {
             "id": "campaigns-inventory",
             "title": "Campaigns",
-            "description": "Centrally managed campaign inventory and observed execution totals.",
+            "description": "Campaign inventory and observed totals, including associated standalone workflows without changing their authority.",
             "data": {
               "source": "campaign-inventory",
               "partial-source": "campaign-inventory-preview"
@@ -1022,7 +1031,7 @@
           },
           "mark": "table",
           "controls": "interactive",
-          "empty-message": "No orchestrator or worker workflows are configured for this campaign.",
+          "empty-message": "No active workflows are associated with this campaign.",
           "encoding": {
             "href": {
               "field": "workflow-link",
