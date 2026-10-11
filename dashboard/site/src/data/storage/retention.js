@@ -6,9 +6,6 @@ const debugRetention = createDebug('retention');
 
 export const RETENTION_WINDOW_DAYS = 30;
 export const RETENTION_WINDOW_MS = RETENTION_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-export const BROWSER_RETENTION_WINDOWS_MS = Object.freeze({
-  runs: Number.MAX_SAFE_INTEGER
-});
 
 /**
  * Stores whose retention is decided by observation time. Structural parents
@@ -16,7 +13,7 @@ export const BROWSER_RETENTION_WINDOWS_MS = Object.freeze({
  * a retained run never loses its hierarchy, while campaigns persist across imports.
  * @type {Record<string, string[]>}
  */
-const RETENTION_TIMESTAMPS = {
+export const RETENTION_TIMESTAMPS = {
   runs: ['completedAt', 'startedAt', 'observedAt'],
   domains: ['timestamp', 'observedAt'],
   tools: ['timestamp', 'observedAt'],
@@ -53,6 +50,34 @@ const RUN_LINKED_STORES = /** @type {const} */ ([
   'audits',
   'issues', 'experimentAssignments', 'graderObservations', 'evalObservations'
 ]);
+export const BROWSER_RETENTION_WINDOWS_MS = Object.freeze({
+  runs: Number.MAX_SAFE_INTEGER,
+  ...Object.fromEntries(RUN_LINKED_STORES.map((store) => [store, 7 * 24 * 60 * 60 * 1000]))
+});
+
+/**
+ * @param {string} storeName
+ * @param {{ retentionWindowMs?: number, retentionWindowMsByStore?: Record<string, number> }} options
+ */
+export function retentionWindowForStore(storeName, options = {}) {
+  const configured = options.retentionWindowMsByStore?.[storeName]
+    ?? (Number.isFinite(options.retentionWindowMs)
+      ? options.retentionWindowMs
+      : BROWSER_RETENTION_WINDOWS_MS[/** @type {keyof typeof BROWSER_RETENTION_WINDOWS_MS} */ (storeName)]);
+  return Number.isFinite(configured) ? Math.max(0, Number(configured)) : RETENTION_WINDOW_MS;
+}
+
+/**
+ * @param {string} storeName
+ * @param {Record<string, unknown>} record
+ * @param {{ now?: number, retentionWindowMs?: number, retentionWindowMsByStore?: Record<string, number> }} options
+ */
+export function isExpiredCanonicalRecord(storeName, record, options = {}) {
+  if (!Object.hasOwn(RETENTION_TIMESTAMPS, storeName)) return false;
+  const timestamp = recordTimestamp(storeName, record);
+  return timestamp === null
+    || timestamp < (options.now ?? Date.now()) - retentionWindowForStore(storeName, options);
+}
 const WORKFLOW_INVENTORY_FIELDS = /** @type {const} */ ([
   'campaignId',
   'githubId',

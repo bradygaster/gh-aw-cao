@@ -70,7 +70,7 @@ test("dashboard authoring corpus workflow generates only validated training exam
   assert.match(dashboardIrSkill, /specification as the semantic authority/);
   assert.match(dashboardIrSkill, /validator entry point as the syntax and structural validation authority/);
   assert.match(dashboardIrSkill, /Do not introduce a new intermediate language/);
-  assert.match(dashboardIrSkill, /Read the specification and `dashboard\/site\/dashboard\.json`/);
+  assert.match(dashboardIrSkill, /Read the specification(?: \([^)\n]+\))? and `dashboard\/site\/dashboard\.json`/);
   assert.match(dashboardIrSkill, /Reuse an established built-in view pattern/);
   assert.match(dashboardIrSkill, /Return only the validated complete Dashboard Language YAML document/);
   assert.match(dashboardAuthoringSkill, /Pass the intent to `generate-dashboard-ir`/);
@@ -268,6 +268,11 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.doesNotMatch(dashboardWorkflow, /workflow_call:|cao-dashboard-build|dispatch-workflow/);
   assert.match(dashboardWorkflow, /workflow_dispatch:/);
   assert.match(dashboardWorkflow, /workflow_run:[\s\S]*?workflows:[\s\S]*?- CAO Activity[\s\S]*?types:[\s\S]*?- completed/);
+  const dashboardConcurrency = parse(dashboardWorkflow).concurrency;
+  assert.equal(dashboardConcurrency["cancel-in-progress"], true);
+  assert.match(dashboardConcurrency.group, /github\.event_name == 'workflow_run'[\s\S]*?github\.event\.workflow_run\.conclusion != 'success'[\s\S]*?github\.event\.workflow_run\.head_branch != github\.event\.repository\.default_branch/);
+  assert.match(dashboardConcurrency.group, /github\.event_name == 'push' && github\.ref_name != github\.event\.repository\.default_branch/);
+  assert.match(dashboardConcurrency.group, /format\('central-agentic-ops-dashboard-ineligible-\{0\}', github\.run_id\)[\s\S]*?\|\| 'central-agentic-ops-dashboard'/);
   assert.doesNotMatch(dashboardWorkflow, /DISPATCH_WORKFLOW: activity\.yml|Dispatch activity refresh|inputs\.mode/);
   assert.match(dashboardBuildJob, /actions: read[\s\S]*?contents: read/);
   assert.match(dashboardWorkflow, /Restore collected activity data[\s\S]*?id: activity-cache[\s\S]*?actions\/cache\/restore@[0-9a-f]{40}[\s\S]*?restore-keys: \|[\s\S]*?cao-activity-v5-/);
@@ -277,7 +282,7 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.match(dashboardWorkflow, /Download fallback activity data[\s\S]*?if: steps\.activity-cache\.outputs\.cache-matched-key == ''[\s\S]*?actions\/download-artifact@[0-9a-f]{40}[\s\S]*?name: cao-activity-index[\s\S]*?path: \$\{\{ runner\.temp \}\}\/cao-activity[\s\S]*?repository: \$\{\{ github\.repository \}\}[\s\S]*?github-token: \$\{\{ github\.token \}\}[\s\S]*?run-id: \$\{\{ steps\.activity-artifact-run\.outputs\.run-id \}\}/);
   assert.match(dashboardWorkflow, /Upgrade fallback activity data[\s\S]*?actions\/github-script@[0-9a-f]{40}[\s\S]*?'hash-payloads'[\s\S]*?'--normalized-dir'[\s\S]*?'ingest-jsonl'[\s\S]*?'--runs-dir'[\s\S]*?'--records-dir'[\s\S]*?'hash-payloads'[\s\S]*?'--output', process\.env\.REPORT_PAYLOAD_HASHES/);
   assert.match(dashboardWorkflow, /Upgrade fallback activity data[\s\S]*?const path = require\('path'\)[\s\S]*?path\.join\(process\.env\.RUNNER_TEMP, 'cao-activity', 'agent-summary\.json'\)/);
-  assert.match(dashboardWorkflow, /Upgrade fallback activity data[\s\S]*?NODE_DEBUG: cao:ingest[\s\S]*?'--retention-days', '30'[\s\S]*?'--run-retention-days', '30'/);
+  assert.match(dashboardWorkflow, /Upgrade fallback activity data[\s\S]*?NODE_DEBUG: cao:ingest[\s\S]*?'--retention-days', '7'[\s\S]*?'--run-retention-days', '30'/);
   assert.doesNotMatch(dashboardWorkflow, /Upgrade fallback activity data\n\s+if:/);
   assert.doesNotMatch(activityWorkflow, /workflow_call:/);
   assert.match(activityWorkflow, /workflow_dispatch:[\s\S]*?request-id:/);

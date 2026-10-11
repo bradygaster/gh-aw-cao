@@ -38,13 +38,12 @@ const sources = {
 };
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-09-09T05:00:00Z'));
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
   indexedDB.deleteDatabase('cao-dashboard-canonical');
 });
 
 afterEach(() => {
-  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.doUnmock('../../src/debug.js');
   vi.resetModules();
 });

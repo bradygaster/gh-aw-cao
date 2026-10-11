@@ -13,6 +13,7 @@ import {
   TEXT_COMPUTE_FUNCTIONS
 } from './specification.js';
 import { createDebug } from './debug.js';
+import { nearestIdentifier } from './validator-common.js';
 
 /**
  * @typedef {'scalar'|'text'|'boolean'|'numeric'|'temporal'|'link'|'unknown'} FieldType
@@ -35,6 +36,7 @@ const debugCompile = createDebug('query-type-checker');
  *   errors: ValidationError[],
  *   queryFields: Map<string, string[] | undefined>,
  *   queryTables: Map<string, Set<string>>
+ *   queryFieldTypes: Map<string, Map<string, FieldType> | undefined>,
  * }}
  */
 export function compileDashboardQueryTypes(definitions) {
@@ -71,9 +73,10 @@ export function compileDashboardQueryTypes(definitions) {
       if (QUERY_SOURCE_VALUES.includes(reference.name)) continue;
       const target = symbols.get(reference.name);
       if (!target) {
+        const suggestion = nearestIdentifier(reference.name, [...QUERY_SOURCE_VALUES, ...symbols.keys()]);
         errors.push(error(
           ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
-          `query input "${reference.name}" is not a database table or previously declared query.`,
+          `query input "${reference.name}" is not a database table or previously declared query.${suggestion ? ` Did you mean "${suggestion}"?` : ''}`,
           reference.path
         ));
       } else if (target.index >= symbol.index) {
@@ -155,6 +158,7 @@ export function compileDashboardQueryTypes(definitions) {
       name,
       new Set(compiled.get(name)?.tables ?? [])
     ])),
+    queryFieldTypes: new Map([...symbols.keys()].map((name) => [name, compiled.get(name)?.fields])),
     errors
   };
 }
@@ -320,7 +324,7 @@ function compileQuery(query, index, symbols, compiled, errors) {
         requireField(
           value.field,
           `${valuePath}.field`,
-          typeof value.reducer === 'string' && QUERY_NUMERIC_REDUCER_VALUES.includes(value.reducer) ? 'aggregate-numeric' : 'scalar'
+          value.reducer === 'unique' ? 'read' : typeof value.reducer === 'string' && QUERY_NUMERIC_REDUCER_VALUES.includes(value.reducer) ? 'aggregate-numeric' : 'scalar'
         );
         if (isRecord(value.filter) && Array.isArray(value.filter.predicates)) {
           value.filter.predicates.forEach((predicate, predicateIndex) => {
@@ -405,6 +409,16 @@ function compileQuery(query, index, symbols, compiled, errors) {
     query['order-by'].forEach((clause, clauseIndex) => {
       if (isRecord(clause)) requireField(clause.field, `${path}.order-by[${clauseIndex}].field`, 'scalar');
     });
+  }
+  if (isRecord(query.facet)) {
+    for (const channel of ['field', 'row', 'column']) {
+      if (query.facet[channel] !== undefined) requireField(query.facet[channel], `${path}.facet.${channel}`, 'scalar');
+    }
+    fields = new Map([
+      ['facet-field', 'scalar'], ['facet-row', 'scalar'], ['facet-column', 'scalar'],
+      ['facet-row-index', 'numeric'], ['facet-column-index', 'numeric'],
+      [String(query.facet.as), 'unknown']
+    ]);
   }
 
   return { fields, tables, rowTables };
@@ -569,7 +583,7 @@ function inferComputeType(computed, fields, parameters = new Map()) {
   const functionName = computed.function;
   if (functionName === 'dashboard-link') return 'link';
   if (functionName === 'link') return 'link';
-  if (functionName === 'date-day') return 'temporal';
+  if (functionName === 'date-day' || functionName === 'date-bucket') return 'temporal';
   if (typeof functionName === 'string' && NUMERIC_COMPUTE_FUNCTIONS.includes(functionName)) return 'numeric';
   if (typeof functionName === 'string' && TEXT_COMPUTE_FUNCTIONS.includes(functionName)) return 'text';
   if (functionName === 'equals-any' || functionName === 'greater-than') return 'boolean';
@@ -636,7 +650,8 @@ function unavailableFieldMessage(field, fields, inputLabel) {
   const available = [...fields.keys()].sort();
   const displayed = available.slice(0, 8);
   const suffix = available.length > displayed.length ? `, and ${available.length - displayed.length} more` : '';
-  return `field "${field}" is not available from ${inputLabel}; available fields: ${displayed.join(', ') || '(none)'}${suffix}.`;
+  const suggestion = nearestIdentifier(field, available);
+  return `field "${field}" is not available from ${inputLabel}; available fields: ${displayed.join(', ') || '(none)'}${suffix}.${suggestion ? ` Did you mean "${suggestion}"?` : ''}`;
 }
 
 /** @param {string} field @returns {FieldType} */

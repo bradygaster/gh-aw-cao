@@ -168,9 +168,9 @@ test("Docker dashboard builder installs production tooling without shipping buil
   const builder = stages.find((stage) => stage.includes(" AS dashboard-build"));
   assert.ok(builder);
   const install = builder.indexOf("npm --prefix dashboard/site ci --omit=dev --ignore-scripts");
-  assert.ok(install >= 0, "the builder must install Rollup even with NODE_ENV=production");
+  assert.ok(install >= 0, "the builder must install esbuild even with NODE_ENV=production");
   const manifest = JSON.parse(await text("dashboard/site/package.json"));
-  assert.ok(manifest.dependencies.rollup, "Rollup is required by the production build");
+  assert.ok(manifest.dependencies.esbuild, "esbuild is required by the production build");
   assert.doesNotMatch(builder, /--include=dev/);
   for (const name of ["dashboard-runtime", "azure-functions-runtime"]) {
     const runtime = stages.find((stage) => stage.includes(` AS ${name}`));

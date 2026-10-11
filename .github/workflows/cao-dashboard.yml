@@ -18,7 +18,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: central-agentic-ops-dashboard
+  # Skipped Activity completions must not cancel a manual or default-branch build.
+  group: >-
+    ${{ (
+      (github.event_name == 'workflow_run'
+        && (github.event.workflow_run.conclusion != 'success'
+          || github.event.workflow_run.head_branch != github.event.repository.default_branch))
+      || (github.event_name == 'push' && github.ref_name != github.event.repository.default_branch)
+    ) && format('central-agentic-ops-dashboard-ineligible-{0}', github.run_id)
+      || 'central-agentic-ops-dashboard' }}
   cancel-in-progress: true
 
 jobs:
@@ -195,7 +203,7 @@ jobs:
               '--database', process.env.ACTIVITY_DATABASE,
               '--runs-dir', process.env.REPORT_GH_AW_LOGS_RUNS,
               '--records-dir', process.env.REPORT_GH_AW_LOGS_RECORDS,
-              '--retention-days', '30',
+              '--retention-days', '7',
               '--run-retention-days', '30',
             ])
             await exec.exec(process.execPath, [

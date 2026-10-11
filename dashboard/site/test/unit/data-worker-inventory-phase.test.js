@@ -94,9 +94,14 @@ it('publishes inventory-only sources before historical shards finish ingesting',
     }
   };
   /** @type {() => void} */
-  let releaseShards = () => {};
-  const shardsReady = new Promise((resolve) => {
-    releaseShards = () => resolve(undefined);
+  let releaseRecords = () => {};
+  const recordsReady = new Promise((resolve) => {
+    releaseRecords = () => resolve(undefined);
+  });
+  /** @type {() => void} */
+  let releaseRuns = () => {};
+  const runsReady = new Promise((resolve) => {
+    releaseRuns = () => resolve(undefined);
   });
   globalThis.fetch = /** @type {typeof fetch} */ (async (input, init) => {
     const url = String(input);
@@ -105,9 +110,9 @@ it('publishes inventory-only sources before historical shards finish ingesting',
       return Response.json({ [runsName]: 'a'.repeat(64), [recordsName]: 'b'.repeat(64) });
     }
     if (init?.method === 'HEAD') return new Response(null, { headers: { 'content-length': '1' } });
-    // Every activity shard stays pending so the assertions below can only pass
-    // when inventory publication does not wait for historical ingestion.
-    await shardsReady;
+    if (url.endsWith(`/${runsName}`)) await runsReady;
+    // Hold record shards until the run-phase subscription has published.
+    if (url.endsWith(`/${recordsName}`)) await recordsReady;
     return new Response(url.endsWith(`/${runsName}`)
       ? normalized('runs', ({
         ...emptyBatch,
@@ -201,7 +206,17 @@ it('publishes inventory-only sources before historical shards finish ingesting',
     .some((source) => JSON.stringify(source.rows).includes('Self Care'))).toBe(true);
   expect(posted.some(({ id }) => id === 1)).toBe(false);
 
-  releaseShards();
+  releaseRuns();
+  await waitFor('the runs subscription to be published before record ingestion',
+    () => posted.some(({ subscriptionId }) => subscriptionId === 'runs'));
+  expect(posted.find(({ subscriptionId }) => subscriptionId === 'runs')).toMatchObject({
+    data: { 'run-summary': { rows: [{ run: '404' }] } }
+  });
+  const { processDataRequest } = await import('../../src/data-worker.js');
+  expect(await processDataRequest({ operation: 'read-dashboard-snapshot' })).toBeNull();
+  expect(posted.some(({ id }) => id === 1)).toBe(false);
+
+  releaseRecords();
   await waitFor('the ingestion request to complete', () => posted.some(({ id }) => id === 1));
   expect(posted.find(({ id }) => id === 1)?.error).toBeUndefined();
   await waitFor('the runs subscription to be published',

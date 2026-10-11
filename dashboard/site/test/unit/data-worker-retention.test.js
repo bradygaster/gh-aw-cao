@@ -62,13 +62,17 @@ function stubFetch(sources) {
 }
 
 beforeEach(async () => {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-09-09T05:00:00Z'));
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
   await new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DATABASE_NAME);
     request.onsuccess = () => resolve(undefined);
     request.onerror = () => reject(request.error);
   });
+  afterEach(() => vi.restoreAllMocks());
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 afterEach(() => vi.useRealTimers());
