@@ -32,11 +32,15 @@ test('Azure ingress defaults to disabled with explicit rules and default-deny ap
   assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');
   assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
   assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
+  assert.deepEqual(generated.parameters.functionScmAccessRestrictions.defaultValue, []);
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.type, 'bool');
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.defaultValue, false);
   const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
   assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
   assert.equal(app.properties.siteConfig.ipSecurityRestrictionsDefaultAction, 'Deny');
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsDefaultAction, 'Deny');
-  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, true);
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, "[parameters('functionScmAccessRestrictionsUseMain')]");
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictions, "[parameters('functionScmAccessRestrictions')]");
   assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
 });
 

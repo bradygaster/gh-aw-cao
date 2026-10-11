@@ -84,8 +84,14 @@ to construct a private endpoint.
 If the applicable requirements permit restricted public access, the smallest
 repair may be an app access-mode change retaining the existing approved rules,
 default-deny behavior, HTTPS, and OAuth authorization. Full-template deployment
-must explicitly carry those rules in `functionAccessRestrictions`; omitting them
-uses an empty list, not the deployed rules. `functionPublicNetworkAccess=Enabled`
+must carry main-site rules in `functionAccessRestrictions`, SCM/Kudu rules in
+`functionScmAccessRestrictions`, and the existing SCM reuse setting in
+`functionScmAccessRestrictionsUseMain`. The reuse setting defaults to `false`;
+set it to `true` only to preserve an approved shared-rule configuration. Keep
+distinct SCM rules out of the main-site array so deployment access does not
+widen application access. Omitting either rule array uses an empty list, not
+the deployed rules. Both endpoints remain default-deny.
+`functionPublicNetworkAccess=Enabled`
 does not itself grant permission, and allow rules cannot override `Disabled`.
 
 Do not redeploy the full bootstrap for an ingress-only repair or image update.

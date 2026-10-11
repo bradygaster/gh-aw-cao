@@ -17,8 +17,14 @@ param functionAppName string
 ])
 param functionPublicNetworkAccess string = 'Disabled'
 
-@description('Reviewed App Service access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied.')
+@description('Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied.')
 param functionAccessRestrictions array = []
+
+@description('Reviewed SCM/Kudu access restriction rules, separate from main-site rules. Explicitly carry forward existing approved SCM rules; omission uses an empty list.')
+param functionScmAccessRestrictions array = []
+
+@description('Whether SCM reuses main-site rules. Carry forward the existing approved setting; false keeps SCM independently restricted by default.')
+param functionScmAccessRestrictionsUseMain bool = false
 
 @description('Azure App Service plan name for the Function App.')
 param hostingPlanName string = '${functionAppName}-plan'
@@ -364,7 +370,8 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
       ipSecurityRestrictionsDefaultAction: 'Deny'
       ipSecurityRestrictions: functionAccessRestrictions
       scmIpSecurityRestrictionsDefaultAction: 'Deny'
-      scmIpSecurityRestrictionsUseMain: true
+      scmIpSecurityRestrictions: functionScmAccessRestrictions
+      scmIpSecurityRestrictionsUseMain: functionScmAccessRestrictionsUseMain
       alwaysOn: true
       minimumElasticInstanceCount: 1
       ftpsState: 'Disabled'

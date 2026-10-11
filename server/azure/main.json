@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "4151066543268110904"
+      "templateHash": "6653120325888738046"
     }
   },
   "parameters": {
@@ -37,7 +37,21 @@
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Reviewed App Service access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied."
+        "description": "Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied."
+      }
+    },
+    "functionScmAccessRestrictions": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Reviewed SCM/Kudu access restriction rules, separate from main-site rules. Explicitly carry forward existing approved SCM rules; omission uses an empty list."
+      }
+    },
+    "functionScmAccessRestrictionsUseMain": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Whether SCM reuses main-site rules. Carry forward the existing approved setting; false keeps SCM independently restricted by default."
       }
     },
     "hostingPlanName": {
@@ -532,7 +546,8 @@
           "ipSecurityRestrictionsDefaultAction": "Deny",
           "ipSecurityRestrictions": "[parameters('functionAccessRestrictions')]",
           "scmIpSecurityRestrictionsDefaultAction": "Deny",
-          "scmIpSecurityRestrictionsUseMain": true,
+          "scmIpSecurityRestrictions": "[parameters('functionScmAccessRestrictions')]",
+          "scmIpSecurityRestrictionsUseMain": "[parameters('functionScmAccessRestrictionsUseMain')]",
           "alwaysOn": true,
           "minimumElasticInstanceCount": 1,
           "ftpsState": "Disabled",
