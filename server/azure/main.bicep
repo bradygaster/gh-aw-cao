@@ -10,6 +10,28 @@ param location string = resourceGroup().location
 @description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
 param functionAppName string
 
+@description('Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model and explicit restriction rules.')
+@allowed([
+  'Disabled'
+  'Enabled'
+])
+param functionPublicNetworkAccess string = 'Disabled'
+
+@description('Reviewed App Service access restriction rules for the default endpoint. Unmatched requests are always denied. These rules do not protect private endpoint traffic.')
+param functionAccessRestrictions array = []
+
+type privateIngressConfiguration = {
+  @minLength(1)
+  subnetResourceId: string
+  @minLength(1)
+  privateDnsZoneResourceId: string
+  @minLength(1)
+  location: string
+}
+
+@description('Optional approved private ingress. Supply an existing corporate-reachable nondelegated subnet, its region, and an existing privatelink.azurewebsites.net zone with working client DNS resolution. Null leaves ingress unprovisioned.')
+param privateIngress privateIngressConfiguration?
+
 @description('Azure App Service plan name for the Function App.')
 param hostingPlanName string = '${functionAppName}-plan'
 
@@ -348,8 +370,13 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: plan.id
     virtualNetworkSubnetId: network.outputs.functionSubnetId
     httpsOnly: true
+    publicNetworkAccess: functionPublicNetworkAccess
     clientAffinityEnabled: false
     siteConfig: {
+      ipSecurityRestrictionsDefaultAction: 'Deny'
+      ipSecurityRestrictions: functionAccessRestrictions
+      scmIpSecurityRestrictionsDefaultAction: 'Deny'
+      scmIpSecurityRestrictionsUseMain: true
       alwaysOn: true
       minimumElasticInstanceCount: 1
       ftpsState: 'Disabled'
@@ -443,6 +470,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: string(postgresRunRetentionDays)
         }
         {
+          name: 'CAO_POSTGRES_LINKED_RETENTION_DAYS'
+          value: string(postgresRunRetentionDays)
+        }
+        {
           name: 'CAO_GITHUB_CLIENT_ID'
           value: githubClientId
         }
@@ -512,6 +543,18 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     sessionSecretValue
     previousSessionSecretValue
   ]
+}
+
+module privateEndpoint 'private-ingress.bicep' = if (privateIngress != null) {
+  name: 'dashboard-private-ingress'
+  scope: resourceGroup(split(privateIngress!.subnetResourceId, '/')[2], split(privateIngress!.subnetResourceId, '/')[4])
+  params: {
+    location: privateIngress!.location
+    functionAppResourceId: functionApp.id
+    privateEndpointName: '${functionAppName}-private'
+    subnetResourceId: privateIngress!.subnetResourceId
+    privateDnsZoneResourceId: privateIngress!.privateDnsZoneResourceId
+  }
 }
 
 module functionRoles 'function-roles.bicep' = {
