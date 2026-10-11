@@ -65,6 +65,72 @@ The `server/azure/main.bicep` template creates the following resources in one re
 - A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
 - At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
 - An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
+- An approved ingress topology. The template now defaults the Function App's
+  `publicNetworkAccess` to `Disabled` and unmatched main-site and SCM traffic to
+  `Deny`. Without private ingress it is intentionally unreachable. This changes
+  the older implicit public-access baseline; existing deployments must review
+  ingress parameters and preserve their approved restrictions before redeploying.
+
+### Private ingress prerequisites
+
+The Functions VNet integration in `network.bicep` is **outbound** connectivity
+to PostgreSQL, not browser access. Private ingress needs all of the following:
+
+- An existing approved nondelegated subnet reachable from the intended clients
+  through sanctioned corporate routing. It must not be the Functions integration
+  subnet. A subnet in an already-connected hub can avoid adding connectivity to
+  the isolated database VNet; the endpoint region and subscription must match
+  that subnet. The app itself can be in a different subscription.
+- An existing approved `privatelink.azurewebsites.net` private DNS zone, VNet
+  links, and corporate DNS forwarding/resolution. The endpoint's zone group adds
+  the app and SCM records; it does not configure client DNS or routing.
+- Network-owner approval and deployment permissions for the subnet join, private
+  endpoint connection, and private DNS integration. Enforce the intended client
+  scope at the private network boundary: App Service public access restrictions
+  do **not** protect traffic entering through a private endpoint.
+
+Pass `privateIngress` with `subnetResourceId`, `privateDnsZoneResourceId`, and
+`location` in adopter-owned deployment parameters. Keep resource IDs and network
+approval records outside the public catalog. The template does not invent a
+subnet, peer overlapping VNets, create a VPN, or weaken managed network rules.
+Creating an endpoint without a usable corporate route and DNS is not an access
+repair. Preserve `https://FUNCTION-APP-NAME.azurewebsites.net` and the existing
+OAuth callback; private DNS changes resolution, not the application origin.
+
+`functionPublicNetworkAccess=Enabled` is an alternative only when the applicable
+platform policy explicitly permits that ingress model and reviewed
+`functionAccessRestrictions` allow exactly the intended clients. Unmatched
+traffic remains denied. Corporate allow rules cannot override
+`publicNetworkAccess=Disabled`; a valid Azure CLI login grants no browser route.
+An unreadable policy is not permission to override it.
+
+For an **existing** app, use `server/azure/private-ingress.bicep` as a narrowly
+scoped deployment after the network prerequisites are approved. It creates only
+the endpoint and DNS zone group; it does not rewrite the app, its settings, VNet,
+NSGs, DNS links, secrets, or identities. Do not redeploy the full bootstrap to
+repair ingress or update an image.
+The main template scopes this module to the subnet's subscription and resource
+group. When deploying it independently, use that same scope and supply
+`functionAppResourceId`, `privateEndpointName`, `subnetResourceId`,
+`privateDnsZoneResourceId`, and `location`.
+
+```bash
+az deployment group what-if \
+  --subscription APPROVED-ENDPOINT-SUBSCRIPTION \
+  --resource-group APPROVED-ENDPOINT-RESOURCE-GROUP \
+  --template-file server/azure/private-ingress.bicep \
+  --parameters @APPROVED-PRIVATE-INGRESS-PARAMETERS.json
+```
+
+Use actual approved IDs, never placeholder IDs, for validation and what-if.
+Proceed with the same scoped template only after the diff contains the intended
+endpoint and zone group and all prerequisites have been verified. An ARM success
+or approved endpoint connection alone is insufficient: from the sanctioned
+client verify private DNS resolution, readiness, GitHub login and populated
+dashboard queries; separately confirm unauthorized ingress remains denied.
+If subnet/DNS ownership or policy reads are unavailable, record the exact
+missing resource IDs, permissions, and owner action instead of applying a
+disconnected endpoint or trying an alternate authentication path.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
@@ -182,6 +248,9 @@ dogfood policy. Do not commit this build context or its data.
    ACR build agent, this job has a network path to private PostgreSQL. Its managed
    identity resolves the URL from Key Vault and pulls the image from private ACR.
    Set `postgresRunRetentionDays` at least as large as the snapshot window.
+   Azure sets both `CAO_POSTGRES_RUN_RETENTION_DAYS` and
+   `CAO_POSTGRES_LINKED_RETENTION_DAYS` to that value on the app, ingestion job,
+   and optional collection/backfill roles, preserving the earlier shared window.
 
    ```bash
    az containerapp job start --resource-group cao-dashboard \
@@ -218,6 +287,26 @@ and secure `postgresAdministratorPassword`. This creates only the private
 network, DNS, and PostgreSQL database, not an unauthenticated dashboard.
 The full template adopts the same resources when supplied the same values.
 Do not use placeholder OAuth values to bypass application startup requirements.
+
+### Updating an existing runtime
+
+Compare the deployed source's generated `server/internal/postgresx/schema.sql`
+with the release. A changed physical contract requires a new database and
+explicit re-ingestion; there is no automatic compatibility migration. An
+unchanged contract can still change maintenance behavior. Releases supporting
+independent linked retention default to seven days when the setting is absent.
+Before starting such a release, explicitly set linked retention to the existing
+effective run retention on **every** database-owning role; otherwise startup can
+drop older linked partitions even without ingestion.
+
+Validate old-to-new startup, representative historical records, new ingestion,
+and rollback against an isolated local database. With retention preserved,
+normal aging, weekly partition maintenance, and existing curation still run;
+"no schema migration" does not mean "no database writes." Never use production
+startup as a read-only compatibility probe. Preserve the current image/settings
+receipt and verified recovery evidence, review a minimal settings/image delta,
+and do not start the ingestion job or replay a bootstrap deployment for an
+image-only update.
 
 ## Configuration reference
 

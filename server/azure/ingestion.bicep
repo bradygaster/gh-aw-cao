@@ -85,6 +85,10 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
               name: 'CAO_POSTGRES_RUN_RETENTION_DAYS'
               value: string(postgresRunRetentionDays)
             }
+            {
+              name: 'CAO_POSTGRES_LINKED_RETENTION_DAYS'
+              value: string(postgresRunRetentionDays)
+            }
           ]
           resources: {
             cpu: json('1.0')

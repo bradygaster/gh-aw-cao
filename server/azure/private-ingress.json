@@ -1,0 +1,94 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.44.1.10279",
+      "templateHash": "15236569734836309660"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region of the approved existing endpoint subnet, which may differ from the app region."
+      }
+    },
+    "functionAppResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Existing Function App resource ID, possibly in a different subscription. This module does not modify the app. Deploy this module in the endpoint subnet subscription."
+      }
+    },
+    "privateEndpointName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the new private endpoint."
+      }
+    },
+    "subnetResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Approved existing nondelegated subnet resource ID with sanctioned client routing and endpoint security controls. Do not use the app integration subnet."
+      }
+    },
+    "privateDnsZoneResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Existing approved privatelink.azurewebsites.net zone resource ID. Its VNet links and corporate DNS forwarding must already be established."
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[parameters('privateEndpointName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[parameters('subnetResourceId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[format('{0}-sites', parameters('privateEndpointName'))]",
+            "properties": {
+              "privateLinkServiceId": "[parameters('functionAppResourceId')]",
+              "groupIds": [
+                "sites"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', parameters('privateEndpointName'), 'app-service')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "app-service",
+            "properties": {
+              "privateDnsZoneId": "[parameters('privateDnsZoneResourceId')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "privateEndpointId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]"
+    }
+  }
+}
