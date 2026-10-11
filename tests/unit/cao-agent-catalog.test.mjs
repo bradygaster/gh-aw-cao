@@ -62,6 +62,17 @@ test("every agent-facing query defines its own objective and verifiable acceptan
   }
 });
 
+test("campaign workflow membership explains reporting coverage without granting authority", async () => {
+  const { queries } = await readAgentCatalog();
+  const membership = queries.find((query) => query.id === "campaign-workflow-membership");
+  assert.ok(membership);
+  assert.deepEqual(membership.sources, ["workflows"]);
+  assert.deepEqual(membership.execution.requirements, ["workflows"]);
+  assert.match(membership.objective, /campaign workflow coverage/);
+  assert.match(membership.objective, /managed and explicitly associated standalone workflows/);
+  assert.match(membership.objective, /without changing execution roles or granting authority/);
+});
+
 test("repository inventory preview is catalogued without claiming activity outcomes", async () => {
   const { queries } = await readAgentCatalog();
   const preview = queries.find((query) => query.id === "repository-activity-preview");

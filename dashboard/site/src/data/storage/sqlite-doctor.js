@@ -9,8 +9,10 @@ import {
   DATABASE_NAME,
   DATABASE_STORES,
   DATABASE_VERSION,
-  ENTITY_STORES
+  ENTITY_STORES,
+  prepareCanonicalRecord
 } from './indexeddb.js';
+import { STORAGE_SHARD_STORE } from './shards.js';
 import { mergeRetainedRecords, RETENTION_WINDOW_DAYS } from './retention.js';
 import {
   createSqliteRelationalTables,
@@ -344,10 +346,27 @@ function writeCanonicalDatabase(connection, batch, transactions) {
   const insertRecord = connection.prepare(`
     INSERT INTO __idb_records (database_name, store_name, record_key, value) VALUES (?, ?, ?, ?)
   `);
+  /** @type {Map<string, import('./shards.js').Shard>} */
+  const shards = new Map();
+  const totals = { id: 'totals', bytes: 0, count: 0 };
   for (const store of ENTITY_STORES) {
     for (const record of batch[store] ?? []) {
-      insertRecord.run(DATABASE_NAME, store, JSON.stringify(record.id), JSON.stringify(pruneCanonicalRecord(store, record)));
+      const prepared = prepareCanonicalRecord(store, pruneCanonicalRecord(store, record));
+      insertRecord.run(DATABASE_NAME, store, JSON.stringify(record.id), JSON.stringify(prepared));
+      const storage = prepared._storage;
+      const shard = shards.get(storage.shard) ?? {
+        id: storage.shard, storeName: store, day: Number(storage.shard.split(':').at(-1)),
+        bytes: 0, count: 0, dirty: store === 'audits'
+      };
+      shard.bytes += storage.bytes;
+      shard.count += 1;
+      shards.set(shard.id, shard);
+      totals.bytes += storage.bytes;
+      totals.count += 1;
     }
+  }
+  for (const shard of [...shards.values(), totals]) {
+    insertRecord.run(DATABASE_NAME, STORAGE_SHARD_STORE, JSON.stringify(shard.id), JSON.stringify(shard));
   }
   for (const transaction of transactions) {
     insertRecord.run(
@@ -364,9 +383,9 @@ function writeCanonicalDatabase(connection, batch, transactions) {
  * @param {string} checkedAt
  * @param {number} now
  * @param {number} retentionWindowMs
- * @param {number | undefined} runRetentionWindowMs
+ * @param {{ runs: number, operationalValues: number }} retentionWindowMsByStore
  */
-async function repairCanonicalDatabase(filename, checkedAt, now, retentionWindowMs, runRetentionWindowMs) {
+async function repairCanonicalDatabase(filename, checkedAt, now, retentionWindowMs, retentionWindowMsByStore) {
   const connection = openConnection(filename);
   let backupPath = null;
   let candidateBackupPath = null;
@@ -400,7 +419,7 @@ async function repairCanonicalDatabase(filename, checkedAt, now, retentionWindow
     const repairedBatch = mergeRetainedRecords(scanned.batch, emptyBatch(), {
       now,
       retentionWindowMs,
-      retentionWindowMsByStore: { runs: runRetentionWindowMs },
+      retentionWindowMsByStore,
       includePreviousInReference: true,
       preserveUnreferencedParents: true
     });
@@ -476,7 +495,7 @@ export async function doctorSqliteDatabase(filename, options = {}) {
   const retainAll = options.ttlDays === 'all';
   const ttlDays = retainAll
     ? 'all'
-    : Number.isFinite(options.ttlDays) ? Number(options.ttlDays) : RETENTION_WINDOW_DAYS;
+    : Number.isFinite(options.ttlDays) ? Number(options.ttlDays) : 7;
   const retentionWindowMs = retainAll ? Number.MAX_SAFE_INTEGER : Number(ttlDays) * DAY_MS;
   if (!retainAll && (Number(ttlDays) <= 0 || !Number.isFinite(retentionWindowMs))) {
     throw new TypeError('TTL days must produce a finite window greater than zero');
@@ -484,14 +503,19 @@ export async function doctorSqliteDatabase(filename, options = {}) {
   const retainAllRuns = options.runTtlDays === 'all';
   const runTtlDays = retainAllRuns
     ? 'all'
-    : Number.isFinite(options.runTtlDays) ? Number(options.runTtlDays) : undefined;
+    : Number.isFinite(options.runTtlDays) ? Number(options.runTtlDays)
+      : options.ttlDays === undefined ? RETENTION_WINDOW_DAYS : ttlDays;
   const runRetentionWindowMs = retainAllRuns
     ? Number.MAX_SAFE_INTEGER
-    : runTtlDays === undefined ? undefined : Number(runTtlDays) * DAY_MS;
-  if (!retainAllRuns && runTtlDays !== undefined
+    : runTtlDays === 'all' ? Number.MAX_SAFE_INTEGER : Number(runTtlDays) * DAY_MS;
+  if (!retainAllRuns
     && (Number(runTtlDays) <= 0 || !Number.isFinite(runRetentionWindowMs))) {
     throw new TypeError('Run TTL days must produce a finite window greater than zero');
   }
+  const retentionWindowMsByStore = {
+    runs: runRetentionWindowMs,
+    operationalValues: runRetentionWindowMs
+  };
   const checkedAt = new Date(now).toISOString();
   const actions = /** @type {string[]} */ ([]);
   const errors = /** @type {string[]} */ ([]);
@@ -575,7 +599,7 @@ export async function doctorSqliteDatabase(filename, options = {}) {
   const repairedBatch = mergeRetainedRecords(scanned.batch, emptyBatch(), {
     now,
     retentionWindowMs,
-    retentionWindowMsByStore: { runs: runRetentionWindowMs },
+    retentionWindowMsByStore,
     includePreviousInReference: true,
     preserveUnreferencedParents: true
   });
@@ -613,7 +637,7 @@ export async function doctorSqliteDatabase(filename, options = {}) {
         checkedAt,
         now,
         retentionWindowMs,
-        runRetentionWindowMs
+        retentionWindowMsByStore
       );
       backupPath = repair.backupPath;
     } catch (error) {

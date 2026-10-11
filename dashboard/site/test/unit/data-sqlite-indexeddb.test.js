@@ -537,10 +537,83 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     ], { encoding: 'utf8' }));
     expect(diagnosis).toMatchObject({
       healthy: true,
-      ttlDays: 30,
+      ttlDays: 7,
       runTtlDays: 'all',
       after: { counts: { runs: 2 } }
     });
+  });
+
+  it.each([
+    { name: 'default', args: [] },
+    { name: 'explicit workflow', args: ['--retention-days', '7', '--run-retention-days', '30'] }
+  ])('applies separate $name linked and run/value windows in SQLite CLI ingestion', async ({ args }) => {
+    const filename = temporaryDatabase();
+    const runsDirectory = join(filename, '..', 'runs');
+    const recordsDirectory = join(filename, '..', 'records');
+    mkdirSync(runsDirectory);
+    mkdirSync(recordsDirectory);
+    const records = batch();
+    records.audits = [];
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString();
+    const expired = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+    const recent = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    records.runs[0].observedAt = old;
+    records.runs.push({ ...records.runs[0], id: 'run:recent', observedAt: recent });
+    records.runs.push({ ...records.runs[0], id: 'run:expired', observedAt: expired });
+    records.tools.push(
+      { id: 'tool:old', runId: 'run:1', observedAt: old },
+      { id: 'tool:recent', runId: 'run:recent', observedAt: recent }
+    );
+    records.operationalValues.push(
+      { id: 'value:old', repositoryId: 'repository:1', observedAt: old },
+      { id: 'value:expired', repositoryId: 'repository:1', observedAt: expired }
+    );
+    for (const [phase, directory] of [['runs', runsDirectory], ['records', recordsDirectory]]) {
+      const entries = Object.entries(records).flatMap(([collection, rows]) =>
+        (phase === 'runs'
+          ? ['campaigns', 'repositories', 'workflows', 'runs', 'experiments', 'experimentAssignments'].includes(collection)
+          : !['campaigns', 'repositories', 'workflows', 'runs', 'experiments', 'experimentAssignments'].includes(collection))
+          ? rows.map((record) => ({ kind: 'record', collection, record }))
+          : []);
+      writeFileSync(join(directory, 'shard.jsonl'), [
+        { kind: 'metadata', schemaVersion: CANONICAL_SCHEMA_VERSION, ingestionVersion: 4,
+          sourceRecords: entries.length, phase, records: entries.length },
+        ...entries
+      ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+    }
+    const ingestion = JSON.parse(execFileSync(process.execPath, [
+      resolve('../../activity/cao.mjs'), 'ingest-jsonl',
+      '--database', filename, '--runs-dir', runsDirectory, '--records-dir', recordsDirectory, ...args
+    ], { encoding: 'utf8' }));
+    expect(ingestion.counts).toMatchObject({ runs: 2, tools: 1, operationalValues: 1 });
+    const indexedDB = createSqliteIndexedDB(filename);
+    expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);
+    expect((await readCollection(indexedDB, 'operationalValues')).map(({ id }) => id)).toEqual(['value:old']);
+  });
+
+  it.each([
+    { name: 'default', options: {} },
+    { name: 'explicit workflow', options: { ttlDays: 7, runTtlDays: 30 } }
+  ])('uses $name SQLite repair windows for seven-day detail and 30-day runs/values', async ({ options }) => {
+    const filename = temporaryDatabase();
+    const indexedDB = installSqliteIndexedDB(filename);
+    const canonical = batch();
+    canonical.audits = [];
+    canonical.runs[0].observedAt = '2026-09-01T00:00:00Z';
+    canonical.runs.push({ ...canonical.runs[0], id: 'run:recent', observedAt: '2026-09-09T00:00:00Z' });
+    canonical.tools.push(
+      { id: 'tool:old', runId: 'run:1', observedAt: '2026-09-01T00:00:00Z' },
+      { id: 'tool:recent', runId: 'run:recent', observedAt: '2026-09-09T00:00:00Z' }
+    );
+    canonical.operationalValues.push({
+      id: 'value:old', repositoryId: 'repository:1', observedAt: '2026-09-01T00:00:00Z'
+    });
+    await upsertCanonicalBatch(indexedDB, canonical);
+    const diagnosis = await doctorSqliteDatabase(filename, { ...options, now: Date.parse('2026-09-10T00:00:00Z') });
+    expect(diagnosis).toMatchObject({ healthy: true, ttlDays: 7, runTtlDays: 30 });
+    expect((await readCollection(indexedDB, 'runs')).map(({ id }) => id)).toEqual(['run:1', 'run:recent']);
+    expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);
+    expect((await readCollection(indexedDB, 'operationalValues')).map(({ id }) => id)).toEqual(['value:old']);
   });
 
   it('repairs malformed, orphaned, and expired canonical data', async () => {

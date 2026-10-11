@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
+import Ajv2020 from 'ajv/dist/2020.js'
 
 const directory = dirname(fileURLToPath(import.meta.url))
 const implementation = readFileSync(join(directory, '../internal/server/server.go'), 'utf8')
@@ -51,7 +52,7 @@ test('agent discovery describes public GET and body-free HEAD responses', () => 
 
 test('the generated contract describes the implemented security and wire formats', () => {
   assert.equal(openapi.openapi, '3.1.0')
-  assert.equal(openapi.info.version, '2.3.0')
+  assert.equal(openapi.info.version, '2.4.0')
   for (const path of ['/api/runs/{id}/jobs', '/api/runs/{id}/sessions', '/api/sessions/{id}/events']) {
     assert.equal(openapi.paths[path], undefined)
   }
@@ -111,6 +112,7 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     ['../internal/server/server.go', 'queryRequest', 'QueryRequest'],
     ['../internal/server/server.go', 'queryResponse', 'QueryResponse'],
     ['../internal/query/types.go', 'Definition', 'QueryDefinition'],
+    ['../internal/query/types.go', 'Facet', 'Facet'],
     ['../internal/query/types.go', 'WindowField', 'WindowField'],
     ['../internal/query/types.go', 'OrderField', 'OrderField'],
     ['../internal/model/model.go', 'Source', 'QuerySource'],
@@ -128,8 +130,79 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     assert.ok(fields, `missing Go struct ${name}`)
     const goFields = [...fields.matchAll(/`json:"([^",]+)(?:,omitempty)?"`/g)]
       .map(([, field]) => field).sort()
-    const specFields = Object.keys(openapi.components.schemas[schema].properties).sort()
+    const definition = openapi.components.schemas[schema]
+    const alternatives = definition.anyOf?.map(branch => openapi.components.schemas[branch.$ref.split('/').at(-1)])
+      ?? [definition]
+    const specFields = [...new Set(alternatives.flatMap(branch => Object.keys(branch.properties)))].sort()
     assert.deepEqual(specFields, goFields, `${schema} differs from ${file}:${name}`)
+  }
+})
+
+test('generated facet contracts admit exactly the four axis alternatives', () => {
+  const definition = JSON.parse(readFileSync(join(directory, 'generated/schemas/QueryDefinition.json'), 'utf8'))
+  const request = JSON.parse(readFileSync(join(directory, 'generated/schemas/QueryRequest.json'), 'utf8'))
+  const jsonValidator = new Ajv2020({ validateFormats: false })
+  jsonValidator.addSchema(definition)
+  const validateJson = jsonValidator.compile(request)
+  // Move the OpenAPI component registry to $defs without changing schema semantics.
+  const components = JSON.parse(JSON.stringify(openapi.components.schemas)
+    .replaceAll('#/components/schemas/', '#/$defs/'))
+  const validateOpenApi = new Ajv2020({ validateFormats: false }).compile({
+    $defs: components,
+    $ref: '#/$defs/QueryRequest'
+  })
+  for (const schemas of [openapi.components.schemas, definition.$defs]) {
+    assert.equal(schemas.Facet.anyOf.length, 4)
+    for (const [name, axes] of [
+      ['FieldFacet', ['field']], ['RowFacet', ['row']],
+      ['ColumnFacet', ['column']], ['GridFacet', ['row', 'column']]
+    ]) {
+      assert.deepEqual(schemas[name].required, [...axes, 'as'])
+      assert.equal(schemas[name].additionalProperties, false)
+    }
+  }
+  const cases = [
+    ...JSON.parse(readFileSync(join(directory, '../internal/query/testdata/facet-contract.json'), 'utf8')),
+    { facet: undefined, valid: true },
+    { facet: null, valid: false },
+    { facet: { field: 'engine' }, valid: false },
+    { facet: { field: 'engine', as: null }, valid: false },
+    { facet: { field: 'engine', as: 1 }, valid: false },
+    { facet: { field: 'engine', as: 'panels', unknown: 'axis' }, valid: false }
+  ]
+  const whitespace = '\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'
+  for (const axes of [{ field: 'engine' }, { row: 'repository' }, { column: 'workflow' }, { row: 'repository', column: 'workflow' }]) {
+    for (const as of ['', ...whitespace, whitespace]) {
+      cases.push({ facet: { ...axes, as }, valid: false })
+    }
+    for (const as of ['panels', `${whitespace}panels${whitespace}`, '\u200b', '\ufeff']) {
+      cases.push({ facet: { ...axes, as }, valid: true })
+    }
+  }
+  for (const field of [undefined, '', 'engine', null, 1, false, [], {}]) {
+    for (const row of [undefined, '', 'repository', null, 1, false, [], {}]) {
+      for (const column of [undefined, '', 'workflow', null, 1, false, [], {}]) {
+        const axes = { field, row, column }
+        const facet = { ...axes, as: 'panels' }
+        const present = Object.entries(axes).filter(([, value]) => value !== undefined)
+        const valid = present.length > 0
+          && present.every(([, value]) => typeof value === 'string' && value.length > 0)
+          && (field === undefined || present.length === 1)
+        cases.push({ facet, valid })
+      }
+    }
+  }
+  for (const [name, validate] of [['OpenAPI', validateOpenApi], ['JSON Schema', validateJson]]) {
+    for (const { facet, valid } of cases) {
+      for (const property of ['queries', 'compiledQueries']) {
+        // JSON transport omits undefined properties but retains null and empty strings.
+        const input = JSON.parse(JSON.stringify({
+          [property]: [{ name: 'panels', from: 'runs', facet }]
+        }))
+        assert.equal(validate(input), valid,
+          `${name} ${JSON.stringify(input)}: ${JSON.stringify(validate.errors)}`)
+      }
+    }
   }
 })
 

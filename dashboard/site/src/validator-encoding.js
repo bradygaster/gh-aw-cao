@@ -2,6 +2,7 @@ import { ADDITIVE_MEASURE_FIELDS, AGGREGATE_VALUES, DASHBOARD_LINK_FIELD_NAMES, 
 import { sourceFieldNames } from './validator-queries.js';
 import { validateStringField, validateOptionalStringField, validateObjectKeys, createError, isPlainObject, getValueNodeByKey, getSequenceItemNode } from './validator-common.js';
 import { createDebug } from './debug.js';
+import { chartFacet } from './chart-facet.js';
 
 /** @typedef {import('./validator.js').ValidationError} ValidationError */
 
@@ -17,8 +18,10 @@ const debugValidatorEncoding = createDebug('validator-encoding');
  * @param {unknown} data
  * @param {string} viewPath
  * @param {ValidationError[]} errors
+ * @param {unknown} [facet]
+ * @param {boolean} [layered]
  */
-export function validateEncoding(encodingNode, encoding, mark, chart, sourceName, data, viewPath, errors) {
+export function validateEncoding(encodingNode, encoding, mark, chart, sourceName, data, viewPath, errors, facet, layered = false) {
   const errorCountBeforeValidation = errors.length;
   const markValue = typeof mark === 'string' ? mark : null;
 
@@ -87,11 +90,11 @@ export function validateEncoding(encodingNode, encoding, mark, chart, sourceName
   } else if (markValue === 'list') {
     validateTableEncoding(encodingNode, encoding, sourceName, `${viewPath}.encoding`, aggregateOutputIds, errors, 'list');
   } else if (markValue === 'chart') {
-    validateChartEncoding(encodingNode, encoding, chart, sourceName, `${viewPath}.encoding`, aggregateOutputIds, errors);
+    validateChartEncoding(encodingNode, encoding, chart, sourceName, `${viewPath}.encoding`, aggregateOutputIds, errors, layered);
     validateChartWidget(encoding, chart, viewPath, errors);
   }
 
-  validateOrderByReferences(data, encoding, aggregateOutputIds, sourceName, viewPath, errors);
+  validateOrderByReferences(data, encoding, aggregateOutputIds, sourceName, viewPath, errors, facet);
 
   debugValidatorEncoding({ operation: 'validate-encoding', mark: markValue, status: errors.length === errorCountBeforeValidation ? 'ok' : 'invalid' });
 }
@@ -155,10 +158,10 @@ function validateChartWidget(encoding, chart, viewPath, errors) {
       `${viewPath}.encoding.reference`
     ));
   }
-  if (chart === 'pie' && isPlainObject(encoding.x) && encoding.x.type !== undefined && !['nominal', 'ordinal'].includes(String(encoding.x.type))) {
+  if (['pie', 'treemap'].includes(String(chart)) && isPlainObject(encoding.x) && encoding.x.type !== undefined && !['nominal', 'ordinal'].includes(String(encoding.x.type))) {
     errors.push(createError(
       ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
-      'pie chart x encoding must be nominal or ordinal when explicitly typed.',
+      `${chart} chart x encoding must be nominal or ordinal when explicitly typed.`,
       `${viewPath}.encoding.x.type`
     ));
   }
@@ -189,10 +192,10 @@ function validateChartWidget(encoding, chart, viewPath, errors) {
     }
   }
   if (encoding.section !== undefined) {
-    if (chart !== 'horizontal-bar') {
+    if (chart !== 'horizontal-bar' && chart !== 'treemap') {
       errors.push(createError(
         ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
-        'section encoding is supported only by horizontal-bar charts.',
+        'section encoding is supported only by horizontal-bar and treemap charts.',
         `${viewPath}.encoding.section`
       ));
     } else if (
@@ -202,9 +205,30 @@ function validateChartWidget(encoding, chart, viewPath, errors) {
     ) {
       errors.push(createError(
         ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
-        'horizontal-bar chart section encoding must be nominal or ordinal when explicitly typed.',
+        `${chart} chart section encoding must be nominal or ordinal when explicitly typed.`,
         `${viewPath}.encoding.section.type`
       ));
+    }
+  }
+  if (chart === 'treemap') {
+    for (const channel of ['x', 'y', 'color', 'section']) {
+      const definition = encoding[channel];
+      if (!isPlainObject(definition)) continue;
+      if (definition.aggregate !== undefined && definition.aggregate !== 'none') {
+        errors.push(createError(
+          ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
+          'treemap fields must use query-produced values; declare aggregation in dashboard.queries.',
+          `${viewPath}.encoding.${channel}.aggregate`
+        ));
+      }
+      if (['color', 'section'].includes(channel) && definition.type !== undefined
+          && !['nominal', 'ordinal'].includes(String(definition.type))) {
+        errors.push(createError(
+          ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
+          `treemap ${channel} encoding must be nominal or ordinal when explicitly typed.`,
+          `${viewPath}.encoding.${channel}.type`
+        ));
+      }
     }
   }
   if (chart === 'histogram') {
@@ -376,9 +400,12 @@ function validateTableEncoding(encodingNode, encoding, sourceName, path, aggrega
  * @param {string} path
  * @param {Map<string, string>} aggregateOutputIds
  * @param {ValidationError[]} errors
+ * @param {boolean} [layered]
  */
-function validateChartEncoding(encodingNode, encoding, chart, sourceName, path, aggregateOutputIds, errors) {
-  validateRequiredFieldDefinition(getValueNodeByKey(encodingNode, 'x'), encoding.x, sourceName, `${path}.x`, aggregateOutputIds, errors);
+function validateChartEncoding(encodingNode, encoding, chart, sourceName, path, aggregateOutputIds, errors, layered = false) {
+  if (chart !== 'rule' || encoding.x !== undefined) {
+    validateRequiredFieldDefinition(getValueNodeByKey(encodingNode, 'x'), encoding.x, sourceName, `${path}.x`, aggregateOutputIds, errors);
+  }
   const yNode = getValueNodeByKey(encodingNode, 'y');
   const yDefinitions = Array.isArray(encoding.y) ? encoding.y : [encoding.y];
   for (const [index, definition] of yDefinitions.entries()) {
@@ -511,13 +538,14 @@ function validateChartEncoding(encodingNode, encoding, chart, sourceName, path, 
 
   if (
     expectedDefault === 'line'
+    && !layered
     && !['dot', 'scatter', 'swimlane'].includes(String(chart))
     && !xHasTimeUnit
     && !Array.isArray(encoding.y)
   ) {
     errors.push(createError(
       ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
-      'chart views with temporal x must declare a temporal bucket to realize the line time-series default conservatively.',
+      `Temporal chart x requires encoding.x.time-unit. Set it to ${TIME_UNIT_VALUES.join(', ')} to match the intended UTC grouping; for example, add "time-unit": "day" inside encoding.x. Setting chart: line or pre-bucketing the source query does not replace this encoding property.`,
       `${path}.x`
     ));
   }
@@ -790,8 +818,9 @@ function validateAggregateCompatibility(fieldName, aggregate, path, errors) {
  * @param {string | null} sourceName
  * @param {string} viewPath
  * @param {ValidationError[]} errors
+ * @param {unknown} facet
  */
-function validateOrderByReferences(data, encoding, aggregateOutputIds, sourceName, viewPath, errors) {
+function validateOrderByReferences(data, encoding, aggregateOutputIds, sourceName, viewPath, errors, facet) {
   if (!isPlainObject(data) || !Array.isArray(data['order-by']) || !sourceName) {
     return;
   }
@@ -810,6 +839,7 @@ function validateOrderByReferences(data, encoding, aggregateOutputIds, sourceNam
       encoding.color,
       encoding.section,
       ...(Array.isArray(encoding.columns) ? encoding.columns : []),
+      ...Object.values(chartFacet({ encoding, facet }) ?? {}),
     ];
     for (const definition of definitions) {
       if (

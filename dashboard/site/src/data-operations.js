@@ -10,6 +10,7 @@ import { formatCount, titleCase } from './components/count-formatters.js';
 import { projectTemporalSeries } from './data/analytics/temporal-series.js';
 import { formatPercent } from './view-formatters.js';
 import { createDebug } from './debug.js';
+import { partitionFacetRows } from './data/queries/facet.js';
 
 const debugDataOperations = createDebug('data-operations');
 
@@ -17,7 +18,7 @@ const debugDataOperations = createDebug('data-operations');
  * @typedef {Record<string, unknown>} Row
  * @typedef {{ field: string, equals?: unknown, in?: unknown[], includes?: string, gte?: unknown, lt?: unknown, optional?: boolean }} Predicate
  * @typedef {{ op: 'filter', predicates?: Predicate[], search?: { fields: string[], query: string } }} FilterOperator
- * @typedef {{ op: 'summarize', by?: string[], values: Array<{ field: string, as: string, reducer: 'count'|'distinct-count'|'distinct-list'|'distinct-values'|'calendar-week-rhythm'|'latest-failure-streak'|'sum'|'mean'|'min'|'max', filter?: { predicates: Predicate[] } }> }} SummarizeOperator
+ * @typedef {{ op: 'summarize', by?: string[], values: Array<{ field: string, as: string, reducer: 'count'|'distinct-count'|'distinct-list'|'distinct-values'|'calendar-week-rhythm'|'latest-failure-streak'|'sum'|'mean'|'min'|'max'|'unique', filter?: { predicates: Predicate[] } }> }} SummarizeOperator
  * @typedef {{ op: 'arrange', by: Array<{ field: string, direction?: 'asc'|'desc' }> }} ArrangeOperator
  * @typedef {{ op: 'slice', offset?: number, limit: number }} SliceOperator
  * @typedef {{ field: string } | { value: string|number|boolean|null }} ComputeArgument
@@ -31,7 +32,8 @@ const debugDataOperations = createDebug('data-operations');
  * @typedef {{ op: 'select', fields: Array<{ field: string, as?: string }> }} SelectOperator
  * @typedef {import('./data/analytics/temporal-series.js').TemporalSeriesDefinition} TemporalSeriesDefinition
  * @typedef {{ op: 'temporal-series' } & TemporalSeriesDefinition} TemporalSeriesOperator
- * @typedef {FilterOperator|SummarizeOperator|ArrangeOperator|SliceOperator|ComputeOperator|PredictOperator|WindowOperator|SelectOperator|TemporalSeriesOperator} DataOperator
+ * @typedef {{ op: 'facet' } & import('./data/queries/facet.js').FacetDefinition} FacetOperator
+ * @typedef {FilterOperator|SummarizeOperator|ArrangeOperator|SliceOperator|ComputeOperator|PredictOperator|WindowOperator|SelectOperator|TemporalSeriesOperator|FacetOperator} DataOperator
  */
 
 /**
@@ -49,6 +51,7 @@ export const COMPUTE_FUNCTION_ARITY = {
   'replace-suffix': [3, 3],
   'url-encode': [1, 1],
   'date-day': [1, 1],
+  'date-bucket': [2, 2],
   'calendar-week-point': [3, 3],
   'dashboard-link': [3, 4],
   link: [2, 2],
@@ -70,7 +73,7 @@ export const COMPUTE_FUNCTION_ARITY = {
 
 /** Computed-field functions whose result is always text or null. */
 export const TEXT_COMPUTE_FUNCTIONS = [
-  'concat', 'lower', 'upper', 'title-case', 'trim', 'replace-suffix', 'url-encode', 'date-day', 'calendar-week-point', 'format-count', 'format-percent', 'failure-streak-point', 'link-href'
+  'concat', 'lower', 'upper', 'title-case', 'trim', 'replace-suffix', 'url-encode', 'date-day', 'date-bucket', 'calendar-week-point', 'format-count', 'format-percent', 'failure-streak-point', 'link-href'
 ];
 
 /** Computed-field functions whose result is always a finite number or null. */
@@ -78,6 +81,12 @@ export const NUMERIC_COMPUTE_FUNCTIONS = ['number', 'positive-integer', 'sum', '
 
 /** Vega regression method names supported without an external model registry. */
 export const PREDICTION_METHODS = ['linear', 'log', 'exp', 'pow', 'quad', 'poly'];
+
+/** @param {unknown} argument */
+export function validDateBucketUnitArgument(argument) {
+  return isPlainObject(argument) && Object.keys(argument).length === 1
+    && typeof argument.value === 'string' && ['hour', 'day', 'week', 'month'].includes(argument.value);
+}
 
 /**
  * Applies a sequence of declarative operators without mutating the input rows.
@@ -107,6 +116,11 @@ function applyOperator(rows, operator) {
   if (operator.op === 'window') return windowRows(rows, operator);
   if (operator.op === 'select') return select(rows, operator);
   if (operator.op === 'temporal-series') return projectTemporalSeries(rows, operator);
+  if (operator.op === 'facet') {
+    const { op: _op, ...definition } = operator;
+    void _op;
+    return partitionFacetRows(rows, definition);
+  }
   if (operator.op === 'slice') {
     const offset = Number.isInteger(operator.offset) ? Math.max(0, Number(operator.offset)) : 0;
     return rows.slice(offset, offset + Math.max(0, operator.limit));
@@ -413,6 +427,20 @@ export function computeValue(row, definition) {
     const timestamp = parseTimestamp(values[0]);
     return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
   }
+  if (definition.function === 'date-bucket') {
+    if (!validDateBucketUnitArgument(definition.args[1])) {
+      throw new TypeError('date-bucket requires a literal UTC unit: hour, day, week, or month.');
+    }
+    const timestamp = parseTimestamp(values[0]);
+    if (timestamp === null) return null;
+    const date = new Date(timestamp);
+    const unit = values[1];
+    date.setUTCMinutes(0, 0, 0);
+    if (unit !== 'hour') date.setUTCHours(0);
+    if (unit === 'week') date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+    if (unit === 'month') date.setUTCDate(1);
+    return date.toISOString();
+  }
   if (definition.function === 'calendar-week-point') {
     const timestamp = parseTimestamp(values[0]);
     const reference = parseTimestamp(values[1]);
@@ -623,6 +651,11 @@ function summarizeValue(group, summary) {
 
 /** @param {unknown[]} input @param {SummarizeOperator['values'][number]['reducer']} reducer */
 function reduceValues(input, reducer) {
+  if (reducer === 'unique') {
+    const values = new Map(input.filter((value) => value != null).map((value) => [stableValueKey(value), value]));
+    return values.size === 1 ? values.values().next().value : null;
+  }
+
   const present = input.filter((value) => value != null && value !== '');
   if (reducer === 'count') return present.length;
   if (reducer === 'distinct-count') return new Set(present.map(String)).size;
@@ -636,6 +669,13 @@ function reduceValues(input, reducer) {
   if (reducer === 'mean') return values.reduce((total, value) => total + value, 0) / values.length;
   if (reducer === 'min') return Math.min(...values);
   return Math.max(...values);
+}
+
+/** @param {unknown} value @returns {string} */
+function stableValueKey(value) {
+  if (Array.isArray(value)) return `[${value.map(stableValueKey).join(',')}]`;
+  if (isPlainObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableValueKey(value[key])}`).join(',')}}`;
+  return JSON.stringify(value) ?? 'null';
 }
 
 /** @param {unknown[]} input */

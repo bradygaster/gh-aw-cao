@@ -22,8 +22,9 @@ SQLite and IndexedDB are rebuildable projections. Neither is the source for the
 other. The local SQLite adapter implements the same logical object stores,
 indexes, records, conversion rules, and queries as browser IndexedDB. It is not
 a separate relational canonical schema. Both keep all run summaries available
-in the published JSONL. Detailed Domain, Tool, Audit, and Issue records remain
-bounded to 30 days unless a separate full-detail SQLite archive is requested.
+in the published JSONL. SQLite keeps Run and Operational Value records for
+30 days by default and expires run-linked detail after seven days unless a
+separate full-detail SQLite archive is requested.
 
 See [Data model](/gh-aw-cao/dashboard-data-model/) for the canonical entities, identities, and relationships produced by ingestion.
 
@@ -77,7 +78,7 @@ The scheduled Activity workflow is a rolling operational snapshot, not a full hi
 | Enrichment | The scheduled command downloads at most five matching usage artifacts across all workflow targets per Activity invocation. |
 | GitHub retention | Expired or unavailable artifacts cannot provide agent, usage, job, or audit detail. The run summary may still exist. |
 | Mapping | GitHub API rate-limit records without collection context are intentionally not attached to a run. |
-| Browser storage | IndexedDB keeps all published run summaries and expires detailed Domain, Tool, Audit, and Issue records after 30 days. |
+| Browser storage | IndexedDB keeps all published run summaries and expires run-linked detail after seven days. |
 
 Cached JSONL can repeat the same run in later snapshots. These are repeated observations, not duplicate database records. Raw runs are deduplicated by GitHub run ID and attempt. Enriched runs are deduplicated by run ID and attempt, with the newest observation winning.
 
@@ -116,7 +117,7 @@ The activity shard manifest is the dashboard's published operational input. The 
 The complete normative [cached gh-aw JSONL mapping](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md) describes source fields, canonical entities, identity, ownership, and accounting.
 
 The canonical model is version 28. The browser database is
-`gh-aw-cao-dashboard-data`, IndexedDB version 37. Its canonical stores are
+`gh-aw-cao-dashboard-data`, IndexedDB version 38. Its canonical stores are
 `campaigns`, `repositories`, `workflows`, `runs`, `domains`, `tools`, `skills`,
 `friction`, `audits`, `issues`, `operationalValues`, `marketplacePackages`,
 `experiments`, `experimentAssignments`, `graders`, `graderObservations`,
@@ -128,7 +129,16 @@ Overview aggregates are computed by request-scoped queries over canonical runs
 rather than stored separately. Because the database is derived state, physical schema
 upgrades rebuild every store from authoritative dashboard inputs.
 
-For each ingestion, the worker reads the existing canonical batch, merges incoming records, expires time-bounded records outside the 30-day retention window, and prunes orphaned descendants and unreferenced structural parents. The effective retention horizon is the later of the browser clock and the newest incoming observation, so a browser with a slow clock cannot prune current producer data. The worker then replaces each canonical collection, deleting records absent from the retained batch and writing every retained record.
+Normalized shards are written in bounded transactions, with a separate receipt
+recorded after each complete shard. A stopped import can reuse those receipts on
+the next visit, even before the full snapshot marker has been written. Run-phase
+views can load after the run shards finish while record shards continue. Retention
+and orphan cleanup run after shard ingestion. During maintenance, the worker
+expires run-linked detail outside the seven-day window and Operational Values
+outside the 30-day window, pruning orphaned descendants and unreferenced
+structural parents. The effective retention horizon is the later of the browser
+clock and the newest incoming observation, so a slow clock cannot prune
+current producer data.
 
 Every merged batch must satisfy these relationships:
 
@@ -158,6 +168,15 @@ Worker errors abort the update instead of rerunning ingestion through an older p
 Before ingestion, the browser inspects its storage estimate and requests persistent storage when the API is available. Either request may be denied or fail without affecting correctness. Diagnostics use stable categories such as `NORMALIZATION_FAILED`, `TRANSACTION_ABORTED`, and `QUOTA_EXCEEDED`.
 
 IndexedDB is disposable derived state. Clearing browser storage reconstructs it from authorized published inputs; it does not delete authoritative information.
+
+To investigate repeated imports on a mobile browser, open the dashboard with
+`?debug=data:ingestion,data:indexeddb,quota`. The worker reports whether the
+complete snapshot was found, schema upgrades, storage quota and persistence
+availability, cached versus missing run and record shards, shard commits, and
+dashboard revisions. These diagnostics report counts and storage metadata, not
+record contents. A `missing-snapshot` message alone does not mean previously
+committed shards were lost: compare the `shard-cache-checked` counts on the next
+visit. Browsers may decline persistent storage or evict this rebuildable cache.
 
 ## Validate browser performance
 
@@ -267,7 +286,7 @@ cao doctor \
   --database /tmp/cao-dashboard.sqlite
 ```
 
-The doctor reports SQLite integrity, foreign-key and schema health, table and transaction counts, malformed records, and relationship errors. It applies retention, removes malformed and orphaned derived records, repairs metadata, and runs SQLite maintenance. Before changing data, it creates a timestamped `.doctor-backup-*.sqlite` backup next to the database.
+The doctor reports SQLite integrity, foreign-key and schema health, table and transaction counts, malformed records, and relationship errors. It applies the default seven-day run-linked detail and 30-day Run and Operational Value windows (or explicit `--ttl-days` and `--run-ttl-days` overrides), removes malformed and orphaned derived records, repairs metadata, and runs SQLite maintenance. Before changing data, it creates a timestamped `.doctor-backup-*.sqlite` backup next to the database.
 
 To let an agent read the same snapshot through dashboard pages and named
 queries, instead of through collections, see

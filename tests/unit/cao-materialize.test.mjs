@@ -107,6 +107,18 @@ test("CAO materialization preserves canonical source paths", async () => {
     assert.equal(existsSync(staleCampaignFile), false);
     assert.equal(existsSync(staleExtensionFile), false);
     assert.ok(existsSync(path.join(destination, "activity", "cao.mjs")));
+    const cliModules = filesBelow(sourceRoot, "activity/cli");
+    assert.deepEqual(filesBelow(destination, "activity/cli").sort(), cliModules.sort());
+    for (const module of cliModules) {
+      const installedPath = path.join(destination, module);
+      const content = readFileSync(installedPath);
+      assert.deepEqual(content, readFileSync(path.join(sourceRoot, module)));
+      rmSync(installedPath);
+      assert.throws(() => verifyCaoRuntime("activity", destination), {
+        message: `CAO activity runtime is incomplete at its canonical source paths: ${module}`,
+      });
+      writeFileSync(installedPath, content);
+    }
     assert.ok(existsSync(path.join(destination, "activity", "normalized-phase.mjs")));
     assert.ok(existsSync(path.join(destination, "dashboard", "site", "package.json")));
     assert.ok(existsSync(path.join(destination, "skills", "setup-cao", "SKILL.md")));
@@ -200,6 +212,10 @@ for (const missingResource of [
   "plugin.json",
   "com.github.copilot/extensions/cao-dashboard",
   "specs/dashboard-data.md",
+  "docs/dashboard-language-specification.md",
+  ".github/skills/generate-dashboard-ir",
+  ".github/skills/dashboard-authoring/SKILL.md",
+  ".github/skills/author-dashboard-intent/SKILL.md",
 ]) {
   test(`CAO materialization rejects a bundle missing ${missingResource} before replacement`, () => {
     const source = mkdtempSync(path.join(tmpdir(), "cao-materialize-incomplete-plugin-"));
@@ -273,6 +289,10 @@ test("root materialization preserves exact focused package revisions", () => {
           "plugin.json",
           "com.github.copilot/extensions/cao-dashboard",
           "specs/dashboard-data.md",
+          "docs/dashboard-language-specification.md",
+          ".github/skills/generate-dashboard-ir",
+          ".github/skills/dashboard-authoring/SKILL.md",
+          ".github/skills/author-dashboard-intent/SKILL.md",
           ".github/actions/setup-cao-runtime",
           ".github/actions/setup-gh-aw",
           ".github/cao/instructions.md",

@@ -12,7 +12,8 @@
     "@typespec/compiler": "1.16.0",
     "@typespec/json-schema": "1.16.0",
     "@typespec/openapi": "1.16.0",
-    "@typespec/openapi3": "1.16.0"
+    "@typespec/openapi3": "1.16.0",
+    "ajv": "8.20.0"
   },
   "overrides": {
     "ansi-regex": "6.2.2"

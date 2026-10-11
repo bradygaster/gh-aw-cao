@@ -77,6 +77,14 @@ This specification does not cover:
 - campaign or experiment management; or
 - causal inference.
 
+The canvas authoring surface additionally registers `query-editor`, an
+interaction-only named element with `data.sources: []`. It is available only in
+a Copilot canvas and is exempt from chart-first layout because it is an editor,
+not an evidence view. Its form and generation lifecycle cannot be expressed by
+data marks. Generated evidence previews use ordinary Dashboard Language queries
+and data marks, validated and executed by the canonical data worker; the element
+does not derive or query source rows.
+
 ### 1.3 Design Goals
 
 The language is designed to be minimal, deterministic, auditable, and safe to validate. Built-in pages provide useful defaults. Custom pages provide only metric, table, chart, and time-series views.
@@ -226,7 +234,9 @@ Language keys and enumerated values use canonical kebab-case. Human-readable tit
 | Tooltip | `label`, `description`, `icon` |
 | `defaults` | `scope`, `time`, `filters` |
 | Unit definition | `name`, `symbol`, `significant`, `format` |
-| Query definition | `name`, `subject`, `objective`, `acceptance`, `description`, `parameters`, `from`, `union`, `time`, `joins`, `filter`, `compute`, `temporal-series`, `aggregate`, `predict`, `select`, `order-by`, `limit` |
+| Query definition | `name`, `subject`, `objective`, `acceptance`, `description`, `parameters`, `from`, `union`, `time`, `joins`, `filter`, `compute`, `temporal-series`, `aggregate`, `predict`, `select`, `order-by`, `limit`, `facet` |
+| Query `facet` | `field`, `row`, `column`, `as` |
+| Chart facet field | `field`, `type`, `title`, `format` |
 | Query parameter | `name`, `type` |
 | Query `joins` entry | `source`, `type`, `on`, `fields` |
 | Query join key | `left`, `right` |
@@ -251,7 +261,10 @@ Language keys and enumerated values use canonical kebab-case. Human-readable tit
 | Navigation section | `label`, `pages`, `experimental`, `placement` |
 | Page section | `id`, `title`, `description`, `layout`, `views`, `count-source`, `count-sources`, `count-field`, `count-label` |
 | Custom page `route` | `hash-query-parameter`, `navigation-page`, `availability-view`, `availability-message`, `partial-message`, `title-format`, `tabs-class-name`, `tab`, `tabs` |
-| View | `id`, `title`, `show-title`, `description`, `subject`, `objective`, `acceptance`, `locked`, `requires`, `data`, `mark`, `element`, `config`, `callout`, `chart`, `metric`, `list`, `tree`, `layout`, `disclosure`, `controls`, `filter-bar`, `lazy-list`, `column-summaries`, `empty-message`, `title-link`, `encoding` |
+| View | `id`, `title`, `show-title`, `description`, `subject`, `objective`, `acceptance`, `locked`, `requires`, `data`, `mark`, `element`, `config`, `callout`, `chart`, `facet`, `columns`, `treemap`, `layer`, `resolve`, `metric`, `list`, `tree`, `layout`, `disclosure`, `controls`, `filter-bar`, `lazy-list`, `column-summaries`, `empty-message`, `title-link`, `encoding` |
+| Chart layer | `chart`, `encoding`, `layer` |
+| Layer resolution | `scale` with `y: shared` or `y: independent` |
+| Treemap options | `method`, `ratio`, `padding` |
 | View `filter-bar` | `filters` |
 | View filter control | `id`, `label`, `groups` |
 | View filter group | `label`, `field`, `source`, `value-field`, `label-field` |
@@ -526,6 +539,7 @@ Computed fields use only the following typed, deterministic functions with the s
 | `literal` | 1 | scalar value |
 | `lower`, `upper`, `title-case`, `trim`, `url-encode` | 1 | text |
 | `date-day` | 1 | UTC calendar date text |
+| `date-bucket` | 2 | UTC bucket-start timestamp text for a timestamp and literal `hour`, `day`, `week` (Monday), or `month` |
 | `calendar-week-point` | 3 | serializable calendar point from timestamp, `time-end`, and run conclusion |
 | `equals-any` | 2–8 | whether the first argument equals any later argument |
 | `greater-than` | 2 | whether the first numeric argument is greater than the second |
@@ -649,10 +663,10 @@ return the untransformed observations.
 
 #### 5.5.5 Normative Query Requirements
 
-- **DLS-QUERY-001:** `queries`, when present, **MUST** be a non-empty sequence of mappings. Each query **MUST** declare a `name` matching the canonical identifier pattern in **DLS-DOC-005**, a non-empty `subject` describing what its data is about or intended to show, and one `from` input; **MAY** declare non-empty `objective` and `acceptance` semantic annotations, `description`, `parameters`, `union`, `time`, `joins`, `filter`, `compute`, `temporal-series`, `aggregate`, `predict`, `window`, `select`, `order-by`, and `limit`; and **MUST NOT** declare any other key. The combined `subject`, `objective`, and `acceptance` of each query **MUST NOT** exceed 512 Unicode characters. Query execution **MUST** treat semantic annotations as inert metadata.
+- **DLS-QUERY-001:** `queries`, when present, **MUST** be a non-empty sequence of mappings. Each query **MUST** declare a `name` matching the canonical identifier pattern in **DLS-DOC-005**, a non-empty `subject` describing what its data is about or intended to show, and one `from` input; **MAY** declare non-empty `objective` and `acceptance` semantic annotations, `description`, `parameters`, `union`, `time`, `joins`, `filter`, `compute`, `temporal-series`, `aggregate`, `predict`, `window`, `select`, `order-by`, `limit`, and `facet`; and **MUST NOT** declare any other key. The combined `subject`, `objective`, and `acceptance` of each query **MUST NOT** exceed 512 Unicode characters. Query execution **MUST** treat semantic annotations as inert metadata.
 - **DLS-QUERY-002:** A query `name` **MUST** be unique among queries and **MUST NOT** shadow a Section 5.1 database table or registered Section 5.4 runtime source. A declared query name **MAY** be used wherever a view selects data.
 - **DLS-QUERY-003:** `from`, every `union[]`, and every `joins[].source` **MUST** name one Section 5.1 database table, registered Section 5.4 runtime source, built-in `simulation-days` source, or query declared earlier in the sequence. Forward references, self references, and cycles **MUST** be rejected. `union`, when present, **MUST** be a non-empty sequence; its rows are appended in declaration order, fields from every unioned table, runtime source, or query are available to later clauses, and a field absent from one row has a null value for query operations.
-- **DLS-QUERY-004:** Clause execution order **MUST** be `from`, then `union` in declaration order, then `joins` in declaration order, then `filter`, `compute` in declaration order, `temporal-series`, `aggregate`, `predict` in declaration order, `window` in declaration order, `select`, `order-by`, and finally `limit`.
+- **DLS-QUERY-004:** Clause execution order **MUST** be `from`, then `union` in declaration order, then `joins` in declaration order, then `filter`, `compute` in declaration order, `temporal-series`, `aggregate`, `predict` in declaration order, `window` in declaration order, `select`, `order-by`, `limit`, and finally `facet`.
 - **DLS-QUERY-005:** A join **MUST** declare `source`, a non-empty `on` sequence of `left`/`right` equality key pairs, and a non-empty `fields` sequence of aliased fields imported from the joined source. `type` **MUST** be `inner` or `left` and defaults to `inner`. Version 0.1.0 defines no other join type, no join expressions, and no cross joins. A query **MUST NOT** declare more than four joins.
 - **DLS-QUERY-006:** Join keys **MUST** address table or query fields, not canonical entity identities. `left` **MUST** name a field available after the preceding clauses and `right` **MUST** name a field declared by the joined table or query. Key values **MUST** be compared as trimmed text; a null, missing, empty, or structured key value **MUST NOT** match any row.
 - **DLS-QUERY-007:** The joined source **MUST** contain at most one row per join key. A duplicate join key **MUST** fail the query rather than expand rows, so many-to-many expansion cannot occur.
@@ -667,7 +681,7 @@ return the untransformed observations.
 - **DLS-QUERY-016:** A presenter **MUST** resolve the query dependency graph before requesting a page projection so every input source required by a requested derived source is loaded while unrelated sources remain excluded, and **MUST** execute queries in the data-processing layer defined by Section 7.5 without a main-thread fallback.
 - **DLS-QUERY-017:** An execution layer **MUST NOT** assume its query definitions were validated. Before it reads any rows it **MUST** reject a query that reads itself, participates in a dependency cycle, reads a query declared later in the sequence, shares its name with another query, declares a join without equality keys, declares more joins than **DLS-QUERY-005** permits, or declares a `limit` outside **DLS-QUERY-013**. Every query that reads a rejected query **MUST** also be rejected. Rejected queries **MUST** fail closed under **DLS-QUERY-015**, and a query that does not depend on a rejected query **MUST** still execute.
 - **DLS-QUERY-018:** Query execution **MUST** be cancelable from outside the execution layer through an abort signal, **MUST** stop after 60000 milliseconds of execution, and **MUST** stop after 5000000 row operations. A stopped execution **MUST NOT** report a partial projection: it **MUST** surface an explicit cancellation distinct from a query fault, and **MUST** identify only the cancellation cause without source payloads or secrets. A presenter **MUST** offer a command that cancels a runaway computation, and **MUST** terminate a data worker that does not acknowledge cancellation.
-- **DLS-QUERY-019:** A validator **MUST** reject a query whose field references are incompatible with the table or earlier-query schema, with `DLS-E011`. A field that only exists after a presenter derives it from an executed projection **MUST NOT** be read by a query. A structured link field **MUST NOT** be a join key, filter field, computed-field argument, grouping field, aggregate measure, or `order-by` field, because **DLS-QUERY-006** and **DLS-QUERY-010** define no scalar value for it; a query **MAY** still project one. A temporal field **MUST NOT** be a numeric computed-field argument or the measure of a `sum`, `mean`, `min`, or `max` reducer.
+- **DLS-QUERY-019:** A validator **MUST** reject a query whose field references are incompatible with the table or earlier-query schema, with `DLS-E011`. A field that only exists after a presenter derives it from an executed projection **MUST NOT** be read by a query. A structured link field **MUST NOT** be a join key, filter field, computed-field argument, grouping field, numeric aggregate measure, or `order-by` field; a query **MAY** project one or retain it using `unique`, which returns the single distinct non-null value and otherwise `null`. A temporal field **MUST NOT** be a numeric computed-field argument or the measure of a `sum`, `mean`, `min`, or `max` reducer.
 - **DLS-QUERY-020:** Query `time`, when present, **MUST** satisfy Section 6 time syntax. A relative query range **MUST** resolve against the active view window's exclusive end and replace only that view's temporal bounds for the query; scope, route, and dimension filters **MUST** remain in force.
 - **DLS-QUERY-021:** `predict` **MUST** be a non-empty sequence. Each entry **MUST** declare one numeric `field`, one `on` predictor field or a sequence of one to eight numeric predictor fields, and a unique `as` output name; **MAY** declare `method`, `groupby`, and `order`; and **MUST NOT** declare another key. `method` **MUST** be one Section 5.5.2 built-in and defaults to `linear`. Only `linear` **MAY** declare more than one predictor. `order` **MAY** appear only with `poly`.
 - **DLS-QUERY-022:** A prediction **MUST** fit independently for each distinct `groupby` tuple, or once for all rows when `groupby` is absent. Fitting **MUST** ignore rows whose target or predictor input is not a finite number. Prediction **MUST** preserve row count and order, MUST NOT mutate an input row, and **MUST** append a finite numeric value or null under the Section 5.5.2 semantics.
@@ -892,7 +906,7 @@ An **output row** is the post-aggregation result of applying grouping and aggreg
 The **canonical post-aggregation row order** is defined for every output grain, entity-grain or group-grain, as follows:
 
 1. Apply each declared `order-by` clause in sequence, comparing each row's resolved output identifier value ascending or descending as declared.
-2. Break any ties remaining after step 1, or order all rows when `order-by` is entirely omitted, by the view's remaining unaggregated output dimensions that are not already fully determined by step 1. Only the grouping-capable encoding channels defined in Section 11.1 (`x`, `y`, `color`, `section`, and each `columns` entry) can hold an unaggregated output dimension; `value` and `href` are excluded because they do not participate in grouping. Consider these channels in that fixed declaration order (`x`, then `y`, then `color`, then `section`, then each `columns` entry in its declared sequence), each compared ascending by canonical field value after time bucketing.
+2. Break any ties remaining after step 1, or order all rows when `order-by` is entirely omitted, by the view's remaining unaggregated output dimensions that are not already fully determined by step 1. The grouping-capable encoding channels defined in Section 11.1 (`x`, `y`, `color`, `section`, and each `columns` entry), plus chart facet fields, can hold an unaggregated output dimension; `value` and `href` are excluded because they do not participate in grouping. Consider these channels in that fixed declaration order (`x`, then `y`, then `color`, then `section`, then each `columns` entry in its declared sequence, then the single facet field or facet `row` followed by `column`), each compared ascending by canonical field value after time bucketing.
 3. Break any ties still remaining after step 2 by canonical entity ID ascending, when a canonical entity ID is present at the output grain; an entity-grain output row always has a canonical entity ID available for this step.
 
 A presenter **MUST** apply `limit` only after the canonical post-aggregation row order from steps 1 through 3 is fully resolved.
@@ -1089,6 +1103,43 @@ For pages that opt in to `filter-bar: true`, the presenter renders a filter bar 
 
 A custom page contains a non-empty `views` sequence. Each view has one `data` mapping and one mark. Data marks use an `encoding`; named UI elements use `element`. Any view may declare `subject`, `objective`, and `acceptance` semantic metadata. These annotations compose with those of its named query dependencies; they are not rendered verbatim as visible or accessible content. Any view, including any chart type, may declare `prompt` as `auto` (the default), `none`, or `always`. `auto` enables the shared prompt button when all three effective semantic values are available; `none` hides it; `always` shows it even if semantic values are incomplete. In every mode, the button remains hidden while the view or its independently bound widgets are loading. The generated action defaults to `prompt-level: propose`, since its request can produce a pull request; a view may declare `prompt-level: explore` for read-only investigation. The shared preview uses the composed values without duplicating view metadata. The prompt level is validated against `explore`, `propose`, and `operate`.
 
+**Chart layering.** Inspired by [Vega-Lite's layer composition](https://vega.github.io/vega-lite/docs/layer.html), a `mark: chart` view may replace its single `chart` widget with `layer`. Each leaf selects `chart: area`, `bar`, `line`, `dot`, or `rule`. A group instead contains another `layer` array. Parent encodings are inherited by channel; a child's field definition replaces the entire inherited channel. All leaves share the view's one worker-produced `data.source`, one responsive SVG plot, and one merged color legend. Later leaves paint above earlier leaves.
+
+```json
+{
+  "id": "observed-credits",
+  "mark": "chart",
+  "data": { "source": "credit-observations" },
+  "encoding": {
+    "x": { "field": "observed-at", "type": "temporal" },
+    "y": { "field": "aic", "type": "quantitative", "title": "AI credits" }
+  },
+  "layer": [
+    { "chart": "area" },
+    { "layer": [{ "chart": "line" }, { "chart": "dot" }] },
+    {
+      "chart": "rule",
+      "encoding": {
+        "y": { "field": "reference-aic", "type": "quantitative", "title": "Reference" }
+      }
+    }
+  ]
+}
+```
+
+The example's `credit-observations` query must declare `observed-at`, `aic`, and `reference-aic`. Compute references, joins, filters, aggregates, time buckets, sorting, and limits in `dashboard.queries`, not in layers. A rule spans the horizontal plot at each distinct observed quantitative `y` value per color series and needs no `x`. Other leaves require one `x` and one quantitative `y`; supported channels are `x`, `y`, `color`, and `href`. Layers have at most eight leaves and four array nesting levels. Single-widget chart behavior is unchanged.
+
+Bar and rule layers accept at most 2,000 source observations per leaf; a larger payload produces an explicit limit message rather than silently truncating observations. Bound these sources with a query `limit`. Line, area, and dot layers retain the shared renderer's bounded mark sampling for dense plots. Invalid or absent numeric observations remain gaps rather than zeroes.
+
+Scale domains default to unions across all leaves, including stacked area totals, with shared axes and a merged legend. Temporal positions are proportional to timestamp; categorical positions share one category domain. Explicit `x` types must be nominal, ordinal, or temporal and retain the selected widget's type constraints; quantitative x scales are not supported. Shared `x` types and `y` units must be compatible. `resolve: { "scale": { "y": "independent" } }` uses a separate quantitative domain and value formatting for each leaf. The presenter replaces the common numeric y labels with an explicit per-layer scale key showing its lower, midpoint, and upper values; guides indicate the same fractional plot positions. This bounded implementation is not a general Vega-Lite interpreter: independent x/color scales, projections, per-layer data/transforms, and other chart widgets are rejected.
+
+A layered view may declare a top-level facet using the view or encoding syntax
+below. Facet channels are not inherited into leaves and remain forbidden inside
+layer specifications. The worker partitions the already-shaped query result
+without reordering, aggregating, or limiting it; each panel renders all leaves
+with its own scale domains. Layer bounds and scale resolution apply within each
+panel, and sorting and limits remain the responsibility of `dashboard.queries`.
+
 Any view may include the optional Boolean `locked` authoring hint. When `true`, an agent evolving the dashboard should preserve the view and modify it only to correct bugs. `locked` does not affect presentation, accessibility, data processing, or validation of the view's other fields.
 
 Any view may declare `requires` with a `backend` of `static` or `hosted`.
@@ -1120,6 +1171,41 @@ action presentation as other levels. UI actions do not require an agent preview
 or operational approval; destructive local actions still require their existing
 confirmation. CLI declarations, row prompt/CLI/external-link actions, and
 `prompt-level` must reject `ui` rather than treating it as another execution tier.
+
+#### Treemap charts
+
+A chart may additionally declare `chart: treemap`, extending the widget and
+`section` vocabulary in **DLS-VIEW-005**. Its unaggregated nominal
+or ordinal `x` supplies leaf labels and its unaggregated quantitative `y`
+supplies area. Optional nominal or ordinal `color` supplies categorical color;
+optional nominal or ordinal `section` nests leaves inside one labeled group
+rectangle per distinct field value. Without `section`, all leaves share one
+flat layout. This is a Vega-inspired treemap layout, not a native Vega-Lite
+mark or an arbitrary Vega expression interface. It does not consume
+parent/child IDs or infer hierarchy from labels.
+
+`treemap` options are allowed only on treemap charts. `method` is `squarify`
+(default), `binary`, or `slicedice`. `ratio` is a finite number from 1 to 5,
+defaulting to 1.618, and controls the preferred aspect ratio in squarify only.
+`padding` is a finite number from 0 to 10, defaulting to 0.5, expressed in a
+100-by-60 drawing plane. Slice-dice alternates orientation between group and
+leaf levels. Input query order determines deterministic layout order.
+
+- **DLS-VIEW-046:** A treemap **MUST** use the field roles above, **MUST NOT**
+  aggregate encoded fields in the presenter, and **MUST** declare `data.limit`
+  from 1 to 100. Aggregation, filtering, ordering, and limiting **MUST** execute
+  through declarative queries in the data worker before geometric tiling.
+  The active view **MUST** remain subscribed with an abort-scoped lifetime.
+- **DLS-VIEW-047:** Positive finite values **MUST** determine proportional
+  rectangle area before padding and optional group headings. Missing and
+  zero values **MUST NOT** receive area and **MUST** be reported explicitly.
+  Negative or non-finite values, or more than 100 input leaves, **MUST** render
+  an explanatory unavailable state rather than silently clamp or truncate.
+  Every rendered leaf **MUST** expose its label, group when present, and
+  formatted value without relying on color alone. Encoded safe links **MUST**
+  remain keyboard-operable. A small rectangle **MAY** omit visible text but
+  **MUST** retain its complete accessible name and visible, viewport-bounded
+  tooltip on hover, keyboard focus, or tap. Escape **MUST** dismiss the tooltip.
 
 #### 11.1.1 Route-Bound Page Templates
 
@@ -1165,7 +1251,7 @@ those states in user-facing terms.
 | Named UI element | `element` | no encoding; one `element` name |
 | Callout | `callout` | no encoding or data; one `callout` mapping |
 
-Allowed encoding channels are `value`, `columns`, `x`, `y`, `color`, `section`, `reference`, and `href`. `columns` is a non-empty sequence of field definitions. A line chart's `y` channel may be a sequence of two to eight quantitative field definitions, rendered as one named series per field; such a chart does not also encode `color`. Other channels contain one field definition. The `href` channel references one relation-specific link field or one declared `campaign-dashboard-link`, `repository-dashboard-link`, or `workflow-dashboard-link` field; it does not select from multiple links. The quantitative `reference` channel is available only to dot charts and renders each distinct value as a horizontal reference line in the corresponding color series. The nominal or ordinal `section` channel is available only to horizontal bar charts and groups bars beneath section headings in first-appearance order.
+Allowed encoding channels are `value`, `columns`, `x`, `y`, `color`, `section`, `reference`, `href`, and the chart-only `facet`, `row`, and `column` facet channels. `columns` is a non-empty sequence of field definitions. A line chart's `y` channel may be a sequence of two to eight quantitative field definitions, rendered as one named series per field; such a chart does not also encode `color`. Other channels contain one field definition. The `href` channel references one relation-specific link field or one declared `campaign-dashboard-link`, `repository-dashboard-link`, or `workflow-dashboard-link` field; it does not select from multiple links. The quantitative `reference` channel is available only to dot charts and renders each distinct value as a horizontal reference line in the corresponding color series. The nominal or ordinal `section` channel is available to horizontal bar charts for section headings and to treemap charts for nested group rectangles, in first-appearance order.
 
 Chart presenters MUST assign each non-semantic nominal category to a stable palette slot from its identity rather than its row, sort, or visibility position. The shared presenter normalizes the identity with Unicode NFKC, trimming, and lowercase conversion, then applies 32-bit FNV-1a and selects one of the twelve chart palette slots by modulo. This deterministic hash is the fallback for categories not previously observed, including new campaign and repository identities. Semantic status colors override the resulting palette color. The reserved `value` identity represents an ungrouped series and always uses the first palette slot; only an empty identity falls back to its local series position. Marks and legend swatches MUST resolve the same identity through the same mapping.
 
@@ -1272,7 +1358,7 @@ failure. The element and its repair prompt release reactive resources when
 their owned roots detach. Campaign navigation consumes already route-scoped
 worker payloads rather than filtering campaign rows in the browser.
 
-A chart may set `chart` to `area`, `line`, `dot`, `bar`, `horizontal-bar`, `pie`, `heatmap`, `histogram`, `scatter`, or `swimlane`. When `chart` is omitted, temporal `x` has a line time-series default and any other valid chart has a bar default. Area charts show a quantitative `y` over an ordinal or temporal `x`; temporal values use the same explicit UTC bucketing and ordering machinery as line charts. An area chart without `color` fills from zero to its values. When `color` is present, the presenter groups by that nominal or ordinal field and stacks the non-negative series in deterministic series order, matching Vega-Lite's normal stacked-area behavior. Version 0.1.0 exposes no separate stack control; authors use existing aggregation on `y` and must not use area charts for negative contributions. Line, dot, and scatter charts use temporal `x`. Dot charts preserve exact timestamps, do not connect observations, and may encode quantitative `reference` values as horizontal lines. Scatter charts preserve exact timestamps as proportional positions on the time axis and do not connect observations. A pie chart uses nominal or ordinal `x` for categories and quantitative `y` for values. A horizontal bar chart uses nominal or ordinal `x` for text labels, quantitative `y` for left-aligned bars, and must declare `data.limit` no greater than 100. A histogram uses nominal or ordinal `x` to identify each sample and automatically bins the resulting quantitative `y` values after aggregation, ordering, and limiting. Its deterministic bin count is the smaller of the sample count and Sturges' value `ceil(log2(sample count) + 1)`; an empty sample produces no bins and an equal-valued sample produces one bin. A histogram does not use `color` or `href`. A heatmap uses nominal or ordinal `x` and `y` axes to define discrete cells and an aggregated quantitative `color` value. A heatmap is intended only for compact matrices: authors must set `data.limit` no greater than 100, and presenters must reject visual matrices larger than 100 cells or 12 categories on either axis. Every cell must expose its two category labels and formatted value as text, not color alone. A swimlane chart uses an unbucketed temporal `x` and an unaggregated nominal or ordinal `y`; its presenter may coalesce visually contiguous observations in the same labeled categorical lane into one range without connecting observations across gaps or implying quantitative distance between lanes. Charts render only their visualization and legend; authors use a separate table view when row-level evidence is required. These known widget types and defaults are semantic; this specification does not define visual styling.
+A chart may set `chart` to `area`, `line`, `dot`, `bar`, `horizontal-bar`, `pie`, `heatmap`, `histogram`, `scatter`, `swimlane`, or `treemap`. When `chart` is omitted, temporal `x` has a line time-series default and any other valid chart has a bar default. Area charts show a quantitative `y` over an ordinal or temporal `x`; temporal values use the same explicit UTC bucketing and ordering machinery as line charts. An area chart without `color` fills from zero to its values. When `color` is present, the presenter groups by that nominal or ordinal field and stacks the non-negative series in deterministic series order, matching Vega-Lite's normal stacked-area behavior. Version 0.1.0 exposes no separate stack control; authors use existing aggregation on `y` and must not use area charts for negative contributions. Line, dot, and scatter charts use temporal `x`. Dot charts preserve exact timestamps, do not connect observations, and may encode quantitative `reference` values as horizontal lines. Scatter charts preserve exact timestamps as proportional positions on the time axis and do not connect observations. A pie chart uses nominal or ordinal `x` for categories and quantitative `y` for values. A horizontal bar chart uses nominal or ordinal `x` for text labels, quantitative `y` for left-aligned bars, and must declare `data.limit` no greater than 100. A histogram uses nominal or ordinal `x` to identify each sample and automatically bins the resulting quantitative `y` values after aggregation, ordering, and limiting. Its deterministic bin count is the smaller of the sample count and Sturges' value `ceil(log2(sample count) + 1)`; an empty sample produces no bins and an equal-valued sample produces one bin. A histogram does not use `color` or `href`. A heatmap uses nominal or ordinal `x` and `y` axes to define discrete cells and an aggregated quantitative `color` value. A heatmap is intended only for compact matrices: authors must set `data.limit` no greater than 100, and presenters must reject visual matrices larger than 100 cells or 12 categories on either axis. Every cell must expose its two category labels and formatted value as text, not color alone. A swimlane chart uses an unbucketed temporal `x` and an unaggregated nominal or ordinal `y`; its presenter may coalesce visually contiguous observations in the same labeled categorical lane into one range without connecting observations across gaps or implying quantitative distance between lanes. Treemaps use nominal or ordinal `x` labels, positive quantitative `y` areas, optional categorical `color`, and optional `section` nesting as specified in DLS-VIEW-046 and DLS-VIEW-047. Charts render only their visualization and legend; authors use a separate table view when row-level evidence is required. These known widget types and defaults are semantic; this specification does not define visual styling.
 
 Minimal area chart:
 
@@ -1285,6 +1371,66 @@ encoding:
   x: { field: day, type: temporal, time-unit: day }
   y: { field: aic, type: quantitative, aggregate: sum }
 ```
+
+#### Faceted charts (small multiples)
+
+A chart can repeat its visualization over categorical subsets, following the
+[Vega-Lite facet model](https://vega.github.io/vega-lite/docs/facet.html).
+There is still one view box: panels contain chart graphics, not nested views.
+
+```json
+{
+  "id": "cost-by-engine",
+  "mark": "chart",
+  "chart": "bar",
+  "facet": { "field": "engine", "type": "nominal", "title": "Engine" },
+  "columns": 2,
+  "data": { "source": "usage", "limit": 100 },
+  "encoding": {
+    "x": { "field": "workflow", "type": "nominal" },
+    "y": { "field": "aic", "type": "quantitative", "aggregate": "sum" }
+  }
+}
+```
+
+`facet` accepts one field definition or a mapping containing `row`, `column`,
+or both field definitions. As shortcuts, put a single-field `facet`, `row`,
+and/or `column` in `encoding` instead. Do not combine view-level and encoding
+facet syntax, or combine `encoding.facet` with row/column channels. Optional
+`columns` (1–64) wraps only a single-field facet; omission uses one row on
+desktop. A row/column mapping places observed panels on their categorical
+axes. Mobile may collapse either layout to one column without dropping panels.
+
+- **DLS-VIEW-FACET-001:** Facet fields **MUST** exist in the source and be
+  unaggregated categorical dimensions (`nominal` or `ordinal` when explicitly
+  typed). Field definitions accept only `field`, `type`, `title`, and categorical
+  `format` (`workflow-relative-path` or `workflow-identity-label`). Binning,
+  temporal transforms, custom sorting, headers, nested `spec`, and scale
+  resolution are not part of this subset; derive categories in a query first.
+- **DLS-VIEW-FACET-002:** The query engine **MUST** retain facet dimensions as
+  aggregation keys, apply view ordering and `data.limit` globally to chart
+  rows, and then partition those rows. Panels and rows retain first-appearance
+  order after processing. Missing and null categories share an explicit
+  Unknown panel; the literal string `"unknown"` remains a distinct category.
+  Formatted labels **MUST NOT** determine partition identity.
+- **DLS-VIEW-FACET-003:** Browser and hosted queries **MUST** produce the same
+  terminal `facet` payload: each panel contains `facet-field`, `facet-row`,
+  `facet-column`, zero-based `facet-row-index` and `facet-column-index`, and
+  the ordered row sequence named by `as`. Chart view compilation uses
+  `as: facet-rows`. Query-level `facet` runs after `limit`; it declares a
+  scalar `field` alone or scalar `row` and/or `column` names plus a non-empty
+  `as` distinct from the five reserved facet category/index output names.
+  The UI **MUST NOT** group, filter, aggregate, or sort rows to construct panels.
+- **DLS-VIEW-FACET-004:** A result exceeding 64 observed panels **MUST** fail
+  closed with an unavailable state rather than truncate panels. Unobserved
+  row/column combinations **MUST NOT** synthesize points or empty panels.
+  Each panel **MUST** have a visible, accessible categorical caption and
+  preserve chart labels, links, units, and legends. Scales are independent
+  per panel in this subset; no shared-scale comparison is implied.
+- **DLS-VIEW-FACET-005:** Facets **MUST** use the existing abort-scoped view
+  subscription so refreshed evidence republishes the complete panel payload.
+  Empty, partial, and unavailable evidence **MUST** preserve their existing
+  meanings, and panel rendering resources **MUST** stop on detachment.
 
 Grouped operational area chart:
 
@@ -1342,7 +1488,7 @@ Disclosure changes presentation only. It does not change data processing, data s
 - **DLS-VIEW-004:** `table` **MUST** encode non-empty `columns` and **MAY** encode `href`; it **MUST NOT** encode `value`, `x`, `y`, or `color`.
 - **DLS-VIEW-004b:** A table **MAY** declare `data.partial-source` as a distinct, previously declared query to render an initial inventory projection on the static data-worker backend. The partial query **MUST** preserve the final query's row identities and link fields without implying that absent computed values are zero or complete. Its metadata **MUST** mark `projection-state: pending` separately from evidence completeness; absent computed cells **MUST** render as pending, not zero. The worker **MUST** publish it before evaluating the complete query, then replace it with the complete view projection at the same data revision; a canceled or superseded subscription **MUST NOT** publish stale rows. Interactive filters, search, or ordering that depend on deferred fields **MUST** wait for the complete query. Hosted backends **MAY** return only the complete result.
 - **DLS-VIEW-004a:** `list` **MUST** declare `list.style: cards`, a canonical `list.icon`, a view-placed dashboard CLI action through `list.action`, and non-empty encoded `columns`. The first column **MUST** supply each card title; remaining columns **MUST** supply labeled details. It **MAY** encode conditional row `actions` and **MUST NOT** encode `value`, `x`, `y`, `color`, or `href`.
-- **DLS-VIEW-005:** `chart` **MUST** encode `x` and `y`, **MAY** encode `color`, `href`, the horizontal-bar-only `section`, and the swimlane-only `weight`, and **MUST NOT** encode `value` or `columns`. Its optional `chart` widget **MUST** be `area`, `line`, `dot`, `bar`, `horizontal-bar`, `pie`, `heatmap`, `histogram`, `scatter`, or `swimlane`. Except for heatmaps and swimlanes, `y` **MUST** be quantitative. A line chart **MAY** encode `y` as a sequence of two to eight quantitative fields, which **MUST** render as one named series per field and **MUST NOT** also encode `color`; all other charts **MUST** encode exactly one `y` field. An area chart **MUST** use ordinal or temporal `x`; temporal `x` **MUST** declare a time unit, and `color`, when present, **MUST** produce a normally stacked area in deterministic series order. Line, dot, and scatter charts **MUST** use temporal `x`; dot and scatter charts **MUST NOT** connect observations, and scatter charts **MUST** position observations proportionally by timestamp. Dot charts **MAY** encode one unaggregated quantitative `reference` field as horizontal lines. Other chart widgets **MUST NOT** encode `reference`. Pie, heatmap, histogram, and horizontal-bar charts **MUST** use nominal or ordinal `x`. A horizontal-bar chart **MUST** declare `data.limit` no greater than 100, **MUST** render text labels to the left of left-aligned bars, and **MAY** encode one unaggregated nominal or ordinal `section` field to group bars beneath section headings in first-appearance order. Other chart widgets **MUST NOT** encode `section`. A histogram **MUST NOT** encode `color` or `href` and **MUST** automatically bin its post-processing quantitative `y` values using the deterministic rule in Section 11.1. A heatmap **MUST** use nominal or ordinal `y`, **MUST** encode an aggregated quantitative `color`, **MUST** declare `data.limit` no greater than 100, and **MUST NOT** render more than 100 cells or 12 categories on either axis. Its cells **MUST** expose both category labels and the formatted quantitative value without relying on color alone. A swimlane **MUST** use unbucketed temporal `x` and unaggregated nominal or ordinal `y`, **MAY** encode one unaggregated quantitative `weight` field, **MUST** render each observation in exactly one labeled categorical lane with its weight as the represented observation count, and **MUST NOT** connect observations or imply quantitative distance between lanes. Other chart widgets **MUST NOT** encode `weight`.
+- **DLS-VIEW-005:** `chart` **MUST** encode `x` and `y`, **MAY** encode `color`, `href`, the horizontal-bar-or-treemap `section`, and the swimlane-only `weight`, and **MUST NOT** encode `value` or `columns`. Its optional `chart` widget **MUST** be `area`, `line`, `dot`, `bar`, `horizontal-bar`, `pie`, `heatmap`, `histogram`, `scatter`, `swimlane`, or `treemap`. Except for heatmaps and swimlanes, `y` **MUST** be quantitative. A line chart **MAY** encode `y` as a sequence of two to eight quantitative fields, which **MUST** render as one named series per field and **MUST NOT** also encode `color`; all other charts **MUST** encode exactly one `y` field. An area chart **MUST** use ordinal or temporal `x`; temporal `x` **MUST** declare a time unit, and `color`, when present, **MUST** produce a normally stacked area in deterministic series order. Line, dot, and scatter charts **MUST** use temporal `x`; dot and scatter charts **MUST NOT** connect observations, and scatter charts **MUST** position observations proportionally by timestamp. Dot charts **MAY** encode one unaggregated quantitative `reference` field as horizontal lines. Other chart widgets **MUST NOT** encode `reference`. Pie, heatmap, histogram, horizontal-bar, and treemap charts **MUST** use nominal or ordinal `x`. A horizontal-bar chart **MUST** declare `data.limit` no greater than 100, **MUST** render text labels to the left of left-aligned bars, and **MAY** encode one unaggregated nominal or ordinal `section` field to group bars beneath section headings in first-appearance order. Treemaps **MAY** encode `section` as specified in DLS-VIEW-046. Other chart widgets **MUST NOT** encode `section`. A histogram **MUST NOT** encode `color` or `href` and **MUST** automatically bin its post-processing quantitative `y` values using the deterministic rule in Section 11.1. A heatmap **MUST** use nominal or ordinal `y`, **MUST** encode an aggregated quantitative `color`, **MUST** declare `data.limit` no greater than 100, and **MUST NOT** render more than 100 cells or 12 categories on either axis. Its cells **MUST** expose both category labels and the formatted quantitative value without relying on color alone. A swimlane **MUST** use unbucketed temporal `x` and unaggregated nominal or ordinal `y`, **MAY** encode one unaggregated quantitative `weight` field, **MUST** render each observation in exactly one labeled categorical lane with its weight as the represented observation count, and **MUST NOT** connect observations or imply quantitative distance between lanes. Other chart widgets **MUST NOT** encode `weight`.
 - **DLS-VIEW-006:** A `chart` with temporal `x` **MUST** use the line time-series default when its widget is omitted; any other valid `chart` **MUST** use the bar default. An optional `layout` hint **MUST** be `full`, `full-view`, `half`, `third`, or `horizontal`, **MUST NOT** change source order, and **MAY** be collapsed by a presenter. `full-view` **SHOULD** consume the available viewport height.
 - **DLS-VIEW-007:** An encoding field **MUST** exist in the selected source and its declared type **MUST** be compatible with its intrinsic type or aggregate output type; when the field is aggregated, the effective output identifier **MUST** be the explicit `as` value or the canonical `<aggregate>-<field>` name, and duplicate identifiers within a view **MUST** be rejected. An `href` field **MUST** have intrinsic type link.
 - **DLS-VIEW-008:** A field definition **MUST** contain `field` and **MAY** contain only `type`, `aggregate`, `time-unit`, `title`, `as`, `display`, `filter`, `format`, and `unit` in addition; `as` is valid only when `aggregate` is not `none`. `display` is valid only on table columns and **MUST** be `text`, `status`, `grader-status`, `mode`, `active-state`, `label`, `digest`, `outcome-link`, `run-link`, `repository-link`, `workflow-link`, or `evidence-link`. `filter` is valid only on table columns and **MUST** be boolean. `format`, when present, **MUST** be `human-friendly-timestamp`, `workflow-relative-path`, `workflow-run-url`, or `shortened-url`. `human-friendly-timestamp` is valid only on temporal fields and **MUST** expose the original timestamp, an exact UTC date and time, and the human-friendly text defined in Section 11.1. The remaining formats are valid only on nominal or ordinal fields. `workflow-relative-path` **MUST** affect presentation only by removing a leading `.github/workflows/` while preserving the `.md` extension. `workflow-run-url` is valid only on table columns and **MUST** present a canonical github.com Actions run URL as an external link labeled with the run ID, while leaving non-matching values as plain text. `shortened-url` is valid only on table columns and **MUST** present an HTTPS URL as an external link with intermediate path segments replaced by `...`, retain its final path segment, and leave other values as plain text.
@@ -1395,6 +1541,7 @@ The view/query prompt template lives in `dashboard/site/src/semantic-view-prompt
 - **DLS-VIEW-041:** An `element` view **MAY** declare `config.labels` for an element that presents counted summary boxes. Each entry **MUST** be keyed by a canonical kebab-case identifier and **MUST** be a plural text variable containing exactly the non-empty strings `singular` and `plural`. A presenter **MUST** present `singular` when the accompanying count has an absolute value of one and `plural` otherwise, **MUST** apply the same selection to the accessible name of that box, and **MUST** fall back to the element's declared default text for an undeclared label. Plural text selection **MUST** affect presentation only.
 - **DLS-VIEW-042:** `show-title`, when present, **MUST** be Boolean and defaults to `true`. When `false`, the presenter **MUST** omit the view title heading from the rendered view without hiding the view or removing its accessible name. This does not omit data-derived headings inside named UI elements or supplemental disclosure labels.
 - **DLS-VIEW-043:** `requires`, when present, **MUST** contain `backend` and **MAY** contain `message` and `on-unavailable`, with no other keys. `backend` **MUST** be `static` or `hosted`; `on-unavailable` **MUST** be `hide` or `message` and defaults to `message`. For `message` behavior, `message` **MUST** be a non-empty string; when present for `hide` behavior, it **MUST** also be non-empty. Runtime view eligibility **MUST** use the configured backend rather than page identifiers, source names, query results, or credential reach. An unmet prerequisite **MUST** render its explanatory message for `message` behavior, or **MUST** omit the view and any section left empty by its omission for `hide` behavior, and **MUST NOT** initiate query execution, alias materialization, pagination, or subscriptions for that view. Eligibility **MUST** be evaluated independently for views sharing a source. A met prerequisite **MUST NOT** suppress authorization errors or replace missing telemetry with zero.
+- **DLS-VIEW-048:** Only a `chart` view **MAY** declare `layer`, and it **MUST NOT** also declare `chart`. Layer composition **MUST** follow Section 11.1's bounded vocabulary, channel inheritance, shared-source boundary, scale resolution, and paint order. A layer **MUST NOT** declare data transformations, a separate source, nested graphical views, or unsupported resolution. All layer values **MUST** come from the view's active abort-scoped worker query subscription; unavailable and empty payloads **MUST NOT** produce synthetic observations. The single-widget temporal-bucket requirement in **DLS-VIEW-005** does not apply to layers over already-shaped query results.
 
 ---
 
@@ -1489,6 +1636,7 @@ In the table, “accept” means validation succeeds; “reject” means validat
 | DLS-VIEW-016–021 | T-VIEW-003 | 3 | Validate disclosure vocabulary, one-to-four essential views, initial collapsed state, accessible controls, source order, and unchanged semantic output. |
 | DLS-VIEW-022–024, DLS-VIEW-026–037 | T-VIEW-004 | 3 | Validate named element dispatch, explicit field display treatments, complete ordered custom-page section layouts, route allocation, title links, rejection of chart data tables, tree-table hierarchy, swimlane accessibility, bounded scatter clustering progress, and inert element subject and view-lock hints. |
 | DLS-VIEW-043 | T-VIEW-005 | 3 | Validate backend prerequisites, explanatory unavailable states, exclusion of unmet-view queries and subscriptions, independent eligibility for shared sources, and unchanged hosted authorization failures. |
+| DLS-VIEW-048 | T-VIEW-006 | 3 | Validate layer inheritance and bounds, compatible shared domains, independent y scales, ordered marks, safe SVG links, worker-produced payloads, responsive rendering, and subscription disposal. |
 | DLS-VAL-001–005 | T-VAL-001 | 1–3 | Verify rejection, coded path-specific errors, semantic checks, progressive-disclosure bounds, and secret redaction. |
 | DLS-SAFE-001–006, DLS-SAFE-012, DLS-SAFE-015 | T-SAFE-001 | 3 | Exercise safe YAML, inert content, outcome-HTML allowlisting, prompt-context serialization, HTTPS links, secrets, and authorization boundaries. |
 | DLS-SAFE-007–010 | T-SAFE-002 | 3 | Inspect names, textual alternatives, labels, and non-color semantics. |

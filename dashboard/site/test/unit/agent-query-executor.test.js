@@ -149,10 +149,10 @@ function execute(request) {
 
 describe('named query execution', () => {
   beforeEach(async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(metadata['as-of']));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
     await ingest();
   });
+  afterEach(() => vi.restoreAllMocks());
 
   afterEach(() => vi.useRealTimers());
 

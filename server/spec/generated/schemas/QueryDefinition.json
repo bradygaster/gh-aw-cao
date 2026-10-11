@@ -82,6 +82,9 @@
             "minimum": -2147483648,
             "maximum": 2147483647
         },
+        "facet": {
+            "$ref": "#/$defs/Facet"
+        },
         "stores": {
             "type": "array",
             "items": {
@@ -396,6 +399,23 @@
                 "field"
             ]
         },
+        "Facet": {
+            "anyOf": [
+                {
+                    "$ref": "#/$defs/FieldFacet"
+                },
+                {
+                    "$ref": "#/$defs/RowFacet"
+                },
+                {
+                    "$ref": "#/$defs/ColumnFacet"
+                },
+                {
+                    "$ref": "#/$defs/GridFacet"
+                }
+            ],
+            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. Nonblank as names each panel's ordered row sequence."
+        },
         "RecordArrayString": {
             "type": "object",
             "properties": {},
@@ -440,6 +460,82 @@
             "required": [
                 "direction"
             ]
+        },
+        "FieldFacet": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "$ref": "#/$defs/FacetOutput"
+                }
+            },
+            "required": [
+                "field",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "RowFacet": {
+            "type": "object",
+            "properties": {
+                "row": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "$ref": "#/$defs/FacetOutput"
+                }
+            },
+            "required": [
+                "row",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "ColumnFacet": {
+            "type": "object",
+            "properties": {
+                "column": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "$ref": "#/$defs/FacetOutput"
+                }
+            },
+            "required": [
+                "column",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "GridFacet": {
+            "type": "object",
+            "properties": {
+                "row": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "column": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "$ref": "#/$defs/FacetOutput"
+                }
+            },
+            "required": [
+                "row",
+                "column",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "FacetAxis": {
+            "type": "string",
+            "minLength": 1
+        },
+        "FacetOutput": {
+            "type": "string",
+            "pattern": "^(?!(?:facet-field|facet-row|facet-column|facet-row-index|facet-column-index)(?![\\s\\S]))[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
         }
     }
 }

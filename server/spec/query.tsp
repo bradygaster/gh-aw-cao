@@ -1,5 +1,6 @@
 import "@typespec/http";
 import "@typespec/json-schema";
+import "@typespec/openapi";
 
 using TypeSpec.Http;
 using TypeSpec.JsonSchema;
@@ -50,6 +51,33 @@ model OrderField {
   field: string;
   direction?: string;
 }
+@minLength(1)
+scalar FacetAxis extends string;
+
+// Match Go strings.TrimSpace, including NEL but not the zero-width BOM.
+@pattern("^(?!(?:facet-field|facet-row|facet-column|facet-row-index|facet-column-index)(?![\\s\\S]))[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]")
+scalar FacetOutput extends string;
+
+// Close each alternative in both emitters; optional never properties are omitted by OpenAPI.
+@TypeSpec.OpenAPI.extension("additionalProperties", false)
+@TypeSpec.JsonSchema.extension("additionalProperties", false)
+model FacetPanel<Axes> {
+  ...Axes;
+  as: FacetOutput;
+}
+
+model FieldFacet is FacetPanel<{ field: FacetAxis }>;
+model RowFacet is FacetPanel<{ row: FacetAxis }>;
+model ColumnFacet is FacetPanel<{ column: FacetAxis }>;
+model GridFacet is FacetPanel<{ row: FacetAxis; column: FacetAxis }>;
+
+/** Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. Nonblank as names each panel's ordered row sequence. */
+union Facet {
+  field: FieldFacet,
+  row: RowFacet,
+  column: ColumnFacet,
+  grid: GridFacet,
+}
 /** One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection. */
 model WindowField {
   operation: string;
@@ -83,6 +111,7 @@ model QueryDefinition {
   select?: SelectedField[];
   @encodedName("application/json", "order-by") orderBy?: OrderField[];
   limit?: int32;
+  facet?: Facet;
   stores?: string[];
   @encodedName("application/json", "stores-by-source") storesBySource?: Record<string[]>;
 }

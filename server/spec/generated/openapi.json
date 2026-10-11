@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "CAO dashboard server",
-    "version": "2.3.0",
+    "version": "2.4.0",
     "description": "The Go dashboard server HTTP contract. Local mode uses a loopback bearer capability; hosted mode uses an authorized GitHub OAuth session and X-CSRF-Token on protected mutations. The optional MCP HTTP transport is covered, but its protocol messages and tool schemas are owned by the MCP contract; dashboard static assets are outside this contract."
   },
   "tags": [
@@ -2910,6 +2910,22 @@
           }
         }
       },
+      "ColumnFacet": {
+        "type": "object",
+        "required": [
+          "column",
+          "as"
+        ],
+        "properties": {
+          "column": {
+            "$ref": "#/components/schemas/FacetAxis"
+          },
+          "as": {
+            "$ref": "#/components/schemas/FacetOutput"
+          }
+        },
+        "additionalProperties": false
+      },
       "ComputedField": {
         "type": "object",
         "required": [
@@ -2984,6 +3000,47 @@
           }
         }
       },
+      "Facet": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/FieldFacet"
+          },
+          {
+            "$ref": "#/components/schemas/RowFacet"
+          },
+          {
+            "$ref": "#/components/schemas/ColumnFacet"
+          },
+          {
+            "$ref": "#/components/schemas/GridFacet"
+          }
+        ],
+        "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. Nonblank as names each panel's ordered row sequence."
+      },
+      "FacetAxis": {
+        "type": "string",
+        "minLength": 1
+      },
+      "FacetOutput": {
+        "type": "string",
+        "pattern": "^(?!(?:facet-field|facet-row|facet-column|facet-row-index|facet-column-index)(?![\\s\\S]))[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
+      },
+      "FieldFacet": {
+        "type": "object",
+        "required": [
+          "field",
+          "as"
+        ],
+        "properties": {
+          "field": {
+            "$ref": "#/components/schemas/FacetAxis"
+          },
+          "as": {
+            "$ref": "#/components/schemas/FacetOutput"
+          }
+        },
+        "additionalProperties": false
+      },
       "Filter": {
         "type": "object",
         "properties": {
@@ -3012,6 +3069,26 @@
             ]
           }
         }
+      },
+      "GridFacet": {
+        "type": "object",
+        "required": [
+          "row",
+          "column",
+          "as"
+        ],
+        "properties": {
+          "row": {
+            "$ref": "#/components/schemas/FacetAxis"
+          },
+          "column": {
+            "$ref": "#/components/schemas/FacetAxis"
+          },
+          "as": {
+            "$ref": "#/components/schemas/FacetOutput"
+          }
+        },
+        "additionalProperties": false
       },
       "HealthResponse": {
         "type": "object",
@@ -3433,6 +3510,9 @@
           "limit": {
             "type": "integer",
             "format": "int32"
+          },
+          "facet": {
+            "$ref": "#/components/schemas/Facet"
           },
           "stores": {
             "type": "array",
@@ -3968,6 +4048,22 @@
             "healthRevision": 7
           }
         ]
+      },
+      "RowFacet": {
+        "type": "object",
+        "required": [
+          "row",
+          "as"
+        ],
+        "properties": {
+          "row": {
+            "$ref": "#/components/schemas/FacetAxis"
+          },
+          "as": {
+            "$ref": "#/components/schemas/FacetOutput"
+          }
+        },
+        "additionalProperties": false
       },
       "SelectedField": {
         "type": "object",

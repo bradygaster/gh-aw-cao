@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { processDataRequest } from '../../src/data-worker.js';
 import {
   createDashboardQueryBudget,
@@ -132,8 +132,8 @@ function evidence(scale = 1) {
       'aic-total': (index + 1) * 0.25,
       event: attempt % 2 ? 'schedule' : 'workflow_dispatch',
       'target-repository': attempt % 4 ? 'example/target' : 'example/unregistered',
-      'started-at': attempt % 3 === 0 ? '2026-09-01T12:00:00Z'
-        : attempt % 3 === 1 ? '2026-09-15T12:00:00Z' : '2026-09-23T12:00:00Z'
+      'started-at': attempt % 3 === 0 ? '2026-09-18T12:00:00Z'
+        : attempt % 3 === 1 ? '2026-09-20T12:00:00Z' : '2026-09-23T12:00:00Z'
     }))
   ));
   const recordSources = Object.fromEntries(['audits', 'domains', 'tools', 'issues'].map((name) => [
@@ -203,11 +203,16 @@ function parity(sources) {
 }
 
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-23T12:00:00Z'));
   await new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DATABASE_NAME);
     request.onsuccess = () => resolve(undefined);
     request.onerror = () => reject(request.error);
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('campaign inventory query optimization', () => {
@@ -302,7 +307,7 @@ describe('campaign inventory query optimization', () => {
     const sources = await canonicalSources();
     for (const name of names) {
       const page = { views: [{ id: 'inventory', mark: 'table', data: { source: name } }] };
-      const options = { queryContext: { timeWindow: { start: '2026-09-10T00:00:00Z', end: '2026-09-23T12:00:00Z' } } };
+      const options = { queryContext: { timeWindow: { start: '2026-09-19T00:00:00Z', end: '2026-09-23T12:00:00Z' } } };
       const before = compileDashboardViewPayloadQueries(page, 'campaigns', { ...options, queries: baseline });
       const after = compileDashboardViewPayloadQueries(page, 'campaigns', { ...options, queries });
       expect(after.aliases).toEqual(before.aliases);
@@ -409,14 +414,36 @@ describe('campaign inventory query optimization', () => {
       .toMatchObject({ runs: 8, aic: 5 });
   });
 
+  it('preserves workflow import counts and quality without intermediate run groups', async () => {
+    const name = 'campaign-workflow-import-evidence';
+    const previous = queries.map((query) => query.name === name ? {
+      ...query, from: 'audit-event-runs', union: ['domain-event-runs', 'tool-event-runs', 'issue-event-runs']
+    } : query);
+    const sources = await canonicalSources();
+    expect(workerResults(queries, sources, [name])).toEqual(workerResults(previous, sources, [name]));
+    for (const sourceName of ['audits', 'domains', 'tools', 'issues']) {
+      const incomplete = { ...sources };
+      delete incomplete[sourceName];
+      const original = workerResults(previous, incomplete, [name])[name];
+      if (sourceName === 'audits') {
+        expect(original.metadata['query-diagnostic']).toBe(
+          '$.dashboard.queries[campaign-workflow-import-evidence]: input source "audit-event-runs" is unavailable.'
+        );
+        original.metadata['query-diagnostic'] =
+          '$.dashboard.queries[campaign-workflow-import-evidence]: input source "campaign-audit-workflows" is unavailable.';
+      }
+      expect(workerResults(queries, incomplete, [name])[name]).toEqual(original);
+    }
+  });
+
   it('reduces measured production query operations and estimator pressure for every selected query', async () => {
     const sources = await canonicalSources(evidence(12));
     const beforeAnalysis = analyzeDashboardComplexity({ dashboard: { queries: baseline } });
     const afterAnalysis = analyzeDashboardComplexity({ dashboard: { queries } });
     const expected = {
-      'campaign-inventory': [83, 251, 69, 107],
-      'campaign-workflows': [51, 155, 41, 88],
-      'campaign-workflow-totals': [50, 149, 39, 82]
+      'campaign-inventory': [83, 251, 69, 99],
+      'campaign-workflows': [51, 155, 41, 80],
+      'campaign-workflow-totals': [50, 149, 39, 74]
     };
     for (const name of names) {
       const before = beforeAnalysis.inventory.find((query) => query.name === name);
@@ -441,6 +468,15 @@ describe('campaign inventory query optimization', () => {
   }, 30000);
 
   it('keeps the public workflow inventory schema while isolating lean campaign dependencies', () => {
+    for (const kind of ['audit', 'domain', 'tool', 'issue']) {
+      expect(queries.find((query) => query.name === `campaign-${kind}-workflows`)).toMatchObject({
+        from: `${kind}s`,
+        aggregate: {
+          by: ['organization', 'repository', 'workflow'],
+          values: [{ field: 'event', as: 'events', reducer: 'count' }]
+        }
+      });
+    }
     const publicQuery = queries.find((query) => query.name === 'workflow-inventory');
     expect(publicQuery?.from).toBe('workflows');
     expect(publicQuery?.joins?.map((join) => join.source)).toEqual(['workflow-run-totals', 'workflow-aic-totals']);
