@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "6653120325888738046"
+      "templateHash": "11677100637105602780"
     }
   },
   "parameters": {
@@ -30,14 +30,25 @@
         "Enabled"
       ],
       "metadata": {
-        "description": "Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model and explicit restriction rules."
+        "description": "Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model with restriction rules or an explicit public-main default action."
+      }
+    },
+    "functionAccessRestrictionsDefaultAction": {
+      "type": "string",
+      "defaultValue": "Deny",
+      "allowedValues": [
+        "Allow",
+        "Deny"
+      ],
+      "metadata": {
+        "description": "Default action for unmatched main-site requests. Deny is fail-closed; Allow requires an explicitly approved public-main access model and does not change SCM restrictions."
       }
     },
     "functionAccessRestrictions": {
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied."
+        "description": "Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests use functionAccessRestrictionsDefaultAction."
       }
     },
     "functionScmAccessRestrictions": {
@@ -543,7 +554,7 @@
         "publicNetworkAccess": "[parameters('functionPublicNetworkAccess')]",
         "clientAffinityEnabled": false,
         "siteConfig": {
-          "ipSecurityRestrictionsDefaultAction": "Deny",
+          "ipSecurityRestrictionsDefaultAction": "[parameters('functionAccessRestrictionsDefaultAction')]",
           "ipSecurityRestrictions": "[parameters('functionAccessRestrictions')]",
           "scmIpSecurityRestrictionsDefaultAction": "Deny",
           "scmIpSecurityRestrictions": "[parameters('functionScmAccessRestrictions')]",

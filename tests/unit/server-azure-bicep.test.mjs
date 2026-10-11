@@ -31,17 +31,54 @@ test('Documented bootstrap supplies required inputs and explicit reviewed retent
 test('Azure ingress defaults to disabled with explicit rules and default-deny app and SCM access', () => {
   assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');
   assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
+  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.type, 'string');
+  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.defaultValue, 'Deny');
+  assert.deepEqual(generated.parameters.functionAccessRestrictionsDefaultAction.allowedValues, ['Allow', 'Deny']);
   assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
   assert.deepEqual(generated.parameters.functionScmAccessRestrictions.defaultValue, []);
   assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.type, 'bool');
   assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.defaultValue, false);
   const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
   assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
-  assert.equal(app.properties.siteConfig.ipSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(app.properties.siteConfig.ipSecurityRestrictionsDefaultAction, "[parameters('functionAccessRestrictionsDefaultAction')]");
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsDefaultAction, 'Deny');
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, "[parameters('functionScmAccessRestrictionsUseMain')]");
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictions, "[parameters('functionScmAccessRestrictions')]");
   assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
+});
+
+test('Documented public-main opt-in uses Allow with no custom rules and independent default-deny SCM', () => {
+  const example = deploymentDocs.match(/#### Explicit public-main access with independently restricted SCM[\s\S]*?```json\n([\s\S]*?)```/)?.[1];
+  assert.ok(example, 'expected a generic public-main parameter example');
+  const parameters = JSON.parse(example);
+  assert.deepEqual(parameters.functionPublicNetworkAccess, { value: 'Enabled' });
+  assert.deepEqual(parameters.functionAccessRestrictionsDefaultAction, { value: 'Allow' });
+  assert.deepEqual(parameters.functionAccessRestrictions, { value: [] });
+  assert.deepEqual(parameters.functionScmAccessRestrictionsUseMain, { value: false });
+  assert.deepEqual(parameters.functionScmAccessRestrictions.value, [{
+    name: 'approved-admin-network',
+    ipAddress: '192.0.2.0/24',
+    action: 'Allow',
+    priority: 100,
+  }]);
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  const config = app.properties.siteConfig;
+  for (const [property, parameter] of [
+    ['ipSecurityRestrictionsDefaultAction', 'functionAccessRestrictionsDefaultAction'],
+    ['ipSecurityRestrictions', 'functionAccessRestrictions'],
+    ['scmIpSecurityRestrictions', 'functionScmAccessRestrictions'],
+    ['scmIpSecurityRestrictionsUseMain', 'functionScmAccessRestrictionsUseMain'],
+  ]) {
+    assert.equal(config[property], `[parameters('${parameter}')]`);
+    assert.equal(Object.hasOwn(parameters, parameter), true);
+  }
+  assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
+  assert.equal(config.scmIpSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(JSON.stringify(generated).split("[parameters('functionAccessRestrictionsDefaultAction')]").length - 1, 1,
+    'the opt-in default action must be wired only to the main site');
+  assert.equal(app.properties.httpsOnly, true);
+  assert.equal(config.minTlsVersion, '1.2');
+  assert.equal(config.ftpsState, 'Disabled');
 });
 
 test('Every Azure role explicitly preserves the run window for linked evidence', () => {

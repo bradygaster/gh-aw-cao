@@ -10,14 +10,21 @@ param location string = resourceGroup().location
 @description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
 param functionAppName string
 
-@description('Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model and explicit restriction rules.')
+@description('Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model with restriction rules or an explicit public-main default action.')
 @allowed([
   'Disabled'
   'Enabled'
 ])
 param functionPublicNetworkAccess string = 'Disabled'
 
-@description('Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied.')
+@description('Default action for unmatched main-site requests. Deny is fail-closed; Allow requires an explicitly approved public-main access model and does not change SCM restrictions.')
+@allowed([
+  'Allow'
+  'Deny'
+])
+param functionAccessRestrictionsDefaultAction string = 'Deny'
+
+@description('Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests use functionAccessRestrictionsDefaultAction.')
 param functionAccessRestrictions array = []
 
 @description('Reviewed SCM/Kudu access restriction rules, separate from main-site rules. Explicitly carry forward existing approved SCM rules; omission uses an empty list.')
@@ -367,7 +374,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     publicNetworkAccess: functionPublicNetworkAccess
     clientAffinityEnabled: false
     siteConfig: {
-      ipSecurityRestrictionsDefaultAction: 'Deny'
+      ipSecurityRestrictionsDefaultAction: functionAccessRestrictionsDefaultAction
       ipSecurityRestrictions: functionAccessRestrictions
       scmIpSecurityRestrictionsDefaultAction: 'Deny'
       scmIpSecurityRestrictions: functionScmAccessRestrictions
