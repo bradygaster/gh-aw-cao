@@ -1291,6 +1291,82 @@
       }
     },
     {
+      "id": "campaign-audit-workflows",
+      "subject": "Count retained audit evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "audits"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "audits"
+        ]
+      }
+    },
+    {
+      "id": "campaign-domain-workflows",
+      "subject": "Count retained domain evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "domains"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "domains"
+        ]
+      }
+    },
+    {
+      "id": "campaign-tool-workflows",
+      "subject": "Count retained tool evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "tools"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "tools"
+        ]
+      }
+    },
+    {
+      "id": "campaign-issue-workflows",
+      "subject": "Count retained issue evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "issues"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "issues"
+        ]
+      }
+    },
+    {
       "id": "campaign-workflow-import-evidence",
       "subject": "Summarize retained import evidence at workflow grain for campaign inventory quality.",
       "objective": "Preserve import-evidence provenance without materializing per-run ingestion indicators.",
@@ -1298,10 +1374,10 @@
       "description": "",
       "parameters": [],
       "sources": [
-        "audit-event-runs",
-        "domain-event-runs",
-        "issue-event-runs",
-        "tool-event-runs"
+        "campaign-audit-workflows",
+        "campaign-domain-workflows",
+        "campaign-issue-workflows",
+        "campaign-tool-workflows"
       ],
       "used-by-pages": [],
       "execution": {

@@ -312,12 +312,56 @@
       "limit": 10
     },
     {
+      "name": "campaign-audit-workflows",
+      "subject": "Count retained audit evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "from": "audits",
+      "aggregate": {
+        "by": ["organization", "repository", "workflow"],
+        "values": [{ "field": "event", "as": "events", "reducer": "count" }]
+      }
+    },
+    {
+      "name": "campaign-domain-workflows",
+      "subject": "Count retained domain evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "from": "domains",
+      "aggregate": {
+        "by": ["organization", "repository", "workflow"],
+        "values": [{ "field": "event", "as": "events", "reducer": "count" }]
+      }
+    },
+    {
+      "name": "campaign-tool-workflows",
+      "subject": "Count retained tool evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "from": "tools",
+      "aggregate": {
+        "by": ["organization", "repository", "workflow"],
+        "values": [{ "field": "event", "as": "events", "reducer": "count" }]
+      }
+    },
+    {
+      "name": "campaign-issue-workflows",
+      "subject": "Count retained issue evidence directly at workflow grain.",
+      "objective": "Preserve campaign import quality without intermediate run groups.",
+      "acceptance": "Count retained event identities per workflow; missing evidence remains unknown.",
+      "from": "issues",
+      "aggregate": {
+        "by": ["organization", "repository", "workflow"],
+        "values": [{ "field": "event", "as": "events", "reducer": "count" }]
+      }
+    },
+    {
       "name": "campaign-workflow-import-evidence",
       "subject": "Summarize retained import evidence at workflow grain for campaign inventory quality.",
       "objective": "Preserve import-evidence provenance without materializing per-run ingestion indicators.",
       "acceptance": "Compose all four retained event sources with the same availability, freshness, and completeness as event-runs; counts describe retained records, not executions or outcomes.",
-      "from": "audit-event-runs",
-      "union": ["domain-event-runs", "tool-event-runs", "issue-event-runs"],
+      "from": "campaign-audit-workflows",
+      "union": ["campaign-domain-workflows", "campaign-tool-workflows", "campaign-issue-workflows"],
       "aggregate": {
         "by": ["organization", "repository", "workflow"],
         "values": [

@@ -414,7 +414,7 @@
                     "$ref": "#/$defs/GridFacet"
                 }
             ],
-            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. as names each panel's ordered row sequence."
+            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. Nonblank as names each panel's ordered row sequence."
         },
         "RecordArrayString": {
             "type": "object",
@@ -468,7 +468,7 @@
                     "$ref": "#/$defs/FacetAxis"
                 },
                 "as": {
-                    "type": "string"
+                    "$ref": "#/$defs/FacetOutput"
                 }
             },
             "required": [
@@ -484,7 +484,7 @@
                     "$ref": "#/$defs/FacetAxis"
                 },
                 "as": {
-                    "type": "string"
+                    "$ref": "#/$defs/FacetOutput"
                 }
             },
             "required": [
@@ -500,7 +500,7 @@
                     "$ref": "#/$defs/FacetAxis"
                 },
                 "as": {
-                    "type": "string"
+                    "$ref": "#/$defs/FacetOutput"
                 }
             },
             "required": [
@@ -519,7 +519,7 @@
                     "$ref": "#/$defs/FacetAxis"
                 },
                 "as": {
-                    "type": "string"
+                    "$ref": "#/$defs/FacetOutput"
                 }
             },
             "required": [
@@ -532,6 +532,10 @@
         "FacetAxis": {
             "type": "string",
             "minLength": 1
+        },
+        "FacetOutput": {
+            "type": "string",
+            "pattern": "[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
         }
     }
 }

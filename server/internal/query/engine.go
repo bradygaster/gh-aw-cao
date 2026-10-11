@@ -86,6 +86,14 @@ func Validate(definitions []Definition) error {
 			if len(computed.Args) < minimum || len(computed.Args) > maximum {
 				return fmt.Errorf("query %q computed field %q has invalid arity", definition.Name, computed.As)
 			}
+			if computed.Function == "date-bucket" {
+				argument := computed.Args[1]
+				unit, ok := argument.Value.(string)
+				if !ok || argument.Field != nil || argument.Context != "" || argument.Parameter != "" ||
+					(unit != "hour" && unit != "day" && unit != "week" && unit != "month") {
+					return fmt.Errorf("query %q date-bucket requires a supported literal UTC unit", definition.Name)
+				}
+			}
 		}
 		if len(definition.Predict) > 0 {
 			return fmt.Errorf("query %q uses prediction, which is not supported by the dashboard server", definition.Name)

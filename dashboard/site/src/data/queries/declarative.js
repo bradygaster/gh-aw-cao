@@ -11,7 +11,7 @@
  * `select` -> `order-by` -> `limit`.
  */
 
-import { PREDICTION_METHODS, tidy } from '../../data-operations.js';
+import { PREDICTION_METHODS, tidy, validDateBucketUnitArgument } from '../../data-operations.js';
 import { createDebug } from '../../debug.js';
 import { SIMULATION_DAYS, simulationDaysSource } from './simulation-days.js';
 import { validFacetDefinition } from './facet.js';
@@ -344,6 +344,10 @@ export function dashboardQueryDefects(definitions) {
  * @returns {string | undefined}
  */
 function queryStructuralDefect(definition) {
+  if (Array.isArray(definition.compute) && definition.compute.some((computed) =>
+    computed?.function === 'date-bucket' && !validDateBucketUnitArgument(computed.args?.[1]))) {
+    return 'date-bucket requires a literal UTC unit: hour, day, week, or month';
+  }
   if (definition.facet !== undefined && !validFacetDefinition(definition.facet)) {
     return 'facet requires a field or row/column fields and an output as';
   }

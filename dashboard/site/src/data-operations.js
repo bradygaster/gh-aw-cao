@@ -82,6 +82,12 @@ export const NUMERIC_COMPUTE_FUNCTIONS = ['number', 'positive-integer', 'sum', '
 /** Vega regression method names supported without an external model registry. */
 export const PREDICTION_METHODS = ['linear', 'log', 'exp', 'pow', 'quad', 'poly'];
 
+/** @param {unknown} argument */
+export function validDateBucketUnitArgument(argument) {
+  return isPlainObject(argument) && Object.keys(argument).length === 1
+    && typeof argument.value === 'string' && ['hour', 'day', 'week', 'month'].includes(argument.value);
+}
+
 /**
  * Applies a sequence of declarative operators without mutating the input rows.
  * @param {Row[]} rows
@@ -418,11 +424,13 @@ export function computeValue(row, definition) {
     return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
   }
   if (definition.function === 'date-bucket') {
+    if (!validDateBucketUnitArgument(definition.args[1])) {
+      throw new TypeError('date-bucket requires a literal UTC unit: hour, day, week, or month.');
+    }
     const timestamp = parseTimestamp(values[0]);
     if (timestamp === null) return null;
     const date = new Date(timestamp);
     const unit = values[1];
-    if (!['hour', 'day', 'week', 'month'].includes(String(unit))) throw new TypeError('Unsupported date bucket unit.');
     date.setUTCMinutes(0, 0, 0);
     if (unit !== 'hour') date.setUTCHours(0);
     if (unit === 'week') date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);

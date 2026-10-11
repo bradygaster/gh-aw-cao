@@ -9,6 +9,7 @@ import { validateEnumeratedFilterValue, validateEnumeratedMetadataValue, validat
 import { resolveReusablePageViews } from './validator-state.js';
 import { createDebug } from './debug.js';
 import { validFacetDefinition } from './data/queries/facet.js';
+import { validDateBucketUnitArgument } from './specification.js';
 
 /** @typedef {import('./validator.js').ValidationError} ValidationError */
 
@@ -478,6 +479,13 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
             `${computePath}.args`
           ));
         } else {
+          if (computed.function === 'date-bucket' && !validDateBucketUnitArgument(computed.args[1])) {
+            errors.push(createError(
+              ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
+              'date-bucket requires a literal UTC unit: hour, day, week, or month.',
+              `${computePath}.args[1]`
+            ));
+          }
           for (const [argIndex, argument] of computed.args.entries()) {
             const argumentPath = `${computePath}.args[${argIndex}]`;
             if (!isPlainObject(argument)) {

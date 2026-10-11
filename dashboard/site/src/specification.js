@@ -55,7 +55,7 @@ export const QUERY_REDUCER_VALUES = ['count', 'distinct-count', 'distinct-list',
 export const QUERY_SELECT_KEYS = ['field', 'as'];
 export const QUERY_NUMERIC_REDUCER_VALUES = ['sum', 'mean', 'min', 'max'];
 export const INFERRED_FIELD_NAMES = ['campaign-link'];
-export { COMPUTE_FUNCTION_ARITY, NUMERIC_COMPUTE_FUNCTIONS, PREDICTION_METHODS, TEXT_COMPUTE_FUNCTIONS } from './data-operations.js';
+export { COMPUTE_FUNCTION_ARITY, NUMERIC_COMPUTE_FUNCTIONS, PREDICTION_METHODS, TEXT_COMPUTE_FUNCTIONS, validDateBucketUnitArgument } from './data-operations.js';
 export { DASHBOARD_QUERY_LIMITS };
 export const QUERY_MAX_JOINS = DASHBOARD_QUERY_LIMITS['max-joins'];
 export const SITE_CALLOUT_KEYS = ['id', 'title', 'description', 'icon', 'navigation-page', 'visible-when'];

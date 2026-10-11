@@ -169,6 +169,15 @@ test('generated facet contracts admit exactly the four axis alternatives', () =>
     { facet: { field: 'engine', as: 1 }, valid: false },
     { facet: { field: 'engine', as: 'panels', unknown: 'axis' }, valid: false }
   ]
+  const whitespace = '\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'
+  for (const axes of [{ field: 'engine' }, { row: 'repository' }, { column: 'workflow' }, { row: 'repository', column: 'workflow' }]) {
+    for (const as of ['', ...whitespace, whitespace]) {
+      cases.push({ facet: { ...axes, as }, valid: false })
+    }
+    for (const as of ['panels', `${whitespace}panels${whitespace}`, '\u200b', '\ufeff']) {
+      cases.push({ facet: { ...axes, as }, valid: true })
+    }
+  }
   for (const field of [undefined, '', 'engine', null, 1, false, [], {}]) {
     for (const row of [undefined, '', 'repository', null, 1, false, [], {}]) {
       for (const column of [undefined, '', 'workflow', null, 1, false, [], {}]) {

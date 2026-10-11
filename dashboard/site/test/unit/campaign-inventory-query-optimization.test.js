@@ -414,14 +414,36 @@ describe('campaign inventory query optimization', () => {
       .toMatchObject({ runs: 8, aic: 5 });
   });
 
+  it('preserves workflow import counts and quality without intermediate run groups', async () => {
+    const name = 'campaign-workflow-import-evidence';
+    const previous = queries.map((query) => query.name === name ? {
+      ...query, from: 'audit-event-runs', union: ['domain-event-runs', 'tool-event-runs', 'issue-event-runs']
+    } : query);
+    const sources = await canonicalSources();
+    expect(workerResults(queries, sources, [name])).toEqual(workerResults(previous, sources, [name]));
+    for (const sourceName of ['audits', 'domains', 'tools', 'issues']) {
+      const incomplete = { ...sources };
+      delete incomplete[sourceName];
+      const original = workerResults(previous, incomplete, [name])[name];
+      if (sourceName === 'audits') {
+        expect(original.metadata['query-diagnostic']).toBe(
+          '$.dashboard.queries[campaign-workflow-import-evidence]: input source "audit-event-runs" is unavailable.'
+        );
+        original.metadata['query-diagnostic'] =
+          '$.dashboard.queries[campaign-workflow-import-evidence]: input source "campaign-audit-workflows" is unavailable.';
+      }
+      expect(workerResults(queries, incomplete, [name])[name]).toEqual(original);
+    }
+  });
+
   it('reduces measured production query operations and estimator pressure for every selected query', async () => {
     const sources = await canonicalSources(evidence(12));
     const beforeAnalysis = analyzeDashboardComplexity({ dashboard: { queries: baseline } });
     const afterAnalysis = analyzeDashboardComplexity({ dashboard: { queries } });
     const expected = {
-      'campaign-inventory': [83, 251, 69, 107],
-      'campaign-workflows': [51, 155, 41, 88],
-      'campaign-workflow-totals': [50, 149, 39, 82]
+      'campaign-inventory': [83, 251, 69, 99],
+      'campaign-workflows': [51, 155, 41, 80],
+      'campaign-workflow-totals': [50, 149, 39, 74]
     };
     for (const name of names) {
       const before = beforeAnalysis.inventory.find((query) => query.name === name);
@@ -440,12 +462,21 @@ describe('campaign inventory query optimization', () => {
       expect(optimized.rows.length).toBeGreaterThan(0);
       expect(optimized.metadata).toEqual(original.metadata);
       console.info('Campaign query operation reduction', { query: name, before: beforeBudget.operations, after: afterBudget.operations });
-      expect(afterBudget.operations).toBeLessThan(beforeBudget.operations * 0.9);
+      expect(afterBudget.operations).toBeLessThan(beforeBudget.operations * 0.85);
       expect(workerResults(queries, sources, [name])[name].rows).toEqual(optimized.rows);
     }
   }, 30000);
 
   it('keeps the public workflow inventory schema while isolating lean campaign dependencies', () => {
+    for (const kind of ['audit', 'domain', 'tool', 'issue']) {
+      expect(queries.find((query) => query.name === `campaign-${kind}-workflows`)).toMatchObject({
+        from: `${kind}s`,
+        aggregate: {
+          by: ['organization', 'repository', 'workflow'],
+          values: [{ field: 'event', as: 'events', reducer: 'count' }]
+        }
+      });
+    }
     const publicQuery = queries.find((query) => query.name === 'workflow-inventory');
     expect(publicQuery?.from).toBe('workflows');
     expect(publicQuery?.joins?.map((join) => join.source)).toEqual(['workflow-run-totals', 'workflow-aic-totals']);
