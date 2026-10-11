@@ -217,7 +217,15 @@ dogfood policy. Do not commit this build context or its data.
    fails the build. Both images are private artifacts: restrict registry access
    and retention appropriately.
 
-1. Deploy the template. Replace the placeholders with your own values.
+1. Review the template with `az deployment group what-if` before using
+   `az deployment group create`. Replace the placeholders with your own values.
+   The example below is a fail-closed bootstrap, **not a reachable deployment**:
+   it leaves public access disabled and does not provision private ingress.
+   For approved private ingress, add
+   `--parameters @APPROVED-PRIVATE-INGRESS-PARAMETERS.json` with the reviewed
+   `privateIngress` object described above, or deploy the standalone endpoint
+   module later. The parameters file must contain actual approved resource IDs;
+   the example filename is not a supplied deployment artifact.
 
    ```bash
    az deployment group create \
@@ -268,7 +276,8 @@ dogfood policy. Do not commit this build context or its data.
    campaigns. An uninitialized namespace returns `503` readiness; a valid empty
    publication returns `200`.
 
-1. Verify the deployment.
+1. Verify the deployment from a client on the approved private route, after
+   confirming that the app hostname resolves to its private endpoint.
 
    1. Confirm that `GET /api/health` succeeds.
    1. Confirm that `GET /api/readiness` returns `200`. It returns `503` until data is loaded.
@@ -457,6 +466,12 @@ The collection profile requires these parameters: `collectorGithubAppId`, `colle
 
 In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=true`). It verifies and deduplicates deliveries to `POST /api/github/webhook`, then queues the work. It never holds the app's private key.
 
+GitHub.com webhook deliveries cannot reach a private-only endpoint directly.
+Before enabling this profile, arrange an approved delivery path that preserves
+the original signed request body, such as a separately managed webhook relay.
+This template does not provision that path. Do not enable public access or widen
+the dashboard's restrictions merely to make webhook delivery work.
+
 1. Point the GitHub App webhook at `https://HOST/api/github/webhook`.
 1. Install the GitHub App on the repositories to collect from. Enrollment follows app installations. If you uninstall the app from a repository, CAO stops collecting from it and deletes its evidence.
 1. Monitor collection with `GET /api/admin/collection/status` and with the Container Apps logs in Log Analytics.
@@ -478,7 +493,7 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Ingress hardening.** The database has private VNet access; the Function App remains public HTTPS with OAuth. The template does not create a web application firewall or Azure Front Door. Review outbound access and ingress for your tenant.
+- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The optional private endpoint requires existing approved routing and DNS; the template does not provide corporate connectivity, a web application firewall, or Azure Front Door. Review outbound access and ingress for your tenant. OAuth authorization remains required over private ingress.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
 - **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).

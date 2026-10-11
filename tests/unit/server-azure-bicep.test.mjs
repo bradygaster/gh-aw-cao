@@ -24,12 +24,24 @@ test('Azure ingress fails closed and only provisions explicitly supplied private
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, true);
   assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
   const module = resources.find((resource) => resource.name === 'dashboard-private-ingress');
-  assert.match(module.condition, /parameters\('privateIngress'\).*null/);
-  assert.match(module.subscriptionId, /split\(parameters\('privateIngress'\)\.subnetResourceId, '\/'\)\[2\]/);
-  assert.match(module.resourceGroup, /split\(parameters\('privateIngress'\)\.subnetResourceId, '\/'\)\[4\]/);
+  assert.equal(generated.parameters.privateIngress.nullable, true);
+  assert.equal(generated.parameters.privateIngress.$ref, '#/definitions/privateIngressConfiguration');
+  assert.deepEqual(generated.definitions.privateIngressConfiguration.properties, {
+    subnetResourceId: { type: 'string', minLength: 1 },
+    privateDnsZoneResourceId: { type: 'string', minLength: 1 },
+    location: { type: 'string', minLength: 1 },
+  });
+  assert.equal(module.condition, "[not(equals(parameters('privateIngress'), null()))]");
+  assert.equal(module.subscriptionId, "[split(parameters('privateIngress').subnetResourceId, '/')[2]]");
+  assert.equal(module.resourceGroup, "[split(parameters('privateIngress').subnetResourceId, '/')[4]]");
+  assert.equal(module.properties.expressionEvaluationOptions.scope, 'inner');
+  assert.equal(module.properties.mode, 'Incremental');
+  assert.equal(module.properties.parameters.functionAppResourceId.value, "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]");
+  assert.deepEqual(module.dependsOn, ['functionApp']);
   for (const property of ['subnetResourceId', 'privateDnsZoneResourceId', 'location']) {
-    assert.match(module.properties.parameters[property].value, new RegExp(`parameters\\('privateIngress'\\)\\.${property}`));
+    assert.equal(module.properties.parameters[property].value, `[parameters('privateIngress').${property}]`);
   }
+  assert.deepEqual(module.properties.template, privateIngress);
 });
 
 test('Standalone private ingress cannot rewrite the app, network, identities or DNS links', () => {
@@ -41,11 +53,16 @@ test('Standalone private ingress cannot rewrite the app, network, identities or 
     assert.ok(!('defaultValue' in privateIngress.parameters[parameter]));
   }
   const endpoint = privateIngress.resources.find((resource) => resource.type === 'Microsoft.Network/privateEndpoints');
+  assert.equal(endpoint.location, "[parameters('location')]");
+  assert.equal(endpoint.name, "[parameters('privateEndpointName')]");
   assert.equal(endpoint.properties.subnet.id, "[parameters('subnetResourceId')]");
   assert.deepEqual(endpoint.properties.privateLinkServiceConnections[0].properties.groupIds, ['sites']);
   assert.equal(endpoint.properties.privateLinkServiceConnections[0].properties.privateLinkServiceId, "[parameters('functionAppResourceId')]");
   const zoneGroup = privateIngress.resources.find((resource) => resource.type.endsWith('/privateDnsZoneGroups'));
   assert.equal(zoneGroup.properties.privateDnsZoneConfigs[0].properties.privateDnsZoneId, "[parameters('privateDnsZoneResourceId')]");
+  assert.equal(zoneGroup.name, "[format('{0}/{1}', parameters('privateEndpointName'), 'app-service')]");
+  assert.deepEqual(zoneGroup.dependsOn, ["[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]"]);
+  assert.equal(privateIngress.outputs.privateEndpointId.value, "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]");
 });
 
 test('Every Azure role explicitly preserves the run window for linked evidence', () => {
@@ -53,12 +70,34 @@ test('Every Azure role explicitly preserves the run window for linked evidence',
     assert.match(source, /name:\s*'CAO_POSTGRES_LINKED_RETENTION_DAYS'\s+value:\s*string\(postgresRunRetentionDays\)/);
   }
   const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
-  assert.match(app.properties.siteConfig.appSettings, /CAO_POSTGRES_LINKED_RETENTION_DAYS.*postgresRunRetentionDays/);
+  for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+    assert.ok(app.properties.siteConfig.appSettings.includes(`createObject('name', '${setting}', 'value', string(parameters('postgresRunRetentionDays')))`));
+  }
+  let checkedContainers = 0;
   for (const name of ['snapshot-ingestion', 'collection-workers']) {
     const module = resources.find((resource) => resource.name === name);
     assert.equal(module.properties.parameters.postgresRunRetentionDays.value, "[parameters('postgresRunRetentionDays')]");
-    assert.match(JSON.stringify(module.properties.template), /CAO_POSTGRES_LINKED_RETENTION_DAYS/);
+    const template = module.properties.template;
+    const workers = Object.values(template.resources).filter((resource) =>
+      ['Microsoft.App/jobs', 'Microsoft.App/containerApps'].includes(resource.type));
+    assert.equal(workers.length, name === 'snapshot-ingestion' ? 1 : 2);
+    for (const worker of workers) {
+      for (const container of worker.properties.template.containers) {
+        const environment = Array.isArray(container.env) ? container.env : template.variables.collectionEnvironment;
+        if (!Array.isArray(container.env)) {
+          assert.equal(container.env, "[variables('collectionEnvironment')]");
+        }
+        for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+          assert.deepEqual(environment.filter((entry) => entry.name === setting), [{
+            name: setting,
+            value: "[string(parameters('postgresRunRetentionDays'))]",
+          }], `${container.name} must preserve ${setting}`);
+        }
+        checkedContainers++;
+      }
+    }
   }
+  assert.equal(checkedContainers, 3, 'ingestion, collector and backfill must each receive retention settings');
 });
 
 test('Azure selects PostgreSQL operational storage without Redis', () => {
