@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "11332782650853828838"
+      "templateHash": "14469069422667415343"
     }
   },
   "definitions": {
@@ -195,7 +195,7 @@
       "minValue": 7,
       "maxValue": 3650,
       "metadata": {
-        "description": "Number of days of canonical run history retained in PostgreSQL. Keep this at least as large as the published dashboard snapshot window."
+        "description": "Run and linked history retention in days. Before starting any role, explicitly preserve at least the greatest existing effective retention across all roles and the snapshot window. The 45-day default is not an upgrade recommendation."
       }
     },
     "allowedHosts": {

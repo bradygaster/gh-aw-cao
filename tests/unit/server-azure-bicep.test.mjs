@@ -12,6 +12,29 @@ const network = await readFile(new URL('../../server/azure/network.bicep', impor
 const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
 const privateIngress = JSON.parse(await readFile(new URL('../../server/azure/private-ingress.json', import.meta.url), 'utf8'));
+const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
+
+test('Documented bootstrap can omit private ingress and explicitly supplies reviewed retention', () => {
+  const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
+  assert.ok(command, 'expected the documented bootstrap command');
+  const supplied = new Set([...command.matchAll(/^\s+(\w+)=/gm)].map((match) => match[1]));
+  for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword']) {
+    supplied.add(secret);
+  }
+  assert.equal(supplied.has('privateIngress'), false);
+  assert.equal(supplied.has('postgresRunRetentionDays'), true);
+  assert.equal(generated.languageVersion, '2.0');
+  const missing = Object.entries(generated.parameters)
+    .filter(([name, parameter]) => !supplied.has(name)
+      && !Object.hasOwn(parameter, 'defaultValue')
+      && parameter.nullable !== true)
+    .map(([name]) => name);
+  assert.deepEqual(missing, [], 'ARM v2 permits omission only with an explicit default or nullable constraint');
+  assert.equal(generated.parameters.privateIngress.nullable, true);
+  assert.equal(Object.hasOwn(generated.parameters.privateIngress, 'defaultValue'), false);
+  const module = resources.find((resource) => resource.name === 'dashboard-private-ingress');
+  assert.equal(module.condition, "[not(equals(parameters('privateIngress'), null()))]");
+});
 
 test('Azure ingress fails closed and only provisions explicitly supplied private connectivity', () => {
   assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');

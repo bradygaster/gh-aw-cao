@@ -93,6 +93,11 @@ Pass `privateIngress` with `subnetResourceId`, `privateDnsZoneResourceId`, and
 `location` in adopter-owned deployment parameters. Keep resource IDs and network
 approval records outside the public catalog. The template does not invent a
 subnet, peer overlapping VNets, create a VPN, or weaken managed network rules.
+Omitting `privateIngress` leaves it implicitly null and skips the endpoint
+module. The generated ARM uses the
+[languageVersion 2.0 nullable constraint](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/parameters#nullable-constraint),
+which permits either null or omission; Bicep nullable parameters must not have
+an explicit default.
 Creating an endpoint without a usable corporate route and DNS is not an access
 repair. Preserve `https://FUNCTION-APP-NAME.azurewebsites.net` and the existing
 OAuth callback; private DNS changes resolution, not the application origin.
@@ -148,6 +153,35 @@ Prepare an isolated build context from the reviewed source revision, replace
 `cao.azure.json` as the generic PostgreSQL host overlay. For a zero-campaign
 instance, disable campaigns in your own policy; do not reuse the catalog's
 dogfood policy. Do not commit this build context or its data.
+
+### Preserving retention before starting any role
+
+Before any deployment, upgrade, secret rotation, rollback, or job start, read
+the existing effective `CAO_POSTGRES_RUN_RETENTION_DAYS` and
+`CAO_POSTGRES_LINKED_RETENTION_DAYS` on the Function App, ingestion job, and
+every enabled collector/backfill role. Include stopped jobs and active revisions
+that can still open the same database. When a setting is absent, determine its
+effective fallback from that role's deployed source revision, not this
+template's default. If the effective value cannot be established, stop the
+rollout rather than guessing.
+
+Record an explicit `postgresRunRetentionDays` value **no lower than the greatest
+existing effective run or linked retention across those roles and the complete
+snapshot window**. For a new empty database, choose an explicit reviewed window.
+The generic 45-day template default is not evidence of an installation's current
+retention and is not an upgrade recommendation. For example, an existing
+90-day window must remain at least 90 days even when the snapshot spans 45 days.
+Keep the reviewed value in adopter-owned deployment parameters and pass it on
+every full-template, ingestion-module, or collector-module deployment.
+
+Before any new role starts, verify that both retention settings on **all**
+database-owning roles carry that value. For settings/image-only updates, carry
+both settings forward explicitly without replaying the full bootstrap.
+Initialization performs partition maintenance even without ingestion: omitting
+or reducing retention can irreversibly delete history at startup. Increasing it
+later does not restore dropped partitions.
+
+### Bootstrap steps
 
 1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
 
@@ -238,6 +272,7 @@ dogfood policy. Do not commit this build context or its data.
        functionImageTag=DEPLOYMENT-TAG \
        keyVaultName=KEY-VAULT-NAME \
        postgresServerName=POSTGRES-SERVER-NAME \
+       postgresRunRetentionDays=REVIEWED-RETENTION-DAYS \
        allowedHosts='["FUNCTION-APP-NAME.azurewebsites.net"]' \
        githubAllowedOrganizations='["ORGANIZATION"]' \
        githubClientId=OAUTH-CLIENT-ID
@@ -255,10 +290,13 @@ dogfood policy. Do not commit this build context or its data.
 1. Load the dashboard data by starting the private ingestion job. Unlike a public
    ACR build agent, this job has a network path to private PostgreSQL. Its managed
    identity resolves the URL from Key Vault and pulls the image from private ACR.
-   Set `postgresRunRetentionDays` at least as large as the snapshot window.
+   Confirm the [retention preservation preflight](#preserving-retention-before-starting-any-role)
+   was completed before deployment and the job carries the reviewed value,
+   no lower than existing effective retention or the snapshot window.
    Azure sets both `CAO_POSTGRES_RUN_RETENTION_DAYS` and
    `CAO_POSTGRES_LINKED_RETENTION_DAYS` to that value on the app, ingestion job,
-   and optional collection/backfill roles, preserving the earlier shared window.
+   and optional collection/backfill roles. This preserves the earlier shared
+   window only when that existing effective value was carried forward explicitly.
 
    ```bash
    az containerapp job start --resource-group cao-dashboard \
@@ -304,9 +342,12 @@ with the release. A changed physical contract requires a new database and
 explicit re-ingestion; there is no automatic compatibility migration. An
 unchanged contract can still change maintenance behavior. Releases supporting
 independent linked retention default to seven days when the setting is absent.
-Before starting such a release, explicitly set linked retention to the existing
-effective run retention on **every** database-owning role; otherwise startup can
-drop older linked partitions even without ingestion.
+Before starting such a release, perform the
+[retention preservation preflight](#preserving-retention-before-starting-any-role)
+and explicitly set **both** retention settings on every database-owning role to
+the reviewed value. Never replace a larger existing run or linked window with
+the generic 45-day template default; otherwise startup can drop older partitions
+even without ingestion.
 
 Validate old-to-new startup, representative historical records, new ingestion,
 and rollback against an isolated local database. With retention preserved,
@@ -330,7 +371,8 @@ The template creates the following app settings.
 | `CAO_AZURE_REQUIRE_HTTPS` | Fixed value `true` | Requires `X-Forwarded-Proto: https`. |
 | `CAO_POLICY_PATH` | Fixed value `.github/workflows/cao.azure.json` | Selects the reviewed Azure deployment profile. |
 | `CAO_POSTGRES_URL` | Key Vault secret `cao-postgres-url` | TLS PostgreSQL URL shared by canonical and operational adapters. |
-| `CAO_POSTGRES_RUN_RETENTION_DAYS` | `postgresRunRetentionDays` parameter, default `45` | Canonical run-history window and partition-retention horizon. |
+| `CAO_POSTGRES_RUN_RETENTION_DAYS` | Explicit reviewed `postgresRunRetentionDays`; template default `45` is not upgrade-safe | Canonical run-history window and partition-retention horizon. Preserve existing effective retention and the snapshot window before startup. |
+| `CAO_POSTGRES_LINKED_RETENTION_DAYS` | Same explicit `postgresRunRetentionDays` | Linked-evidence horizon shared by all database-owning roles. Never shorten an existing linked window during redeployment. |
 | `REDIS_NAMESPACE` | Fixed value `azure-dashboard` | Legacy name for the canonical PostgreSQL dataset identity; no Redis service is used. |
 | `CAO_OPERATIONAL_NAMESPACE` | Fixed value `azure-dashboard-operational` | Isolated namespace for operational PostgreSQL tables. |
 | `CAO_OPERATIONAL_CACHE_MAX_*` | Template capacity parameters | Bounds disposable operational cache entries and bytes. |
@@ -366,7 +408,9 @@ The `cao-functions` handler also reads these optional settings.
 Besides the parameters in the deployment command, the template accepts:
 
 - `location`, `hostingPlanName`, `applicationInsightsName`, `containerRegistryName`, `functionImageRepository`, and `functionImageTag`.
-- `postgresRunRetentionDays`; size it to cover the complete dashboard snapshot window.
+- `postgresRunRetentionDays`; explicitly preserve the greatest existing effective
+  run or linked window across all database-owning roles and the complete snapshot
+  window. Do not rely on the generic default during redeployment.
 - `operationalCacheMaxBytes`, `operationalCacheMaxValueBytes`, `operationalCacheMaxEntries`, `operationalProtectedMaxBytes`, and `operationalProtectedMaxEntries`.
 - `logAnalyticsWorkspaceName`, `postgresServerName`, `postgresAdministratorLogin`,
   `postgresAdministratorPassword`, `postgresSkuName`, and `postgresSkuTier`.
@@ -502,6 +546,13 @@ the dashboard's restrictions merely to make webhook delivery work.
 - **Credential rollback.** Rolling back the package doesn't roll back OAuth, session, or PostgreSQL credentials.
 
 ## Rotating secrets and rolling back
+
+Every redeployment, restart, and rollback below requires the
+[retention preservation preflight](#preserving-retention-before-starting-any-role).
+Carry the reviewed `postgresRunRetentionDays` in deployment parameters, and keep
+both effective retention settings at least that large across every role before
+startup. Restoring an older package or parameters file must not restore a shorter
+retention window.
 
 | Task | Procedure |
 | --- | --- |

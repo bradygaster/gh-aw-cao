@@ -93,7 +93,7 @@ param operationalProtectedMaxEntries int = 200000
 
 @minValue(7)
 @maxValue(3650)
-@description('Number of days of canonical run history retained in PostgreSQL. Keep this at least as large as the published dashboard snapshot window.')
+@description('Run and linked history retention in days. Before starting any role, explicitly preserve at least the greatest existing effective retention across all roles and the snapshot window. The 45-day default is not an upgrade recommendation.')
 param postgresRunRetentionDays int = 45
 
 @description('Public host names that Azure Front Door/App Service is allowed to forward to the Go dashboard handler.')
