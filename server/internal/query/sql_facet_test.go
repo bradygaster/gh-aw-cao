@@ -51,12 +51,33 @@ func TestCompileSQLFacet(t *testing.T) {
 func TestSQLFacetRejectsInvalidDeclarations(t *testing.T) {
 	for _, facet := range []*Facet{
 		{}, {Field: "engine"}, {Field: "engine", Row: "repository", As: "rows"},
+		{As: "panels"}, {Field: "", As: "panels"},
+		{Field: "engine", Column: "workflow", As: "panels"},
+		{Field: "engine", Row: "repository", Column: "workflow", As: "panels"},
 		{Field: "missing", As: "rows"},
 		{Field: "engine", As: "facet-field"}, {Field: "engine", As: " "},
 	} {
 		if _, err := CompileSQL([]Definition{{Name: "bad", From: "facts", Facet: facet}}, []string{"bad"}, facetTestResolver); err == nil {
 			t.Fatalf("invalid facet admitted: %+v", facet)
 		}
+	}
+}
+
+func TestSQLFacetAcceptsSchemaAlternatives(t *testing.T) {
+	for _, testcase := range []struct {
+		name  string
+		facet Facet
+	}{
+		{"field", Facet{Field: "engine", As: "panels"}},
+		{"row", Facet{Row: "repository", As: "panels"}},
+		{"column", Facet{Column: "workflow", As: "panels"}},
+		{"grid", Facet{Row: "repository", Column: "workflow", As: "panels"}},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			if _, err := CompileSQL([]Definition{{Name: "panels", From: "facts", Facet: &testcase.facet}}, []string{"panels"}, facetTestResolver); err != nil {
+				t.Fatalf("schema alternative rejected: %v", err)
+			}
+		})
 	}
 }
 

@@ -400,25 +400,21 @@
             ]
         },
         "Facet": {
-            "type": "object",
-            "properties": {
-                "field": {
-                    "type": "string"
+            "anyOf": [
+                {
+                    "$ref": "#/$defs/FieldFacet"
                 },
-                "row": {
-                    "type": "string"
+                {
+                    "$ref": "#/$defs/RowFacet"
                 },
-                "column": {
-                    "type": "string"
+                {
+                    "$ref": "#/$defs/ColumnFacet"
                 },
-                "as": {
-                    "type": "string"
+                {
+                    "$ref": "#/$defs/GridFacet"
                 }
-            },
-            "required": [
-                "as"
             ],
-            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; as names each panel's ordered row sequence."
+            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. as names each panel's ordered row sequence."
         },
         "RecordArrayString": {
             "type": "object",
@@ -464,6 +460,78 @@
             "required": [
                 "direction"
             ]
+        },
+        "FieldFacet": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "field",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "RowFacet": {
+            "type": "object",
+            "properties": {
+                "row": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "row",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "ColumnFacet": {
+            "type": "object",
+            "properties": {
+                "column": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "column",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "GridFacet": {
+            "type": "object",
+            "properties": {
+                "row": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "column": {
+                    "$ref": "#/$defs/FacetAxis"
+                },
+                "as": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "row",
+                "column",
+                "as"
+            ],
+            "additionalProperties": false
+        },
+        "FacetAxis": {
+            "type": "string",
+            "minLength": 1
         }
     }
 }

@@ -1,5 +1,6 @@
 import "@typespec/http";
 import "@typespec/json-schema";
+import "@typespec/openapi";
 
 using TypeSpec.Http;
 using TypeSpec.JsonSchema;
@@ -50,12 +51,28 @@ model OrderField {
   field: string;
   direction?: string;
 }
-/** Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; as names each panel's ordered row sequence. */
-model Facet {
-  field?: string;
-  row?: string;
-  column?: string;
+@minLength(1)
+scalar FacetAxis extends string;
+
+// Close each alternative in both emitters; optional never properties are omitted by OpenAPI.
+@TypeSpec.OpenAPI.extension("additionalProperties", false)
+@TypeSpec.JsonSchema.extension("additionalProperties", false)
+model FacetPanel<Axes> {
+  ...Axes;
   as: string;
+}
+
+model FieldFacet is FacetPanel<{ field: FacetAxis }>;
+model RowFacet is FacetPanel<{ row: FacetAxis }>;
+model ColumnFacet is FacetPanel<{ column: FacetAxis }>;
+model GridFacet is FacetPanel<{ row: FacetAxis; column: FacetAxis }>;
+
+/** Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; omit unused axes. as names each panel's ordered row sequence. */
+union Facet {
+  field: FieldFacet,
+  row: RowFacet,
+  column: ColumnFacet,
+  grid: GridFacet,
 }
 /** One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection. */
 model WindowField {
