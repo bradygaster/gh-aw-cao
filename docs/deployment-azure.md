@@ -90,7 +90,9 @@ must carry main-site rules in `functionAccessRestrictions`, SCM/Kudu rules in
 set it to `true` only to preserve an approved shared-rule configuration. Keep
 distinct SCM rules out of the main-site array so deployment access does not
 widen application access. Omitting either rule array uses an empty list, not
-the deployed rules. Both endpoints remain default-deny.
+the deployed rules. Main-site unmatched requests use
+`functionAccessRestrictionsDefaultAction`, which defaults to `Deny` and accepts
+only `Allow` or `Deny`. SCM's independent default remains `Deny`.
 `functionPublicNetworkAccess=Enabled`
 does not itself grant permission, and allow rules cannot override `Disabled`.
 
@@ -99,6 +101,51 @@ Preserve the hostname and OAuth callback, review only the intended settings
 delta, and verify authorized and unauthorized access afterward. The template
 does not provision private endpoints or new client connectivity. Its Functions
 VNet integration is outbound connectivity to PostgreSQL, not browser access.
+
+#### Explicit public-main access with independently restricted SCM
+
+For an explicitly authorized public-main deployment, use `Enabled`, main-site
+default action `Allow`, and an empty main-site custom-rule list. Do not model
+public access as a terminal `Allow`/`Any` rule under default `Deny`: the platform
+can normalize that rule, so an accepted update is not evidence of actual access.
+The following generic ARM parameter fragment can be merged into the adopter's
+protected deployment parameters for a new deployment or reviewed redeployment:
+
+```json
+{
+  "functionPublicNetworkAccess": { "value": "Enabled" },
+  "functionAccessRestrictionsDefaultAction": { "value": "Allow" },
+  "functionAccessRestrictions": { "value": [] },
+  "functionScmAccessRestrictionsUseMain": { "value": false },
+  "functionScmAccessRestrictions": {
+    "value": [
+      {
+        "name": "approved-admin-network",
+        "ipAddress": "192.0.2.0/24",
+        "action": "Allow",
+        "priority": 100
+      }
+    ]
+  }
+}
+```
+
+The documentation-only address above must be replaced with the independently
+approved SCM restrictions; preserve the complete existing SCM rule list.
+Keep SCM reuse `false` for this model so public main-site access is not inherited
+by SCM/Kudu. Unmatched SCM requests remain denied. This changes network admission
+only: HTTPS, GitHub OAuth authorization, and application administrator permissions
+remain required and unchanged. It does not make administrative operations public.
+
+For a from-scratch deployment, record the reviewed source revision and parameter
+set, supply all other required bootstrap inputs, and verify the resulting
+main-site `Allow`/empty-rule configuration and independent SCM rules after
+provisioning. From a public client, confirm health/readiness and the authorized
+GitHub sign-in flow; verify unauthorized users and non-admin users cannot access
+protected data or administrative operations. From outside the approved admin
+network, verify SCM is denied, and verify approved SCM access separately.
+Repeat these checks after redeployment. Neither template tests nor a successful
+deployment/PATCH response prove live reachability or authorization.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
