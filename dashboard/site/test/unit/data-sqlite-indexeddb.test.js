@@ -543,7 +543,10 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     });
   });
 
-  it('applies separate default linked and run windows in SQLite CLI ingestion', async () => {
+  it.each([
+    { name: 'default', args: [] },
+    { name: 'explicit workflow', args: ['--retention-days', '7', '--run-retention-days', '30'] }
+  ])('applies separate $name linked and run/value windows in SQLite CLI ingestion', async ({ args }) => {
     const filename = temporaryDatabase();
     const runsDirectory = join(filename, '..', 'runs');
     const recordsDirectory = join(filename, '..', 'records');
@@ -561,7 +564,10 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       { id: 'tool:old', runId: 'run:1', observedAt: old },
       { id: 'tool:recent', runId: 'run:recent', observedAt: recent }
     );
-    records.operationalValues.push({ id: 'value:old', repositoryId: 'repository:1', observedAt: old });
+    records.operationalValues.push(
+      { id: 'value:old', repositoryId: 'repository:1', observedAt: old },
+      { id: 'value:expired', repositoryId: 'repository:1', observedAt: expired }
+    );
     for (const [phase, directory] of [['runs', runsDirectory], ['records', recordsDirectory]]) {
       const entries = Object.entries(records).flatMap(([collection, rows]) =>
         (phase === 'runs'
@@ -577,14 +583,18 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     }
     const ingestion = JSON.parse(execFileSync(process.execPath, [
       resolve('../../activity/cao.mjs'), 'ingest-jsonl',
-      '--database', filename, '--runs-dir', runsDirectory, '--records-dir', recordsDirectory
+      '--database', filename, '--runs-dir', runsDirectory, '--records-dir', recordsDirectory, ...args
     ], { encoding: 'utf8' }));
     expect(ingestion.counts).toMatchObject({ runs: 2, tools: 1, operationalValues: 1 });
     const indexedDB = createSqliteIndexedDB(filename);
     expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);
+    expect((await readCollection(indexedDB, 'operationalValues')).map(({ id }) => id)).toEqual(['value:old']);
   });
 
-  it('defaults SQLite repair to seven-day linked detail and 30-day runs and values', async () => {
+  it.each([
+    { name: 'default', options: {} },
+    { name: 'explicit workflow', options: { ttlDays: 7, runTtlDays: 30 } }
+  ])('uses $name SQLite repair windows for seven-day detail and 30-day runs/values', async ({ options }) => {
     const filename = temporaryDatabase();
     const indexedDB = installSqliteIndexedDB(filename);
     const canonical = batch();
@@ -599,7 +609,7 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       id: 'value:old', repositoryId: 'repository:1', observedAt: '2026-09-01T00:00:00Z'
     });
     await upsertCanonicalBatch(indexedDB, canonical);
-    const diagnosis = await doctorSqliteDatabase(filename, { now: Date.parse('2026-09-10T00:00:00Z') });
+    const diagnosis = await doctorSqliteDatabase(filename, { ...options, now: Date.parse('2026-09-10T00:00:00Z') });
     expect(diagnosis).toMatchObject({ healthy: true, ttlDays: 7, runTtlDays: 30 });
     expect((await readCollection(indexedDB, 'runs')).map(({ id }) => id)).toEqual(['run:1', 'run:recent']);
     expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);

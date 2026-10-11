@@ -253,7 +253,12 @@ func Normalize(definition Definition) NormalizedQuery {
 	if facet := definition.Facet; facet != nil {
 		inputShape := plan.ResultShape
 		plan.FacetInputShape = &inputShape
-		required := map[string]bool{facet.Field: true, facet.Row: true, facet.Column: true}
+		required := map[string]bool{}
+		for _, field := range []string{facet.Field, facet.Row, facet.Column} {
+			if field != "" {
+				required[field] = true
+			}
+		}
 		for _, field := range append(append([]ResultField{}, inputShape.Fields...), inputShape.Added...) {
 			required[field.As] = true
 		}

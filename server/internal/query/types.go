@@ -212,6 +212,24 @@ func (d *Definition) UnmarshalJSON(data []byte) error {
 	if window, exists := raw["window"]; exists && strings.TrimSpace(string(window)) == "null" {
 		return fmt.Errorf("window must contain between 1 and 8 entries")
 	}
+	if facet, exists := raw["facet"]; exists {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(facet, &fields); err != nil {
+			return fmt.Errorf("invalid facet: %w", err)
+		}
+		if fields == nil {
+			return fmt.Errorf("facet must be an object")
+		}
+		for key, raw := range fields {
+			if key != "field" && key != "row" && key != "column" && key != "as" {
+				return fmt.Errorf("facet contains an unsupported property")
+			}
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+				return fmt.Errorf("facet properties must be nonempty strings; omit unused axes")
+			}
+		}
+	}
 	*d = Definition(decoded)
 	return nil
 }

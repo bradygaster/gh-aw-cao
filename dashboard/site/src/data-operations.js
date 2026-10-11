@@ -116,7 +116,11 @@ function applyOperator(rows, operator) {
   if (operator.op === 'window') return windowRows(rows, operator);
   if (operator.op === 'select') return select(rows, operator);
   if (operator.op === 'temporal-series') return projectTemporalSeries(rows, operator);
-  if (operator.op === 'facet') return partitionFacetRows(rows, operator);
+  if (operator.op === 'facet') {
+    const { op: _op, ...definition } = operator;
+    void _op;
+    return partitionFacetRows(rows, definition);
+  }
   if (operator.op === 'slice') {
     const offset = Number.isInteger(operator.offset) ? Math.max(0, Number(operator.offset)) : 0;
     return rows.slice(offset, offset + Math.max(0, operator.limit));

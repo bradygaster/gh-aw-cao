@@ -162,6 +162,7 @@ test('generated facet contracts admit exactly the four axis alternatives', () =>
     }
   }
   const cases = [
+    ...JSON.parse(readFileSync(join(directory, '../internal/query/testdata/facet-contract.json'), 'utf8')),
     { facet: undefined, valid: true },
     { facet: null, valid: false },
     { facet: { field: 'engine' }, valid: false },

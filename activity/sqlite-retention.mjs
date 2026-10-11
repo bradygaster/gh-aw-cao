@@ -4,7 +4,7 @@ export function sqliteRetention(configuredDetail, configuredRuns, dayMs) {
     retentionWindowMs: configuredDetail ?? 7 * dayMs,
     retentionWindowMsByStore: {
       runs: configuredRuns ?? otherWindow,
-      operationalValues: otherWindow
+      operationalValues: configuredRuns ?? otherWindow
     }
   };
 }

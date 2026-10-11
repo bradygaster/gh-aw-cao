@@ -55,7 +55,7 @@ model OrderField {
 scalar FacetAxis extends string;
 
 // Match Go strings.TrimSpace, including NEL but not the zero-width BOM.
-@pattern("[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]")
+@pattern("^(?!(?:facet-field|facet-row|facet-column|facet-row-index|facet-column-index)(?![\\s\\S]))[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]")
 scalar FacetOutput extends string;
 
 // Close each alternative in both emitters; optional never properties are omitted by OpenAPI.

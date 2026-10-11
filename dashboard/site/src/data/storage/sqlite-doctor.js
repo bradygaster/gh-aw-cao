@@ -514,7 +514,7 @@ export async function doctorSqliteDatabase(filename, options = {}) {
   }
   const retentionWindowMsByStore = {
     runs: runRetentionWindowMs,
-    operationalValues: options.ttlDays === undefined ? RETENTION_WINDOW_DAYS * DAY_MS : retentionWindowMs
+    operationalValues: runRetentionWindowMs
   };
   const checkedAt = new Date(now).toISOString();
   const actions = /** @type {string[]} */ ([]);

@@ -12,7 +12,8 @@ export function validFacetDefinition(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const facet = /** @type {Record<string, unknown>} */ (value);
   return Object.keys(facet).every((key) => ['field', 'row', 'column', 'as'].includes(key))
-    && typeof facet.as === 'string' && facet.as.trim().length > 0
+    // Match the API's Go strings.TrimSpace contract, not JavaScript's BOM trimming.
+    && typeof facet.as === 'string' && /[^\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u.test(facet.as)
     && !['facet-field', 'facet-row', 'facet-column', 'facet-row-index', 'facet-column-index'].includes(facet.as)
     && (facet.field !== undefined
       ? facet.row === undefined && facet.column === undefined && typeof facet.field === 'string' && facet.field.length > 0
@@ -27,6 +28,10 @@ export function validFacetDefinition(value) {
  * @param {FacetDefinition} definition
  */
 export function partitionFacetRows(rows, definition) {
+  if (!validFacetDefinition(definition)) {
+    debugFacet({ operation: 'partition', status: 'rejected-invalid-definition' });
+    throw new TypeError('Facet requires valid axes and a nonblank, nonreserved output name.');
+  }
   /** @type {Map<string, Record<string, unknown>>} */
   const panels = new Map();
   /** @type {Map<string, number>} */
