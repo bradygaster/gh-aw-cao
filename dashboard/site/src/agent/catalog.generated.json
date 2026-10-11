@@ -1361,6 +1361,7 @@
     {
       "id": "campaign-workflow-membership",
       "subject": "Distinguish managed workflows from explicitly associated standalone workflows.",
+      "objective": "Compare campaign workflow coverage across managed and explicitly associated standalone workflows without changing execution roles or granting authority.",
       "acceptance": "Retain execution roles unchanged; a standalone workflow needs a nonempty campaign identity to participate in campaign reporting.",
       "description": "",
       "parameters": [],
