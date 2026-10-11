@@ -211,6 +211,10 @@ var collectionEnvironment = [
     value: string(postgresRunRetentionDays)
   }
   {
+    name: 'CAO_POSTGRES_LINKED_RETENTION_DAYS'
+    value: string(postgresRunRetentionDays)
+  }
+  {
     name: 'CAO_POLICY_PATH'
     value: '/app/.github/workflows/cao.azure.json'
   }

@@ -6,10 +6,78 @@ const bicep = await readFile(new URL('../../server/azure/main.bicep', import.met
 const collector = await readFile(new URL('../../server/azure/collector.bicep', import.meta.url), 'utf8');
 const functionRoles = await readFile(new URL('../../server/azure/function-roles.bicep', import.meta.url), 'utf8');
 const generated = JSON.parse(await readFile(new URL('../../server/azure/main.json', import.meta.url), 'utf8'));
+const resources = Object.values(generated.resources);
 const profile = JSON.parse(await readFile(new URL('../../.github/workflows/cao.azure.json', import.meta.url), 'utf8'));
 const network = await readFile(new URL('../../server/azure/network.bicep', import.meta.url), 'utf8');
 const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
+const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
+
+test('Documented bootstrap supplies required inputs and explicit reviewed retention', () => {
+  const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
+  assert.ok(command, 'expected the documented bootstrap command');
+  const supplied = new Set([...command.matchAll(/^\s+(\w+)=/gm)].map((match) => match[1]));
+  for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword']) {
+    supplied.add(secret);
+  }
+  assert.equal(supplied.has('postgresRunRetentionDays'), true);
+  const missing = Object.entries(generated.parameters)
+    .filter(([name, parameter]) => !supplied.has(name)
+      && !Object.hasOwn(parameter, 'defaultValue'))
+    .map(([name]) => name);
+  assert.deepEqual(missing, [], 'the bootstrap must supply every parameter without a default');
+});
+
+test('Azure ingress defaults to disabled with explicit rules and default-deny app and SCM access', () => {
+  assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');
+  assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
+  assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
+  assert.deepEqual(generated.parameters.functionScmAccessRestrictions.defaultValue, []);
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.type, 'bool');
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.defaultValue, false);
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
+  assert.equal(app.properties.siteConfig.ipSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, "[parameters('functionScmAccessRestrictionsUseMain')]");
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictions, "[parameters('functionScmAccessRestrictions')]");
+  assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
+});
+
+test('Every Azure role explicitly preserves the run window for linked evidence', () => {
+  for (const source of [bicep, ingestion, collector]) {
+    assert.match(source, /name:\s*'CAO_POSTGRES_LINKED_RETENTION_DAYS'\s+value:\s*string\(postgresRunRetentionDays\)/);
+  }
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+    assert.ok(app.properties.siteConfig.appSettings.includes(`createObject('name', '${setting}', 'value', string(parameters('postgresRunRetentionDays')))`));
+  }
+  let checkedContainers = 0;
+  for (const name of ['snapshot-ingestion', 'collection-workers']) {
+    const module = resources.find((resource) => resource.name === name);
+    assert.equal(module.properties.parameters.postgresRunRetentionDays.value, "[parameters('postgresRunRetentionDays')]");
+    const template = module.properties.template;
+    const workers = Object.values(template.resources).filter((resource) =>
+      ['Microsoft.App/jobs', 'Microsoft.App/containerApps'].includes(resource.type));
+    assert.equal(workers.length, name === 'snapshot-ingestion' ? 1 : 2);
+    for (const worker of workers) {
+      for (const container of worker.properties.template.containers) {
+        const environment = Array.isArray(container.env) ? container.env : template.variables.collectionEnvironment;
+        if (!Array.isArray(container.env)) {
+          assert.equal(container.env, "[variables('collectionEnvironment')]");
+        }
+        for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+          assert.deepEqual(environment.filter((entry) => entry.name === setting), [{
+            name: setting,
+            value: "[string(parameters('postgresRunRetentionDays'))]",
+          }], `${container.name} must preserve ${setting}`);
+        }
+        checkedContainers++;
+      }
+    }
+  }
+  assert.equal(checkedContainers, 3, 'ingestion, collector and backfill must each receive retention settings');
+});
 
 test('Azure selects PostgreSQL operational storage without Redis', () => {
   assert.equal(profile.extends, 'cao.json');
@@ -24,7 +92,7 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
 });
 
   test('Azure baseline provisions one shared telemetry pair and private PostgreSQL', () => {
-    const count = (type) => generated.resources.filter((resource) => resource.type === type).length;
+    const count = (type) => resources.filter((resource) => resource.type === type).length;
     assert.equal(count('Microsoft.Insights/components'), 1);
     assert.equal(count('Microsoft.OperationalInsights/workspaces'), 1);
     assert.equal(count('Microsoft.Storage/storageAccounts'), 1);

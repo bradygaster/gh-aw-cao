@@ -65,6 +65,40 @@ The `server/azure/main.bicep` template creates the following resources in one re
 - A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
 - At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
 - An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
+- An approved ingress topology. The template now defaults the Function App's
+  `publicNetworkAccess` to `Disabled` and unmatched main-site and SCM traffic to
+  `Deny`. Without an existing approved ingress path it is intentionally unreachable. This changes
+  the older implicit public-access baseline; existing deployments must review
+  ingress parameters and preserve their approved restrictions before redeploying.
+
+### Ingress changes on an existing app
+
+The disabled default is not evidence that a subscription requires private-only
+ingress. Establish the applicable subscription and inherited policy requirements
+before changing the deployed access mode. If those requirements cannot be read
+or confirmed by the responsible owner, leave access unchanged; an Audit or
+Compliant status alone does not establish permission to enable public access.
+The blocker is the exact permitted ingress model, not a presumed requirement
+to construct a private endpoint.
+
+If the applicable requirements permit restricted public access, the smallest
+repair may be an app access-mode change retaining the existing approved rules,
+default-deny behavior, HTTPS, and OAuth authorization. Full-template deployment
+must carry main-site rules in `functionAccessRestrictions`, SCM/Kudu rules in
+`functionScmAccessRestrictions`, and the existing SCM reuse setting in
+`functionScmAccessRestrictionsUseMain`. The reuse setting defaults to `false`;
+set it to `true` only to preserve an approved shared-rule configuration. Keep
+distinct SCM rules out of the main-site array so deployment access does not
+widen application access. Omitting either rule array uses an empty list, not
+the deployed rules. Both endpoints remain default-deny.
+`functionPublicNetworkAccess=Enabled`
+does not itself grant permission, and allow rules cannot override `Disabled`.
+
+Do not redeploy the full bootstrap for an ingress-only repair or image update.
+Preserve the hostname and OAuth callback, review only the intended settings
+delta, and verify authorized and unauthorized access afterward. The template
+does not provision private endpoints or new client connectivity. Its Functions
+VNet integration is outbound connectivity to PostgreSQL, not browser access.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
@@ -82,6 +116,33 @@ Prepare an isolated build context from the reviewed source revision, replace
 `cao.azure.json` as the generic PostgreSQL host overlay. For a zero-campaign
 instance, disable campaigns in your own policy; do not reuse the catalog's
 dogfood policy. Do not commit this build context or its data.
+
+### Retention for existing deployments
+
+Before deployment, upgrade, secret rotation, rollback, or job start, read
+the existing effective `CAO_POSTGRES_RUN_RETENTION_DAYS` and
+`CAO_POSTGRES_LINKED_RETENTION_DAYS` on the Function App, ingestion job, and
+every enabled collector/backfill role. Include stopped jobs and active revisions
+that can still open the same database. When a setting is absent, determine its
+effective fallback from that role's deployed source revision, not this
+template's default. If the effective value cannot be established, stop the
+rollout rather than guessing.
+
+Pass an explicit `postgresRunRetentionDays` value **no lower than the greatest
+existing effective run or linked retention across those roles and the complete
+snapshot window**. For a new empty database, choose an explicit reviewed window.
+The generic 45-day template default is not evidence of an installation's current
+retention and is not an upgrade recommendation. Keep the reviewed value in
+adopter-owned parameters for full-template, ingestion, or collector deployments.
+
+Before any new role starts, verify that both retention settings on **all**
+database-owning roles carry that value. For settings/image-only updates, carry
+both settings forward explicitly without replaying the full bootstrap.
+Initialization performs partition maintenance even without ingestion: omitting
+or reducing retention can irreversibly delete history at startup. Increasing it
+later does not restore dropped partitions.
+
+### Bootstrap steps
 
 1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
 
@@ -151,7 +212,12 @@ dogfood policy. Do not commit this build context or its data.
    fails the build. Both images are private artifacts: restrict registry access
    and retention appropriately.
 
-1. Deploy the template. Replace the placeholders with your own values.
+1. Review the template with `az deployment group what-if` before using
+   `az deployment group create`. Replace the placeholders with your own values.
+   The example below is a fail-closed bootstrap, **not a reachable deployment**:
+   it leaves public access disabled and does not provision client connectivity.
+   Do not use it to overwrite an existing app's access rules; follow
+   [the ingress guidance](#ingress-changes-on-an-existing-app) for an existing app.
 
    ```bash
    az deployment group create \
@@ -164,6 +230,7 @@ dogfood policy. Do not commit this build context or its data.
        functionImageTag=DEPLOYMENT-TAG \
        keyVaultName=KEY-VAULT-NAME \
        postgresServerName=POSTGRES-SERVER-NAME \
+       postgresRunRetentionDays=REVIEWED-RETENTION-DAYS \
        allowedHosts='["FUNCTION-APP-NAME.azurewebsites.net"]' \
        githubAllowedOrganizations='["ORGANIZATION"]' \
        githubClientId=OAUTH-CLIENT-ID
@@ -181,7 +248,13 @@ dogfood policy. Do not commit this build context or its data.
 1. Load the dashboard data by starting the private ingestion job. Unlike a public
    ACR build agent, this job has a network path to private PostgreSQL. Its managed
    identity resolves the URL from Key Vault and pulls the image from private ACR.
-   Set `postgresRunRetentionDays` at least as large as the snapshot window.
+   Confirm the [existing retention](#retention-for-existing-deployments)
+   was checked before deployment and the job carries the reviewed value,
+   no lower than existing effective retention or the snapshot window.
+   Azure sets both `CAO_POSTGRES_RUN_RETENTION_DAYS` and
+   `CAO_POSTGRES_LINKED_RETENTION_DAYS` to that value on the app, ingestion job,
+   and optional collection/backfill roles. This preserves the earlier shared
+   window only when that existing effective value was carried forward explicitly.
 
    ```bash
    az containerapp job start --resource-group cao-dashboard \
@@ -199,7 +272,7 @@ dogfood policy. Do not commit this build context or its data.
    campaigns. An uninitialized namespace returns `503` readiness; a valid empty
    publication returns `200`.
 
-1. Verify the deployment.
+1. Verify the deployment from a client using the approved ingress path.
 
    1. Confirm that `GET /api/health` succeeds.
    1. Confirm that `GET /api/readiness` returns `200`. It returns `503` until data is loaded.
@@ -219,6 +292,29 @@ network, DNS, and PostgreSQL database, not an unauthenticated dashboard.
 The full template adopts the same resources when supplied the same values.
 Do not use placeholder OAuth values to bypass application startup requirements.
 
+### Updating an existing runtime
+
+Compare the deployed source's generated `server/internal/postgresx/schema.sql`
+with the release. A changed physical contract requires a new database and
+explicit re-ingestion; there is no automatic compatibility migration. An
+unchanged contract can still change maintenance behavior. Releases supporting
+independent linked retention default to seven days when the setting is absent.
+Before starting such a release, check the
+[existing retention](#retention-for-existing-deployments)
+and explicitly set **both** retention settings on every database-owning role to
+the reviewed value. Never replace a larger existing run or linked window with
+the generic 45-day template default; otherwise startup can drop older partitions
+even without ingestion.
+
+Validate old-to-new startup, representative historical records, new ingestion,
+and rollback against an isolated local database. With retention preserved,
+normal aging, weekly partition maintenance, and existing curation still run;
+"no schema migration" does not mean "no database writes." Never use production
+startup as a read-only compatibility probe. Preserve the current image/settings
+receipt and verified recovery evidence, review a minimal settings/image delta,
+and do not start the ingestion job or replay a bootstrap deployment for an
+image-only update.
+
 ## Configuration reference
 
 ### App settings
@@ -232,7 +328,8 @@ The template creates the following app settings.
 | `CAO_AZURE_REQUIRE_HTTPS` | Fixed value `true` | Requires `X-Forwarded-Proto: https`. |
 | `CAO_POLICY_PATH` | Fixed value `.github/workflows/cao.azure.json` | Selects the reviewed Azure deployment profile. |
 | `CAO_POSTGRES_URL` | Key Vault secret `cao-postgres-url` | TLS PostgreSQL URL shared by canonical and operational adapters. |
-| `CAO_POSTGRES_RUN_RETENTION_DAYS` | `postgresRunRetentionDays` parameter, default `45` | Canonical run-history window and partition-retention horizon. |
+| `CAO_POSTGRES_RUN_RETENTION_DAYS` | Explicit reviewed `postgresRunRetentionDays`; template default `45` is not upgrade-safe | Canonical run-history window and partition-retention horizon. Preserve existing effective retention and the snapshot window before startup. |
+| `CAO_POSTGRES_LINKED_RETENTION_DAYS` | Same explicit `postgresRunRetentionDays` | Linked-evidence horizon shared by all database-owning roles. Never shorten an existing linked window during redeployment. |
 | `REDIS_NAMESPACE` | Fixed value `azure-dashboard` | Legacy name for the canonical PostgreSQL dataset identity; no Redis service is used. |
 | `CAO_OPERATIONAL_NAMESPACE` | Fixed value `azure-dashboard-operational` | Isolated namespace for operational PostgreSQL tables. |
 | `CAO_OPERATIONAL_CACHE_MAX_*` | Template capacity parameters | Bounds disposable operational cache entries and bytes. |
@@ -268,7 +365,9 @@ The `cao-functions` handler also reads these optional settings.
 Besides the parameters in the deployment command, the template accepts:
 
 - `location`, `hostingPlanName`, `applicationInsightsName`, `containerRegistryName`, `functionImageRepository`, and `functionImageTag`.
-- `postgresRunRetentionDays`; size it to cover the complete dashboard snapshot window.
+- `postgresRunRetentionDays`; explicitly preserve the greatest existing effective
+  run or linked window across all database-owning roles and the complete snapshot
+  window. Do not rely on the generic default during redeployment.
 - `operationalCacheMaxBytes`, `operationalCacheMaxValueBytes`, `operationalCacheMaxEntries`, `operationalProtectedMaxBytes`, and `operationalProtectedMaxEntries`.
 - `logAnalyticsWorkspaceName`, `postgresServerName`, `postgresAdministratorLogin`,
   `postgresAdministratorPassword`, `postgresSkuName`, and `postgresSkuTier`.
@@ -368,6 +467,10 @@ The collection profile requires these parameters: `collectorGithubAppId`, `colle
 
 In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=true`). It verifies and deduplicates deliveries to `POST /api/github/webhook`, then queues the work. It never holds the app's private key.
 
+The approved ingress path must also permit GitHub webhook delivery. Disabled
+public access or client-only allow rules can block it; do not widen access just
+to make delivery work.
+
 1. Point the GitHub App webhook at `https://HOST/api/github/webhook`.
 1. Install the GitHub App on the repositories to collect from. Enrollment follows app installations. If you uninstall the app from a repository, CAO stops collecting from it and deletes its evidence.
 1. Monitor collection with `GET /api/admin/collection/status` and with the Container Apps logs in Log Analytics.
@@ -389,7 +492,7 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Ingress hardening.** The database has private VNet access; the Function App remains public HTTPS with OAuth. The template does not create a web application firewall or Azure Front Door. Review outbound access and ingress for your tenant.
+- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
 - **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).
@@ -398,6 +501,13 @@ In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=
 - **Credential rollback.** Rolling back the package doesn't roll back OAuth, session, or PostgreSQL credentials.
 
 ## Rotating secrets and rolling back
+
+Every redeployment, restart, and rollback below must preserve
+[existing retention](#retention-for-existing-deployments).
+Carry the reviewed `postgresRunRetentionDays` in deployment parameters, and keep
+both effective retention settings at least that large across every role before
+startup. Restoring an older package or parameters file must not restore a shorter
+retention window.
 
 | Task | Procedure |
 | --- | --- |

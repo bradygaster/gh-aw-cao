@@ -10,6 +10,22 @@ param location string = resourceGroup().location
 @description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
 param functionAppName string
 
+@description('Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model and explicit restriction rules.')
+@allowed([
+  'Disabled'
+  'Enabled'
+])
+param functionPublicNetworkAccess string = 'Disabled'
+
+@description('Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied.')
+param functionAccessRestrictions array = []
+
+@description('Reviewed SCM/Kudu access restriction rules, separate from main-site rules. Explicitly carry forward existing approved SCM rules; omission uses an empty list.')
+param functionScmAccessRestrictions array = []
+
+@description('Whether SCM reuses main-site rules. Carry forward the existing approved setting; false keeps SCM independently restricted by default.')
+param functionScmAccessRestrictionsUseMain bool = false
+
 @description('Azure App Service plan name for the Function App.')
 param hostingPlanName string = '${functionAppName}-plan'
 
@@ -71,7 +87,7 @@ param operationalProtectedMaxEntries int = 200000
 
 @minValue(7)
 @maxValue(3650)
-@description('Number of days of canonical run history retained in PostgreSQL. Keep this at least as large as the published dashboard snapshot window.')
+@description('Run and linked history retention in days. Before starting any role, explicitly preserve at least the greatest existing effective retention across all roles and the snapshot window. The 45-day default is not an upgrade recommendation.')
 param postgresRunRetentionDays int = 45
 
 @description('Public host names that Azure Front Door/App Service is allowed to forward to the Go dashboard handler.')
@@ -348,8 +364,14 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: plan.id
     virtualNetworkSubnetId: network.outputs.functionSubnetId
     httpsOnly: true
+    publicNetworkAccess: functionPublicNetworkAccess
     clientAffinityEnabled: false
     siteConfig: {
+      ipSecurityRestrictionsDefaultAction: 'Deny'
+      ipSecurityRestrictions: functionAccessRestrictions
+      scmIpSecurityRestrictionsDefaultAction: 'Deny'
+      scmIpSecurityRestrictions: functionScmAccessRestrictions
+      scmIpSecurityRestrictionsUseMain: functionScmAccessRestrictionsUseMain
       alwaysOn: true
       minimumElasticInstanceCount: 1
       ftpsState: 'Disabled'
@@ -440,6 +462,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'CAO_POSTGRES_RUN_RETENTION_DAYS'
+          value: string(postgresRunRetentionDays)
+        }
+        {
+          name: 'CAO_POSTGRES_LINKED_RETENTION_DAYS'
           value: string(postgresRunRetentionDays)
         }
         {

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5924881790044452425"
+      "templateHash": "6653120325888738046"
     }
   },
   "parameters": {
@@ -20,6 +20,38 @@
       "type": "string",
       "metadata": {
         "description": "Globally unique Function App name for the experimental Azure Functions dashboard profile."
+      }
+    },
+    "functionPublicNetworkAccess": {
+      "type": "string",
+      "defaultValue": "Disabled",
+      "allowedValues": [
+        "Disabled",
+        "Enabled"
+      ],
+      "metadata": {
+        "description": "Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model and explicit restriction rules."
+      }
+    },
+    "functionAccessRestrictions": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests are always denied."
+      }
+    },
+    "functionScmAccessRestrictions": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Reviewed SCM/Kudu access restriction rules, separate from main-site rules. Explicitly carry forward existing approved SCM rules; omission uses an empty list."
+      }
+    },
+    "functionScmAccessRestrictionsUseMain": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Whether SCM reuses main-site rules. Carry forward the existing approved setting; false keeps SCM independently restricted by default."
       }
     },
     "hostingPlanName": {
@@ -150,7 +182,7 @@
       "minValue": 7,
       "maxValue": 3650,
       "metadata": {
-        "description": "Number of days of canonical run history retained in PostgreSQL. Keep this at least as large as the published dashboard snapshot window."
+        "description": "Run and linked history retention in days. Before starting any role, explicitly preserve at least the greatest existing effective retention across all roles and the snapshot window. The 45-day default is not an upgrade recommendation."
       }
     },
     "allowedHosts": {
@@ -508,8 +540,14 @@
         "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('hostingPlanName'))]",
         "virtualNetworkSubnetId": "[reference(resourceId('Microsoft.Resources/deployments', 'private-network-postgres'), '2025-04-01').outputs.functionSubnetId.value]",
         "httpsOnly": true,
+        "publicNetworkAccess": "[parameters('functionPublicNetworkAccess')]",
         "clientAffinityEnabled": false,
         "siteConfig": {
+          "ipSecurityRestrictionsDefaultAction": "Deny",
+          "ipSecurityRestrictions": "[parameters('functionAccessRestrictions')]",
+          "scmIpSecurityRestrictionsDefaultAction": "Deny",
+          "scmIpSecurityRestrictions": "[parameters('functionScmAccessRestrictions')]",
+          "scmIpSecurityRestrictionsUseMain": "[parameters('functionScmAccessRestrictionsUseMain')]",
           "alwaysOn": true,
           "minimumElasticInstanceCount": 1,
           "ftpsState": "Disabled",
@@ -517,7 +555,7 @@
           "http20Enabled": true,
           "linuxFxVersion": "[format('DOCKER|{0}/{1}:{2}', reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('containerRegistryName')), '2023-07-01').loginServer, parameters('functionImageRepository'), parameters('functionImageTag'))]",
           "acrUseManagedIdentityCreds": true,
-          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'WEBSITES_PORT', 'value', '8080'), createObject('name', 'WEBSITES_ENABLE_APP_SERVICE_STORAGE', 'value', 'false'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', parameters('applicationInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage__accountName', 'value', parameters('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_POLICY_PATH', 'value', '.github/workflows/cao.azure.json'), createObject('name', 'CAO_DATABASE_QUERIES', 'value', '/app/queries/database.json'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_REQUIRE_HTTPS', 'value', 'true'), createObject('name', 'REDIS_NAMESPACE', 'value', 'azure-dashboard'), createObject('name', 'CAO_OPERATIONAL_NAMESPACE', 'value', 'azure-dashboard-operational'), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_BYTES', 'value', string(parameters('operationalCacheMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES', 'value', string(parameters('operationalCacheMaxValueBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_ENTRIES', 'value', string(parameters('operationalCacheMaxEntries'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_BYTES', 'value', string(parameters('operationalProtectedMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_ENTRIES', 'value', string(parameters('operationalProtectedMaxEntries'))), createObject('name', 'CAO_POSTGRES_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-postgres-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_POSTGRES_RUN_RETENTION_DAYS', 'value', string(parameters('postgresRunRetentionDays'))), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_USERS', 'value', join(parameters('githubAllowedUsers'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(empty(parameters('previousSessionSecret')), createArray(), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)))), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
+          "appSettings": "[concat(createArray(createObject('name', 'FUNCTIONS_EXTENSION_VERSION', 'value', '~4'), createObject('name', 'FUNCTIONS_WORKER_RUNTIME', 'value', 'custom'), createObject('name', 'WEBSITES_PORT', 'value', '8080'), createObject('name', 'WEBSITES_ENABLE_APP_SERVICE_STORAGE', 'value', 'false'), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', parameters('applicationInsightsName')), '2020-02-02').ConnectionString), createObject('name', 'AzureWebJobsStorage__accountName', 'value', parameters('storageAccountName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'CAO_DASHBOARD_HOSTING', 'value', 'azure-functions'), createObject('name', 'CAO_POLICY_PATH', 'value', '.github/workflows/cao.azure.json'), createObject('name', 'CAO_DATABASE_QUERIES', 'value', '/app/queries/database.json'), createObject('name', 'CAO_AZURE_ALLOWED_HOSTS', 'value', join(parameters('allowedHosts'), ',')), createObject('name', 'CAO_AZURE_REQUIRE_HTTPS', 'value', 'true'), createObject('name', 'REDIS_NAMESPACE', 'value', 'azure-dashboard'), createObject('name', 'CAO_OPERATIONAL_NAMESPACE', 'value', 'azure-dashboard-operational'), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_BYTES', 'value', string(parameters('operationalCacheMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES', 'value', string(parameters('operationalCacheMaxValueBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_ENTRIES', 'value', string(parameters('operationalCacheMaxEntries'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_BYTES', 'value', string(parameters('operationalProtectedMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_ENTRIES', 'value', string(parameters('operationalProtectedMaxEntries'))), createObject('name', 'CAO_POSTGRES_URL', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-postgres-url)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_POSTGRES_RUN_RETENTION_DAYS', 'value', string(parameters('postgresRunRetentionDays'))), createObject('name', 'CAO_POSTGRES_LINKED_RETENTION_DAYS', 'value', string(parameters('postgresRunRetentionDays'))), createObject('name', 'CAO_GITHUB_CLIENT_ID', 'value', parameters('githubClientId')), createObject('name', 'CAO_GITHUB_CLIENT_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/github-oauth-client-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_REDIRECT_URL', 'value', variables('githubRedirectUri')), createObject('name', 'CAO_GITHUB_ALLOWED_ORGS', 'value', join(parameters('githubAllowedOrganizations'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_TEAMS', 'value', join(parameters('githubAllowedTeams'), ',')), createObject('name', 'CAO_GITHUB_ALLOWED_USERS', 'value', join(parameters('githubAllowedUsers'), ',')), createObject('name', 'CAO_SESSION_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri))), if(empty(parameters('previousSessionSecret')), createArray(), createArray(createObject('name', 'CAO_SESSION_SECRET_PREVIOUS', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-session-secret-previous)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)))), if(not(variables('collectionEnabled')), createArray(), createArray(createObject('name', 'CAO_GITHUB_WEBHOOK_SECRET', 'value', format('@Microsoft.KeyVault(SecretUri={0}secrets/cao-github-webhook-secret)', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)), createObject('name', 'CAO_GITHUB_ADMIN_USERS', 'value', join(parameters('githubAdminUsers'), ',')), createObject('name', 'CAO_COLLECT_APP_ID', 'value', parameters('collectorGithubAppId')), createObject('name', 'CAO_COLLECT_ADMIT_ONLY', 'value', 'true'), createObject('name', 'CAO_COLLECT_CONTROL_REPOSITORY', 'value', parameters('collectorControlRepository')))))]"
         }
       },
       "dependsOn": [
@@ -934,7 +972,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "9623571400110015185"
+              "templateHash": "8713152380974177607"
             }
           },
           "parameters": {
@@ -1102,6 +1140,10 @@
               },
               {
                 "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
+                "value": "[string(parameters('postgresRunRetentionDays'))]"
+              },
+              {
+                "name": "CAO_POSTGRES_LINKED_RETENTION_DAYS",
                 "value": "[string(parameters('postgresRunRetentionDays'))]"
               },
               {
@@ -1550,7 +1592,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "8940656186767077606"
+              "templateHash": "13338654404865834055"
             }
           },
           "parameters": {
@@ -1644,6 +1686,10 @@
                         },
                         {
                           "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
+                          "value": "[string(parameters('postgresRunRetentionDays'))]"
+                        },
+                        {
+                          "name": "CAO_POSTGRES_LINKED_RETENTION_DAYS",
                           "value": "[string(parameters('postgresRunRetentionDays'))]"
                         }
                       ],
