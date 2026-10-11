@@ -11,32 +11,24 @@ const profile = JSON.parse(await readFile(new URL('../../.github/workflows/cao.a
 const network = await readFile(new URL('../../server/azure/network.bicep', import.meta.url), 'utf8');
 const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
-const privateIngress = JSON.parse(await readFile(new URL('../../server/azure/private-ingress.json', import.meta.url), 'utf8'));
 const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
 
-test('Documented bootstrap can omit private ingress and explicitly supplies reviewed retention', () => {
+test('Documented bootstrap supplies required inputs and explicit reviewed retention', () => {
   const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
   assert.ok(command, 'expected the documented bootstrap command');
   const supplied = new Set([...command.matchAll(/^\s+(\w+)=/gm)].map((match) => match[1]));
   for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword']) {
     supplied.add(secret);
   }
-  assert.equal(supplied.has('privateIngress'), false);
   assert.equal(supplied.has('postgresRunRetentionDays'), true);
-  assert.equal(generated.languageVersion, '2.0');
   const missing = Object.entries(generated.parameters)
     .filter(([name, parameter]) => !supplied.has(name)
-      && !Object.hasOwn(parameter, 'defaultValue')
-      && parameter.nullable !== true)
+      && !Object.hasOwn(parameter, 'defaultValue'))
     .map(([name]) => name);
-  assert.deepEqual(missing, [], 'ARM v2 permits omission only with an explicit default or nullable constraint');
-  assert.equal(generated.parameters.privateIngress.nullable, true);
-  assert.equal(Object.hasOwn(generated.parameters.privateIngress, 'defaultValue'), false);
-  const module = resources.find((resource) => resource.name === 'dashboard-private-ingress');
-  assert.equal(module.condition, "[not(equals(parameters('privateIngress'), null()))]");
+  assert.deepEqual(missing, [], 'the bootstrap must supply every parameter without a default');
 });
 
-test('Azure ingress fails closed and only provisions explicitly supplied private connectivity', () => {
+test('Azure ingress defaults to disabled with explicit rules and default-deny app and SCM access', () => {
   assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');
   assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
   assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
@@ -46,46 +38,6 @@ test('Azure ingress fails closed and only provisions explicitly supplied private
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsDefaultAction, 'Deny');
   assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, true);
   assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
-  const module = resources.find((resource) => resource.name === 'dashboard-private-ingress');
-  assert.equal(generated.parameters.privateIngress.nullable, true);
-  assert.equal(generated.parameters.privateIngress.$ref, '#/definitions/privateIngressConfiguration');
-  assert.deepEqual(generated.definitions.privateIngressConfiguration.properties, {
-    subnetResourceId: { type: 'string', minLength: 1 },
-    privateDnsZoneResourceId: { type: 'string', minLength: 1 },
-    location: { type: 'string', minLength: 1 },
-  });
-  assert.equal(module.condition, "[not(equals(parameters('privateIngress'), null()))]");
-  assert.equal(module.subscriptionId, "[split(parameters('privateIngress').subnetResourceId, '/')[2]]");
-  assert.equal(module.resourceGroup, "[split(parameters('privateIngress').subnetResourceId, '/')[4]]");
-  assert.equal(module.properties.expressionEvaluationOptions.scope, 'inner');
-  assert.equal(module.properties.mode, 'Incremental');
-  assert.equal(module.properties.parameters.functionAppResourceId.value, "[resourceId('Microsoft.Web/sites', parameters('functionAppName'))]");
-  assert.deepEqual(module.dependsOn, ['functionApp']);
-  for (const property of ['subnetResourceId', 'privateDnsZoneResourceId', 'location']) {
-    assert.equal(module.properties.parameters[property].value, `[parameters('privateIngress').${property}]`);
-  }
-  assert.deepEqual(module.properties.template, privateIngress);
-});
-
-test('Standalone private ingress cannot rewrite the app, network, identities or DNS links', () => {
-  assert.deepEqual(privateIngress.resources.map((resource) => resource.type).sort(), [
-    'Microsoft.Network/privateEndpoints',
-    'Microsoft.Network/privateEndpoints/privateDnsZoneGroups',
-  ]);
-  for (const parameter of ['functionAppResourceId', 'privateEndpointName', 'subnetResourceId', 'privateDnsZoneResourceId', 'location']) {
-    assert.ok(!('defaultValue' in privateIngress.parameters[parameter]));
-  }
-  const endpoint = privateIngress.resources.find((resource) => resource.type === 'Microsoft.Network/privateEndpoints');
-  assert.equal(endpoint.location, "[parameters('location')]");
-  assert.equal(endpoint.name, "[parameters('privateEndpointName')]");
-  assert.equal(endpoint.properties.subnet.id, "[parameters('subnetResourceId')]");
-  assert.deepEqual(endpoint.properties.privateLinkServiceConnections[0].properties.groupIds, ['sites']);
-  assert.equal(endpoint.properties.privateLinkServiceConnections[0].properties.privateLinkServiceId, "[parameters('functionAppResourceId')]");
-  const zoneGroup = privateIngress.resources.find((resource) => resource.type.endsWith('/privateDnsZoneGroups'));
-  assert.equal(zoneGroup.properties.privateDnsZoneConfigs[0].properties.privateDnsZoneId, "[parameters('privateDnsZoneResourceId')]");
-  assert.equal(zoneGroup.name, "[format('{0}/{1}', parameters('privateEndpointName'), 'app-service')]");
-  assert.deepEqual(zoneGroup.dependsOn, ["[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]"]);
-  assert.equal(privateIngress.outputs.privateEndpointId.value, "[resourceId('Microsoft.Network/privateEndpoints', parameters('privateEndpointName'))]");
 });
 
 test('Every Azure role explicitly preserves the run window for linked evidence', () => {

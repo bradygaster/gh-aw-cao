@@ -67,75 +67,32 @@ The `server/azure/main.bicep` template creates the following resources in one re
 - An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
 - An approved ingress topology. The template now defaults the Function App's
   `publicNetworkAccess` to `Disabled` and unmatched main-site and SCM traffic to
-  `Deny`. Without private ingress it is intentionally unreachable. This changes
+  `Deny`. Without an existing approved ingress path it is intentionally unreachable. This changes
   the older implicit public-access baseline; existing deployments must review
   ingress parameters and preserve their approved restrictions before redeploying.
 
-### Private ingress prerequisites
+### Ingress changes on an existing app
 
-The Functions VNet integration in `network.bicep` is **outbound** connectivity
-to PostgreSQL, not browser access. Private ingress needs all of the following:
+The disabled default is not evidence that a subscription requires private-only
+ingress. Establish the applicable subscription and inherited policy requirements
+before changing the deployed access mode. If those requirements cannot be read
+or confirmed by the responsible owner, leave access unchanged; an Audit or
+Compliant status alone does not establish permission to enable public access.
+The blocker is the exact permitted ingress model, not a presumed requirement
+to construct a private endpoint.
 
-- An existing approved nondelegated subnet reachable from the intended clients
-  through sanctioned corporate routing. It must not be the Functions integration
-  subnet. A subnet in an already-connected hub can avoid adding connectivity to
-  the isolated database VNet; the endpoint region and subscription must match
-  that subnet. The app itself can be in a different subscription.
-- An existing approved `privatelink.azurewebsites.net` private DNS zone, VNet
-  links, and corporate DNS forwarding/resolution. The endpoint's zone group adds
-  the app and SCM records; it does not configure client DNS or routing.
-- Network-owner approval and deployment permissions for the subnet join, private
-  endpoint connection, and private DNS integration. Enforce the intended client
-  scope at the private network boundary: App Service public access restrictions
-  do **not** protect traffic entering through a private endpoint.
+If the applicable requirements permit restricted public access, the smallest
+repair may be an app access-mode change retaining the existing approved rules,
+default-deny behavior, HTTPS, and OAuth authorization. Full-template deployment
+must explicitly carry those rules in `functionAccessRestrictions`; omitting them
+uses an empty list, not the deployed rules. `functionPublicNetworkAccess=Enabled`
+does not itself grant permission, and allow rules cannot override `Disabled`.
 
-Pass `privateIngress` with `subnetResourceId`, `privateDnsZoneResourceId`, and
-`location` in adopter-owned deployment parameters. Keep resource IDs and network
-approval records outside the public catalog. The template does not invent a
-subnet, peer overlapping VNets, create a VPN, or weaken managed network rules.
-Omitting `privateIngress` leaves it implicitly null and skips the endpoint
-module. The generated ARM uses the
-[languageVersion 2.0 nullable constraint](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/parameters#nullable-constraint),
-which permits either null or omission; Bicep nullable parameters must not have
-an explicit default.
-Creating an endpoint without a usable corporate route and DNS is not an access
-repair. Preserve `https://FUNCTION-APP-NAME.azurewebsites.net` and the existing
-OAuth callback; private DNS changes resolution, not the application origin.
-
-`functionPublicNetworkAccess=Enabled` is an alternative only when the applicable
-platform policy explicitly permits that ingress model and reviewed
-`functionAccessRestrictions` allow exactly the intended clients. Unmatched
-traffic remains denied. Corporate allow rules cannot override
-`publicNetworkAccess=Disabled`; a valid Azure CLI login grants no browser route.
-An unreadable policy is not permission to override it.
-
-For an **existing** app, use `server/azure/private-ingress.bicep` as a narrowly
-scoped deployment after the network prerequisites are approved. It creates only
-the endpoint and DNS zone group; it does not rewrite the app, its settings, VNet,
-NSGs, DNS links, secrets, or identities. Do not redeploy the full bootstrap to
-repair ingress or update an image.
-The main template scopes this module to the subnet's subscription and resource
-group. When deploying it independently, use that same scope and supply
-`functionAppResourceId`, `privateEndpointName`, `subnetResourceId`,
-`privateDnsZoneResourceId`, and `location`.
-
-```bash
-az deployment group what-if \
-  --subscription APPROVED-ENDPOINT-SUBSCRIPTION \
-  --resource-group APPROVED-ENDPOINT-RESOURCE-GROUP \
-  --template-file server/azure/private-ingress.bicep \
-  --parameters @APPROVED-PRIVATE-INGRESS-PARAMETERS.json
-```
-
-Use actual approved IDs, never placeholder IDs, for validation and what-if.
-Proceed with the same scoped template only after the diff contains the intended
-endpoint and zone group and all prerequisites have been verified. An ARM success
-or approved endpoint connection alone is insufficient: from the sanctioned
-client verify private DNS resolution, readiness, GitHub login and populated
-dashboard queries; separately confirm unauthorized ingress remains denied.
-If subnet/DNS ownership or policy reads are unavailable, record the exact
-missing resource IDs, permissions, and owner action instead of applying a
-disconnected endpoint or trying an alternate authentication path.
+Do not redeploy the full bootstrap for an ingress-only repair or image update.
+Preserve the hostname and OAuth callback, review only the intended settings
+delta, and verify authorized and unauthorized access afterward. The template
+does not provision private endpoints or new client connectivity. Its Functions
+VNet integration is outbound connectivity to PostgreSQL, not browser access.
 
 The optional collection profile also needs a container image of the collector, a GitHub App, and Azure Container Apps. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
@@ -154,9 +111,9 @@ Prepare an isolated build context from the reviewed source revision, replace
 instance, disable campaigns in your own policy; do not reuse the catalog's
 dogfood policy. Do not commit this build context or its data.
 
-### Preserving retention before starting any role
+### Retention for existing deployments
 
-Before any deployment, upgrade, secret rotation, rollback, or job start, read
+Before deployment, upgrade, secret rotation, rollback, or job start, read
 the existing effective `CAO_POSTGRES_RUN_RETENTION_DAYS` and
 `CAO_POSTGRES_LINKED_RETENTION_DAYS` on the Function App, ingestion job, and
 every enabled collector/backfill role. Include stopped jobs and active revisions
@@ -165,14 +122,12 @@ effective fallback from that role's deployed source revision, not this
 template's default. If the effective value cannot be established, stop the
 rollout rather than guessing.
 
-Record an explicit `postgresRunRetentionDays` value **no lower than the greatest
+Pass an explicit `postgresRunRetentionDays` value **no lower than the greatest
 existing effective run or linked retention across those roles and the complete
 snapshot window**. For a new empty database, choose an explicit reviewed window.
 The generic 45-day template default is not evidence of an installation's current
-retention and is not an upgrade recommendation. For example, an existing
-90-day window must remain at least 90 days even when the snapshot spans 45 days.
-Keep the reviewed value in adopter-owned deployment parameters and pass it on
-every full-template, ingestion-module, or collector-module deployment.
+retention and is not an upgrade recommendation. Keep the reviewed value in
+adopter-owned parameters for full-template, ingestion, or collector deployments.
 
 Before any new role starts, verify that both retention settings on **all**
 database-owning roles carry that value. For settings/image-only updates, carry
@@ -254,12 +209,9 @@ later does not restore dropped partitions.
 1. Review the template with `az deployment group what-if` before using
    `az deployment group create`. Replace the placeholders with your own values.
    The example below is a fail-closed bootstrap, **not a reachable deployment**:
-   it leaves public access disabled and does not provision private ingress.
-   For approved private ingress, add
-   `--parameters @APPROVED-PRIVATE-INGRESS-PARAMETERS.json` with the reviewed
-   `privateIngress` object described above, or deploy the standalone endpoint
-   module later. The parameters file must contain actual approved resource IDs;
-   the example filename is not a supplied deployment artifact.
+   it leaves public access disabled and does not provision client connectivity.
+   Do not use it to overwrite an existing app's access rules; follow
+   [the ingress guidance](#ingress-changes-on-an-existing-app) for an existing app.
 
    ```bash
    az deployment group create \
@@ -290,8 +242,8 @@ later does not restore dropped partitions.
 1. Load the dashboard data by starting the private ingestion job. Unlike a public
    ACR build agent, this job has a network path to private PostgreSQL. Its managed
    identity resolves the URL from Key Vault and pulls the image from private ACR.
-   Confirm the [retention preservation preflight](#preserving-retention-before-starting-any-role)
-   was completed before deployment and the job carries the reviewed value,
+   Confirm the [existing retention](#retention-for-existing-deployments)
+   was checked before deployment and the job carries the reviewed value,
    no lower than existing effective retention or the snapshot window.
    Azure sets both `CAO_POSTGRES_RUN_RETENTION_DAYS` and
    `CAO_POSTGRES_LINKED_RETENTION_DAYS` to that value on the app, ingestion job,
@@ -314,8 +266,7 @@ later does not restore dropped partitions.
    campaigns. An uninitialized namespace returns `503` readiness; a valid empty
    publication returns `200`.
 
-1. Verify the deployment from a client on the approved private route, after
-   confirming that the app hostname resolves to its private endpoint.
+1. Verify the deployment from a client using the approved ingress path.
 
    1. Confirm that `GET /api/health` succeeds.
    1. Confirm that `GET /api/readiness` returns `200`. It returns `503` until data is loaded.
@@ -342,8 +293,8 @@ with the release. A changed physical contract requires a new database and
 explicit re-ingestion; there is no automatic compatibility migration. An
 unchanged contract can still change maintenance behavior. Releases supporting
 independent linked retention default to seven days when the setting is absent.
-Before starting such a release, perform the
-[retention preservation preflight](#preserving-retention-before-starting-any-role)
+Before starting such a release, check the
+[existing retention](#retention-for-existing-deployments)
 and explicitly set **both** retention settings on every database-owning role to
 the reviewed value. Never replace a larger existing run or linked window with
 the generic 45-day template default; otherwise startup can drop older partitions
@@ -510,11 +461,9 @@ The collection profile requires these parameters: `collectorGithubAppId`, `colle
 
 In this profile, the Function App only admits webhooks (`CAO_COLLECT_ADMIT_ONLY=true`). It verifies and deduplicates deliveries to `POST /api/github/webhook`, then queues the work. It never holds the app's private key.
 
-GitHub.com webhook deliveries cannot reach a private-only endpoint directly.
-Before enabling this profile, arrange an approved delivery path that preserves
-the original signed request body, such as a separately managed webhook relay.
-This template does not provision that path. Do not enable public access or widen
-the dashboard's restrictions merely to make webhook delivery work.
+The approved ingress path must also permit GitHub webhook delivery. Disabled
+public access or client-only allow rules can block it; do not widen access just
+to make delivery work.
 
 1. Point the GitHub App webhook at `https://HOST/api/github/webhook`.
 1. Install the GitHub App on the repositories to collect from. Enrollment follows app installations. If you uninstall the app from a repository, CAO stops collecting from it and deletes its evidence.
@@ -537,7 +486,7 @@ the dashboard's restrictions merely to make webhook delivery work.
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The optional private endpoint requires existing approved routing and DNS; the template does not provide corporate connectivity, a web application firewall, or Azure Front Door. Review outbound access and ingress for your tenant. OAuth authorization remains required over private ingress.
+- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
 - **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).
@@ -547,8 +496,8 @@ the dashboard's restrictions merely to make webhook delivery work.
 
 ## Rotating secrets and rolling back
 
-Every redeployment, restart, and rollback below requires the
-[retention preservation preflight](#preserving-retention-before-starting-any-role).
+Every redeployment, restart, and rollback below must preserve
+[existing retention](#retention-for-existing-deployments).
 Carry the reviewed `postgresRunRetentionDays` in deployment parameters, and keep
 both effective retention settings at least that large across every role before
 startup. Restoring an older package or parameters file must not restore a shorter
