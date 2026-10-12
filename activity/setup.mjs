@@ -173,7 +173,7 @@ function inspectRepository(repository, execute) {
   };
 }
 
-export function configureDashboardPages({ repository, visibility, execute = spawnSync }) {
+export function configureDashboardPages({ repository, execute = spawnSync }) {
   const endpoint = `repos/${repository}/pages`;
   const request = (arguments_) => execute('gh', ['api', ...arguments_, endpoint], { encoding: 'utf8' });
   const read = () => {
@@ -187,6 +187,7 @@ export function configureDashboardPages({ repository, visibility, execute = spaw
   };
 
   let { site, result } = read();
+  const created = !site;
   if (!site) {
     if (result.error || !/\bHTTP 404\b/.test(result.stderr || '')) {
       throw new Error(`Unable to inspect dashboard Pages site: ${commandFailureMessage(result, 'gh api failed')}`);
@@ -197,14 +198,6 @@ export function configureDashboardPages({ repository, visibility, execute = spaw
     }
   }
 
-  if (visibility !== 'public' && site?.public !== false) {
-    result = request(['-X', 'PUT', '-F', 'public=false']);
-    if (result.error || result.status !== 0) {
-      throw new Error(
-        `Unable to restrict dashboard Pages access; do not deploy the dashboard: ${commandFailureMessage(result, 'gh api failed')}`,
-      );
-    }
-  }
   if (site && site.build_type !== 'workflow') {
     result = request(['-X', 'PUT', '-f', 'build_type=workflow']);
     if (result.error || result.status !== 0) {
@@ -213,9 +206,19 @@ export function configureDashboardPages({ repository, visibility, execute = spaw
   }
 
   ({ site } = read());
-  if (!site || site.build_type !== 'workflow' || (visibility !== 'public' && site.public !== false)) {
+  if (!site || site.build_type !== 'workflow') {
     throw new Error('Dashboard Pages configuration could not be verified; do not deploy the dashboard');
   }
+  return {
+    created,
+    public: site.public !== false,
+    url: typeof site.html_url === 'string' ? site.html_url : undefined,
+  };
+}
+
+export function removeDashboardPages({ repository, execute = spawnSync }) {
+  const result = execute('gh', ['api', '-X', 'DELETE', `repos/${repository}/pages`], { encoding: 'utf8' });
+  return !result.error && result.status === 0;
 }
 
 function createTerminalPrompt({ input, output, UsageError }) {
@@ -399,13 +402,32 @@ export async function setupCaoControlPlane({
     interactive.note(`  Review output write scope: ${control.repository}`);
     interactive.note(`  Authentication: ${profile}`);
     interactive.note('  Campaigns: none');
-    interactive.note(`  Dashboard Pages: GitHub Actions source${control.visibility === 'public' ? ' (public)' : ' (repository-restricted access required)'}`);
+    interactive.note('  Dashboard Pages: GitHub Actions source');
     if (!await interactive.confirm('Apply this setup?')) {
       return { command: 'setup', cancelled: true };
     }
 
+    const pages = configureDashboardPages({ repository: control.repository, execute });
+    if (pages.public) {
+      interactive.note([
+        '',
+        `Warning: the dashboard Pages site for ${control.repository} is public${pages.url ? ` (${pages.url})` : ''}.`,
+        'Anyone on the internet will be able to read published dashboard data, including activity from',
+        `${control.visibility === 'public' ? 'the selected repositories' : 'this private control repository and the selected repositories'}.`,
+        'To keep it private, restrict access in Settings > Pages (requires an organization on GitHub Enterprise Cloud).',
+        '',
+      ].join('\n'));
+      if (!await interactive.confirm('Is a public dashboard OK?')) {
+        const removed = pages.created && removeDashboardPages({ repository: control.repository, execute });
+        interactive.note(pages.created
+          ? (removed
+              ? 'Removed the Pages site created by setup.'
+              : 'Could not remove the Pages site created by setup; unpublish it in Settings > Pages.')
+          : 'Left the existing Pages site in place; restrict or unpublish it in Settings > Pages before running the dashboard workflow.');
+        return { command: 'setup', cancelled: true, reason: 'public-pages-declined' };
+      }
+    }
     const authentication = setupAuthentication(profile, authenticationArguments, { execute });
-    configureDashboardPages({ repository: control.repository, visibility: control.visibility, execute });
     await writeJsonAtomically(path.resolve(policyPath), intendedPolicy);
     return {
       command: 'setup',
@@ -414,6 +436,7 @@ export async function setupCaoControlPlane({
       repositories,
       profile,
       authentication,
+      dashboardPages: pages.public ? 'public' : 'private',
       campaigns: [],
     };
   } finally {
