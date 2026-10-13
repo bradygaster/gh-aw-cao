@@ -517,18 +517,27 @@ uses a clean public, private, or internal control repository on its checked-out
 default branch, preserving any existing commits. Outside a checkout the
 installer defaults to the signed-in user's available private `cao` control
 repository; explicit `--create-repo OWNER/NAME` selects another coordinate.
-Quickstart creates the signed-in user's public `cao-sample` repository with
-warning-marked deterministic functional defects, unless `--target OWNER/REPO`
-selects an existing public repository. Default-name collisions fail rather
-than reusing, overwriting, deleting, or suffixing repositories. Quickstart
+Quickstart selects an immutable revision of the public
+`githubnext/gh-aw-cao-bug-bash` repository unless `--target OWNER/REPO` selects
+another existing public repository. The shared starter replays a fictional
+incident where an emergency zero-percent rollout request prepares ten services,
+including four tier-0 services, and three retries while its normal suite remains
+green. The campaign supplies that hypothesis externally. The target itself has
+neutral product documentation and a clean single-commit history with no
+incident explanation, root-cause hint, failing reproduction, or intentional-bug
+warning. Current and legacy modules, different valid-zero contracts, a
+production-like fleet inventory, a paused-rollout scenario, and red herrings
+force the versioned `explicit-zero-default` campaign to screen, reproduce,
+repair, and independently verify rather than report a textual match. Quickstart
+verifies that the pinned revision is still available and never creates or
+copies a target repository. Quickstart
 installs Bug Bash at the selected catalog revision, configures exact
 review-only authority for the selected target, requires public Pages, commits
 and pushes only the bounded CAO paths plus gh-aw's root `.gitattributes` and
 `.vscode/settings.json` project settings, dispatches one orchestrator and at
 most one worker, collects Activity, and waits for the Activity-triggered
-dashboard deployment. Campaign execution never modifies the target. A failed
-later phase may leave the initially created sample in place and reports that
-partial effect. Quickstart reports Bug Bash blocked and failed outcomes without
+dashboard deployment. Campaign execution never modifies the target. Quickstart
+reports Bug Bash blocked and failed outcomes without
 converting them to findings, and does not report success until the Activity
 artifact contains at least one unique run and the dashboard deployment
 succeeds. Installer handoff preserves the controlling terminal when present
