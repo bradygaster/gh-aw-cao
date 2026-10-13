@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "examples": [
     {
+      "id": "firewall-destination-review-readiness",
+      "metadata": "examples/firewall-destination-review-readiness.json",
+      "dashboard": "examples/firewall-destination-review-readiness.dashboard.yml"
+    },
+    {
       "id": "triage-review-readiness",
       "metadata": "examples/triage-review-readiness.json",
       "dashboard": "examples/triage-review-readiness.dashboard.yml"

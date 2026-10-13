@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "firewall-destination-review-readiness",
+  "task": {
+    "actor": "Repository operator",
+    "subject": "A firewall-destination review workflow for the bradygaster/gh-aw-cao repository",
+    "intent": "Assess whether the firewall-destination review workflow activates on new or changed outbound destinations, records bounded review evidence for each eligible destination, surfaces actionable review gaps, and attains its intended value of keeping destination-review demand under control with workflow-scoped gh-aw attainment evidence.",
+    "activationConditions": [
+      "A repository operator enables a standalone firewall-destination review workflow on bradygaster/gh-aw-cao.",
+      "A new, removed, or changed outbound destination is observed for that workflow within the dashboard horizon.",
+      "A workflow-scoped gh-aw attainment observation for the same workflow is retained in the selected horizon."
+    ],
+    "requiredEffects": [
+      "Each eligible destination-review opportunity is represented by bounded firewall evidence tied to one workflow run and one destination decision context.",
+      "High-priority or degraded observations remain visible in an actionable review queue until the operator can inspect the evidence and disposition.",
+      "The dashboard preserves the workflow-scoped gh-aw attainment metric without normalizing, clamping, or fabricating missing values."
+    ],
+    "noopConditions": [
+      "No outbound destination is observed for the workflow in the selected horizon.",
+      "The workflow records only stable, already-reviewed destinations with no new drift or evidence gap.",
+      "Firewall evidence is unavailable for a run, in which case the workflow must not imply that review demand was cleared."
+    ],
+    "successConditions": [
+      "Eligible destination-review demand appears as workflow-scoped review observations over time.",
+      "The operator can identify recent workflow executions and inspect the highest-priority destination reviews without leaving the dashboard.",
+      "Workflow attainment remains attributable to the synthetic workflow through the preserved gh-aw metric identifier and native ratio values."
+    ],
+    "uncertainties": [
+      "A reviewed destination does not by itself prove that policy was changed or that the destination became safe.",
+      "A successful run can still leave incomplete evidence or unresolved review demand.",
+      "A null attainment observation must remain distinct from a numeric zero because missing evidence is not equivalent to failed attainment."
+    ]
+  },
+  "operationalValue": {
+    "upstream": "gh-aw",
+    "orderedMetrics": [
+      {
+        "id": "firewall-review-attainment",
+        "unit": "ratio",
+        "direction": "higher_is_better"
+      }
+    ],
+    "preservation": "Preserve the gh-aw metric identifier, ordered position, native finite ratio values or null, and higher-is-better direction exactly as published for the workflow.",
+    "contract": {
+      "repositories": [
+        "bradygaster/gh-aw-cao"
+      ],
+      "stableOpportunity": "One workflow-scoped outbound-destination review opportunity keyed by repository, workflow, destination domain, protocol, and review-state evidence within the selected horizon.",
+      "acceptedRepositoryEvidence": [
+        "Workflow inventory proving the workflow is enabled for the repository.",
+        "Firewall observations for the same workflow and repository, including destination decision, drift, review labels, and evidence coverage.",
+        "Workflow run provenance linked from the firewall observation that triggered or refreshed the review opportunity.",
+        "Workflow-scoped gh-aw attainment observations published for the same workflow under the firewall-review-attainment metric identifier."
+      ],
+      "directMetric": {
+        "id": "firewall-review-attainment",
+        "range": [
+          0,
+          1
+        ],
+        "baseline": {
+          "kind": "attainment-only",
+          "value": null,
+          "cutoff": null
+        },
+        "maturationRule": "A run-level attainment observation is considered matured only when the corresponding destination-review opportunity has workflow-linked firewall evidence and the gh-aw metric is published for that workflow run.",
+        "zeroRule": "The direct metric is zero when a matured workflow observation shows unresolved destination-review demand with no attained review outcome for the eligible opportunity set.",
+        "missingEvidenceRule": "The direct metric is null when workflow-linked firewall evidence or the gh-aw attainment publication is missing, incomplete, or unavailable for the opportunity horizon."
+      }
+    }
+  },
+  "logicalSources": {
+    "workflows": {
+      "rows": [
+        {
+          "organization": "bradygaster",
+          "repository": "gh-aw-cao",
+          "workflow": ".github/workflows/firewall-destination-review.yml",
+          "workflow-name": "Firewall destination review",
+          "workflow-role": "standalone",
+          "workflow-active": "true",
+          "rollout-mode": "review",
+          "observed-at": "2026-09-01T00:00:00Z",
+          "repository-link": {
+            "relation": "repository",
+            "href": "https://github.com/bradygaster/gh-aw-cao",
+            "label": "bradygaster/gh-aw-cao"
+          },
+          "workflow-link": {
+            "relation": "workflow",
+            "href": "https://github.com/bradygaster/gh-aw-cao/actions/workflows/firewall-destination-review.yml",
+            "label": "Firewall destination review"
+          }
+        }
+      ]
+    }
+  },
+  "dashboard": "firewall-destination-review-readiness.dashboard.yml"
+}

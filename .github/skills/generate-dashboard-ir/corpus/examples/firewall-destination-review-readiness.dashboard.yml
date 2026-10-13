@@ -1,0 +1,170 @@
+language-version: "0.1.0"
+dashboard:
+  id: firewall-destination-review-readiness
+  title: Firewall destination review readiness
+  description: Shows whether the firewall-destination review workflow is activating on outbound-destination changes, exposing actionable review demand, and preserving workflow-scoped gh-aw attainment evidence.
+  defaults:
+    scope:
+      repositories:
+        - bradygaster/gh-aw-cao
+      workflows:
+        - .github/workflows/firewall-destination-review.yml
+    time:
+      range: 30d
+  units:
+    percent:
+      name: Percent
+      symbol: "%"
+      significant: 0.1
+  pages:
+    - id: firewall-destination-review-readiness
+      kind: custom
+      title: Firewall destination review readiness
+      description: Shows workflow-scoped destination-review demand, recent executions, actionable review gaps, and preserved direct attainment for the firewall-destination review workflow.
+      sections:
+        - id: firewall-review-summary
+          title: Firewall review summary
+          description: Executive summary of destination-review demand, recent workflow execution, active evidence gaps, and preserved attainment for this workflow.
+          layout: full
+          views:
+            - firewall-review-demand
+            - firewall-review-runs
+            - firewall-review-queue
+            - firewall-review-attainment
+      views:
+        - id: firewall-review-demand
+          title: Destination-review demand
+          subject: Show how many firewall destination-review observations are appearing for the synthetic workflow over time.
+          objective: Let an operator see whether the workflow is activating on review demand in the selected horizon.
+          acceptance: Counts remain limited to firewall observations for the synthetic workflow and do not imply that every review opportunity was resolved.
+          description: Daily firewall observations show when destination-review demand is appearing for this workflow.
+          data:
+            source: firewall-observations
+            filters:
+              workflow: .github/workflows/firewall-destination-review.yml
+          mark: chart
+          chart: line
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: observed-at
+              type: temporal
+              time-unit: day
+              title: Observed
+            y:
+              field: firewall-observation
+              type: quantitative
+              aggregate: count
+              title: Review observations
+        - id: firewall-review-runs
+          subject: Show recent runs for the synthetic workflow so the operator can inspect execution status and provenance.
+          objective: Confirm that the workflow is running and surface non-success conclusions that can explain stale or missing review evidence.
+          acceptance: Each row remains one workflow run for the configured workflow, ordered by the latest observed start time.
+          description: Recent workflow runs provide execution context for destination-review demand and evidence freshness.
+          data:
+            source: runs
+            filters:
+              workflow: .github/workflows/firewall-destination-review.yml
+            order-by:
+              - field: started-at
+                direction: desc
+            limit: 10
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: supplemental
+          empty-message: No workflow runs for the firewall-destination review workflow match the selected horizon.
+          encoding:
+            href:
+              field: run-link
+              type: nominal
+            columns:
+              - field: run
+                type: nominal
+                title: Run
+                display: run-link
+              - field: run-conclusion
+                type: ordinal
+                title: Conclusion
+                display: status
+              - field: rollout-mode
+                type: ordinal
+                title: Mode
+                display: mode
+              - field: started-at
+                type: temporal
+                title: Started
+              - field: ended-at
+                type: temporal
+                title: Ended
+        - id: firewall-review-queue
+          title: Destination review queue
+          subject: Show the highest-priority firewall destination observations that still need operator attention.
+          objective: Help the operator inspect active destination-review demand and evidence quality without leaving the dashboard.
+          acceptance: Rows remain workflow-scoped firewall observations ordered by review priority and recency; missing evidence is surfaced rather than normalized away.
+          description: Review-priority destinations expose drift, decision, and evidence coverage so the operator can inspect what needs attention first.
+          data:
+            source: firewall-observations
+            filters:
+              workflow: .github/workflows/firewall-destination-review.yml
+            order-by:
+              - field: observed-at
+                direction: desc
+            limit: 20
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: essential
+          empty-message: No destination-review observations for the firewall-destination review workflow match the selected horizon.
+          encoding:
+            href:
+              field: evidence-link
+              type: nominal
+            columns:
+              - field: domain
+                type: nominal
+                title: Domain
+              - field: decision-label
+                type: nominal
+                title: Decision
+              - field: drift-label
+                type: nominal
+                title: Drift
+              - field: review-label
+                type: nominal
+                title: Review state
+                display: status
+              - field: evidence-coverage-percent
+                type: quantitative
+                title: Coverage
+                unit: percent
+              - field: observed-at
+                type: temporal
+                title: Observed
+        - id: firewall-review-attainment
+          title: Firewall-review attainment
+          subject: Show the preserved gh-aw direct attainment metric for the synthetic workflow over time.
+          objective: Let an operator compare workflow review demand with the native workflow-scoped attainment signal without inventing a new baseline.
+          acceptance: The chart filters to the configured workflow and gh-aw metric identifier and preserves native ratio values or nulls.
+          description: Workflow-scoped gh-aw attainment observations show whether the firewall-destination review workflow is attaining its intended value.
+          data:
+            source: value-workflows
+            filters:
+              workflow: .github/workflows/firewall-destination-review.yml
+              operational-grader-definition: firewall-review-attainment
+          mark: chart
+          chart: line
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: observed-at
+              type: temporal
+              time-unit: day
+              title: Observed
+            y:
+              field: mean-operational-grader
+              type: quantitative
+              aggregate: mean
+              title: Mean attainment
