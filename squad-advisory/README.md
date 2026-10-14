@@ -49,6 +49,15 @@ into a public repository.
 cao add bradygaster/gh-aw-cao/squad-advisory@<CAO-COMMIT>
 ```
 
+The CLI itself must contain the native onboarding integration, not just the
+selected campaign. Upstream runtime `5a7695bdd` remains valid for ordinary CAO
+operations but does not contain `campaign-records.mjs`, `squad-onboarding.mjs`,
+`squad-farm.mjs`, or the Squad CLI handlers. Use this reviewed source-managed
+CAO checkout for onboarding; installed upstream runtimes need an upstream
+integration and attested runtime publication first. Installing a fork campaign
+does not replace the CLI, and a fork runtime cannot bypass upstream provenance
+verification.
+
 Do not substitute direct `gh aw add` of the CAO campaign: that command does not
 execute CAO's prerequisite/evidence/native-package setup. The native dependency
 is mandatory and cannot be bypassed with a flag. Extra install flags that move

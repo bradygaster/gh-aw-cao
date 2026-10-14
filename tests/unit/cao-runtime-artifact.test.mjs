@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { parse } from "yaml";
 import {
-  downloadCaoRuntimeArtifact, extractCaoArchive, materializeCao, validateCaoRuntimeArtifact,
+  downloadCaoRuntimeArtifact, extractCaoArchive, materializeCao, validateCaoRuntimeArtifact, verifyCaoRuntime,
 } from "../../.github/workflows/shared/materialize-cao.mjs";
 import { buildCaoRuntime } from "../../scripts/build-cao-runtime.mjs";
 import { setupTerminalFixture, walkSetupTerminal } from "../helpers/setup-terminal.mjs";
@@ -29,6 +30,8 @@ function fakeGithub(t, {
   missing = false,
   pendingBeforeSuccess = 0,
   rejection = false,
+  runtimeArtifact = artifact,
+  runtimeRevision = revision,
 } = {}) {
   const root = mkdtempSync(path.join(temporary, "github-"));
   const log = path.join(root, "commands.jsonl");
@@ -41,16 +44,16 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 if (args[0] === "api" && args.at(-1).includes("/actions/workflows/")) {
   const pending = workflowQueries < ${pendingBeforeSuccess};
   console.log(JSON.stringify([{ workflow_runs: ${missing ? "[]" : `pending ? ${JSON.stringify([
-    { id: 9, head_sha: revision, conclusion: null, event: "push", status: "in_progress" },
+    { id: 9, head_sha: runtimeRevision, conclusion: null, event: "push", status: "in_progress" },
   ])} : ${JSON.stringify([
     { id: 7, head_sha: "2".repeat(40), conclusion: "success", event: "push", status: "completed" },
-    { id: 8, head_sha: revision, conclusion: "success", event: "pull_request", status: "completed" },
-    { id: 9, head_sha: revision, conclusion: "success", event: "push", status: "completed" },
+    { id: 8, head_sha: runtimeRevision, conclusion: "success", event: "pull_request", status: "completed" },
+    { id: 9, head_sha: runtimeRevision, conclusion: "success", event: "push", status: "completed" },
   ])}`} }]));
 } else if (args[0] === "api") {
-  console.log(JSON.stringify([{ artifacts: [{ name: "cao-runtime-${revision}", expired: ${expired} }] }]));
+  console.log(JSON.stringify([{ artifacts: [{ name: "cao-runtime-${runtimeRevision}", expired: ${expired} }] }]));
 } else if (args[0] === "run" || args[0] === "release") {
-  cpSync(${JSON.stringify(artifact.archive)}, args[args.indexOf("--dir") + 1] + "/cao-runtime-${revision}.tgz");
+  cpSync(${JSON.stringify(runtimeArtifact.archive)}, args[args.indexOf("--dir") + 1] + "/cao-runtime-${runtimeRevision}.tgz");
 } else if (args[0] === "attestation") {
   if (${rejection}) { console.error("invalid signature or source digest"); process.exit(1); }
 } else { process.exit(2); }
@@ -78,6 +81,69 @@ if (args[0] === "api" && args.at(-1).includes("/actions/workflows/")) {
   return { root, commands: () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) };
 }
 
+const upstreamFixture = JSON.parse(readFileSync(path.join(catalog, "tests/fixtures/cao-runtime/upstream.json"), "utf8"));
+
+test("canonical activity requirements stay compatible with the pinned upstream inventory", (t) => {
+  const root = mkdtempSync(path.join(temporary, "upstream-inventory-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const file of upstreamFixture.activityFiles) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), "");
+  }
+  verifyCaoRuntime("activity", root);
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+    assert.equal(existsSync(path.join(root, "activity", `${module}.mjs`)), false);
+  }
+  rmSync(path.join(root, "activity/cli/campaigns.mjs"));
+  assert.throws(() => verifyCaoRuntime("activity", root), /incomplete.*activity\/cli\/campaigns.mjs/);
+});
+
+test("upstream 5a7695bdd runtime materializes without fork-only Squad modules", {
+  skip: !process.env.CAO_UPSTREAM_RUNTIME_ARCHIVE && "Set CAO_UPSTREAM_RUNTIME_ARCHIVE to the independently built pinned upstream archive",
+}, async (t) => {
+  const fixture = upstreamFixture;
+  const archive = path.resolve(process.env.CAO_UPSTREAM_RUNTIME_ARCHIVE);
+  assert.equal(createHash("sha256").update(readFileSync(archive)).digest("hex"), fixture.sha256);
+  const { root, commands } = fakeGithub(t, {
+    runtimeArtifact: { archive },
+    runtimeRevision: fixture.revision,
+  });
+  const consumer = path.join(root, "consumer");
+  mkdirSync(path.join(consumer, ".github/aw/packages"), { recursive: true });
+  writeFileSync(path.join(consumer, ".github/aw/packages/cao.json"), JSON.stringify({
+    package: fixture.repository,
+    source: `${fixture.repository}@${fixture.revision}`,
+    resolvedCommit: fixture.revision,
+  }));
+  await materializeCao("root", consumer);
+  verifyCaoRuntime("activity", consumer);
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+    assert.equal(existsSync(path.join(consumer, "activity", `${module}.mjs`)), false);
+  }
+  const verification = commands().find((args) => args[0] === "attestation");
+  for (const [flag, value] of [
+    ["--repo", fixture.repository],
+    ["--signer-workflow", `${fixture.repository}/.github/workflows/cao-runtime.yml`],
+    ["--source-digest", fixture.revision],
+    ["--signer-digest", fixture.revision],
+  ]) assert.equal(verification[verification.indexOf(flag) + 1], value);
+  assert.ok(verification.includes("--deny-self-hosted-runners"));
+
+  const extracted = path.join(root, "upstream");
+  mkdirSync(extracted);
+  extractCaoArchive(archive, extracted, true);
+  const packageRoot = path.join(extracted, "package");
+  validateCaoRuntimeArtifact(packageRoot, fixture.revision);
+  assert.throws(() => validateCaoRuntimeArtifact(packageRoot, revision), /provenance does not match/);
+  const metadataPath = path.join(packageRoot, "cao-runtime.json");
+  const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+  writeFileSync(metadataPath, JSON.stringify({ ...metadata, repository: "bradygaster/gh-aw-cao" }));
+  assert.throws(() => validateCaoRuntimeArtifact(packageRoot, fixture.revision), /provenance does not match/);
+  writeFileSync(metadataPath, JSON.stringify(metadata));
+  writeFileSync(path.join(packageRoot, "activity/cao.mjs"), "altered");
+  assert.throws(() => validateCaoRuntimeArtifact(packageRoot, fixture.revision), /checksum mismatch: activity\/cao.mjs/);
+});
+
 test("producer artifact binds its production inventory to an immutable revision", (t) => {
   const root = unpack(t);
   validateCaoRuntimeArtifact(root, revision);
@@ -86,6 +152,10 @@ test("producer artifact binds its production inventory to an immutable revision"
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.js"]);
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.LICENSE"]);
   assert.ok(metadata.files["activity/setup-prompt.mjs"]);
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+    assert.ok(metadata.files[`activity/${module}.mjs`], `new producer must ship ${module}`);
+  }
+  assert.match(readFileSync(path.join(root, "activity/cli/campaigns.mjs"), "utf8"), /from '\.\.\/squad-onboarding\.mjs'/);
   const prompt = readFileSync(path.join(root, "activity/setup-prompt.mjs"), "utf8");
   const rootManifest = JSON.parse(readFileSync(path.join(catalog, "package.json"), "utf8"));
   assert.equal(rootManifest.devDependencies?.["@clack/prompts"], undefined);
