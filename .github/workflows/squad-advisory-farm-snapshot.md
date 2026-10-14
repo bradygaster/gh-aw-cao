@@ -111,7 +111,7 @@ safe-outputs:
     title-prefix: "[squad-advisory:farm-snapshot] "
     body-footer: "<!-- squad:farm-snapshot run=${{ github.run_id }} -->"
     labels: [squad-advisory, squad-advisory:farm-snapshot]
-    draft: false
+    draft: true
     max: 1
     expires: 14d
     if-no-changes: ignore

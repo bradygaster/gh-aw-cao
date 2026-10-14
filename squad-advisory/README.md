@@ -245,6 +245,12 @@ both `squad-advisory` and `squad-advisory:farm-snapshot` labels, and only
 `squad-advisory-farm-snapshot.lock.yml` on the default branch. Existing output
 credentials must produce that author; an App- or PAT-authored PR does not qualify.
 
+The worker creates a **draft** snapshot PR. PRs created with `GITHUB_TOKEN` do not
+trigger native Squad's `pull_request_target` review workflow on creation. The
+maintainer marks the snapshot PR **ready for review**, which starts native Squad
+review, then merges normally after review and approval. This handoff requires no
+additional trigger token or credential.
+
 This is provenance for an external farm snapshot, not native agent attribution.
 Do not fabricate `.squad-review.json` or weaken Squad review: native review and
 human approval still apply, and a PR that fails these conditions is not exempt.

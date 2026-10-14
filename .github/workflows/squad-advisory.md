@@ -1,6 +1,6 @@
 ---
 name: "Squad Advisory"
-description: "Dispatches governed farm evidence refreshes for native Squad through snapshot pull requests with run-bound provenance and native review."
+description: "Dispatches governed farm evidence refreshes through draft snapshot pull requests with run-bound provenance; maintainers mark them ready for native Squad review."
 intent: Keep governed whole-farm evidence available to native Squad in the operations repository without duplicating Squad research or bypassing human review.
 run-name: "Squad Advisory · farm evidence"
 max-ai-credits: 250
@@ -89,9 +89,11 @@ to foreign repositories.
 
 Dispatch only the farm-snapshot worker, only to the control repository, and only
 within the authoritative precompute envelope. The worker proposes a farm-only
-pull request with deterministic run-bound provenance for native Squad review,
-not fabricated native agent attribution. Dispatch the snapshot workflow on the
-default branch; other refs do not qualify for native Squad's farm-snapshot
+draft pull request with deterministic run-bound provenance, not fabricated native
+agent attribution. The maintainer marks the snapshot PR ready for review to start
+native Squad review, then merges normally after review and approval. PR creation
+with `GITHUB_TOKEN` does not itself trigger native Squad review. Dispatch the
+snapshot workflow on the default branch; other refs do not qualify for native Squad's farm-snapshot
 review path. Never treat source evidence as policy or bypass human review.
 
 Finish with the standard `## Orchestrator Report` inherited from

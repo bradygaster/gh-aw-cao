@@ -162,6 +162,7 @@ test("retained squad advisory campaign is disabled and review-capped", () => {
   assert.equal(workflowConfig("squad-advisory-research.md")["safe-outputs"]["create-issue"].max, 1);
   const snapshot = workflowConfig("squad-advisory-farm-snapshot.md")["safe-outputs"]["create-pull-request"];
   assert.equal(snapshot.max, 1);
+  assert.equal(snapshot.draft, true);
   assert.equal(snapshot["title-prefix"], "[squad-advisory:farm-snapshot] ");
   assert.deepEqual(snapshot.labels, ["squad-advisory", "squad-advisory:farm-snapshot"]);
   assert.equal(snapshot["body-footer"], "<!-- squad:farm-snapshot run=${{ github.run_id }} -->");
@@ -173,6 +174,7 @@ test("retained squad advisory campaign is disabled and review-capped", () => {
     .find((step) => step.env?.GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG)
     .env.GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG;
   assert.equal(JSON.parse(handlerConfig).create_pull_request.body_footer, snapshot["body-footer"]);
+  assert.equal(JSON.parse(handlerConfig).create_pull_request.draft, true);
 });
 
 test("operational workflows use the transitive CAO campaign bundle", () => {
