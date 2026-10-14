@@ -10,6 +10,44 @@ import (
 	"testing"
 )
 
+func TestAzureEmptyPublicationIsReadyAndRepeatable(t *testing.T) {
+	ctx, store := ingestTestStore(t)
+	options := Options{DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json"}
+	first, err := Run(ctx, store, "../../azure/empty-data", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision == 0 || first.DataRevision == "" {
+		t.Fatalf("empty dataset was not published: %+v", first)
+	}
+	for _, source := range []string{"$repositories", "$campaigns", "$workflows", "$runs"} {
+		count, exists := first.Counts[source]
+		if !exists || count != 0 {
+			t.Fatalf("empty publication %s count = %d, exists = %t", source, count, exists)
+		}
+	}
+	second, err := Run(ctx, store, "../../azure/empty-data", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Revision != first.Revision || second.DataRevision != first.DataRevision {
+		t.Fatalf("repeat ingestion changed publication: %+v", second)
+	}
+	definitions, err := loadDefinitions(options.DatabaseQueriesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, _, err := store.ExecuteSQLPlan(ctx, definitions, []string{"repositories", "campaigns", "workflows", "runs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range sources {
+		if len(source.Rows) != 0 {
+			t.Fatalf("empty publication query %s returned %d rows", name, len(source.Rows))
+		}
+	}
+}
+
 func TestEmptyPostgresRebuildAndFailedIngestionPreservesCurrentData(t *testing.T) {
 	ctx, store := ingestTestStore(t)
 	directory := scratchDirectory(t)

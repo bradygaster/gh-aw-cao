@@ -101,6 +101,8 @@ async function ingest(shardDirectory, databasePath) {
     shardDirectory,
     '--retention-days',
     'all',
+    '--run-retention-days',
+    'all',
   ]);
   return JSON.parse(stdout);
 }

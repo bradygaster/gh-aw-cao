@@ -349,6 +349,24 @@ func (w *Writer) Flush(ctx context.Context) error {
 			columns = append(columns, "run_at")
 		}
 		if _, err := w.tx.CopyFrom(ctx, pgx.Identifier{tableName}, columns, pgx.CopyFromRows(batch)); err != nil {
+			if table.name == "runs" && sourceName == source {
+				var earliest, latest time.Time
+				for _, values := range batch {
+					runAt, ok := values[len(values)-1].(time.Time)
+					if !ok {
+						continue
+					}
+					if earliest.IsZero() || runAt.Before(earliest) {
+						earliest = runAt
+					}
+					if latest.IsZero() || runAt.After(latest) {
+						latest = runAt
+					}
+				}
+				if !earliest.IsZero() {
+					return fmt.Errorf("copy native %s batch with run_at range %s through %s: %w", source, earliest.Format(time.RFC3339Nano), latest.Format(time.RFC3339Nano), err)
+				}
+			}
 			return fmt.Errorf("copy native %s batch: %w", source, err)
 		}
 		delete(w.batches, source)
