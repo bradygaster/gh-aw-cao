@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { collectFarmEvidence, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
+import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
+import { collectWaveBundle, WAVE_PROVIDER, WAVE_RUNTIME_FILES, WAVE_RUNTIME_ROOT } from '../../activity/squad-wave-evidence.mjs';
 import { installPreparedSquad, prepareSquadOnboarding, SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_RECEIPT, SQUAD_VERIFIER } from '../../activity/squad-onboarding.mjs';
 import { addCaoCampaign, setCaoCampaignWorkflowsEnabled, updateCaoCampaigns } from '../../activity/cao.mjs';
 import { planCaoMaterialization } from '../../.github/workflows/shared/materialize-cao.mjs';
@@ -19,6 +20,7 @@ const policy = {
 };
 const manifest = {
   schema_version: 2, package: 'bradygaster/squad/workflows', minimum_gh_aw_version: 'v0.91.5',
+  evidence_provider_schema: 'squad-evidence-provider/v1',
   workflows: ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'].map((name) => ({
     name, destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
   })),
@@ -148,6 +150,10 @@ test('install resolves dev once, verifies the native unit, then writes scope and
   assert.deepEqual(scope.evidence_roots, ['farm/']);
   assert.equal(existsSync(path.join(f.root, '.github/skills/agentic-workflows/SKILL.md')), false);
   assert.match(readFileSync(path.join(f.root, '.squad/skills/cao-farm/SKILL.md'), 'utf8'), /foreign-repository implementation/);
+  const descriptor = JSON.parse(readFileSync(path.join(f.root, WAVE_PROVIDER), 'utf8'));
+  const receipt = JSON.parse(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8'));
+  assert.deepEqual(Object.keys(descriptor.runtime_files), WAVE_RUNTIME_FILES.map((file) => `${WAVE_RUNTIME_ROOT}${file}`));
+  assert.ok([WAVE_PROVIDER, ...Object.keys(descriptor.runtime_files)].every((file) => receipt.files[file]));
 });
 
 test('current incompatible dev and wrong local compiler fail before package installation', async (t) => {
@@ -156,6 +162,12 @@ test('current incompatible dev and wrong local compiler fail before package inst
     await assert.rejects(prepareSquadOnboarding(f.options), /requires/);
     assert.equal(f.calls.some(({ args }) => args[1] === 'add'), false);
   }
+});
+
+test('compiler-aligned native packages without the evidence hook fail before installation', async (t) => {
+  const f = fixture(t, { manifest: { ...manifest, evidence_provider_schema: undefined } });
+  await assert.rejects(prepareSquadOnboarding(f.options), /Unsupported native Squad integrity contract/);
+  assert.equal(f.calls.some(({ args }) => args[1] === 'add'), false);
 });
 
 test('Issues must be enabled before any package mutation; settings are never changed', async (t) => {
@@ -206,8 +218,51 @@ test('owned update resolves fresh dev, preserves accepted team artifacts, and us
   assert.equal(readFileSync(path.join(f.root, '.squad/decisions.md'), 'utf8'), 'accepted decisions');
 });
 
+test('an untouched pre-provider install migrates through ordinary update without taking over unknown files', async (t) => {
+  const f = fixture(t);
+  installPreparedSquad(await prepareSquadOnboarding(f.options));
+  const receipt = JSON.parse(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8'));
+  for (const file of [WAVE_PROVIDER, ...WAVE_RUNTIME_FILES.map((file) => `${WAVE_RUNTIME_ROOT}${file}`)]) {
+    rmSync(path.join(f.root, file));
+    delete receipt.files[file];
+  }
+  f.write(SQUAD_RECEIPT, JSON.stringify(receipt));
+  f.write(SQUAD_MANIFEST, JSON.stringify({ ...manifest, evidence_provider_schema: undefined }));
+  installPreparedSquad(await prepareSquadOnboarding(f.options));
+  assert.ok(existsSync(path.join(f.root, WAVE_PROVIDER)));
+});
+
+test('two waves beyond baseline freshness leave receipt hashes untouched and ordinary updates still accept the install', async (t) => {
+  const f = fixture(t);
+  const configured = structuredClone(policy);
+  configured['control-plane'].campaigns = { 'squad-advisory': { enabled: true, mode: 'review',
+    workers: { 'farm-snapshot': { workflow: 'squad-advisory-farm-snapshot', enabled: false } } } };
+  const options = { ...f.options, policy: configured };
+  installPreparedSquad(await prepareSquadOnboarding(options));
+  f.write('.github/workflows/cao.json', JSON.stringify(configured));
+  const before = readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8');
+  const receipt = JSON.parse(before);
+  const wave = {
+    root: f.root, now: () => new Date(now().getTime() + FARM_LIMITS.maxAgeMs + 1000),
+    environment: { GITHUB_REPOSITORY: 'acme/ops', SQUAD_WORKFLOW_SHA: revision,
+      SQUAD_ISSUE_NUMBER: '42', GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '1' },
+    readApi: async () => ({ secrets: [], close: async () => {}, api: (endpoint) => endpoint === 'repos/acme/ops'
+      ? { full_name: 'acme/ops', has_issues: true, visibility: 'private' } : farmApi(endpoint) }),
+  };
+  await collectWaveBundle({ ...wave, bundle: path.join(f.root, 'wave-one') });
+  await collectWaveBundle({ ...wave, bundle: path.join(f.root, 'wave-two'),
+    environment: { ...wave.environment, GITHUB_RUN_ID: '8' } });
+  assert.equal(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8'), before);
+  for (const file of Object.keys(receipt.files).filter((file) => file.startsWith('farm/'))) {
+    assert.equal(contentHash(readFileSync(path.join(f.root, file))), receipt.files[file]);
+  }
+  assert.ok(await prepareSquadOnboarding(options));
+});
+
 test('modified owned evidence, unknown ignored files, and expired collection block updates', async (t) => {
-  for (const file of ['farm/INDEX.md', 'farm/unknown.md', '.squad/research-scope.json']) {
+  for (const file of ['farm/INDEX.md', 'farm/unknown.md', '.squad/research-scope.json',
+    '.squad/cao-evidence-provider.json', '.squad/cao-evidence-runtime/activity/squad-farm.mjs',
+    '.squad/cao-evidence-runtime/unknown.mjs']) {
     const f = fixture(t);
     installPreparedSquad(await prepareSquadOnboarding(f.options));
     f.write(file, 'user edit');

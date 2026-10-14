@@ -4,6 +4,7 @@ import path from 'node:path';
 import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from './squad-farm.mjs';
 import { parsePolicy } from '../.github/workflows/shared/policy.mjs';
 import { CAO_CATALOGS, installedCampaignRecords } from './campaign-records.mjs';
+import { waveProviderDocuments, WAVE_PROVIDER, WAVE_RUNTIME_FILES, WAVE_RUNTIME_ROOT } from './squad-wave-evidence.mjs';
 
 export const SQUAD_PACKAGE = 'bradygaster/squad/workflows';
 export const SQUAD_OWNERSHIP = '.github/aw/packages/bradygaster-squad-workflows-3632054824e8.json';
@@ -13,6 +14,7 @@ export const SQUAD_RECEIPT = '.github/cao/squad-install.json';
 const ROUTER = '.github/skills/agentic-workflows/SKILL.md';
 const COMPILER_CONFIG = '.github/workflows/aw.json';
 const WORKFLOWS = ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'];
+const PROVIDER_FILES = [WAVE_PROVIDER, ...WAVE_RUNTIME_FILES.map((file) => `${WAVE_RUNTIME_ROOT}${file}`)];
 
 export function setSquadPolicy(policy, enabled = policy['control-plane']?.campaigns?.['squad-advisory']?.enabled ?? false) {
   const campaign = policy['control-plane']?.campaigns?.['squad-advisory'];
@@ -54,11 +56,12 @@ function safePath(root, file) {
   return current;
 }
 
-function destinations(manifest) {
+function destinations(manifest, requireProvider = true) {
   if (manifest.schema_version !== 2 || manifest.package !== SQUAD_PACKAGE
     || !Array.isArray(manifest.workflows)
     || JSON.stringify(manifest.workflows.map((entry) => entry.name).sort()) !== JSON.stringify([...WORKFLOWS].sort())
-    || !Array.isArray(manifest.shared_runtime) || !Array.isArray(manifest.skills)) {
+    || !Array.isArray(manifest.shared_runtime) || !Array.isArray(manifest.skills)
+    || (requireProvider && manifest.evidence_provider_schema !== 'squad-evidence-provider/v1')) {
     throw new Error('Unsupported native Squad integrity contract; no installation performed');
   }
   const files = [SQUAD_MANIFEST, SQUAD_OWNERSHIP];
@@ -80,7 +83,7 @@ function ownedIntegration(root, receipt) {
   if (!receipt) return;
   if (receipt.schema !== 'cao-squad-install/v1' || !receipt.files || !/^[0-9a-f]{40}$/.test(receipt.source_revision)) throw new Error('Invalid CAO Squad receipt');
   for (const [file, hash] of Object.entries(receipt.files)) {
-    if (!(file.startsWith('farm/') || file === '.squad/research-scope.json' || file === '.squad/skills/cao-farm/SKILL.md')) throw new Error('Invalid CAO Squad owned path');
+    if (!(file.startsWith('farm/') || file === '.squad/research-scope.json' || file === '.squad/skills/cao-farm/SKILL.md' || PROVIDER_FILES.includes(file))) throw new Error('Invalid CAO Squad owned path');
     if (!existsSync(safePath(root, file)) || contentHash(readFileSync(safePath(root, file))) !== hash) {
       throw new Error(`CAO Squad evidence ownership conflict: ${file}; preserve and reconcile local changes before update`);
     }
@@ -115,7 +118,7 @@ export async function prepareSquadOnboarding({ policy, controlRepository, root =
   let previousFiles = [];
   if (owned) {
     const oldManifest = readJson(root, SQUAD_MANIFEST);
-    previousFiles = destinations(oldManifest);
+    previousFiles = destinations(oldManifest, false);
     run(process.execPath, [SQUAD_VERIFIER, '--verify-install', '--source-revision', receipt.source_revision, '--strict-compile']);
   } else if (existsSync(safePath(root, '.squad'))) {
     throw new Error('Existing .squad state requires explicit adoption; refusing to overwrite a team');
@@ -135,12 +138,14 @@ export async function prepareSquadOnboarding({ policy, controlRepository, root =
       }
     };
     visit('farm');
+    if (existsSync(safePath(root, WAVE_RUNTIME_ROOT.slice(0, -1)))) visit(WAVE_RUNTIME_ROOT.slice(0, -1));
   }
   const evidence = await collectFarmEvidence({ policy, controlRepository, controlVisibility: control.visibility, api, now });
-  for (const file of [...Object.keys(evidence.documents), '.squad/research-scope.json', '.squad/skills/cao-farm/SKILL.md']) {
+  const provider = waveProviderDocuments();
+  for (const file of [...Object.keys(evidence.documents), ...PROVIDER_FILES, '.squad/research-scope.json', '.squad/skills/cao-farm/SKILL.md']) {
     if (existsSync(safePath(root, file)) && !(file in (receipt?.files ?? {}))) throw new Error(`CAO Squad ownership conflict: ${file}`);
   }
-  return { revision, compiler, manifest, files, receipt, evidence, root, execute, now };
+  return { revision, compiler, manifest, files, receipt, evidence, provider, root, execute, now };
 }
 
 const GUIDANCE = `---
@@ -150,16 +155,23 @@ description: Farm-wide Squad research, triage, and planning in a CAO operations 
 
 # Farm-oriented Squad
 
-Read farm/INDEX.md and farm/evidence.json before research, triage, or planning.
-Use every enrolled repository, its recorded immutable revision, and its bounded
-evidence; do not mistake the operations repository for the product. Check the
-24-hour evidence freshness bound and current reviewed CAO enrollment before
-starting new research. Stop for missing, stale, or mismatched evidence and ask
-the operator to refresh with CAO. Never infer authorization from mirrored files.
+The committed farm/INDEX.md and farm/evidence.json are historical bootstrap
+evidence, not current-wave evidence. Native /squad research automatically
+collects fresh evidence for every enrolled repository through the receipt-owned
+CAO provider before research executes. Read /tmp/gh-aw/agent/cao-farm/manifest.json
+and its farm/ evidence for the current wave. Do not mistake the operations
+repository for the product or infer authorization from mirrored content.
+Missing access, incomplete coverage, changed enrollment, or evidence outside
+the 24-hour bound blocks research; never fall back to the bootstrap baseline.
+For fresh research use ordinary /squad research, not a snapshot refresh/update.
 
 Coordinate one farm plan with shared decisions, cross-repository dependencies,
 repository-specific execution slices, integration checkpoints, and completion
-evidence. Cite farm paths and source revisions. Proposals are not completed
+evidence. Cite immutable source URLs and revisions from the wave bundle.
+Triage and planning use the referenced research wave only after deterministic
+enrollment, document-integrity, and freshness validation; stop if it cannot be
+restored and direct the operator to /squad research. Never mix different waves.
+Proposals are not completed
 research: begin research with native /squad research, then native triage and plan.
 
 Native issues, implementation, and review are local to this operations repository.
@@ -167,14 +179,15 @@ A farm plan never authorizes foreign-repository implementation. CAO reviewed
 policy and declared safe outputs remain the authority for any later target work.
 Never edit package-owned Squad workflows to implement these instructions.
 
-Farm snapshot PR automation is blocked pending compatible native review
-attribution. Refresh via the reviewed CAO installation/update change; do not
-forge agent attribution, bypass review, or weaken native Squad review guards.
+Never overwrite committed farm/ or its receipt during a research wave.
+Farm snapshot PR automation remains disabled. Do not forge agent attribution,
+bypass review, or weaken native Squad review guards.
 `;
 
 export function installPreparedSquad(prepared) {
   const { root, execute, revision, evidence, receipt, now } = prepared;
-  if (now().getTime() - Date.parse(evidence.generatedAt) > FARM_LIMITS.maxAgeMs) throw new Error('Squad farm evidence expired before installation');
+  const age = now().getTime() - Date.parse(evidence.generatedAt);
+  if (!Number.isFinite(age) || age < 0 || age > FARM_LIMITS.maxAgeMs) throw new Error('Squad farm evidence invalid or expired before installation');
   const run = (executable, args) => command(execute, root, executable, args);
   run('gh', ['aw', 'add', `${SQUAD_PACKAGE}@${revision}`, ...(receipt ? ['--force'] : [])]);
   // gh-aw adds a generic mutable router; preflight established it was absent.
@@ -184,6 +197,7 @@ export function installPreparedSquad(prepared) {
   run(process.execPath, [SQUAD_VERIFIER, '--verify-install', '--source-revision', revision, '--strict-compile']);
   const documents = {
     ...evidence.documents,
+    ...prepared.provider,
     '.squad/research-scope.json': `${JSON.stringify({ schema: 'squad-research-scope/v1', evidence_roots: ['farm/'], description: 'Cast and research the whole authorized CAO farm. Read farm/INDEX.md and the cao-farm skill; operations infrastructure is not the product.' }, null, 2)}\n`,
     '.squad/skills/cao-farm/SKILL.md': GUIDANCE,
   };
@@ -213,7 +227,7 @@ function verifySquadActivation(root, execute, policy, controlRepository, now) {
   const files = destinations(manifest);
   command(execute, root, process.execPath, [SQUAD_VERIFIER, '--verify-install', '--source-revision', receipt.source_revision, '--strict-compile']);
   if (manifest.minimum_gh_aw_version !== policy['gh-aw-version'] || receipt.compiler !== policy['gh-aw-version']) throw new Error('Squad activation compiler differs from reviewed CAO policy');
-  for (const file of ['farm/INDEX.md', 'farm/evidence.json', '.squad/research-scope.json', '.squad/skills/cao-farm/SKILL.md']) {
+  for (const file of ['farm/INDEX.md', 'farm/evidence.json', '.squad/research-scope.json', '.squad/skills/cao-farm/SKILL.md', ...PROVIDER_FILES]) {
     if (!receipt.files[file]) throw new Error(`Squad activation is missing owned evidence: ${file}`);
   }
   const evidence = readJson(root, 'farm/evidence.json');

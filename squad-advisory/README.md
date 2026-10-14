@@ -23,12 +23,15 @@ The adoption flow is:
 3. Setup installs the native package's eight source/lock pairs, runtime
    resources, integrity and ownership records, and enlistment skill. Its
    verifier materializes runtime resources and verifies the strict compilation.
-4. Review and commit the entire install, policy, `farm/` evidence,
-   `.squad/research-scope.json`, and CAO farm skill together. Merge that reviewed
+4. Review and commit the entire install, policy, `farm/` baseline,
+   `.squad/research-scope.json`, CAO farm skill, and receipt-owned evidence
+   provider/runtime together. Merge that reviewed
    change to the default branch: the native installation push starts bootstrap.
-5. Bootstrap casts from `farm/` and proposes farm-wide first-wave research in
+5. Bootstrap casts from the historical `farm/` baseline and proposes farm-wide first-wave research in
    the operations repository. Research proposals are not completed research.
    Use native `/squad research`, triage, and planning from that repository.
+   Each research wave collects current evidence automatically; no per-wave
+   snapshot commit, refresh PR, or manual merge is needed.
 
 Native task issues, implementation dispatch, and review remain repository-local.
 Planning across the farm never grants authority to implement in its repositories.
@@ -52,7 +55,7 @@ cao add bradygaster/gh-aw-cao/squad-advisory@<CAO-COMMIT>
 The CLI itself must contain the native onboarding integration, not just the
 selected campaign. Upstream runtime `5a7695bdd` remains valid for ordinary CAO
 operations but does not contain `campaign-records.mjs`, `squad-onboarding.mjs`,
-`squad-farm.mjs`, or the Squad CLI handlers. Use this reviewed source-managed
+`squad-farm.mjs`, `squad-wave-evidence.mjs`, or the Squad CLI handlers. Use this reviewed source-managed
 CAO checkout for onboarding; installed upstream runtimes need an upstream
 integration and attested runtime publication first. Installing a fork campaign
 does not replace the CLI, and a fork runtime cannot bypass upstream provenance
@@ -144,10 +147,11 @@ receipt. Updating does not reuse an old dev pin, select a release, or follow a
 moving branch during installation.
 
 The native integrity manifest's compiler version must equal both CAO's reviewed
-`gh-aw-version` and the installed compiler. Native dev
-`477f583b3a239e9a3b59d059d7604875086c56b7` requires `v0.89.22`, so it is rejected
-by CAO `v0.91.5`. Publish the aligned Squad dev revision before using this flow.
-There is no compatibility fallback. The native verifier, not CAO, owns the
+`gh-aw-version` and the installed compiler. It must also declare
+`evidence_provider_schema: squad-evidence-provider/v1`; a compiler-aligned
+package without the deterministic evidence hook is rejected before installation.
+Publish an aligned immutable Squad dev revision with that capability before
+using this flow. There is no compatibility fallback. The native verifier, not CAO, owns the
 native integrity/ownership format. CAO never hand-edits those records.
 
 ### Review and bootstrap gates
@@ -157,7 +161,8 @@ credential patterns and scrubs detected values across all snapshots. Automated
 redaction cannot guarantee absence of every kind of sensitive data.
 
 Stage the intended native package, CAO policy, farm evidence, research scope,
-integration skill, and `.github/cao/squad-install.json` together. Run the native
+integration skill, `.squad/cao-evidence-provider.json`,
+`.squad/cao-evidence-runtime/`, and `.github/cao/squad-install.json` together. Run the native
 staged verifier using the resolved SHA reported by setup:
 
 ```bash
@@ -193,20 +198,88 @@ missing supported source evidence, or failed required read blocks installation;
 no partial farm is silently accepted. Evidence must be less than 24 hours old
 when prepared and installed.
 
-Run `cao update <CAO-COMMIT>` for a reviewed local refresh/update. Updates use a
+Run `cao update <CAO-COMMIT>` for a reviewed installation update, not before
+each research wave. Updates use a
 fresh native dev SHA and fresh whole-farm evidence, verify the old owned native
 installation first, and preserve the accepted team and research artifacts.
 Locally changed owned evidence or unknown files under `farm/` block updates
-rather than being overwritten. The CAO receipt owns only its generated farm
-evidence, research scope, and farm skill; it does not own native team state.
+rather than being overwritten. The CAO receipt owns its generated farm
+baseline, research scope, farm skill, provider descriptor, and the fixed runtime
+closure; it does not own native team state. Provider/runtime edits and unknown
+runtime files also block updates. Existing untouched installations can be
+upgraded to the evidence hook through the ordinary reviewed CAO update.
 
-The durable `.squad/skills/cao-farm/SKILL.md` instructs later native operations
-to recheck freshness, enrollment, and farm-wide dependencies. Native later
-research does not universally enforce scope or freshness in code: this is
-integration guidance, not a new security boundary. Recheck evidence before
-starting a later research wave; use CAO policy for all target authority.
+## Automatic run-local research evidence
 
-## Automated refresh is not yet available
+The opt-in descriptor `.squad/cao-evidence-provider.json` uses
+`schema: squad-evidence-provider/v1`, `kind: cao-farm-v1`, a fixed `runtime`,
+and `runtime_files` mapping the complete five-module closure to SHA-256 hashes.
+The runtime entry is
+`.squad/cao-evidence-runtime/activity/squad-wave-evidence.mjs`; its only
+dependencies are the copied farm collector, authentication selector, policy
+validator, and GitHub App setup module. All imports use Node built-ins; no
+runtime package installation or floating download is involved. Native Squad
+must verify every runtime hash before executing the provider from the immutable
+executing-workflow checkout, after command normalization and before the agent.
+
+The provider reads only `.github/workflows/cao.json` from that checkout.
+It requires enabled, review-only advisory adoption with disabled legacy workers,
+an owned provider installation, unchanged exact enrollment, known control and
+target visibility, and complete bounded evidence. Issue text never selects
+repositories. `SQUAD_WORKFLOW_SHA` identifies the executing workflow revision;
+the event's `GITHUB_SHA` is not a substitute.
+
+It reuses CAO Actions read authentication and owner-specific repository
+mapping through `activity/authentication.mjs`: the existing read App, mapped
+owner-scoped PATs, or the workflow token for control-only enrollment. App tokens
+are restricted to the selected repositories and contents/issues/pull-request
+reads and revoked before publication. Credentials are step-local, never
+written into the bundle or passed to the model. Missing Actions credentials
+fail explicitly; Azure-only Key Vault credentials are not an automatic bridge
+and this feature does not add ingress, federation, or a new credential type.
+**Native hook v1 supports App authentication only**, matching the intended
+deployment's existing CAO read App. It rejects PAT mode explicitly as
+unsupported in v1 rather than silently falling back. The adapter retains
+CAO's mapped PAT support for direct/runtime callers using the filtered,
+step-local `GH_AW_GITHUB_READ_PAT_SECRETS` map; native v1 does not supply that
+handoff. An existing PAT-only deployment therefore cannot adopt native v1
+without a separately approved authentication change; setup must not conceal
+that limitation as a per-wave prerequisite.
+
+Only a completely collected and validated bundle is published atomically at
+`/tmp/gh-aw/agent/cao-farm/`. The maximum bundle is 8 MiB, with a 400-request,
+five-minute collection budget and 20-second request timeouts. Any failed
+repository, incomplete inventory, visibility leak, stale/future capture,
+credential material, or preexisting output blocks publication. There is no
+partial-success or historical-baseline fallback.
+
+The bundle contains `manifest.json` plus the same bounded `farm/` layout used
+by the collector. Its `cao-squad-wave-evidence/v1` manifest binds
+`control_repository`, `workflow_revision`, raw-file `policy_sha256`,
+`enrollment_sha256` (SHA-256 of `JSON.stringify(policy["control-plane"].scope)`),
+`issue_number`, `run_id`, `run_attempt`, `captured_at`, `expires_at`, immutable
+repository revisions, and each document's SHA-256. Repository `destination`
+and document paths are relative to the bundle root. Source files are pinned
+to revisions; issue/PR samples are observations at capture, not an atomic
+historical snapshot.
+
+The provider's `--validate-bundle` mode performs no collection or credential
+lookup. It checks a restored bundle's original provenance, issue, control,
+current exact enrollment, complete coverage, closed file inventory, hashes,
+and 24-hour freshness before downstream source analysis. A different current
+run/workflow revision is allowed so triage/planning can use the referenced
+research wave; provenance continues to name the original wave. Native Squad
+owns selecting/restoring that referenced artifact, deterministic provenance
+in research comments, private control-repository artifact retention, and
+invoking validation before consuming it. Guidance is not a substitute for
+that deterministic native gate. Expired or unavailable evidence requires the
+ordinary `/squad research` command, never a manual baseline refresh.
+
+The committed baseline and its receipt hashes remain untouched across waves.
+The provider adds no schedule, dispatch, target writes, or live promotion.
+CAO reviewed policy remains the authority for any later target work.
+
+## Legacy snapshot automation remains disabled
 
 Native Squad reviews PRs from other automation too. The retained snapshot
 worker does not yet emit compatible native attribution. Both the orchestrator
@@ -214,11 +287,13 @@ and snapshot worker therefore **fail closed before agent execution**. Native
 campaign activation is supported independently: CAO keeps its workers explicitly
 disabled and never enables the legacy orchestrator or snapshot jobs. Do not enable the retained
 automation, forge agent attribution, or weaken Squad review to work around this.
-The supported refresh path is a human-reviewed local CAO update.
+Research uses the run-local provider instead; human-reviewed CAO updates are
+installation maintenance, not a per-wave evidence-refresh prerequisite.
 
 Hosted initial-install bootstrap, Cast PR/Profile A fallback, first-wave issue,
 and subsequent native research/triage/planning still require end-to-end hosted
-validation with an aligned immutable Squad dev revision. No hosted run is
+validation with an aligned immutable Squad dev revision implementing the
+credential and artifact handoffs above. No hosted run is
 performed or claimed by the local installation checks.
 
 ## Retained legacy sources
