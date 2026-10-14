@@ -8,6 +8,8 @@ import { DEFAULT_POLICY_PATH, resolveControlRepository, minimalPolicy, validateG
 import { UsageError } from './options.mjs';
 import { isMapping, commandFailureMessage, writeJsonAtomically } from './files.mjs';
 import { parseGhAwVersion, compareGhAwVersions, ensureGhAwMinimumVersion } from './gh-aw.mjs';
+import { activateSquadCampaign, installPreparedSquad, installSquadCampaignFromRoot, prepareSquadOnboarding, setSquadPolicy } from '../squad-onboarding.mjs';
+import { CAO_CATALOGS } from '../campaign-records.mjs';
 import { campaignSlugFromSpec, installedCampaignRecords, materializeInstalledCao, installedPackageUpdateTarget, prepareInstalledPackageReleaseSource, restorePreparedPackageSource, readInstalledCaoDeclaration } from './packages.mjs';
 
 const AUTO_UPGRADE_PATH = path.join('.github', 'workflows', 'agentic-auto-upgrade.yml');
@@ -52,12 +54,18 @@ async function pinGeneratedAutoUpgradeActions(root = process.cwd()) {
 
 export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
-  execute = spawnSync
+  execute = spawnSync,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad,
+  enableSquad = false
 } = {}) {
   if (!campaignSpec || campaignSpec.startsWith('-')) throw new UsageError('cao add requires a campaign');
   const expectedCampaign = campaignSlugFromSpec(campaignSpec);
   if (expectedCampaign === 'gh-aw-cao') {
     throw new UsageError('cao add cannot install the CAO root package; use install.sh');
+  }
+  if (expectedCampaign === 'squad-advisory' && ghAwOptions.some((option) => !['--force', '--no-security-scanner'].includes(option))) {
+    throw new UsageError('Squad onboarding supports only --force and --no-security-scanner; workflow relocation or source customization is not supported');
   }
   let localSourceRoot;
   try {
@@ -68,6 +76,16 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
+  if (expectedCampaign === 'squad-advisory' && !localSourceRoot
+    && !CAO_CATALOGS.some((catalog) => campaignSpec.startsWith(`${catalog}/squad-advisory@`) || campaignSpec === `${catalog}/squad-advisory`)) {
+    throw new UsageError('Native Squad onboarding requires a trusted CAO catalog or an explicit local campaign source');
+  }
+  const squad = expectedCampaign === 'squad-advisory'
+    ? await prepareSquad({
+      policy: await readCaoPolicy(policyPath, 'add squad-advisory'),
+      controlRepository: resolveControlRepository(execute), execute
+    })
+    : undefined;
   const install = execute('gh', ['aw', 'add', campaignSpec, ...ghAwOptions], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024
@@ -95,38 +113,60 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
   }
 
   mergeCaoCampaignDeclaration(policy, declaration);
+  if (squad) setSquadPolicy(policy, enableSquad ? true : undefined);
+  const nativeSquad = squad ? installSquad(squad) : undefined;
   await writeJsonAtomically(absolutePolicyPath, policy);
   return {
     command: 'add',
     campaign: declaration.campaign,
     orchestrator: declaration.orchestrator,
     workers: Object.keys(declaration.workers),
-    policy: policyPath
+    policy: policyPath,
+    ...(nativeSquad ? { nativeSquad } : {})
   };
 }
 
 export async function updateCaoCampaigns(ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
-  execute = spawnSync
+  execute = spawnSync,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad
 } = {}) {
   const { ref, includePrereleases, updateOptions } = parseUpdateArguments(ghAwOptions, UsageError);
   const policy = await readCaoPolicy(policyPath);
-  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
   const campaigns = await installedCampaignRecords();
   if (campaigns.length === 0) {
     throw new Error('No installed gh-aw package records found under .github/aw/packages');
+  }
+  const campaignSlugs = campaigns.map((record) => record.campaign.split('/').slice(2).join('/') || 'root');
+  if (new Set(campaignSlugs).size !== campaignSlugs.length) {
+    throw new Error('Multiple trusted CAO catalogs own the same campaign; reconcile ownership before updating');
   }
   for (const record of campaigns) {
     if (!/^[0-9a-f]{40}$/i.test(record.resolvedCommit)) {
       throw new Error(`Installed CAO package record must contain a full resolvedCommit SHA: ${record.resolvedCommit || '(missing)'}`);
     }
   }
-
-  const resolvedCommit = resolveUpdateCommit(ref, execute, commandFailureMessage, compareGhAwVersions);
+  const hasSquad = campaigns.some((record) => record.campaign.endsWith('/squad-advisory'));
+  if (hasSquad && updateOptions.some((option) => !['--force', '--no-security-scanner'].includes(option))) {
+    throw new UsageError('Squad updates support only --force and --no-security-scanner; workflow relocation or source customization is not supported');
+  }
+  // Complete native prerequisites before any CAO package or compiler mutation.
+  const squad = hasSquad
+    ? await prepareSquad({ policy, controlRepository: resolveControlRepository(execute), execute })
+    : undefined;
+  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
+  const revisions = new Map();
+  for (const record of campaigns) {
+    const catalog = record.campaign.split('/').slice(0, 2).join('/');
+    if (!revisions.has(catalog)) revisions.set(catalog, resolveUpdateCommit(ref, execute, commandFailureMessage, compareGhAwVersions, catalog));
+  }
+  const resolvedCommit = revisions.values().next().value;
   const updatedCampaigns = [];
   const mergedDeclarations = [];
   const releaseTags = new Map();
   for (const record of campaigns) {
+    const resolvedCommit = revisions.get(record.campaign.split('/').slice(0, 2).join('/'));
     const preparedSource = resolvedCommit ? undefined : await prepareInstalledPackageReleaseSource(record, releaseTags, execute, {
       includePrereleases,
       allowMajor: updateOptions.includes('--major')
@@ -135,7 +175,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     // must be reapplied through add, which also writes the ownership record.
     // Match install.sh: root resources contain an intentional App setup form
     // that gh-aw's Markdown scanner rejects.
-    const addOptions = record.campaign === 'githubnext/gh-aw-cao' && !updateOptions.includes('--no-security-scanner')
+    const addOptions = record.campaign.split('/').length === 2 && !updateOptions.includes('--no-security-scanner')
       ? ['--no-security-scanner', ...updateOptions]
       : updateOptions;
     const updateArguments = resolvedCommit
@@ -155,7 +195,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
         throw new Error(`CAO package ${record.campaign} did not record requested commit ${resolvedCommit}; refusing to materialize`);
       }
     }
-    const campaign = record.campaign === 'githubnext/gh-aw-cao'
+    const campaign = record.campaign.split('/').length === 2
       ? 'root'
       : record.campaign.split('/').at(-1);
     materializeInstalledCao(campaign, execute);
@@ -167,6 +207,8 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     updatedCampaigns.push(record.campaign);
   }
   await pinGeneratedAutoUpgradeActions();
+  if (squad) setSquadPolicy(policy);
+  const nativeSquad = squad ? installSquad(squad) : undefined;
   if (mergedDeclarations.length > 0) await writeJsonAtomically(path.resolve(policyPath), policy);
   return {
     command: 'update',
@@ -174,7 +216,8 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     'gh-aw': ghAw,
     ...(resolvedCommit ? { ref, resolvedCommit } : {}),
     campaigns: updatedCampaigns,
-    declarations: mergedDeclarations
+    declarations: mergedDeclarations,
+    ...(nativeSquad ? { nativeSquad } : {})
   };
 }
 
@@ -222,7 +265,11 @@ export async function setCaoCampaignMode(mode, campaignNames, {
 }
 
 export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
-  execute = spawnSync
+  execute = spawnSync,
+  policyPath = DEFAULT_POLICY_PATH,
+  prepareSquad = prepareSquadOnboarding,
+  installSquad = installPreparedSquad,
+  now = () => new Date()
 } = {}) {
   if (action !== 'enable' && action !== 'disable') {
     throw new UsageError('CAO campaign workflow action must be enable or disable');
@@ -237,14 +284,28 @@ export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
   }
 
   const declarations = [];
+  let missingSquad = false;
   for (const campaignName of campaigns) {
     const declaration = await readInstalledCaoDeclaration(campaignName);
     if (!declaration) {
+      if (action === 'enable' && campaignName === 'squad-advisory') {
+        missingSquad = true;
+        continue;
+      }
       throw new Error(`Campaign ${campaignName} is not installed or does not declare CAO workflows`);
     }
     declarations.push(declaration);
   }
-  const workflows = [...new Set(declarations.flatMap((declaration) => [
+  const nativeSquad = missingSquad
+    ? await installSquadCampaignFromRoot({ addCampaign: addCaoCampaign, policyPath, execute, prepareSquad, installSquad, now })
+    : campaigns.includes('squad-advisory')
+    ? await activateSquadCampaign(action, {
+      policy: await readCaoPolicy(policyPath, action), policyPath,
+      controlRepository: resolveControlRepository(execute), execute, prepareSquad, installSquad,
+      writePolicy: writeJsonAtomically, now,
+    })
+    : undefined;
+  const workflows = [...new Set(declarations.filter((declaration) => declaration.campaign !== 'squad-advisory').flatMap((declaration) => [
     declaration.orchestrator,
     ...Object.values(declaration.workers)
   ]))];
@@ -258,5 +319,5 @@ export async function setCaoCampaignWorkflowsEnabled(action, campaignNames, {
       throw new Error(`gh workflow ${action} failed for ${workflow}: ${commandFailureMessage(result, 'unknown error')}`);
     }
   }
-  return { command: action, campaigns, workflows };
+  return { command: action, campaigns, workflows: [...workflows, ...(nativeSquad?.workflows ?? [])], ...(nativeSquad ? { nativeSquad } : {}) };
 }

@@ -7,7 +7,7 @@ import { gunzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 
 const repository = 'githubnext/gh-aw-cao';
-const rootPackageNames = [`${repository}/control-plane`, repository];
+const catalogs = [repository, 'bradygaster/gh-aw-cao'];
 const runtimeWaitArray = new Int32Array(new SharedArrayBuffer(4));
 const rootResources = [
   'activity',
@@ -48,7 +48,7 @@ function installedRecords(root) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const record = JSON.parse(readFileSync(path.join(recordDirectory, entry.name), 'utf8'));
       const name = packageName(record);
-      if (name === repository || name.startsWith(`${repository}/`)) records.push({ name, record });
+      if (catalogs.some((catalog) => name === catalog || name.startsWith(`${catalog}/`))) records.push({ name, record });
     }
   }
   return records;
@@ -64,11 +64,17 @@ function resolvedRevision(record) {
 
 function exactRecordFor(records, campaign) {
   if (campaign === 'root') {
-    return rootPackageNames
+    const owners = catalogs.filter((catalog) => records.some((candidate) =>
+      candidate.name === catalog || candidate.name === `${catalog}/control-plane`));
+    if (owners.length > 1) throw new Error('Multiple trusted CAO catalogs own root; reconcile ownership before materializing');
+    return owners.flatMap((catalog) => [`${catalog}/control-plane`, catalog])
       .map((name) => records.find((candidate) => candidate.name === name)?.record)
       .find(Boolean);
   }
-  return records.find((candidate) => candidate.name === `${repository}/${campaign}`)?.record;
+  const names = catalogs.map((catalog) => `${catalog}/${campaign}`);
+  const matches = records.filter((candidate) => names.includes(candidate.name));
+  if (matches.length > 1) throw new Error(`Multiple trusted CAO catalogs own ${campaign}; reconcile ownership before materializing`);
+  return matches[0]?.record;
 }
 
 function recordFor(records, campaign) {
@@ -87,8 +93,8 @@ export function installedCaoRevision(campaign = 'root', repositoryRoot = process
   return resolvedRevision(recordFor(installedRecords(repositoryRoot), campaign));
 }
 
-async function downloadArchive(revision, destination) {
-  const response = await fetch(`https://codeload.github.com/${repository}/tar.gz/${encodeURIComponent(revision)}`);
+async function downloadArchive(revision, destination, catalog = repository) {
+  const response = await fetch(`https://codeload.github.com/${catalog}/tar.gz/${encodeURIComponent(revision)}`);
   if (!response.ok) throw new Error(`Unable to download CAO ${revision}: HTTP ${response.status}`);
   writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
 }
@@ -464,15 +470,20 @@ export async function materializeCao(campaign = 'root', repositoryRoot = process
   try {
     const sourceRoots = new Map();
     for (const [index, plan] of plans.entries()) {
-      let sourceRoot = sourceRoots.get(plan.revision);
+      const catalog = packageName(plan.record).split('/').slice(0, 2).join('/');
+      if (!catalogs.includes(catalog)) throw new Error('CAO materialization requires a trusted catalog identity');
+      const sourceKey = `${catalog}@${plan.revision}`;
+      let sourceRoot = sourceRoots.get(sourceKey);
       if (!sourceRoot) {
         const extractionDirectory = path.join(temporaryDirectory, String(index));
         mkdirSync(extractionDirectory);
         const runtime = ['root', 'activity', 'dashboard'].includes(plan.campaign);
+        // Runtime artifacts are attested only by the upstream catalog.
+        if (runtime && catalog !== repository) throw new Error(`CAO runtime artifacts must come from ${repository}`);
         const archive = runtime
           ? downloadCaoRuntimeArtifact(plan.record, path.join(temporaryDirectory, `download-${index}`))
           : path.join(temporaryDirectory, `${index}.tar.gz`);
-        if (!runtime) await downloadArchive(plan.revision, archive);
+        if (!runtime) await downloadArchive(plan.revision, archive, catalog);
         try {
           extractCaoArchive(archive, extractionDirectory, runtime || process.platform === 'win32');
         } catch (error) {
@@ -480,7 +491,7 @@ export async function materializeCao(campaign = 'root', repositoryRoot = process
         }
         sourceRoot = archiveRoot(extractionDirectory);
         if (runtime) validateCaoRuntimeArtifact(sourceRoot, plan.revision);
-        sourceRoots.set(plan.revision, sourceRoot);
+        sourceRoots.set(sourceKey, sourceRoot);
       }
       plan.sourceRoot = sourceRoot;
       validateResources(sourceRoot, plan.resources);
@@ -526,6 +537,9 @@ export function verifyCaoRuntime(bundle, repositoryRoot = process.cwd()) {
       'activity/commands/index.mjs',
       'activity/setup.mjs',
       'activity/upgrade-gh-aw.mjs',
+      'activity/campaign-records.mjs',
+      'activity/squad-onboarding.mjs',
+      'activity/squad-farm.mjs',
       'activity/control-settings.mjs',
       'activity/repository-visibility.mjs',
       'activity/collect-logs.sh',

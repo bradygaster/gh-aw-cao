@@ -33,7 +33,7 @@ function operationCampaigns() {
 }
 
 function operationWorkflowRegistrations() {
-  return operationCampaigns().flatMap(({ campaignName, descriptor }) => [
+  return [...operationCampaigns().flatMap(({ campaignName, descriptor }) => [
     {
       name: `${descriptor.orchestrator}.md`,
       campaignName,
@@ -46,7 +46,26 @@ function operationWorkflowRegistrations() {
       role: "worker",
       workerName,
     })),
-  ]);
+  ]), ...squadAdvisoryRegistrations()];
+}
+
+// Squad Advisory is a catalog campaign whose in-tree workflows stay unenrolled
+// unless this control repository's reviewed policy explicitly declares it.
+function squadAdvisoryRegistrations() {
+  const enrolled = operationCampaigns().some(({ campaignName }) => campaignName === "squad-advisory");
+  const descriptor = JSON.parse(readFileSync(join(root, "squad-advisory", "cao.json"), "utf8"));
+  return [
+    ...(enrolled ? [] : [
+      { name: `${descriptor.orchestrator}.md`, campaignName: "squad-advisory", role: "orchestrator", workerName: undefined },
+      ...Object.entries(descriptor.workers).map(([workerName, workflowId]) => ({
+        name: `${workflowId}.md`,
+        campaignName: "squad-advisory",
+        role: "worker",
+        workerName,
+      })),
+    ]),
+    { name: "squad-advisory-research.md", campaignName: "squad-advisory", role: "worker", workerName: "research" },
+  ];
 }
 
 test("all scheduled configurations and manual selections route safely", () => {
@@ -272,6 +291,9 @@ test("enterprise defaults, budgets, timeouts, and concurrency are finite", () =>
     "optimization-token-auditor.md": { credits: 400, timeout: 30 },
     "optimization-token-optimizer.md": { credits: 500, timeout: 40 },
     "software-development-practices.md": { credits: 250, timeout: 15, dispatchMax: 20, workers: 2 },
+    "squad-advisory.md": { credits: 250, timeout: 15, dispatchMax: 4, workers: 1 },
+    "squad-advisory-research.md": { credits: 600, timeout: 45 },
+    "squad-advisory-farm-snapshot.md": { credits: 150, timeout: 20 },
     "software-development-practices-github-well-architected.md": { credits: 400, timeout: 30 },
     "software-development-practices-nist-ssdf.md": { credits: 400, timeout: 30 },
     "self-care-accessibility-checker.md": { credits: 400, timeout: 30 },
@@ -353,7 +375,9 @@ test("control workflows deny before activation through one shared admission cont
         workerName,
         config.workflow,
       ])),
-      descriptor.workers,
+      campaignName === "squad-advisory"
+        ? { ...descriptor.workers, research: "squad-advisory-research" }
+        : descriptor.workers,
       `${campaignName} policy workers must match its campaign descriptor`,
     );
   }

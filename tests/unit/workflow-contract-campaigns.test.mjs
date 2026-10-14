@@ -56,6 +56,7 @@ test("campaigns and repository workflows pin the supported gh-aw version", () =>
     "repo-assist/aw.yml",
     "self-care/aw.yml",
     "software-development-practices/aw.yml",
+    "squad-advisory/aw.yml",
   ];
   for (const manifest of manifests) {
     assert.equal(parse(readFileSync(join(root, manifest), "utf8"))["min-version"], ghAwVersion, manifest);
@@ -132,6 +133,7 @@ test("catalog campaigns declare their current experimental maturity", () => {
     "repo-assist/aw.yml",
     "self-care/aw.yml",
     "software-development-practices/aw.yml",
+    "squad-advisory/aw.yml",
   ];
   for (const manifest of manifests) {
     const metadata = parse(readFileSync(join(root, manifest), "utf8"));
@@ -144,6 +146,36 @@ test("optimization package includes its README", () => {
   const manifest = parse(readFileSync(join(root, "optimization", "aw.yml"), "utf8"));
 
   assert.ok(manifest.includes.includes("README.md"));
+});
+
+test("retained squad advisory campaign is disabled and review-capped", () => {
+  const policy = JSON.parse(workflow("cao.json"));
+  const campaign = policy["control-plane"].campaigns["squad-advisory"];
+  const declaration = JSON.parse(readFileSync(join(root, "squad-advisory", "cao.json"), "utf8"));
+
+  // Enrollment is a reviewed control-policy decision; when present it must stay disabled and review-capped.
+  if (campaign) {
+    assert.equal(campaign.enabled, false);
+    assert.equal(campaign.mode, "review");
+    assert.equal(campaign["max-repositories"], 1);
+    assert.deepEqual(Object.keys(campaign.workers).sort(), ["farm-snapshot", "research"]);
+    for (const [name, worker] of Object.entries(campaign.workers)) {
+      assert.equal(worker["max-mode"], "review", name);
+      assert.equal(worker.workflow, name === "research" ? "squad-advisory-research" : declaration.workers[name], name);
+    }
+  }
+  assert.deepEqual(declaration.workers, { "farm-snapshot": "squad-advisory-farm-snapshot" });
+  const manifest = parse(readFileSync(join(root, "squad-advisory", "aw.yml"), "utf8"));
+  assert.ok(!manifest.includes.includes(".github/workflows/squad-advisory-research.md"));
+  assert.deepEqual(workflowConfig("squad-advisory.md")["safe-outputs"]["dispatch-workflow"].workflows, ["squad-advisory-farm-snapshot"]);
+  for (const name of ["squad-advisory.md", "squad-advisory-farm-snapshot.md"]) {
+    assert.match(workflowConfig(name).steps[0].run, /native Squad review attribution[\s\S]*exit 1/);
+  }
+  assert.equal(workflowConfig("squad-advisory.md").on.schedule, "daily");
+  assert.equal(workflowConfig("squad-advisory-research.md")["safe-outputs"]["create-issue"].max, 1);
+  const snapshot = workflowConfig("squad-advisory-farm-snapshot.md")["safe-outputs"]["create-pull-request"];
+  assert.equal(snapshot.max, 1);
+  assert.deepEqual(snapshot["allowed-files"], ["farm/*.md", "farm/**/*.md"]);
 });
 
 test("operational packages own their workflows without reinstalling the control plane", () => {
@@ -208,7 +240,12 @@ test("operational packages own their workflows without reinstalling the control 
         entry.uses === "shared/control.md"
         && existsSync(join(root, entry.with.campaign, "cao.json"))))
     .sort();
-  assert.deepEqual(operationWorkflows.map((name) => `.github/workflows/${name}`), declaredOperationWorkflows);
+  const squadDeclaration = JSON.parse(readFileSync(join(root, "squad-advisory", "cao.json"), "utf8"));
+  const unenrolledSquadWorkflows = Object.hasOwn(policyCampaigns, "squad-advisory")
+    ? []
+    : [squadDeclaration.orchestrator, ...Object.values(squadDeclaration.workers)].map((id) => `.github/workflows/${id}.md`);
+  assert.deepEqual(operationWorkflows.map((name) => `.github/workflows/${name}`),
+    [...declaredOperationWorkflows, ...unenrolledSquadWorkflows, ".github/workflows/squad-advisory-research.md"].sort());
   assert.match(control, /name: Upload CAO admission artifact/);
   assert.match(control, /name: cao-admission/);
   assert.match(control, /path: \$\{\{ runner\.temp \}\}\/cao\/admission\.json/);
@@ -220,7 +257,7 @@ test("operational packages own their workflows without reinstalling the control 
 });
 
 test("campaign manifests exclude repository-only tests", () => {
-  for (const relativePath of ["aw.yml", join("uk-ai-advisory", "aw.yml"), join("bug-bash", "aw.yml"), join("cao-evolution", "aw.yml"), join("dashboard", "aw.yml"), join("dependabot", "aw.yml"), join("dreaming", "aw.yml"), join("eslint-rules", "aw.yml"), join("eu-cra-compliance", "aw.yml"), join("optimization", "aw.yml"), join("repo-assist", "aw.yml"), join("self-care", "aw.yml"), join("software-development-practices", "aw.yml")]) {
+  for (const relativePath of ["aw.yml", join("uk-ai-advisory", "aw.yml"), join("bug-bash", "aw.yml"), join("cao-evolution", "aw.yml"), join("dashboard", "aw.yml"), join("dependabot", "aw.yml"), join("dreaming", "aw.yml"), join("eslint-rules", "aw.yml"), join("eu-cra-compliance", "aw.yml"), join("optimization", "aw.yml"), join("repo-assist", "aw.yml"), join("self-care", "aw.yml"), join("software-development-practices", "aw.yml"), join("squad-advisory", "aw.yml")]) {
     const manifest = readFileSync(join(root, relativePath), "utf8");
     assert.doesNotMatch(manifest, /(?:review-smoke|enterprise-canary|enterprise-stress|tests\/e2e|\.github\/aw\/e2e)/, relativePath);
   }
@@ -295,6 +332,7 @@ test("operational campaigns install declarations matching their workflow identit
     "repo-assist",
     "self-care",
     "software-development-practices",
+    "squad-advisory",
     "uk-ai-advisory",
   ];
 

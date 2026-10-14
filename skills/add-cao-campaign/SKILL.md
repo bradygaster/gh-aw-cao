@@ -1,6 +1,6 @@
 ---
 name: add-cao-campaign
-description: "Discover, compare, recommend, or install an existing Central Agentic Ops (CAO) catalog campaign. Use when a user wants to browse the CAO catalog, find an operation for an outcome, compare campaigns, or add a campaign to a control repository safely."
+description: "Discover, compare, recommend, or safely install an existing Central Agentic Ops (CAO) catalog campaign in a control repository."
 metadata:
   argument-hint: "Describe the desired operational outcome or name a CAO catalog campaign"
 ---
@@ -89,6 +89,10 @@ After explicit approval, run the repository-local CLI from the control repositor
 ```
 
 Forward additional campaign-installer options only when the user requested them and they do not weaken the reviewed boundary. Do not pass secrets in command arguments.
+
+For `squad-advisory`, follow its README: `cao enable squad-advisory` stages native
+Squad and farm evidence for review; rerun after merge to enable native workflows.
+Keep snapshot workers disabled and review gates intact.
 
 After installation:
 

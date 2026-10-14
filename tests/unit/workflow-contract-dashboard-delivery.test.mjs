@@ -700,11 +700,19 @@ test("Dashboard inventory links multiline orchestrator worker lists", () => {
       }
       const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8"));
       assert.equal(descriptor.campaign, campaignId, descriptorPath);
+      const policyWorkers = Object.fromEntries(Object.entries(policyCampaigns[campaignId].workers).map(([worker, config]) => [
+        worker,
+        config.workflow,
+      ]));
+      if (campaignId === "squad-advisory") {
+        assert.equal(policyCampaigns[campaignId].enabled, false);
+        assert.equal(policyWorkers.research, "squad-advisory-research");
+        assert.ok(existsSync(join(root, ".github/workflows/squad-advisory-research.md")));
+        assert.equal(descriptor.workers.research, undefined);
+        delete policyWorkers.research;
+      }
       assert.deepEqual(
-        Object.fromEntries(Object.entries(policyCampaigns[campaignId].workers).map(([worker, config]) => [
-          worker,
-          config.workflow,
-        ])),
+        policyWorkers,
         descriptor.workers,
         `${campaignId} policy workers must match its campaign descriptor`,
       );
@@ -721,7 +729,13 @@ test("Dashboard inventory links multiline orchestrator worker lists", () => {
         id: campaignId,
         workers: dispatchWorkflows,
       }];
-    }).sort((left, right) => left.id.localeCompare(right.id));
+    });
+    if (!Object.hasOwn(policyCampaigns, "squad-advisory")) {
+      // Unenrolled catalog orchestrators remain discoverable bundles but not policy campaigns.
+      const squad = JSON.parse(readFileSync(join(root, "squad-advisory", "cao.json"), "utf8"));
+      expectedBundles.push({ id: "squad-advisory", workers: Object.values(squad.workers) });
+    }
+    expectedBundles.sort((left, right) => left.id.localeCompare(right.id));
     assert.deepEqual(inventory.campaigns.map((entry) => entry.id), registeredCampaignIds);
     assert.equal(inventory.campaigns.find((entry) => entry.id === "repo-assist")?.name, "Repo Assist");
     assert.equal(dependabotBundle.readmePath, "dependabot/README.md");

@@ -1,11 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validateCampaignDeclaration } from './policy.mjs';
 import { ghAwVersionParts, compareGhAwVersions } from './gh-aw.mjs';
 import { commandFailureMessage, writeJsonAtomically } from './files.mjs';
+import { installedCampaignRecords, resolvePathWithinRoot } from '../campaign-records.mjs';
 
 export function campaignSlugFromSpec(spec) {
   const refSeparator = spec.lastIndexOf('@');
@@ -17,81 +17,7 @@ export function campaignSlugFromSpec(spec) {
   return slug;
 }
 
-function resolvePathWithinRoot(root, destination) {
-  const resolved = path.resolve(root, destination);
-  const canonicalRoot = realpathSync(root);
-  let canonicalPath;
-  try {
-    canonicalPath = realpathSync(resolved);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    const missingSegments = [];
-    let existingAncestor = resolved;
-    while (true) {
-      missingSegments.unshift(path.basename(existingAncestor));
-      existingAncestor = path.dirname(existingAncestor);
-      try {
-        canonicalPath = path.join(realpathSync(existingAncestor), ...missingSegments);
-        break;
-      } catch (ancestorError) {
-        if (ancestorError?.code !== 'ENOENT') throw ancestorError;
-      }
-    }
-  }
-  const relative = path.relative(canonicalRoot, canonicalPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Installed package destination escapes the repository: ${destination}`);
-  }
-  return resolved;
-}
-
-export async function installedCampaignRecords(root = process.cwd(), { caoOnly = true } = {}) {
-  const records = new Map();
-  for (const directory of ['campaigns', 'packages']) {
-    let recordsDirectory;
-    let entries;
-    try {
-      recordsDirectory = resolvePathWithinRoot(root, path.join('.github', 'aw', directory));
-      entries = await readdir(recordsDirectory, { withFileTypes: true });
-    } catch (error) {
-      if (error?.code === 'ENOENT') continue;
-      throw error;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory() || !entry.name.endsWith('.json')) continue;
-      const recordPath = resolvePathWithinRoot(root, path.join(recordsDirectory, entry.name));
-      let record;
-      try {
-        record = JSON.parse(await readFile(recordPath, 'utf8'));
-      } catch (error) {
-        if (error instanceof SyntaxError) throw new Error(`${path.relative(root, recordPath)} contains invalid JSON: ${error.message}`);
-        throw error;
-      }
-      const campaignName = typeof record.package === 'string' && record.package.trim()
-        ? record.package.trim()
-        : typeof record.campaign === 'string' && record.campaign.trim()
-          ? record.campaign.trim()
-          : typeof record.source === 'string'
-            ? record.source.split('@')[0].trim()
-            : '';
-      if (!campaignName || (caoOnly
-        && campaignName !== 'githubnext/gh-aw-cao'
-        && !campaignName.startsWith('githubnext/gh-aw-cao/'))) {
-        continue;
-      }
-      records.set(campaignName, {
-        campaign: campaignName,
-        source: typeof record.source === 'string' ? record.source : campaignName,
-        resolvedCommit: typeof record.resolvedCommit === 'string' && record.resolvedCommit.trim()
-          ? record.resolvedCommit.trim()
-          : '',
-        record,
-        recordPath
-      });
-    }
-  }
-  return [...records.values()].sort((left, right) => left.campaign.localeCompare(right.campaign));
-}
+export { installedCampaignRecords };
 
 export function materializeInstalledCao(campaign, execute = spawnSync, sourceRoot) {
   const script = path.join('.github', 'workflows', 'shared', 'materialize-cao.mjs');
@@ -125,12 +51,14 @@ export async function prepareInstalledPackageReleaseSource(
   if (sourceIsCommit && !/^[0-9a-f]{40}$/i.test(record.resolvedCommit)) {
     throw new Error(`Installed CAO package record has an invalid resolvedCommit: ${record.resolvedCommit || '(missing)'}`);
   }
-  let releaseTag = sourceIsRelease ? sourceRef : releaseTags.get(record.resolvedCommit);
+  const catalog = record.campaign.split('/').slice(0, 2).join('/');
+  const releaseKey = `${catalog}@${record.resolvedCommit}`;
+  let releaseTag = sourceIsRelease ? sourceRef : releaseTags.get(releaseKey);
   if (!releaseTag) {
     const tags = execute('gh', [
       'api',
       '--paginate',
-      '/repos/githubnext/gh-aw-cao/tags',
+      `/repos/${catalog}/tags`,
       '--jq',
       `.[] | select(.commit.sha == "${record.resolvedCommit}") | .name`
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -143,7 +71,7 @@ export async function prepareInstalledPackageReleaseSource(
       const prereleaseFilter = includePrereleases ? 'true' : '.prerelease == false';
       const release = execute('gh', [
         'api',
-        `/repos/githubnext/gh-aw-cao/releases/tags/${encodeURIComponent(candidate)}`,
+        `/repos/${catalog}/releases/tags/${encodeURIComponent(candidate)}`,
         '--jq',
         `select(.draft == false and ${prereleaseFilter}) | .tag_name`
       ], { encoding: 'utf8' });
@@ -155,13 +83,13 @@ export async function prepareInstalledPackageReleaseSource(
     if (!releaseTag) {
       throw new Error(`No CAO release tag found for ${record.resolvedCommit}; run "cao update latest" to replace installed CAO packages with the latest stable release`);
     }
-    releaseTags.set(record.resolvedCommit, releaseTag);
+    releaseTags.set(releaseKey, releaseTag);
   }
   if (includePrereleases) {
     const releases = execute('gh', [
       'api',
       '--paginate',
-      '/repos/githubnext/gh-aw-cao/releases?per_page=100',
+      `/repos/${catalog}/releases?per_page=100`,
       '--jq',
       '.[] | select(.draft == false) | .tag_name'
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
