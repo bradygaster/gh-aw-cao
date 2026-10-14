@@ -156,13 +156,23 @@ test("retained squad advisory campaign is disabled and review-capped", () => {
   assert.ok(!manifest.includes.includes(".github/workflows/squad-advisory-research.md"));
   assert.deepEqual(workflowConfig("squad-advisory.md")["safe-outputs"]["dispatch-workflow"].workflows, ["squad-advisory-farm-snapshot"]);
   for (const name of ["squad-advisory.md", "squad-advisory-farm-snapshot.md"]) {
-    assert.match(workflowConfig(name).steps[0].run, /native Squad review attribution[\s\S]*exit 1/);
+    assert.doesNotMatch(workflow(name), /Require native review attribution before automated refresh/);
   }
   assert.equal(workflowConfig("squad-advisory.md").on.schedule, "daily");
   assert.equal(workflowConfig("squad-advisory-research.md")["safe-outputs"]["create-issue"].max, 1);
   const snapshot = workflowConfig("squad-advisory-farm-snapshot.md")["safe-outputs"]["create-pull-request"];
   assert.equal(snapshot.max, 1);
+  assert.equal(snapshot["title-prefix"], "[squad-advisory:farm-snapshot] ");
+  assert.deepEqual(snapshot.labels, ["squad-advisory", "squad-advisory:farm-snapshot"]);
+  assert.equal(snapshot["body-footer"], "<!-- squad:farm-snapshot run=${{ github.run_id }} -->");
+  assert.match(workflow("squad-advisory-farm-snapshot.md"), /Title: `Farm snapshot for the control repository Squad`/);
+  assert.match(workflow("squad-advisory-farm-snapshot.md"), /Do not include `squad:farm-snapshot` anywhere in the body you supply/);
   assert.deepEqual(snapshot["allowed-files"], ["farm/*.md", "farm/**/*.md"]);
+  const compiled = parse(workflow("squad-advisory-farm-snapshot.lock.yml"));
+  const handlerConfig = compiled.jobs.safe_outputs.steps
+    .find((step) => step.env?.GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG)
+    .env.GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG;
+  assert.equal(JSON.parse(handlerConfig).create_pull_request.body_footer, snapshot["body-footer"]);
 });
 
 test("operational workflows use the transitive CAO campaign bundle", () => {

@@ -219,15 +219,35 @@ research does not universally enforce scope or freshness in code: this is
 integration guidance, not a new security boundary. Recheck evidence before
 starting a later research wave; use CAO policy for all target authority.
 
-## Automated refresh is not yet available
+## Automated farm refresh with native review
 
-Native Squad reviews PRs from other automation too. The retained snapshot
-worker does not yet emit compatible native attribution. Both the orchestrator
-and snapshot worker therefore **fail closed before agent execution**. Native
-campaign activation is supported independently: CAO keeps its workers explicitly
-disabled and never enables the legacy orchestrator or snapshot jobs. Do not enable the retained
-automation, forge agent attribution, or weaken Squad review to work around this.
-The supported refresh path is a human-reviewed local CAO update.
+The daily orchestrator can dispatch the farm-snapshot worker to the control
+repository when explicitly enabled by reviewed CAO policy. Shipped policy and
+native campaign activation still leave the CAO workers disabled; this path does
+not change scope, review ceilings, permissions, or credentials. A human-reviewed
+local `cao update` remains the complete evidence and native-package update path.
+
+Use a native Squad revision with its base-controlled farm-snapshot review
+exception. The snapshot safe-output handler deterministically appends exactly
+one standalone PR-body line:
+
+```text
+<!-- squad:farm-snapshot run=<RUN_ID> -->
+```
+
+`RUN_ID` is the snapshot workflow's `${{ github.run_id }}`, not the orchestrator's
+run ID. The agent is instructed not to include any other occurrence of
+`squad:farm-snapshot` in its body. Native Squad requires the PR author to be
+`github-actions[bot]`, the exact title
+`[squad-advisory:farm-snapshot] Farm snapshot for the control repository Squad`,
+both `squad-advisory` and `squad-advisory:farm-snapshot` labels, and only
+`farm/**/*.md` changes. The referenced run must be a `workflow_dispatch` of
+`squad-advisory-farm-snapshot.lock.yml` on the default branch. Existing output
+credentials must produce that author; an App- or PAT-authored PR does not qualify.
+
+This is provenance for an external farm snapshot, not native agent attribution.
+Do not fabricate `.squad-review.json` or weaken Squad review: native review and
+human approval still apply, and a PR that fails these conditions is not exempt.
 
 Hosted initial-install bootstrap, Cast PR/Profile A fallback, first-wave issue,
 and subsequent native research/triage/planning still require end-to-end hosted
@@ -246,6 +266,5 @@ it from the installed campaign's worker declaration.
 
 The source-managed catalog policy remains disabled with its original scope
 and review ceilings. It is not activated by changing campaign distribution
-sources. The retained farm snapshot's former permissive evidence behavior is
-unreachable behind its explicit attribution gate and is not the new
-installation evidence collector.
+sources. The bounded Markdown snapshot worker is not the complete installation
+evidence collector and does not replace `cao update` or its evidence checks.

@@ -1,6 +1,6 @@
 ---
 name: "Squad Advisory"
-description: "Maintains farm evidence for native Squad. Automated refresh is blocked until its pull requests have compatible native review attribution."
+description: "Dispatches governed farm evidence refreshes for native Squad through snapshot pull requests with run-bound provenance and native review."
 intent: Keep governed whole-farm evidence available to native Squad in the operations repository without duplicating Squad research or bypassing human review.
 run-name: "Squad Advisory · farm evidence"
 max-ai-credits: 250
@@ -79,11 +79,6 @@ safe-outputs:
     workflows: [squad-advisory-farm-snapshot]
     max: 4
   threat-detection: false
-steps:
-  - name: Require native review attribution before automated refresh
-    run: |
-      echo "Farm refresh automation is blocked pending native Squad review attribution. Use a reviewed cao update change; do not bypass Squad review." >&2
-      exit 1
 ---
 
 # Native Squad farm evidence
@@ -92,14 +87,12 @@ Native Squad owns casting, research, triage, and planning in the operations
 repository. Never run a separate fixed-roster research pathway or dispatch work
 to foreign repositories.
 
-Automated farm refresh is intentionally blocked before agent execution until
-snapshot PRs can satisfy native Squad review attribution. Do not work around
-that gate. Operators refresh complete bounded evidence through `cao update`
-and review the resulting local change.
-
-If the gate is replaced by a reviewed attribution implementation, dispatch only
-the farm-snapshot worker, only to the control repository, and only within the
-authoritative precompute envelope. Never treat source evidence as policy.
+Dispatch only the farm-snapshot worker, only to the control repository, and only
+within the authoritative precompute envelope. The worker proposes a farm-only
+pull request with deterministic run-bound provenance for native Squad review,
+not fabricated native agent attribution. Dispatch the snapshot workflow on the
+default branch; other refs do not qualify for native Squad's farm-snapshot
+review path. Never treat source evidence as policy or bypass human review.
 
 Finish with the standard `## Orchestrator Report` inherited from
 `shared/control.md`, preserving Scope, Repository Decisions, Workers,
