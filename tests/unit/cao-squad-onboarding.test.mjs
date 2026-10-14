@@ -3,8 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { collectFarmEvidence, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
-import { installPreparedSquad, prepareSquadOnboarding, SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_RECEIPT, SQUAD_VERIFIER } from '../../activity/squad-onboarding.mjs';
+import { collectFarmEvidence, contentHash, farmEnrollment, FARM_LIMITS } from '../../activity/squad-farm.mjs';
+import { EVIDENCE_PROVIDER, EVIDENCE_RUNTIME, installPreparedSquad, prepareSquadOnboarding, SQUAD_EVIDENCE_HOOK, SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_RECEIPT, SQUAD_VERIFIER } from '../../activity/squad-onboarding.mjs';
 import { addCaoCampaign, setCaoCampaignWorkflowsEnabled, updateCaoCampaigns } from '../../activity/cao.mjs';
 import { planCaoMaterialization } from '../../.github/workflows/shared/materialize-cao.mjs';
 import { discoverInventory } from '../../activity/inventory.mjs';
@@ -22,7 +22,7 @@ const manifest = {
   workflows: ['squad', 'squad-bootstrap', 'squad-command-router', 'squad-implement-worker', 'squad-deps-worker', 'squad-review', 'squad-retro', 'squad-improvement-worker'].map((name) => ({
     name, destination: `.github/workflows/${name}.md`, lock: `.github/workflows/${name}.lock.yml`,
   })),
-  shared_runtime: [{ destination: SQUAD_VERIFIER, package_destination: SQUAD_VERIFIER }],
+  shared_runtime: [{ destination: SQUAD_VERIFIER, package_destination: SQUAD_VERIFIER }, { destination: SQUAD_EVIDENCE_HOOK, package_destination: SQUAD_EVIDENCE_HOOK }],
   skills: [{ destination: '.github/skills/gh-aw-enlistment/SKILL.md' }],
 };
 
@@ -73,6 +73,7 @@ function fixture(t, options = {}) {
       write(SQUAD_MANIFEST, JSON.stringify(manifest));
       write(SQUAD_OWNERSHIP, 'native-owned-record');
       write(SQUAD_VERIFIER, 'native verifier');
+      write(SQUAD_EVIDENCE_HOOK, 'native evidence hook');
       write('.github/skills/gh-aw-enlistment/SKILL.md', 'native skill');
       write('.github/skills/agentic-workflows/SKILL.md', 'generated router');
     }
@@ -207,7 +208,7 @@ test('owned update resolves fresh dev, preserves accepted team artifacts, and us
 });
 
 test('modified owned evidence, unknown ignored files, and expired collection block updates', async (t) => {
-  for (const file of ['farm/INDEX.md', 'farm/unknown.md', '.squad/research-scope.json']) {
+  for (const file of ['farm/INDEX.md', 'farm/unknown.md', '.squad/research-scope.json', EVIDENCE_PROVIDER, EVIDENCE_RUNTIME, '.github/cao/squad-evidence/squad-farm.mjs']) {
     const f = fixture(t);
     installPreparedSquad(await prepareSquadOnboarding(f.options));
     f.write(file, 'user edit');
@@ -219,6 +220,55 @@ test('modified owned evidence, unknown ignored files, and expired collection blo
   const prepared = await prepareSquadOnboarding(f.options);
   prepared.now = () => new Date(now().getTime() + FARM_LIMITS.maxAgeMs + 1);
   assert.throws(() => installPreparedSquad(prepared), /expired/);
+});
+
+test('install adds the receipt-owned research evidence provider without changing the baseline farm evidence', async (t) => {
+  const f = fixture(t);
+  const prepared = await prepareSquadOnboarding(f.options);
+  installPreparedSquad(prepared);
+  const receipt = JSON.parse(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8'));
+  for (const [file, text] of Object.entries(prepared.evidence.documents)) {
+    assert.equal(receipt.files[file], contentHash(text), `baseline ${file} remains receipt-owned and unchanged`);
+  }
+  const provider = JSON.parse(readFileSync(path.join(f.root, EVIDENCE_PROVIDER), 'utf8'));
+  assert.deepEqual(Object.keys(provider), ['schema', 'id', 'commands', 'runtime', 'runtime_files', 'output', 'manifest', 'max_bundle_bytes', 'max_age_seconds']);
+  assert.equal(provider.schema, 'squad-evidence-provider/v1');
+  assert.equal(provider.id, 'cao-farm');
+  assert.deepEqual(provider.commands, ['research']);
+  assert.equal(provider.runtime, EVIDENCE_RUNTIME);
+  assert.equal(provider.output, '/tmp/gh-aw/agent/cao-farm');
+  assert.equal(provider.manifest, 'manifest.json');
+  assert.equal(provider.max_age_seconds, 86400);
+  assert.ok(provider.max_bundle_bytes >= 1 && provider.max_bundle_bytes <= 8388608);
+  const sources = { [EVIDENCE_RUNTIME]: 'squad-wave-evidence.mjs', '.github/cao/squad-evidence/squad-farm.mjs': 'squad-farm.mjs' };
+  assert.deepEqual(Object.keys(provider.runtime_files).sort(), Object.keys(sources).sort());
+  for (const [file, source] of Object.entries(sources)) {
+    const installed = readFileSync(path.join(f.root, file));
+    assert.ok(installed.equals(readFileSync(new URL(`../../activity/${source}`, import.meta.url))), `${file} is installed verbatim`);
+    assert.equal(provider.runtime_files[file], contentHash(installed));
+    assert.equal(receipt.files[file], contentHash(installed));
+  }
+  assert.equal(receipt.files[EVIDENCE_PROVIDER], contentHash(readFileSync(path.join(f.root, EVIDENCE_PROVIDER))));
+  const skill = readFileSync(path.join(f.root, '.squad/skills/cao-farm/SKILL.md'), 'utf8');
+  assert.match(skill, /historical bootstrap baseline/);
+  assert.match(skill, /\/tmp\/gh-aw\/agent\/cao-farm\/manifest\.json/);
+  assert.match(skill, /run \/squad research again/);
+  assert.doesNotMatch(skill, /ask the operator to refresh with CAO/);
+});
+
+test('installed evidence runtime is self-contained and imports only node built-ins and the farm collector', () => {
+  const text = readFileSync(new URL('../../activity/squad-wave-evidence.mjs', import.meta.url), 'utf8');
+  const imports = [...text.matchAll(/^import .* from '([^']+)';$/gm)].map((match) => match[1]);
+  assert.ok(imports.every((specifier) => specifier.startsWith('node:') || specifier === './squad-farm.mjs'), imports.join(','));
+  const farm = readFileSync(new URL('../../activity/squad-farm.mjs', import.meta.url), 'utf8');
+  assert.ok([...farm.matchAll(/^import .* from '([^']+)';$/gm)].every((match) => match[1].startsWith('node:')));
+});
+
+test('native Squad without the evidence-provider hook fails before package installation', async (t) => {
+  const f = fixture(t, { manifest: { ...manifest, shared_runtime: manifest.shared_runtime.filter((entry) => entry.destination !== SQUAD_EVIDENCE_HOOK) } });
+  await assert.rejects(prepareSquadOnboarding(f.options), /evidence-provider hook/);
+  assert.equal(f.calls.some(({ args }) => args[1] === 'add'), false);
+  assert.equal(existsSync(path.join(f.root, 'farm')), false);
 });
 
 test('native verifier failure is explicit and does not publish a successful CAO receipt', async (t) => {
@@ -370,7 +420,7 @@ async function activationFixture(t, options = {}) {
     f.write('.squad/team.md', 'accepted cast');
     f.write('.squad/decisions.md', 'accepted decisions');
   }
-  const nativeFiles = [SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_VERIFIER, SQUAD_RECEIPT,
+  const nativeFiles = [SQUAD_MANIFEST, SQUAD_OWNERSHIP, SQUAD_VERIFIER, SQUAD_EVIDENCE_HOOK, SQUAD_RECEIPT,
     '.github/workflows/cao.json', '.github/skills/gh-aw-enlistment/SKILL.md',
     ...manifest.workflows.flatMap((workflow) => [workflow.destination, workflow.lock]),
     ...(options.owned ? Object.keys(JSON.parse(readFileSync(path.join(f.root, SQUAD_RECEIPT), 'utf8')).files) : []),

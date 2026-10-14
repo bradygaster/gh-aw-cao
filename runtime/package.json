@@ -49,6 +49,7 @@
     "activity/sqlite-retention.mjs",
     "activity/squad-farm.mjs",
     "activity/squad-onboarding.mjs",
+    "activity/squad-wave-evidence.mjs",
     "activity/token-intervention-lifecycle.mjs",
     "activity/upgrade-gh-aw.mjs",
     "activity/validation.mjs",

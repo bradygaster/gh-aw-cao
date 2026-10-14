@@ -91,7 +91,7 @@ test("canonical activity requirements stay compatible with the pinned upstream i
     writeFileSync(path.join(root, file), "");
   }
   verifyCaoRuntime("activity", root);
-  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm", "squad-wave-evidence"]) {
     assert.equal(existsSync(path.join(root, "activity", `${module}.mjs`)), false);
   }
   rmSync(path.join(root, "activity/cli/campaigns.mjs"));
@@ -117,7 +117,7 @@ test("upstream 5a7695bdd runtime materializes without fork-only Squad modules", 
   }));
   await materializeCao("root", consumer);
   verifyCaoRuntime("activity", consumer);
-  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm", "squad-wave-evidence"]) {
     assert.equal(existsSync(path.join(consumer, "activity", `${module}.mjs`)), false);
   }
   const verification = commands().find((args) => args[0] === "attestation");
@@ -152,7 +152,7 @@ test("producer artifact binds its production inventory to an immutable revision"
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.js"]);
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.LICENSE"]);
   assert.ok(metadata.files["activity/setup-prompt.mjs"]);
-  for (const module of ["campaign-records", "squad-onboarding", "squad-farm"]) {
+  for (const module of ["campaign-records", "squad-onboarding", "squad-farm", "squad-wave-evidence"]) {
     assert.ok(metadata.files[`activity/${module}.mjs`], `new producer must ship ${module}`);
   }
   assert.match(readFileSync(path.join(root, "activity/cli/campaigns.mjs"), "utf8"), /from '\.\.\/squad-onboarding\.mjs'/);
