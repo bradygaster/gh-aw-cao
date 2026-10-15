@@ -344,7 +344,7 @@ describe('dashboard view query contracts', () => {
     ]);
   });
 
-  it('renders experimental operational value as a chart followed by a full-view observations table', () => {
+  it('renders campaign-first operational value with separate evidence and quiet comparison distribution', () => {
     const page = dashboard.pages.find(
       (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value'
     );
@@ -355,30 +355,54 @@ describe('dashboard view query contracts', () => {
     expect(/** @type {Record<string, unknown> | undefined} */ (experimentalSection)?.pages)
       .toContain('operational-value');
     expect(page).toMatchObject({
-      kind: 'built-in',
-      page: 'operational-value',
-      experimental: true
+      kind: 'custom',
+      experimental: true,
+      'view-mode-control': false,
+      route: { tab: 'overview', tabs: [
+        { id: 'overview', page: 'operational-value' },
+        { id: 'evidence', page: 'operational-value-evidence' }
+      ] }
     });
     expect(viewsOf(page)[0]).toMatchObject({
-      id: 'operational-value-history',
-      data: { source: 'operational-values' },
-      mark: 'chart',
-      chart: 'line',
-      encoding: {
-        x: { field: 'observed-at', type: 'temporal' },
-        y: { field: 'operational-value', type: 'quantitative' },
-        color: { field: 'operational-value-definition', type: 'nominal' }
-      }
+      id: 'operational-value-summary',
+      data: { source: 'operational-value-overview-summary' },
+      mark: 'list'
     });
     expect(viewsOf(page)[1]).toMatchObject({
-      id: 'operational-value-observations',
-      title: 'Operational value observations',
+      id: 'operational-value-signals',
+      data: { source: 'operational-value-measured-campaigns' },
+      mark: 'list',
+      list: { card: 'campaign-outcome-signal' }
+    });
+    expect(viewsOf(page)[2]).toMatchObject({
+      id: 'operational-value-unmeasured',
+      disclosure: 'supplemental',
+      data: { source: 'operational-value-unmeasured-campaigns' }
+    });
+    expect(viewsOf(page)).toHaveLength(3);
+    const evidence = dashboard.pages.find(
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-evidence'
+    );
+    expect(evidence).toMatchObject({ route: { tab: 'evidence', 'navigation-page': 'operational-value' } });
+    expect(viewsOf(evidence)[0]).toMatchObject({
+      id: 'operational-value-coverage', disclosure: 'supplemental',
+      data: { source: 'operational-value-campaign-coverage' }
+    });
+    expect(viewsOf(evidence)[1]).toMatchObject({
+      id: 'operational-value-latest',
       mark: 'table',
-      layout: 'full-view',
+      'column-summaries': false,
+      layout: 'full',
       controls: 'interactive',
       'lazy-list': true
     });
-    expect(/** @type {Record<string, unknown>} */ (page).definition).not.toHaveProperty('sections');
+    expect(viewsOf(evidence)[2]).toMatchObject({
+      id: 'operational-value-direction-chart',
+      disclosure: 'supplemental',
+      mark: 'chart'
+    });
+    expect(JSON.stringify(viewsOf(page))).not.toContain('"aggregate":"mean"');
+    expect(viewsOf(evidence).map(view => view.id)).not.toContain('operational-value-observations');
   });
 
   it('renders the failed-runs ledger as a bounded lazy table', () => {
@@ -500,12 +524,13 @@ describe('dashboard view query contracts', () => {
     for (const alias of absent.aliases) expect(missing[alias].rows).toEqual([]);
   });
 
-  it('keeps stable campaign route IDs with an Operational Value label across every entry path', () => {
+  it('keeps stable campaign route IDs with an Insights label across every entry path', () => {
     const campaignPages = dashboard.pages.filter((/** @type {Record<string, unknown>} */ page) => (
       /** @type {Record<string, unknown> | undefined} */ (page.route)?.['hash-query-parameter'] === 'campaign'
+      && page.experimental !== true
     ));
     const expectedTabs = [
-      { id: 'insights', label: 'Operational Value', icon: 'graph', page: 'campaign-insights' },
+      { id: 'insights', label: 'Insights', icon: 'graph', page: 'campaign-insights' },
       { id: 'problems', label: 'Failures', icon: 'alert', page: 'campaign-problems' },
       { id: 'issues', label: 'Reports', icon: 'issue-opened', page: 'campaign-issues' },
       { id: 'memory', label: 'Memory', icon: 'archive', page: 'campaign-memory' }
@@ -559,23 +584,23 @@ describe('dashboard view query contracts', () => {
       config: { body: 'insights' }
     });
 
-    expect(viewsOf(insights)[1]).toMatchObject({
-      id: 'campaign-operational-value-history',
-      data: {
-        sources: [
-          'campaign-operational-value-primary-series',
-          'campaign-operational-value-run-days',
-          'campaign-operational-value-evidence-state'
-        ],
-        arguments: [{ name: 'campaign', field: 'campaign' }]
-      },
-      mark: 'element',
-      element: 'measure-history',
-      config: { 'measure-source': 'operational-value' }
+    const outcomes = dashboard.pages.find((/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-campaign');
+    expect(outcomes).toMatchObject({
+      experimental: true,
+      route: { 'navigation-page': 'operational-value' }
+    });
+    expect(viewsOf(insights).map((view) => view.id)).not.toEqual(expect.arrayContaining([
+      'campaign-outcome-directions', 'campaign-outcome-repositories', 'campaign-operational-value-history'
+    ]));
+    expect(viewsOf(outcomes)).toHaveLength(1);
+    expect(viewsOf(outcomes)[0]).toMatchObject({
+      id: 'campaign-outcome-repositories',
+      mark: 'list'
     });
 
-    expect(viewsOf(insights)[2]).toMatchObject({
+    expect(viewsOf(insights)[1]).toMatchObject({
       id: 'campaign-baseline-outcomes',
+      title: 'Workflow run results',
       disclosure: 'supplemental',
       data: { source: 'campaign-baseline-outcome-distribution', 'route-field': 'campaign' },
       mark: 'chart',
@@ -586,8 +611,9 @@ describe('dashboard view query contracts', () => {
       }
     });
 
-    expect(viewsOf(insights)[3]).toMatchObject({
+    expect(viewsOf(insights)[2]).toMatchObject({
       id: 'campaign-performance-baseline',
+      title: 'Execution reliability',
       data: {
         source: 'campaign-performance-baseline',
         'route-field': 'campaign'
@@ -596,16 +622,17 @@ describe('dashboard view query contracts', () => {
       controls: 'static',
       encoding: {
         columns: [
-          { field: 'concluded-runs', title: 'Concluded runs' },
-          { field: 'success-rate-display', title: 'Run success' },
+          { field: 'concluded-runs', title: 'Concluded attempts' },
+          { field: 'successful-runs', title: 'Successful attempts' },
+          { field: 'success-rate-display', title: 'Success rate' },
           { field: 'reliability-signal', title: 'Reliability signal' },
-          { field: 'produced-outputs', title: 'Produced outputs' },
+          { field: 'produced-outputs', title: 'Reported output items' },
           { field: 'production-signal', title: 'Production signal' },
-          { field: 'aic-per-successful-run', title: 'Average AIC / successful run', unit: 'aic-per-run' }
+          { field: 'aic-per-successful-run', title: 'Average AIC / costed successful attempt', unit: 'aic-per-run' }
         ]
       }
     });
-    expect(viewsOf(insights)[4]).toMatchObject({
+    expect(viewsOf(insights)[3]).toMatchObject({
       id: 'campaign-audit-event-table',
       disclosure: 'supplemental'
     });
@@ -621,39 +648,36 @@ describe('dashboard view query contracts', () => {
     });
   });
 
-  it('compiles each operational-value source independently with campaign scope', () => {
+  it('compiles repository summaries without native history or run-context dependencies', () => {
     const page = dashboard.pages.find(
-      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'campaign-insights'
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-campaign'
     );
-    const sourceNames = [
-      'campaign-operational-value-primary-series',
-      'campaign-operational-value-run-days',
-      'campaign-operational-value-evidence-state'
-    ];
+    const sourceNames = ['operational-value-repository-signals'];
     for (const sourceName of sourceNames) {
-      const payload = compileDashboardViewPayloadQueries(page, 'campaign-insights', {
-        viewId: 'campaign-operational-value-history',
+      const payload = compileDashboardViewPayloadQueries(page, 'operational-value-campaign', {
+        viewId: 'campaign-outcome-repositories',
         sourceNames: [sourceName],
         routeParameters: { campaign: 'optimization' },
         queries
       });
 
       expect(payload.aliases).toHaveLength(1);
+      expect(payload.queries.map(query => query.name)).not.toContain('operational-value-plot-series');
       expect(payload.queries.at(-1)).toMatchObject({
         name: payload.aliases[0],
-        filter: { predicates: [{ field: 'campaign', equals: 'optimization' }] }
+        filter: { predicates: expect.arrayContaining([{ field: 'campaign', equals: 'optimization' }]) }
       });
     }
   });
 
   it('retains native-unit operational-value observations using only the selected horizon', () => {
     const page = dashboard.pages.find(
-      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'campaign-insights'
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-repository'
     );
-    const payload = compileDashboardViewPayloadQueries(page, 'campaign-insights', {
-      viewId: 'campaign-operational-value-history',
-      sourceNames: ['campaign-operational-value-primary-series'],
-      routeParameters: { campaign: 'sample' },
+    const payload = compileDashboardViewPayloadQueries(page, 'operational-value-repository', {
+      viewId: 'repository-outcome-history',
+      sourceNames: ['operational-value-plot-series'],
+      routeParameters: { campaign: 'sample', organization: 'octo', repository: 'api' },
       queryContext: {
         timeWindow: { start: '2026-01-02T00:00:00Z', end: '2026-01-05T00:00:00Z' }
       },
@@ -664,10 +688,10 @@ describe('dashboard view query contracts', () => {
         source: 'operational-values',
         metadata: { ...metadata, availability: 'available' },
         rows: [
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 1000, 'observed-at': '2026-01-01T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 10, 'observed-at': '2026-01-02T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 20, 'observed-at': '2026-01-03T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 30, 'observed-at': '2026-01-04T00:00:00Z' }
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 1000, 'observed-at': '2026-01-01T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 10, 'observed-at': '2026-01-02T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 20, 'observed-at': '2026-01-03T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 30, 'observed-at': '2026-01-04T00:00:00Z' }
         ]
       }
     });
@@ -822,10 +846,10 @@ describe('dashboard view query contracts', () => {
       }
     });
     expect(results['campaign-baseline-outcome-distribution'].rows).toEqual([
-      { campaign: 'optimization', outcome: 'Successful runs', runs: 2 },
-      { campaign: 'all-success', outcome: 'Successful runs', runs: 1 },
-      { campaign: 'optimization', outcome: 'Other concluded runs', runs: 1 },
-      { campaign: 'all-success', outcome: 'Other concluded runs', runs: 0 }
+      { campaign: 'optimization', outcome: 'Successful attempts', runs: 2 },
+      { campaign: 'all-success', outcome: 'Successful attempts', runs: 1 },
+      { campaign: 'optimization', outcome: 'Other concluded attempts', runs: 1 },
+      { campaign: 'all-success', outcome: 'Other concluded attempts', runs: 0 }
     ]);
   });
 
