@@ -267,8 +267,12 @@ later does not restore dropped partitions.
 
 1. Review the template with `az deployment group what-if` before using
    `az deployment group create`. Replace the placeholders with your own values.
-   The example below is a fail-closed bootstrap, **not a reachable deployment**:
-   it leaves public access disabled and does not provision client connectivity.
+   The example below uses the public-main default: the dashboard is reachable
+   over public HTTPS, GitHub OAuth and the allowed user, organization, or team
+   list control access, and SCM/Kudu stays default-deny. No VPN or proxy is
+   required. If tenant automation has attached a network security group to the
+   subnets, pass its resource ID as `subnetNetworkSecurityGroupId` so
+   redeployment keeps it attached.
    Do not use it to overwrite an existing app's access rules; follow
    [the ingress guidance](#ingress-changes-on-an-existing-app) for an existing app.
 
@@ -545,7 +549,7 @@ to make delivery work.
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
+- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to public main-site access behind GitHub OAuth, with SCM/Kudu denied. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
 - **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).

@@ -67,6 +67,9 @@ param postgresAdministratorPassword string
 param postgresSkuName string = 'Standard_B2s'
 param postgresSkuTier string = 'Burstable'
 
+@description('Optional existing network security group kept attached to every private subnet. Supply it when an approved NSG is already attached so redeployment does not detach it.')
+param subnetNetworkSecurityGroupId string = ''
+
 @description('Repository of an explicitly built snapshot or empty ingestion image in this deployment registry.')
 param ingestionImageRepository string = 'cao-ingest'
 
@@ -187,6 +190,7 @@ module network 'network.bicep' = {
     postgresAdministratorPassword: postgresAdministratorPassword
     postgresSkuName: postgresSkuName
     postgresSkuTier: postgresSkuTier
+    subnetNetworkSecurityGroupId: subnetNetworkSecurityGroupId
   }
 }
 

@@ -261,3 +261,12 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /allowBlobPublicAccess:\s*false/);
   assert.match(bicep, /supportsHttpsTrafficOnly:\s*true/);
 });
+
+test('Azure redeployment can keep an existing subnet NSG without forcing one on other deployments', () => {
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.type, 'string');
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.defaultValue, '');
+  assert.match(bicep, /subnetNetworkSecurityGroupId: subnetNetworkSecurityGroupId/);
+  assert.match(network, /param subnetNetworkSecurityGroupId string = ''/);
+  assert.equal(network.match(/properties: union\(subnetNetworkSecurityGroup, \{/g)?.length, 3,
+    'every subnet must carry the optional NSG');
+});
