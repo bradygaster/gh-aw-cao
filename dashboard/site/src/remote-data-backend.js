@@ -8,9 +8,13 @@ import { csrfHeaders, ensureCsrfToken, usesGitHubAuthentication } from "./auth.j
 import { createDebug, diagnosticErrorName } from "./debug.js";
 import { updateRateLimitNotification } from "./rate-limit-notification.js";
 import { publishNotification } from "./notification-service.js";
+import { createQueryRequestQueue } from "./query-request-queue.js";
 export { disableRemoteDashboardPwa, usesRemoteDataBackend } from "./backend-mode.js";
 
 const debugRemoteBackend = createDebug("remote-data-backend");
+const queryRequests = createQueryRequestQueue(
+  (response) => updateRateLimitNotification("/api/v1/query", response.status),
+);
 
 const ACCESS_TOKEN_STORAGE_KEY = "cao-dashboard-access-token";
 
@@ -111,7 +115,7 @@ async function apiRequest(path, init = {}, signal) {
   };
   let response;
   try {
-    response = await fetch(apiUrl(path), {
+    const send = () => fetch(apiUrl(path), {
       ...init,
       signal,
       cache: "no-store",
@@ -120,6 +124,7 @@ async function apiRequest(path, init = {}, signal) {
         ? csrfHeaders(headers)
         : headers,
     });
+    response = operation === "query" ? await queryRequests(send, signal) : await send();
   } catch (error) {
     debugRemoteBackend({
       event: "request-network-failed", operation,
