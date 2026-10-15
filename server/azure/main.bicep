@@ -10,19 +10,19 @@ param location string = resourceGroup().location
 @description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
 param functionAppName string
 
-@description('Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model with restriction rules or an explicit public-main default action.')
+@description('Default endpoint access. Enabled (default) serves the dashboard over public HTTPS behind GitHub OAuth sign-in; no VPN, proxy, or corporate-network rule is required. Set Disabled only for a deliberately private deployment.')
 @allowed([
   'Disabled'
   'Enabled'
 ])
-param functionPublicNetworkAccess string = 'Disabled'
+param functionPublicNetworkAccess string = 'Enabled'
 
-@description('Default action for unmatched main-site requests. Deny is fail-closed; Allow requires an explicitly approved public-main access model and does not change SCM restrictions.')
+@description('Default action for unmatched main-site requests. Allow (default) is the public-main model: GitHub OAuth remains the access control. Use Deny with explicit rules only for a deliberately restricted deployment. Never changes SCM restrictions.')
 @allowed([
   'Allow'
   'Deny'
 ])
-param functionAccessRestrictionsDefaultAction string = 'Deny'
+param functionAccessRestrictionsDefaultAction string = 'Allow'
 
 @description('Reviewed main-site access restriction rules. Explicitly carry forward existing approved rules during redeployment; omission uses an empty list. Unmatched requests use functionAccessRestrictionsDefaultAction.')
 param functionAccessRestrictions array = []

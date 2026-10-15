@@ -66,21 +66,26 @@ The `server/azure/main.bicep` template creates the following resources in one re
 - A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
 - At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
 - An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
-- An approved ingress topology. The template now defaults the Function App's
-  `publicNetworkAccess` to `Disabled` and unmatched main-site and SCM traffic to
-  `Deny`. Without an existing approved ingress path it is intentionally unreachable. This changes
-  the older implicit public-access baseline; existing deployments must review
-  ingress parameters and preserve their approved restrictions before redeploying.
+- An ingress choice. The template defaults to the public-main model: the
+  Function App's `publicNetworkAccess` is `Enabled`, unmatched main-site traffic
+  is `Allow` with no custom rules, and GitHub OAuth sign-in plus the allowed
+  user, organization, or team list is the access control. No VPN, proxy, or
+  corporate-network rule is required. SCM/Kudu remains independently
+  default-deny. For a deliberately private deployment, set
+  `functionPublicNetworkAccess=Disabled` or `functionAccessRestrictionsDefaultAction=Deny`
+  with explicit rules.
+- After deployment, confirm that tenant automation has not rewritten ingress
+  (for example, `publicNetworkAccess=Disabled` or corporate-network-only service
+  tag rules). Such out-of-band changes aren't Azure Policy denials and aren't
+  prevented by the template; restore the public-main settings described in
+  [Explicit public-main access](#explicit-public-main-access-with-independently-restricted-scm)
+  and ask the automation owner for an exemption if it recurs.
 
 ### Ingress changes on an existing app
 
-The disabled default is not evidence that a subscription requires private-only
-ingress. Establish the applicable subscription and inherited policy requirements
-before changing the deployed access mode. If those requirements cannot be read
-or confirmed by the responsible owner, leave access unchanged; an Audit or
-Compliant status alone does not establish permission to enable public access.
-The blocker is the exact permitted ingress model, not a presumed requirement
-to construct a private endpoint.
+The public-main default does not override a subscription that genuinely requires
+private-only ingress. Establish the applicable subscription and inherited policy requirements
+before changing the deployed access mode.
 
 If the applicable requirements permit restricted public access, the smallest
 repair may be an app access-mode change retaining the existing approved rules,
@@ -92,7 +97,7 @@ set it to `true` only to preserve an approved shared-rule configuration. Keep
 distinct SCM rules out of the main-site array so deployment access does not
 widen application access. Omitting either rule array uses an empty list, not
 the deployed rules. Main-site unmatched requests use
-`functionAccessRestrictionsDefaultAction`, which defaults to `Deny` and accepts
+`functionAccessRestrictionsDefaultAction`, which defaults to `Allow` and accepts
 only `Allow` or `Deny`. SCM's independent default remains `Deny`.
 `functionPublicNetworkAccess=Enabled`
 does not itself grant permission, and allow rules cannot override `Disabled`.

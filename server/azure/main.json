@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "11677100637105602780"
+      "templateHash": "8682065546086382133"
     }
   },
   "parameters": {
@@ -24,24 +24,24 @@
     },
     "functionPublicNetworkAccess": {
       "type": "string",
-      "defaultValue": "Disabled",
+      "defaultValue": "Enabled",
       "allowedValues": [
         "Disabled",
         "Enabled"
       ],
       "metadata": {
-        "description": "Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model with restriction rules or an explicit public-main default action."
+        "description": "Default endpoint access. Enabled (default) serves the dashboard over public HTTPS behind GitHub OAuth sign-in; no VPN, proxy, or corporate-network rule is required. Set Disabled only for a deliberately private deployment."
       }
     },
     "functionAccessRestrictionsDefaultAction": {
       "type": "string",
-      "defaultValue": "Deny",
+      "defaultValue": "Allow",
       "allowedValues": [
         "Allow",
         "Deny"
       ],
       "metadata": {
-        "description": "Default action for unmatched main-site requests. Deny is fail-closed; Allow requires an explicitly approved public-main access model and does not change SCM restrictions."
+        "description": "Default action for unmatched main-site requests. Allow (default) is the public-main model: GitHub OAuth remains the access control. Use Deny with explicit rules only for a deliberately restricted deployment. Never changes SCM restrictions."
       }
     },
     "functionAccessRestrictions": {
