@@ -260,6 +260,23 @@ test('App reads resolve each owner, mint minimally scoped tokens, and revoke bot
   assert.equal(calls.find(({ url }) => url.endsWith('/partner/worker')).init.headers.Authorization, 'Bearer app-partner-token');
 });
 
+test('installed --validate-bundle verifies the bundle at the publication-gate SQUAD_EVIDENCE_BUNDLE path', async (t) => {
+  const f = fixture(t);
+  const bundle = path.join(f.root, 'publication-evidence');
+  await collectWaveBundle({ ...f.options, bundle, now: () => new Date() });
+  const entry = path.join(f.root, WAVE_RUNTIME_ROOT, WAVE_RUNTIME_FILES[0]);
+  const run = (extra) => spawnSync(process.execPath, [entry, '--validate-bundle'], { cwd: f.root, encoding: 'utf8', env: {
+    PATH: process.env.PATH, GITHUB_REPOSITORY: environment.GITHUB_REPOSITORY, SQUAD_WORKFLOW_SHA: revision,
+    SQUAD_ISSUE_NUMBER: environment.SQUAD_ISSUE_NUMBER, GITHUB_RUN_ID: environment.GITHUB_RUN_ID,
+    GITHUB_RUN_ATTEMPT: environment.GITHUB_RUN_ATTEMPT, ...extra,
+  } });
+  assert.equal(run({ SQUAD_EVIDENCE_BUNDLE: bundle }).status, 0);
+  for (const unsafe of ['publication-evidence', `${bundle}/../publication-evidence`, path.parse(bundle).root]) {
+    assert.equal(run({ SQUAD_EVIDENCE_BUNDLE: unsafe }).status, 1);
+  }
+  assert.equal(run({ SQUAD_EVIDENCE_BUNDLE: path.join(f.root, 'missing') }).status, 1);
+});
+
 test('the installed five-module closure imports with Node built-ins only and sanitizes CLI failures', (t) => {
   const f = fixture(t);
   const entry = path.join(f.root, WAVE_RUNTIME_ROOT, WAVE_RUNTIME_FILES[0]);

@@ -282,10 +282,19 @@ export async function collectWaveBundle({ root = process.cwd(), bundle = WAVE_BU
   return manifest;
 }
 
+// Squad's publication gate restores the bundle outside the Agent job and passes its location.
+function validationBundle(environment) {
+  const bundle = environment.SQUAD_EVIDENCE_BUNDLE;
+  if (bundle === undefined || bundle === '') return WAVE_BUNDLE;
+  if (typeof bundle !== 'string' || !path.isAbsolute(bundle) || bundle.includes('\\')
+    || path.normalize(bundle) !== bundle || path.parse(bundle).root === bundle) throw new Error('Unsafe CAO evidence bundle path');
+  return bundle;
+}
+
 export async function runWaveEvidence(args = process.argv.slice(2), { root = process.cwd(), environment = process.env } = {}) {
   if (args.length === 1 && args[0] === '--validate-bundle') {
     const context = waveContext(environment);
-    return validateWaveBundle({ adoption: loadWaveAdoption(root, context), context });
+    return validateWaveBundle({ bundle: validationBundle(environment), adoption: loadWaveAdoption(root, context), context });
   }
   if (args.length) throw new Error('Unsupported CAO wave evidence arguments');
   return collectWaveBundle({ root, environment });
