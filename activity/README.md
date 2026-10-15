@@ -110,6 +110,25 @@ fully expired shards are deleted. The
 ingestion step passes the shard directory to `cao ingest-jsonl --input-dir`,
 which tracks each compacted shard by content hash.
 
+Activity and hosted collection prefer gh-aw's version-1 unified
+`usage/aw_session.jsonl` timeline (published by gh-aw v0.92.0). After download,
+`activity/session-evidence.mjs` associates each session with the execution
+repository, run ID, and attempt from `aw_info.json`, then stores only a safe
+metadata projection in the cached Run's `cao_unified_session` field. This
+projection survives compaction, SQLite ingestion, and normalized publication;
+raw prompts, messages, tool arguments, results, and error bodies are not retained.
+Schema-v5 cached logs are accepted alongside legacy v2/v4 shards.
+
+The canonical adapter prefers the unified timeline for agent, MCP, firewall,
+and skill events, without adding duplicate legacy events for those categories.
+Other run metadata, audit findings, safe outputs, and evaluation evidence still
+come from the enriched run. Runs without a published session retain the
+existing cached-audit parser; `cao ingest --logs` likewise retains its raw
+agent/gateway/firewall parsers when `aw_session.jsonl` is absent. Invalid,
+unsupported, ambiguous, or incorrectly identified sessions fail explicitly
+instead of silently falling back. Untimed session observations are not assigned
+invented event timestamps.
+
 The raw cache defaults to **1 GiB** across all repositories in a job, not per
 shard. Set the repository variable `CAO_ACTIVITY_MAX_RAW_CACHE_BYTES` to override
 it in both Activity and dashboard preparation, or use

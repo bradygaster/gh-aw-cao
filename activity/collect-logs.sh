@@ -156,6 +156,11 @@ for index in "${!repositories[@]}"; do
     exit_code=$repository_exit_code
     break
   fi
+  if ! node activity/session-evidence.mjs "$output_directory/$cache_name" "$shard_prefix" "$target_repository"; then
+    echo "Activity log collection: unified session ingestion failed for $target_repository" >&2
+    exit_code=1
+    break
+  fi
   node "$cao_script" recycle-cache --input-dir "$shard_directory" \
     --retention-days "$window_days" --max-bytes "$max_cache_bytes" || {
       exit_code=$?
