@@ -264,7 +264,12 @@ to revisions; issue/PR samples are observations at capture, not an atomic
 historical snapshot.
 
 The provider's `--validate-bundle` mode performs no collection or credential
-lookup. It checks a restored bundle's original provenance, issue, control,
+lookup. It validates the directory explicitly supplied by native Squad in
+`SQUAD_EVIDENCE_BUNDLE` (including `/tmp/squad-publication-evidence` in Safe
+outputs), or `/tmp/gh-aw/agent/cao-farm` when that variable is absent.
+An empty, missing, or invalid supplied bundle fails closed without falling
+back to the default directory. Collection always retains its existing default.
+It checks a restored bundle's original provenance, issue, control,
 current exact enrollment, complete coverage, closed file inventory, hashes,
 and 24-hour freshness before downstream source analysis. A different current
 run/workflow revision is allowed so triage/planning can use the referenced

@@ -222,6 +222,39 @@ test('restoration rejects missing coverage, unknown files, traversal and symlink
   }
 });
 
+test('Safe outputs validates the restored artifact through SQUAD_EVIDENCE_BUNDLE without collecting evidence', async (t) => {
+  const f = fixture(t);
+  const bundle = path.join(f.root, 'squad-publication-evidence');
+  await collectWaveBundle({ ...f.options, bundle, now: () => new Date() });
+  const entry = path.join(f.root, WAVE_RUNTIME_ROOT, WAVE_RUNTIME_FILES[0]);
+  const validate = (overrides = {}) => spawnSync(process.execPath, [entry, '--validate-bundle'], {
+    cwd: f.root, encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH, GITHUB_REPOSITORY: environment.GITHUB_REPOSITORY,
+      SQUAD_WORKFLOW_SHA: revision, SQUAD_ISSUE_NUMBER: environment.SQUAD_ISSUE_NUMBER,
+      GITHUB_RUN_ID: '2000', GITHUB_RUN_ATTEMPT: '1',
+      SQUAD_EVIDENCE_BUNDLE: bundle, ...overrides,
+    },
+  });
+  const result = validate();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+  assert.doesNotMatch(result.stderr, /research is blocked/);
+  for (const overrides of [
+    { SQUAD_EVIDENCE_BUNDLE: path.join(f.root, 'missing-artifact') },
+    { SQUAD_EVIDENCE_BUNDLE: '' },
+    { SQUAD_ISSUE_NUMBER: '43' },
+  ]) {
+    const rejected = validate(overrides);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /research is blocked/);
+  }
+  f.write('squad-publication-evidence/farm/acme/frontend/SNAPSHOT.md', 'tampered');
+  const rejected = validate();
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /research is blocked/);
+});
+
 test('collection cannot hand off future or expired timestamps', async (t) => {
   for (const offset of [-1, FARM_LIMITS.maxAgeMs + 1]) {
     const f = fixture(t);

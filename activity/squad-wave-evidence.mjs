@@ -285,7 +285,8 @@ export async function collectWaveBundle({ root = process.cwd(), bundle = WAVE_BU
 export async function runWaveEvidence(args = process.argv.slice(2), { root = process.cwd(), environment = process.env } = {}) {
   if (args.length === 1 && args[0] === '--validate-bundle') {
     const context = waveContext(environment);
-    return validateWaveBundle({ adoption: loadWaveAdoption(root, context), context });
+    return validateWaveBundle({ bundle: environment.SQUAD_EVIDENCE_BUNDLE ?? WAVE_BUNDLE,
+      adoption: loadWaveAdoption(root, context), context });
   }
   if (args.length) throw new Error('Unsupported CAO wave evidence arguments');
   return collectWaveBundle({ root, environment });
