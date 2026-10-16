@@ -2,6 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import terminalStyles from '@xterm/xterm/css/xterm.css';
+import stripAnsi from 'strip-ansi';
 import { h } from '../dom.js';
 import { createDebug } from '../debug.js';
 
@@ -30,7 +31,13 @@ export function mountTerminal(root, signal) {
     fontSize: 13,
     screenReaderMode: true,
     // A terminal palette is deliberately independent of dashboard light mode.
-    theme: { background: '#0d1117', foreground: '#e6edf3', red: '#ff7b72' }
+    theme: {
+      background: '#0d1117', foreground: '#e6edf3',
+      black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+      blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#b1bac4',
+      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#7ee787', brightYellow: '#e3b341',
+      brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d4dd', brightWhite: '#f0f6fc'
+    }
   });
   const fit = new FitAddon();
   terminal.loadAddon(fit);
@@ -54,9 +61,12 @@ export function mountTerminal(root, signal) {
   signal.addEventListener('abort', dispose, { once: true });
   if (signal.aborted) dispose();
   return {
-    /** @param {string} data @param {'stdout'|'stderr'} [stream] */
-    write(data, stream = 'stdout') {
-      if (!signal.aborted) terminal.write(stream === 'stderr' ? `\x1b[31m${data}\x1b[39m` : data);
+    /** @param {string} data */
+    plainText(data) { return stripAnsi(data); },
+    /** @param {string} data @param {'stdout'|'stderr'} [_stream] */
+    write(data, _stream = 'stdout') {
+      // Preserve ANSI state across chunks; stderr also carries colored progress.
+      if (!signal.aborted) terminal.write(data);
     },
     reset() { if (!signal.aborted) terminal.reset(); }
   };

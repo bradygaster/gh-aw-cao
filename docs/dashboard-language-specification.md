@@ -1392,12 +1392,22 @@ opens the command's full-page, read-only console, with no separate
 terminal-window option. Its first output line shows the executed command.
 Terminal emulation cannot be expressed by data marks and does not query or
 derive dashboard evidence.
+Displayed `gh aw` and `./cao.sh` commands use a pseudo-terminal with ANSI color
+enabled, combining stdout/stderr in terminal order.
+Prompts and pagers are disabled. Stdin-backed commands and
+preparation reads retain separate pipes.
+The console preserves standard, bright, indexed, and true-color ANSI sequences
+across streamed chunks and retained replay on both stdout and stderr, without
+overriding command-provided colors or assuming that stderr always means failure.
+Authentication and machine-readable preparation reads do not force terminal
+formatting.
 Completion, failure, timeout, or cancellation leaves the console open.
 Back navigation detaches without canceling work, and retained output remains
 available in Commands. Another run requires reopening the approval dialog.
 The console offers **Copy** instead of a cancellation button. It copies the last
 HTTPS pull-request URL found in retained output, or the transcript when no PR
-URL is available. Result URLs support GitHub Enterprise hosts, ports, and path
+URL is available. Copied transcripts are plain text with ANSI formatting removed;
+displayed and retained output keeps its colors. Result URLs support GitHub Enterprise hosts, ports, and path
 prefixes, exclude credentials, query strings, and fragments, and persist with
 the command. **Open pull request** opens the result separately without opener
 access. Other terminal URLs use HTTP/HTTPS link detection with the same
