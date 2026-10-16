@@ -3,7 +3,7 @@ name: "SelfCare / Documentation Discoverability"
 description: Audits whether coding agents can navigate CAO documentation from the published llms.txt entry point without repository-wide search.
 intent: Detect material documentation-routing defects by measuring whether representative CAO development tasks reach authoritative guidance from the public agent entry point within two document hops.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

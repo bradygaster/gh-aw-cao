@@ -3,7 +3,7 @@ name: "SelfCare / View Reuse"
 description: Refactor one over-specialized dashboard view into reusable, declaratively configured subcomponents
 intent: Keep dashboard rendering generic by replacing one evidenced view-specific implementation with tested reusable subcomponents represented by Dashboard Language.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

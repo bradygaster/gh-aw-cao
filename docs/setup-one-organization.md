@@ -53,8 +53,8 @@ For both browser flows:
 Setup verifies the exact selected repository membership with a short-lived App
 installation token and does not accept a manual-verification fallback. The
 write App defaults to the control repository so review outputs have an approved
-destination. Ensure every dispatched worker admits the write App's
-`APP-SLUG[bot]` login.
+destination. Orchestrators dispatch workers with the workflow token, so workers
+do not need to admit the write App's `APP-SLUG[bot]` login.
 
 ## Validate and Commit
 

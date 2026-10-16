@@ -67,8 +67,8 @@ github-token: ${{ vars.GH_AW_GITHUB_AUTH_MODE == 'pat' && secrets[fromJSON(vars.
 
 safe-outputs:
   github-app:
-    client-id: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_WRITE_APP_ID || '' }}
-    private-key: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY || '' }}
+    client-id: ${{ !(env.CAO_ROLE == 'orchestrator' && ((inputs.safe_output_mode || 'review') == 'review' && (inputs.safe_output_repo || github.repository) || inputs.target_repo || github.repository) == github.repository) && (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_WRITE_APP_ID || '' }}
+    private-key: ${{ !(env.CAO_ROLE == 'orchestrator' && ((inputs.safe_output_mode || 'review') == 'review' && (inputs.safe_output_repo || github.repository) || inputs.target_repo || github.repository) == github.repository) && (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY || '' }}
     ignore-if-missing: true
     repositories:
       - ${{ inputs.safe_output_repo || github.repository }}
@@ -165,22 +165,6 @@ tools:
 jobs:
   pre-activation:
     pre-steps:
-      - name: Generate CAO pre-activation GitHub App token
-        id: cao_pre_activation_app_token
-        env:
-          CAO_GITHUB_APP_ID: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
-          CAO_GITHUB_APP_PRIVATE_KEY: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
-        if: ${{ env.CAO_GITHUB_APP_ID != '' && env.CAO_GITHUB_APP_PRIVATE_KEY != '' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
-          private-key: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          github-api-url: ${{ github.api_url }}
-          permission-actions: read
-          permission-contents: read
-
       - name: Checkout CAO control modules
         id: cao_control_checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -192,6 +176,46 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           token: ${{ github.token }}
+
+      - name: Resolve CAO pre-activation read scope
+        id: cao_pre_activation_read_scope
+        env:
+          CAO_POLICY_FILE: ${{ github.workspace }}/.cao/.github/workflows/cao.json
+          CAO_CONTROL_OWNER: ${{ github.repository_owner }}
+          CAO_CONTROL_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -uo pipefail
+          # Scope the read token to the control repository plus the same-owner
+          # repositories that the reviewed policy allows. Any failure keeps the
+          # control-repository-only scope; policy admission still fails closed.
+          repositories="$CAO_CONTROL_NAME"
+          if allowed="$(jq -er --arg owner "$CAO_CONTROL_OWNER" '
+                [(.["control-plane"].scope["allowed-repositories"] // [])[]
+                  | select(type == "string")
+                  | split("/")
+                  | select(length == 2 and (.[0] | ascii_downcase) == ($owner | ascii_downcase))
+                  | .[1]]
+                | unique | join(",")' "$CAO_POLICY_FILE" 2>/dev/null)" && [[ -n "$allowed" ]]; then
+            repositories="$repositories,$allowed"
+          fi
+          echo "repositories=$repositories" >> "$GITHUB_OUTPUT"
+          echo "[cao] Pre-activation read scope resolved from the reviewed policy."
+
+      - name: Generate CAO pre-activation GitHub App token
+        id: cao_pre_activation_app_token
+        env:
+          CAO_GITHUB_APP_ID: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
+          CAO_GITHUB_APP_PRIVATE_KEY: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
+        if: ${{ env.CAO_GITHUB_APP_ID != '' && env.CAO_GITHUB_APP_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_READ_APP_ID || '' }}
+          private-key: ${{ (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && secrets.GH_AW_GITHUB_READ_APP_PRIVATE_KEY || '' }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.cao_pre_activation_read_scope.outputs.repositories || github.event.repository.name }}
+          github-api-url: ${{ github.api_url }}
+          permission-actions: read
+          permission-contents: read
 
       - name: Resolve CAO control runtime
         id: cao_control_source

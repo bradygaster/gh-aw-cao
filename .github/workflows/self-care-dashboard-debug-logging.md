@@ -3,7 +3,7 @@ name: "SelfCare / Dashboard Debug Logging"
 description: Grow privacy-preserving dashboard debug coverage one JavaScript file at a time
 intent: Improve dashboard diagnosability one subsystem at a time without changing behavior or exposing sensitive data.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

@@ -3,7 +3,7 @@ name: "SelfCare / Server Go Logging"
 description: Refactor one Go server subsystem with safe debug logging and real unit tests
 intent: Improve one server Go subsystem at a time through a behavior-preserving refactor, privacy-preserving use of the internal logger, and focused unit tests without mocks.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

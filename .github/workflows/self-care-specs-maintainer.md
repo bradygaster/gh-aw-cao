@@ -3,7 +3,7 @@ name: "SelfCare / Specs Maintainer"
 description: Keeps normative specifications aligned with recently merged pull requests.
 intent: Keep the normative CAO specifications under specs/ accurate by applying small, evidence-backed updates for behavior introduced by recently merged pull requests.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

@@ -38,12 +38,12 @@ test("worker workflows allow service-account dispatches", () => {
   for (const [name, source] of workers) {
     assert.match(
       source,
-      /^on:\n  bots: \["github-actions\[bot\]", "cao-githubnext-gh-aw-cao-write\[bot\]"\]/m,
+      /^on:\n  bots: \["github-actions\[bot\]"\]/m,
       name,
     );
     const generated = workflow(name.replace(/\.md$/, ".lock.yml"));
     assert.match(generated, /GH_AW_REQUIRED_ROLES: "admin,maintainer,write"/, name);
-    assert.match(generated, /GH_AW_ALLOWED_BOTS: "github-actions\[bot\],cao-githubnext-gh-aw-cao-write\[bot\]"/, name);
+    assert.match(generated, /GH_AW_ALLOWED_BOTS: "github-actions\[bot\]"/, name);
   }
 });
 

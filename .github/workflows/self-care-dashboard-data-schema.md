@@ -4,7 +4,7 @@ description: Tracks pseudo schemas for the data files deployed with the CAO dash
 intent: Keep the deployed dashboard data contract synchronized with the schemas inferred from every advertised source.
 
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

@@ -3,7 +3,7 @@ name: "SelfCare / Hosted Health"
 description: Checks whether cao.githubnext.com is healthy using hosted CAO and OTEL MCP evidence
 intent: Publish one current, evidence-backed production health report covering availability, contention, inefficiency, and memory pressure.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

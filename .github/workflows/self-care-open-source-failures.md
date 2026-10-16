@@ -4,7 +4,7 @@ description: Clusters failed runs represented in the public CAO dashboard and fi
 intent: Reduce maintainer effort identifying recurring actionable failures across public projects represented in the CAO dashboard.
 
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

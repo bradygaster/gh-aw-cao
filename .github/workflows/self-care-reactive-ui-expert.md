@@ -3,7 +3,7 @@ name: "SelfCare / Reactive UI Expert"
 description: Keep dashboard views declarative, with JavaScript reserved for capabilities Dashboard Language cannot express
 intent: Keep dashboard UI maintenance safe and efficient by replacing JavaScript view sources with pure JSON Dashboard Language queries and views before considering reactive JavaScript.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

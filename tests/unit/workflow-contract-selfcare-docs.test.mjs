@@ -72,7 +72,7 @@ test("SelfCare data acquisition audit refreshes its specification", () => {
   const source = workflow("self-care-data-acquisition-audit.md");
   const compiled = workflow("self-care-data-acquisition-audit.lock.yml");
 
-  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]", "cao-githubnext-gh-aw-cao-write\[bot\]"\]/);
+  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]"\]/);
   assert.match(source, /campaign: self-care\n\s+role: worker\n\s+worker: data-acquisition-audit/);
   assert.match(source, /safe_output_mode` is `live`/);
   assert.match(source, /draft: true/);
@@ -252,7 +252,7 @@ test("SelfCare specs maintainer fixes missing specification updates in W3C style
   const compiled = workflow("self-care-specs-maintainer.lock.yml");
 
   assert.match(source, /^name: "SelfCare \/ Specs Maintainer"$/m);
-  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]", "cao-githubnext-gh-aw-cao-write\[bot\]"\]/);
+  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]"\]/);
   assert.match(source, /imports:\n\s+- uses: shared\/control\.md/);
   assert.match(source, /campaign: self-care\n\s+role: worker\n\s+worker: specs-maintainer/);
   assert.match(source, /safe_output_mode` is `live`/);
@@ -280,7 +280,7 @@ test("SelfCare docs build-time investigator rotates evidenced recommendations", 
   const compiled = workflow("self-care-docs-build-time-investigator.lock.yml");
 
   assert.match(source, /^name: "SelfCare \/ Docs Build Time"$/m);
-  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]", "cao-githubnext-gh-aw-cao-write\[bot\]"\]/);
+  assert.match(source, /on:\n\s+bots: \["github-actions\[bot\]"\]/);
   assert.match(source, /campaign: self-care\n\s+role: worker\n\s+worker: docs-build-time-investigator/);
   assert.match(source, /safe_output_mode` is `live`/);
   assert.match(source, /at most the latest 20 completed `docs\.yml` runs from the last 14 days/);

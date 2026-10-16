@@ -3,7 +3,7 @@ name: "SelfCare / Pages Health"
 description: Audits every deployed CAO dashboard view for browser errors and Lighthouse performance across desktop, mobile, and low-bandwidth profiles
 intent: Keep one current production health report for every deployed dashboard view, with actionable JavaScript improvements grounded in browser and Lighthouse evidence.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

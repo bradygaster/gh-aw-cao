@@ -3,7 +3,7 @@ name: "SelfCare / Release Blogger"
 description: Turns the day's release or pre-release into a documentation blog post
 intent: Help readers understand each Central Agentic Ops release by publishing an evidence-backed blog post describing what changed and why it matters.
 on:
-  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
+  bots: ["github-actions[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:
