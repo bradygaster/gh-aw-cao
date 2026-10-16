@@ -36,7 +36,7 @@ vi.mock('../../src/data-processor.js', async () => ({
 
 import { renderConfigurationView } from '../../src/components/configuration-view.js';
 import { setDeclaredCliActions } from '../../src/components/cli-actions.js';
-import { renderUiElement } from '../../src/components/ui-elements.js';
+import { renderUiElementAsync } from '../../src/components/ui-elements.js';
 import { setAutomaticDashboardDataUpdatesEnabled } from '../../src/dashboard-data-updates.js';
 import { fullDebugUrl, isDebugEnabled } from '../../src/debug.js';
 
@@ -385,11 +385,11 @@ describe('Configuration dashboard view', () => {
     expect(manageNavigation.pages).toContain('maintenance');
   });
 
-  it('wires the Settings view to a supported UI element', () => {
+  it('wires the Settings view to a supported UI element', async () => {
     const dashboard = authoritativeDashboard.dashboard;
     const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'configuration');
     const [view] = page.views;
-    const rendered = renderUiElement(view.element, {
+    const rendered = await renderUiElementAsync(view.element, {
       ...context({ document: { version: 1 }, raw: '', diagnostics: [] }),
       title: view.title,
       description: view.description,
