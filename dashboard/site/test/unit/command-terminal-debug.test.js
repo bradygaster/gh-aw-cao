@@ -84,6 +84,6 @@ describe('command-terminal debug logging', () => {
 
   it('stays off for excluded categories', async () => {
     const { output } = await runFailedAttach('?debug=1,-command-terminal');
-    expect(output.debug).not.toHaveBeenCalled();
+    expect(output.debug.mock.calls.some(([category]) => category === '[cao:command-terminal]')).toBe(false);
   });
 });

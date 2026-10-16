@@ -28,9 +28,10 @@ export const shellStyles = `.app-shell { height: 100vh; min-height: 0; display: 
 .dashboard-page[data-view-mode="table"] [data-view-mode-content="chart"],
 .dashboard-page[data-view-mode="table"] [data-view-mode-content="card"],
 .dashboard-page[data-view-mode="card"] [data-view-mode-content="chart"] { display: none; }
-.dashboard-page[data-view-mode="table"] [data-mobile-card-list],
+.dashboard-page[data-view-mode="table"] [data-mobile-card-list]:not(.table-card-list),
 .dashboard-page[data-view-mode="card"] [data-view-mode-content="table"] > .table-region { display: none; }
 .mobile-table-card-list { display: none; }
+.mobile-table-card-list.table-card-list { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--canvas); }
 .dashboard-page[data-view-mode="card"] [data-mobile-card-list] { display: flex; flex-direction: column; gap: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--canvas); }
 .mobile-table-card-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 48px; position: relative; z-index: 6; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--canvas-subtle); }
 .mobile-table-card-toolbar-title { color: var(--muted); font-size: .875rem; font-weight: 600; }
@@ -260,6 +261,9 @@ export const shellStyles = `.app-shell { height: 100vh; min-height: 0; display: 
 .cli-action-dialog::backdrop { background: color-mix(in srgb, var(--canvas-inset) 72%, transparent); }
 .cli-action-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--canvas-subtle); }
 .cli-action-dialog-header h2 { margin: 0; font-size: 1rem; }
+.command-console-heading { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.command-console-heading output { display: block; color: var(--muted); font-size: 0.85rem; }
+.command-terminal .cli-action-dialog-close { flex-shrink: 0; }
 .cli-action-dialog-close { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .cli-action-dialog-close:hover { background: var(--neutral-muted); color: var(--fg); }
 .cli-action-dialog-body { min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 18px 16px; overflow-y: auto; line-height: 1.5; }

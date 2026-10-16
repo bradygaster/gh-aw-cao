@@ -2508,7 +2508,8 @@
             "style": "entity-cards",
             "card": "maintenance-campaign",
             "icon": "workflow",
-            "action": "update-repository"
+            "action": "update-repository",
+            "action-context": ["campaign"]
           }
         }
       ]

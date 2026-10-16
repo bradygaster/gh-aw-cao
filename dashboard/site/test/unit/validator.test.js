@@ -32,6 +32,25 @@ dashboard:
 `;
 
 describe('dashboard document validation', () => {
+  it('accepts declared table card templates and rejects unresolved references and other marks', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const view = document.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'commands').views[0];
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    view['lazy-list'] = false;
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+    view['lazy-list'] = true;
+    view.encoding.card = 'missing-template';
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+    view.encoding.card = 'command';
+    view.mark = 'list';
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+  });
   describe('scatter reduction options', () => {
     /** @param {unknown} scatter @param {string} [chart] @param {string} [mark] */
     function validate(scatter, chart = 'scatter', mark = 'chart') {
