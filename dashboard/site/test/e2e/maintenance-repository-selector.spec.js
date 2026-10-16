@@ -225,16 +225,13 @@ for (const { width, height = 900, empty = false, crowded = false } of [
       await page.screenshot({ path: testInfo.outputPath(`repository-selector-${width}.png`), fullPage: true });
       await testInfo.attach(`repository-selector-${width}`, { path: testInfo.outputPath(`repository-selector-${width}.png`), contentType: 'image/png' });
       await confirm.click();
-      await expect.poll(() => executions).toEqual(['./cao.sh add --repository octo/example']);
-      await expect.poll(async () => page.evaluate(async () => {
-        const response = await fetch('./__cli_commands?limit=50');
-        if (!response.ok) throw new Error(`Command history failed: HTTP ${response.status}`);
-        return (await response.json()).commands.map((/** @type {{ status: string }} */ command) => command.status);
-      })).toEqual(['completed']);
+      const consoleView = page.getByRole('region', { name: 'Command console log', exact: true });
+      await expect(consoleView).toBeVisible();
+      await expect(consoleView.getByRole('status')).toContainText('completed');
       expect(approvals).toEqual(['./cao.sh add --repository octo/example']);
       expect(executions).toEqual(approvals);
-      await expect(dialog).not.toBeVisible();
-      await expect(add).toBeFocused();
+      await page.getByRole('button', { name: 'Back to Commands', exact: true }).click();
+      await page.goto(`${preview.url}/#page-maintenance`);
       await add.click();
       await expect(confirm).toBeDisabled();
       await expect(input).toHaveValue('');
