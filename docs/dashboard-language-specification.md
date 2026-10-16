@@ -1386,9 +1386,19 @@ A list may bind its primary `action` to every worker-produced source row with
 The approval dialog lists one fully resolved CLI command per row, and explicit
 approval enqueues each invocation independently. The source query owns target
 selection, distinctness, and ordering; display limits must not narrow the batch.
-Empty, unavailable, incomplete, paginated, or invalid target sets cannot execute
+Empty, unavailable, truncated, paginated, or invalid target sets cannot execute
 and must never fall back to the dashboard's control repository. This binding
 requires a non-lazy list. Additional `list.actions` remain independent controls.
+Partial inventory evidence does not truncate a fully returned query result:
+the dialog MUST warn that only the explicitly listed targets are included,
+and MUST NOT imply that unobserved repositories or campaigns will be targeted.
+Unknown completeness remains unavailable for batch approval.
+
+An action MAY declare `preview-command`, a non-empty, single-line token prefix of its
+`command`, for a compact batch preview. The dialog shows that basic command for
+the first target with the selected argument flags and the total target count.
+All fully resolved commands MUST remain available in an expandable disclosure;
+copying and approval MUST use the full commands, never the abbreviated preview.
 
 Batch actions with boolean arguments open the shared approval dialog before
 queuing any commands. Each checkbox choice applies to every target in the
