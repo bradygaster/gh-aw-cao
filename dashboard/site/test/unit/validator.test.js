@@ -537,7 +537,7 @@ describe('dashboard document validation', () => {
       ok: false,
       errors: expect.arrayContaining([{
         code: 'DLS-E015',
-        message: 'query "unused-run-query" is not used by a view, callout, or another retained query.',
+        message: 'query "unused-run-query" is not used by a view, callout, data status, or another retained query.',
         path: `$.dashboard.queries[${document.dashboard.queries.length - 1}].name`
       }])
     });
@@ -648,7 +648,7 @@ describe('dashboard document validation', () => {
     const document = JSON.parse(authoritativeDashboardSource);
     const overview = document.dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'overview');
     const header = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-header');
-    expect(header.config[key]).toBe(true);
+    header.config[key] = true;
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
     header.config[key] = 'true';
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);

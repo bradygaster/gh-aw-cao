@@ -17,11 +17,11 @@ afterEach(() => {
 });
 
 describe('Overview ingestion status', () => {
-  it('opts into the shared lifecycle indicator without adding data queries', () => {
+  it('leaves ingestion status to the top-right indicator without adding data queries', () => {
     const page = authoritativeDashboard.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'overview');
     const header = page.views.find((/** @type {{ id: string }} */ view) => view.id === contract.view);
     expect(header.element).toBe('factory-header');
-    expect(header.config[contract.config]).toBe(true);
+    expect(header.config[contract.config] === true).toBe(contract.enabled);
     expect(header.data.sources).toEqual(['overview-header-presentation', 'overview-rhythm']);
   });
 
@@ -79,7 +79,7 @@ describe('Overview ingestion status', () => {
     updateRateLimitNotification('/api/v1/query', 429);
     expect(status.querySelector('strong')?.textContent).toBe('Rate limited');
     expect(status.querySelector('.octicon-alert')).not.toBeNull();
-    expect(headerStatus.querySelector('.octicon-alert')).not.toBeNull();
+    expect(headerStatus.querySelector('.octicon-stop')).not.toBeNull();
     updateRateLimitNotification('/api/v1/query', 200);
     expect(status.querySelector('strong')?.textContent).toBe('Current');
   });
