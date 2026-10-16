@@ -3,7 +3,7 @@ name: "SelfCare / Dashboard Performance"
 description: Improves the highest-ROI small dashboard performance bottleneck evidenced by CFO, CTO, and CSO Lighthouse journeys
 intent: Maximize dashboard Lighthouse performance one trace-backed, non-repeating small win at a time without weakening quality gates.
 on:
-  bots: ["github-actions[bot]"]
+  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

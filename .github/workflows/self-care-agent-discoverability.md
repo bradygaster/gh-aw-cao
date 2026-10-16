@@ -3,7 +3,7 @@ name: "SelfCare / Agent Discoverability"
 description: Audits the published CAO dashboard entry point as an external agent and verifies cost-appropriate routing
 intent: Keep the published CAO dashboard independently discoverable to agents through safe, efficient skill, artifact, MCP, and SQLite routes without UI scraping.
 on:
-  bots: ["github-actions[bot]"]
+  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

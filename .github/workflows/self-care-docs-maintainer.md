@@ -3,7 +3,7 @@ name: "SelfCare / Docs Maintainer"
 description: Keeps documentation aligned with recent merged changes and architecture decisions.
 intent: Keep user-facing CAO documentation accurate by applying small, evidence-backed updates from recent merged implementation changes and ADRs.
 on:
-  bots: ["github-actions[bot]"]
+  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

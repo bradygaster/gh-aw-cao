@@ -3,7 +3,7 @@ name: "SelfCare / Glossary"
 description: Maintains the documentation glossary from recent merged pull requests and code changes
 intent: Keep the Central Agentic Ops glossary current with repository-specific terms and definitions supported by recent merged-change evidence.
 on:
-  bots: ["github-actions[bot]"]
+  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

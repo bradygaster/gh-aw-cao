@@ -70,8 +70,7 @@ Paste private keys only into the secure prompts.
 The read App must cover the control repository and every exact repository in
 the policy. The write App must cover the control repository for review output;
 repeat `--write-repository` only for additional approved output repositories.
-Orchestrators dispatch workers with the workflow token, so workers do not need
-to admit the write App's `APP-SLUG[bot]` login.
+Ensure every dispatched worker admits the write App's `APP-SLUG[bot]` login.
 
 ## Validate and Commit
 

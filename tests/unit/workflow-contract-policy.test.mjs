@@ -362,17 +362,7 @@ test("control workflows deny before activation through one shared admission cont
   assert.match(sharedControl, /Generate CAO pre-activation GitHub App token/);
   assert.match(sharedControl, /actions\/create-github-app-token@[0-9a-f]{40} # v3\.2\.0/);
   assert.match(sharedControl, /permission-actions: read[\s\S]*?permission-contents: read/);
-  assert.match(stepBlock(sharedControl, "Generate CAO pre-activation GitHub App token"), /repositories: \$\{\{ steps\.cao_pre_activation_read_scope\.outputs\.repositories \|\| github\.event\.repository\.name \}\}/);
-  const readScope = stepBlock(sharedControl, "Resolve CAO pre-activation read scope");
-  assert.match(readScope, /CAO_POLICY_FILE: \$\{\{ github\.workspace \}\}\/\.cao\/\.github\/workflows\/cao\.json/);
-  assert.match(readScope, /repositories="\$CAO_CONTROL_NAME"/);
-  assert.match(readScope, /\["control-plane"\]\.scope\["allowed-repositories"\]/);
-  assert.match(readScope, /ascii_downcase\) == \(\$owner \| ascii_downcase\)/);
-  assert.ok(
-    sharedControl.indexOf("name: Checkout CAO control modules") < sharedControl.indexOf("name: Resolve CAO pre-activation read scope")
-      && sharedControl.indexOf("name: Resolve CAO pre-activation read scope") < sharedControl.indexOf("name: Generate CAO pre-activation GitHub App token"),
-    "pre-activation read scope must come from the policy checked out at the workflow SHA",
-  );
+  assert.match(stepBlock(sharedControl, "Generate CAO pre-activation GitHub App token"), /repositories: \$\{\{ github\.event\.repository\.name \}\}/);
   assert.match(sharedControl, /CAO_API_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(sharedControl, /name: Checkout CAO control modules/);
   assert.match(sharedControl, /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1/);

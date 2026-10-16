@@ -229,14 +229,7 @@ test("authentication prefers an optional GitHub App and retains bounded fallback
 
   assert.match(control, /github-app:\n\s+client-id: \$\{\{ \(vars\.GH_AW_GITHUB_AUTH_MODE == 'app' \|\| vars\.GH_AW_GITHUB_AUTH_MODE == ''\)[\s\S]*?vars\.GH_AW_GITHUB_READ_APP_ID/);
   assert.match(control, /private-key: \$\{\{ \(vars\.GH_AW_GITHUB_AUTH_MODE == 'app' \|\| vars\.GH_AW_GITHUB_AUTH_MODE == ''\)[\s\S]*?secrets\.GH_AW_GITHUB_READ_APP_PRIVATE_KEY/);
-  const orchestratorLocalDispatch = "!(env.CAO_ROLE == 'orchestrator' && ((inputs.safe_output_mode || 'review') == 'review' && (inputs.safe_output_repo || github.repository) || inputs.target_repo || github.repository) == github.repository)";
-  const writeApp = /safe-outputs:\n\s+github-app:\n\s+client-id: (.*)\n\s+private-key: (.*)\n/.exec(control);
-  assert.ok(writeApp, "missing safe-output write App credentials");
-  assert.ok(
-    writeApp[1].startsWith(`\${{ ${orchestratorLocalDispatch} && (vars.GH_AW_GITHUB_AUTH_MODE == 'app' || vars.GH_AW_GITHUB_AUTH_MODE == '') && vars.GH_AW_GITHUB_WRITE_APP_ID`),
-    "orchestrators must dispatch control-repository workers with the workflow token, not the write App",
-  );
-  assert.ok(writeApp[2].startsWith(`\${{ ${orchestratorLocalDispatch} && (vars.GH_AW_GITHUB_AUTH_MODE == 'app'`));
+  assert.match(control, /safe-outputs:\n\s+github-app:\n\s+client-id: \$\{\{ \(vars\.GH_AW_GITHUB_AUTH_MODE == 'app' \|\| vars\.GH_AW_GITHUB_AUTH_MODE == ''\)[\s\S]*?vars\.GH_AW_GITHUB_WRITE_APP_ID/);
   assert.match(control, /private-key: \$\{\{ \(vars\.GH_AW_GITHUB_AUTH_MODE == 'app' \|\| vars\.GH_AW_GITHUB_AUTH_MODE == ''\)[\s\S]*?secrets\.GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY/);
   assert.match(control, /github-token: \$\{\{ vars\.GH_AW_GITHUB_AUTH_MODE == 'pat'[\s\S]*?GH_AW_GITHUB_READ_PAT_REPOSITORIES[\s\S]*?GH_AW_GITHUB_AUTH_MODE == '' && secrets\.GH_AW_GITHUB_READ_PAT/);
   assert.doesNotMatch(control, /GH_AW_GITHUB_AUTH_MODE != 'pat' && secrets\.GH_AW_GITHUB_(?:READ|WRITE)_PAT/);

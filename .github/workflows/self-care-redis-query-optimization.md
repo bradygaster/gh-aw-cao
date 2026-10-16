@@ -3,7 +3,7 @@ name: "SelfCare / Redis Query Optimization"
 description: Improve one Redis-backed dashboard query bottleneck using reproducible synthetic benchmarks and cross-engine parity
 intent: Reduce Redis-backed dashboard query latency without changing query results or weakening fallback correctness.
 on:
-  bots: ["github-actions[bot]"]
+  bots: ["github-actions[bot]", "cao-githubnext-gh-aw-cao-write[bot]"]
   workflow_dispatch:
     inputs:
       target_repo:

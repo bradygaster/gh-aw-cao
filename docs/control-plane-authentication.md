@@ -192,10 +192,9 @@ bundled into one job or one secret.
 - Confirm the chosen credential covers every enrolled repository but no unrelated repository.
 - Confirm the read App has no write permissions.
 - Install the write App only where approved safe outputs require writes.
-- Orchestrators dispatch control-repository workers with the workflow token,
-  so workers admit `github-actions[bot]` and never need the write App's
-  `APP-SLUG[bot]` login. A successful pre-activation job with skipped
-  activation is not a successful worker run.
+- For App profiles, confirm the write App's bot login (`APP-SLUG[bot]`) is
+  admitted by every worker workflow it may dispatch. A successful
+  pre-activation job with skipped activation is not a successful worker run.
 - For an enterprise App profile, mint and test the read token separately for every enrolled organization, then perform and clean up a reversible write probe using only the write App in an approved output repository.
 - Confirm PAT approval, expiration, resource owner, and API compatibility when using a token.
 - For a PAT profile, prove independently that the read PAT can read every enrolled repository but cannot perform the selected reversible write probe, then prove that the write PAT can perform and clean up that probe only in an approved output repository.

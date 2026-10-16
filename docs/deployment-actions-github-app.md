@@ -73,12 +73,10 @@ Grant only the permissions that your installed campaigns need. For more informat
    - Setup uses a short-lived App installation token to verify the exact
      selected repository membership and fails closed rather than relying on
      manual verification.
-1. Do not add the write App's `APP-SLUG[bot]` login to worker `on.bots`
-   allowlists. Orchestrators dispatch control-repository workers with the
-   workflow token, so workers admit only `github-actions[bot]`. The write App
-   is reserved for safe outputs on approved repositories. A run whose
-   pre-activation job succeeds while activation is skipped has not executed
-   the worker.
+1. Add the write App's `APP-SLUG[bot]` login to the `on.bots` allowlist of
+   every worker workflow that the App may dispatch, then recompile those
+   workflow sources. A run whose pre-activation job succeeds while activation
+   is skipped has not executed the worker.
 1. Confirm that the helper stored the client IDs as variables and the private keys as secrets. For the names, see [Configuration reference](#configuration-reference). The helper passes private keys to `gh secret set` through standard input, so they are never written to disk or passed as command arguments.
 1. Delete any `GH_AW_GITHUB_READ_PAT`, `GH_AW_GITHUB_WRITE_PAT`, or `GH_AW_GITHUB_TOKEN` secrets. If you leave them in place and an app is misconfigured, CAO silently uses the PAT instead.
 1. Run the CAO Activity workflow. Its first successful default-branch run triggers the CAO Dashboard workflow automatically. For the remaining steps, see [Deploying the dashboard](deployment-actions.md#deploying-the-dashboard).
