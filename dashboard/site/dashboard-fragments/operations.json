@@ -2397,7 +2397,7 @@
         {
           "id": "maintenance-repositories",
           "title": "Repositories",
-          "description": "Installed and current gh-aw compiler versions observed for each repository.",
+          "description": "Installed and current gh-aw compiler versions observed for each repository. Select a repository to open its GitHub home page.",
           "data": {
             "source": "maintenance-repositories"
           },
@@ -2434,6 +2434,7 @@
             "card": "maintenance-repository",
             "icon": "repo",
             "action": "upgrade-repository",
+            "action-context": ["repository"],
             "actions": ["add-repository"]
           }
         }

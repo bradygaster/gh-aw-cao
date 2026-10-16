@@ -108,6 +108,55 @@ const workerLoadingProgressListeners = new Set();
 const workerLoadingProgressOperations = new Set();
 /** @type {Set<(versions: { oldVersion: number, newVersion: number }) => void>} */
 const databaseUpgradeListeners = new Set();
+/** @type {Map<number, (event: Record<string, any>) => void>} */
+const cliQueueOutputListeners = new Map();
+
+export function cliQueueAvailable() {
+  return Reflect.get(globalThis, '__CLI_QUEUE__') === true;
+}
+
+/** @param {string[]} names @param {{ pages: unknown[], queries?: unknown[] }} context */
+function usesCliQueueSources(names, context) {
+  return resolveDashboardQuerySources(context.queries ?? [], names)
+    .some((name) => name === 'cli-commands' || name === 'cli-command-summary' || name === 'cli-command-statuses');
+}
+
+/**
+ * All command lifecycle and output traffic stays in the data worker.
+ * @param {Record<string, unknown>} payload
+ * @param {{ signal?: AbortSignal, onOutput?: (event: Record<string, any>) => void }} [options]
+ * @returns {Promise<any>}
+ */
+export function requestCliQueue(payload, options = {}) {
+  if (!cliQueueAvailable()) return Promise.reject(new Error('Command queue is unavailable in this dashboard.'));
+  getWorker()?.postMessage({
+    operation: 'configure-cli-queue', enabled: true,
+    endpoint: new URL('./__cli_commands', globalThis.location.href).href
+  });
+  return Promise.resolve(processRequest({
+    operation: 'cli-queue', ...payload, cliQueueOutput: options.onOutput
+  }, () => { throw new Error('Command queue requires the data worker.'); }, false, options.signal));
+}
+
+/** @param {Record<string, unknown>} command @param {AbortSignal} [signal] */
+export function enqueueCliCommand(command, signal) {
+  return requestCliQueue({ action: 'enqueue', command }, { signal });
+}
+
+/** @param {string} commandId @param {(event: Record<string, any>) => void} onOutput @param {AbortSignal} [signal] @param {number} [after] */
+export function attachCliCommand(commandId, onOutput, signal, after = 0) {
+  return requestCliQueue({ action: 'attach', commandId, after }, { signal, onOutput });
+}
+
+/** @param {string} commandId @param {AbortSignal} [signal] */
+export function cancelCliCommand(commandId, signal) {
+  return requestCliQueue({ action: 'cancel', commandId }, { signal });
+}
+
+/** @param {string} commandId @param {AbortSignal} [signal] */
+export function retryCliCommand(commandId, signal) {
+  return requestCliQueue({ action: 'retry', commandId, idempotencyKey: crypto.randomUUID() }, { signal });
+}
 
 /**
  * Adds supported main-thread behavior to a serializable worker notification.
@@ -456,6 +505,7 @@ export function processRepositoryMemoryFile(path, content, signal) {
  * @returns {Promise<Record<string, import('./presenter.js').LogicalSourceInput>>}
  */
 export function loadCanonicalDashboardSources(sourceUrl, sourceNames, context, pagination, options = {}) {
+  if (usesCliQueueSources(sourceNames, context)) return loadCanonicalDashboardPage(sourceNames, context, pagination, options);
   if (githubDashboardDependencies(sourceNames, context)) {
     if (usesRemoteDataBackend()) return loadCanonicalDashboardPage(sourceNames, context, pagination, options);
     return loadCanonicalDashboardSources(sourceUrl, [], context, undefined, {})
@@ -529,7 +579,7 @@ export function loadCanonicalDashboardPage(sourceNames, context, pagination, opt
       ));
     })();
   }
-  if (usesRemoteDataBackend()) {
+  if (usesRemoteDataBackend() && !usesCliQueueSources(sourceNames, context)) {
     return queryRemoteDashboard(sourceNames, context, pagination, options).then(({ sources }) => sources);
   }
   return /** @type {Promise<Record<string, import('./presenter.js').LogicalSourceInput>>} */ (processRequest(
@@ -637,7 +687,7 @@ export function subscribeCanonicalDashboardView(viewId, sourceNames, context, li
       registerSubscription(processor, subscription);
       if (usesRemoteDataBackend()) registerRemoteGitHubSubscription(processor, subscription);
     }
-  } else if (usesRemoteDataBackend()) {
+  } else if (usesRemoteDataBackend() && !usesCliQueueSources(sourceNames, context)) {
     registerRemoteSubscription(subscription);
   } else {
     const processor = getWorker();
@@ -980,11 +1030,16 @@ function processRequest(request, fallback, recoverWorkerError = true, signal) {
     pending.set(id, {
       resolve: (value) => resolve(/** @type {T} */ (value)),
       reject,
-      cleanup: () => signal?.removeEventListener('abort', onAbort),
+      cleanup: () => {
+        signal?.removeEventListener('abort', onAbort);
+        cliQueueOutputListeners.delete(id);
+      },
       processor,
       githubEpoch: 'githubConfiguration' in request ? githubAuthenticationEpoch : undefined
     });
-    processor.postMessage({ id, ...request });
+    const { cliQueueOutput, ...serializable } = request;
+    if (typeof cliQueueOutput === 'function') cliQueueOutputListeners.set(id, /** @type {(event: Record<string, any>) => void} */ (cliQueueOutput));
+    processor.postMessage({ id, ...serializable });
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -997,8 +1052,16 @@ function getWorker() {
   if (typeof Worker === 'undefined' || import.meta.url.startsWith('data:')) return null;
   worker = new Worker(withDebugParameter(new URL('./data-worker.js', import.meta.url)), { type: 'module' });
   const processor = worker;
+  processor.postMessage({
+    operation: 'configure-cli-queue', enabled: cliQueueAvailable(),
+    endpoint: new URL('./__cli_commands', globalThis.location.href).href
+  });
   debugDataProcessor({ event: 'worker-created' });
   worker.addEventListener('message', (event) => {
+    if (event.data?.type === 'cli-queue-output') {
+      cliQueueOutputListeners.get(event.data.id)?.(event.data.event);
+      return;
+    }
     if (event.data?.type === 'github-resource') {
       if ((event.data.githubEpoch ?? 0) !== githubAuthenticationEpoch) return;
       const subscription = githubSubscriptions.get(event.data.subscriptionId);

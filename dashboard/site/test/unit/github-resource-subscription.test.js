@@ -31,7 +31,10 @@ it('uses worker transport even in hosted mode, passes backend auth, and cleans u
   vi.stubGlobal('fetch', fetch);
   const stop = subscribeGitHubResource({ owner: 'githubnext', repo: 'gh-aw-cao' }, notify, { signal: controller.signal });
   const worker = ResourceWorker.current;
-  const message = worker?.postMessage.mock.calls[0]?.[0];
+  const message = worker?.postMessage.mock.calls.find(([message]) => message.operation === 'subscribe-github-resource')?.[0];
+  expect(worker?.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    operation: 'configure-cli-queue', enabled: false
+  }));
   expect(message).toMatchObject({
     operation: 'subscribe-github-resource',
     configuration: { baseUrl: 'https://dashboard.example/api/v1/github/', credentials: 'same-origin' }
@@ -43,7 +46,7 @@ it('uses worker transport even in hosted mode, passes backend auth, and cleans u
   expect(notify).toHaveBeenCalledWith(snapshot);
   controller.abort();
   stop();
-  expect(worker?.postMessage).toHaveBeenCalledTimes(2);
+  expect(worker?.postMessage).toHaveBeenCalledTimes(3);
   expect(worker?.postMessage).toHaveBeenLastCalledWith({ operation: 'unsubscribe-github-resource', subscriptionId: message.subscriptionId });
   worker?.listeners.get('message')?.({ data: { type: 'github-resource', subscriptionId: message.subscriptionId, snapshot } });
   expect(notify).toHaveBeenCalledOnce();
@@ -113,9 +116,11 @@ it('routes GitHub-only declarative page queries and subscriptions through the wo
     queries: [{ name: 'stars', from: 'github-repository', select: [{ field: 'stargazers_count' }] }]
   };
   const loaded = loadCanonicalDashboardPage(['stars'], context);
-  await vi.waitFor(() => expect(ResourceWorker.current?.postMessage).toHaveBeenCalled());
+  await vi.waitFor(() => expect(ResourceWorker.current?.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    operation: 'query-canonical-dashboard'
+  })));
   const worker = ResourceWorker.current;
-  const request = worker?.postMessage.mock.calls[0]?.[0];
+  const request = worker?.postMessage.mock.calls.find(([message]) => message.operation === 'query-canonical-dashboard')?.[0];
   expect(request).toMatchObject({
     operation: 'query-canonical-dashboard', sourceNames: ['stars'], hostedSources: {},
     githubConfiguration: { baseUrl: expect.stringContaining('/api/v1/github/') }
@@ -167,7 +172,7 @@ it('rejects queued private responses from a previous authentication epoch after 
   const notify = vi.fn();
   subscribeGitHubResource({ owner: 'a', repo: 'private' }, notify, { signal: controller.signal });
   const worker = ResourceWorker.current;
-  const subscriptionId = worker?.postMessage.mock.calls[0]?.[0].subscriptionId;
+  const subscriptionId = worker?.postMessage.mock.calls.find(([message]) => message.operation === 'subscribe-github-resource')?.[0].subscriptionId;
   const loaded = loadCanonicalDashboardPage(['github-repository'], { pages: [], dashboardRepository: 'a/private' });
   await vi.waitFor(() => expect(worker?.postMessage.mock.calls.some(([message]) => message.operation === 'query-canonical-dashboard')).toBe(true));
   const request = worker?.postMessage.mock.calls.find(([message]) => message.operation === 'query-canonical-dashboard')?.[0];
