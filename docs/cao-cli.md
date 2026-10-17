@@ -188,6 +188,7 @@ gh aw run dependabot --ref main \
 | `./cao.sh init` | Create a minimal review-safe policy when one does not exist. It refuses to overwrite an existing policy. |
 | `./cao.sh setup-auth github-app ...` | Configure organization-owned read and write Apps. |
 | `./cao.sh setup-auth enterprise-app ...` | Configure existing enterprise-owned Apps with policy-derived read scope and explicit `--write-repository` output scope. |
+| `./cao.sh setup-auth hosted-cli ...` | Create the dedicated least-privilege App that the dashboard server's optional `execute-cli` worker uses for single-use, repository-scoped command tokens. |
 | `./cao.sh setup-auth token ...` | Configure explicitly consented owner-scoped fine-grained PAT pairs when an App is unavailable. |
 | `./cao.sh add OWNER/REPO/CAMPAIGN` | Install one campaign and merge its declared workers into policy without broadening rollout or enabling live mode. |
 | `./cao.sh add --repository OWNER/REPO` | Verify GitHub CLI read access and stage one exact repository in local control-plane policy, with review-mode overrides for existing campaigns. |
@@ -333,6 +334,33 @@ gh run watch RUN_ID --exit-status
 ```
 
 Manual inputs may narrow checked-in policy for one run; they never widen it.
+
+## Operate the Hosted CLI Backend
+
+The server binary includes a privileged operator interface for the hosted CLI
+queue. Run it in the trusted executor environment with the same operational
+store configuration as `execute-cli`:
+
+```bash
+cao-dashboard hosted-cli queue list --status queued --limit 50
+cao-dashboard hosted-cli queue list --status queued --limit 50 \
+  --continuation-token TOKEN_FROM_PREVIOUS_PAGE
+cao-dashboard hosted-cli queue show COMMAND_ID
+cao-dashboard hosted-cli queue cancel COMMAND_ID --actor OPERATOR_LOGIN
+```
+
+Queue output contains command summaries, not invocation values or process
+output. List responses include `limit`, `hasMore`, and, when another page is
+available, `nextContinuationToken`. Pass that opaque token to
+`--continuation-token` with the same status filters to retrieve the next page.
+The cursor follows command IDs and does not count or skip preceding rows.
+Cancellation is an operator override that bypasses the dashboard
+requester's live repository-permission check; it requires a durable audit store
+and records the supplied operator login as a self-reported identity, not proof
+of the caller's identity. Restrict database and executor environment access
+accordingly. See
+[Hosted CLI actions](../server/README.md#hosted-cli-actions) for the operator
+workflow and SQLite debugging limitation.
 
 For a single-worker development loop without a dispatcher, use
 [Local Worker Debugging](local-debugging.md). Its request-only `debug` mode
