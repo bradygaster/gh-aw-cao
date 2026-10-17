@@ -476,8 +476,8 @@ The implementation profile defined by this specification is:
 
 | Layer | Version | Physical structure |
 | --- | ---: | --- |
-| Canonical model | 28 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
-| Browser IndexedDB | 38 | Eighteen canonical entity stores, `transactions`, and disposable `storageShards` accounting |
+| Canonical model | 30 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
+| Browser IndexedDB | 40 | Eighteen canonical entity stores, `transactions`, and disposable `storageShards` accounting |
 | Local SQLite projection | IndexedDB 38 | `__idb_databases`, `__idb_stores`, `__idb_indexes`, and `__idb_records` for the same logical stores, plus a `campaigns` table and six transactional relational evidence mirrors without duplicate record documents |
 | Go server Postgres sources | Canonical model 17 | Fresh TypeSpec-defined entity and input tables with query-required native columns, compact presence bits, entity-owned relational child values, and transactional diagnostics/revision state; no stored JSON documents or duplicate scalar row formats |
 | Static SQL export | 3 | Versioned JSON interchange produced from upstream SQL tables or views |
@@ -1547,6 +1547,14 @@ canonical definition keys also include the owning Workflow
 to avoid collisions when two workflows reuse an ID. A grader result links
 to an experiment variant only when its explicit experiment identity matches
 an assignment for the same Run.
+The Graders scatter view SHALL plot observation time against native value
+divided by the maximum observed value for the same canonical grader in the
+selected data. This denominator is not a theoretical score limit. Its
+Dashboard Language queries SHALL recompute existing ratios when new evidence
+changes the maximum. Missing values, zero or missing maxima, and invalid
+timestamps SHALL produce no plotted point; the native ledger SHALL retain
+those observations. Ratios SHALL NOT be clamped or inverted for lower-is-better
+graders, including when negative maxima produce ratios greater than one.
 An `experimentAssignments`, `graderObservations`, or `evalObservations` record
 MUST reference a definition (`experiments`, `graders`, or `evals` respectively)
 whose `workflowId` equals the `workflowId` of the Run named by the record's
@@ -1563,21 +1571,68 @@ The hosted dashboard ingester admits the same six canonical collections and
 projects those query definitions from the verified shards rather than trusting
 inventory or report-derived rows.
 
-Only explicit `run.experiments.assignments` and `run.graders.results` evidence
-can populate their respective entities; cumulative experiment counts alone do
-not establish an assignment. A supplied `run.evals[]` entry is accepted only with
+Unified session version-1 `experiment.assignment`, run-matching
+`experiment.state`, `grader.manifest`, `grader.result`, and `eval.result`
+observations are the preferred evidence. Manifests enrich observed grader
+definitions but do not invent results. Session evidence overrides cached run
+evidence independently for each category; it MUST NOT be added a second time
+from legacy audit projections. Run-scoped result identities and supplied
+attempts MUST match the producing run. State ledgers for other runs and
+cumulative counts MUST NOT establish assignments. Untimed evaluation evidence
+is retained using ingestion observation time without inventing a timed session
+event. Only allowlisted scalar metadata and numeric metrics survive projection;
+prompts, messages, error bodies and raw payloads MUST NOT be retained.
+
+In the absence of corresponding session evidence, explicit
+`run.experiments.assignments` and `run.graders.results` evidence can populate
+their respective entities. A supplied `run.evals[]` entry is accepted only with
 an explicit ID, `YES`/`NO`/`UNKNOWN` answer, valid optional timestamp and
-matching optional run identity. This explicit shape is supported by the legacy
-report contract, but no retained gh-aw fixture currently establishes its
-presence in collected audit data. `evals.jsonl` is read by a separate
-reporting path, not by the normalized Activity shard input. Until trustworthy
-eval evidence appears in that existing input, populating Eval observations
-from actual gh-aw audit remains blocked; the projection stays empty rather
-than introducing a second acquisition path. Tests of the explicit eval shape
-use synthetic inputs and do not establish that gh-aw emits it. Invalid eval
+matching optional run identity and attempt; all supplied identity aliases MUST
+agree. Collection MAY project an already-downloaded `evals.jsonl` into that
+existing run input after verifying its repository, run and attempt against
+`aw_info.json`, but MUST prefer session evals and MUST NOT introduce an extra
+GitHub acquisition path. Invalid eval
 candidates remain run-linked Audit observations without an inferred answer
 or score; valid entries also produce a run-linked Audit observation and their
 canonical Eval observation references that Audit's stable identity.
+Eval audit identities MUST survive browser, SQLite and hosted PostgreSQL
+projection and be exposed as `audit-id` by the eval-observations query.
+Grader values and units MUST remain distinct from YES/NO eval answers in
+dashboard views; a grader score or pass/fail status does not create an Eval.
+
+The unified session is also the preferred source for every supported telemetry
+family: agent lifecycle and diagnostics, MCP calls/RPC/configuration, firewall
+access and steering, model routing/inventory, skill activity/inventory/conflicts,
+usage, execution and detection results, daily guardrails, workflow metadata and
+job results, safe-output requests/results/errors, plugin installations, GitHub
+rate limits, dynamic workflow progress, and collection diagnostics.
+Only bounded, explicitly projected metadata is admitted. Prompts, message
+bodies, tool inputs/outputs, raw errors, objectives, private paths and unknown
+extension payloads remain upstream.
+
+Untimed telemetry MUST retain ingestion `observedAt` and source line provenance
+without inventing a native `timestamp`. Inventory entries MUST remain distinct
+without being counted as invocations. Native event `type` identifiers MUST be
+preserved verbatim from the AW unified session, including `mcp.tool_call`,
+`tool.execution_start`, `tool.execution_complete`, `mcp.rpc.request`,
+`mcp.rpc.response`, `firewall.http_access`, `skill.invoked`, `grader.result`,
+`eval.result`, and `safe_output.result`. Outcomes and firewall decisions MUST
+remain `status` and `decision` metadata, not synthesized type identifiers.
+MCP queries MUST select invocation evidence using native types and explicit MCP
+identity, rather than renaming all invocations to one CAO type. RPC request/response
+pairs MAY supply calls and outcomes when combined tool-call observations are
+absent, but MUST NOT double-count the two representations. Firewall method,
+response-byte and latency measurements MUST survive browser and hosted storage.
+Explicit firewall allow decisions MUST NOT become policy blocks merely because
+the upstream endpoint returned an HTTP error.
+
+Run accounting MUST prefer measured usage reports, then proxy usage, then root
+engine-result snapshots, independently per phase and measured dimension.
+Repeated request IDs are revisions, not additional usage. Cumulative AIC MUST
+NOT be added to per-request AIC, and engine usage snapshots or native estimated
+tokens MUST NOT be added to measured reports. Runtime metadata and actual
+safe-output results take precedence over cached copies; safe-output requests
+and errors MUST NOT establish created outcomes or issue status.
 
 Records MUST remain independently addressable and MUST NOT be stored as one
 ever-growing array inside the Run record. Issues and pull requests share the
@@ -1669,8 +1724,8 @@ Tool and Skill membership is determined by their separate collections; the
 unused `isSkill` flag SHALL NOT be persisted or projected.
 
 The current Tool collection and TypeSpec `tools` table are event-grain facts,
-not a configured-tool inventory or one row per invocation. A `tool.call` and
-its correlated result or error SHALL retain separate identities, timestamps,
+not a configured-tool inventory or one row per invocation. A `tool.execution_start` and
+its correlated `tool.execution_complete` SHALL retain separate identities, timestamps,
 status, and size evidence.
 
 A future physical normalization MAY factor repeated observed tool identity
@@ -1695,7 +1750,7 @@ Example:
   timestamp: "...",
 
   source: "firewall",
-  type: "firewall.request.blocked",
+  type: "firewall.http_access",
 
   actor: {
     type: "system",
@@ -1716,49 +1771,63 @@ Example:
 
 ## 12.2 Canonical Record Types
 
-Initial run-owned record families SHOULD include:
+Run-owned session records SHALL use AW's version-1 unified-session identifiers,
+not a parallel CAO taxonomy. Representative native identifiers include:
 
 ```text
-message.user
-message.agent
-message.system
-
-tool.call
-tool.result
-tool.error
-
-mcp.call
-mcp.result
-mcp.error
-
-gateway.request
-gateway.response
-gateway.retry
-gateway.error
-
-firewall.request.allowed
-firewall.request.blocked
-firewall.policy.matched
-firewall.error
-
-safe-output.requested
-safe-output.validated
-safe-output.executed
-safe-output.rejected
-
-work-item.updated
-finding.detected
-finding.updated
-
-github-api.request
-github-api.response
-github-api.rate-limited
-github-api.error
-
-runtime.started
-runtime.completed
-runtime.error
+session.start
+user.message
+assistant.message
+assistant.reasoning
+tool.execution_start
+tool.execution_update
+tool.execution_complete
+mcp.tool_call
+mcp.rpc.request
+mcp.rpc.response
+mcp.guard.blocked
+mcp.difc.filtered
+mcp.configuration
+firewall.http_access
+firewall.token_usage
+firewall.steering
+skill.invoked
+skill.inventory
+usage.report
+experiment.state
+experiment.assignment
+grader.manifest
+grader.result
+eval.result
+safe_output.request
+safe_output.result
+safe_output.error
+github_api.rate_limit
+execution.result
+detection.result
+workflow.info
+workflow.job_result
+session.result
+session.error
 ```
+
+Typed experiment, grader, and eval evidence SHALL populate their respective
+definition and observation stores; retaining native identifiers does not move
+these entities into one generic event table. CAO-only derived findings MAY
+retain their own explicitly source-specific types.
+
+Ingestion SHALL canonicalize historical CAO aliases at the shared record
+boundary, including normalized published shards. For example, `agent_tool_start`
+becomes `tool.execution_start`, `tool.call` becomes `mcp.tool_call`,
+`net_allowed` and `net_blocked` become `firewall.http_access`, and
+`audit.skill_activation` becomes `skill.invoked`. Split outcome/decision aliases
+SHALL retain their failure or decision facts as metadata. Historical aliases
+provide an AW-equivalent classification, not recovery of an unavailable original
+source event. Native input types SHALL never be rewritten. Record identity,
+correlation, timestamps and source references SHALL remain stable.
+Hosted PostgreSQL ingestion SHALL apply the same alignment before binding
+native columns. Its snapshot revision SHALL include the normalization version
+so unchanged published shards are re-ingested after this contract changes.
 
 ## 12.3 Correlation
 
@@ -1767,11 +1836,11 @@ Related records SHOULD use `correlationId`.
 Example:
 
 ```text
-tool.call      correlationId=abc
-gateway.request correlationId=abc
-firewall.request.allowed correlationId=abc
-gateway.response correlationId=abc
-tool.result    correlationId=abc
+tool.execution_start    correlationId=abc
+mcp.rpc.request         correlationId=abc
+firewall.http_access    correlationId=abc decision=allowed
+mcp.rpc.response        correlationId=abc
+tool.execution_complete correlationId=abc status=success
 ```
 
 ## 12.4 Ordering
@@ -1803,19 +1872,18 @@ MUST be used.
 A Run timeline MAY resemble:
 
 ```text
-001 runtime.started
-002 message.user
-003 message.agent
-004 tool.call
-005 gateway.request
-006 firewall.request.allowed
-007 gateway.response
-008 tool.result
-009 message.agent
-010 safe-output.requested
-011 safe-output.validated
-012 safe-output.executed
-013 runtime.completed
+001 session.start
+002 user.message
+003 assistant.message
+004 tool.execution_start
+005 mcp.rpc.request
+006 firewall.http_access decision=allowed
+007 mcp.rpc.response
+008 tool.execution_complete status=success
+009 assistant.message
+010 safe_output.request
+011 safe_output.result
+012 session.result
 ```
 
 The same records SHALL support different projections.
@@ -1823,26 +1891,26 @@ The same records SHALL support different projections.
 ### Conversation
 
 ```text
-message.user
-message.agent
-tool.call
-tool.result
+user.message
+assistant.message
+tool.execution_start
+tool.execution_complete
 ```
 
 ### Security
 
 ```text
-firewall.policy.matched
-firewall.request.blocked
-safe-output.rejected
+mcp.guard.blocked
+firewall.http_access decision=denied
+safe_output.error
 ```
 
 ### Network
 
 ```text
-gateway.request
-firewall.request.allowed
-gateway.response
+mcp.rpc.request
+firewall.http_access
+mcp.rpc.response
 ```
 
 ### Debugging
@@ -2274,7 +2342,7 @@ The canonical browser database SHALL use:
 
 ```js
 const DATABASE_NAME = "gh-aw-cao-dashboard-data";
-const DATABASE_VERSION = 38;
+const DATABASE_VERSION = 40;
 ```
 
 The name MAY be scoped by deployment path to prevent unrelated dashboard
@@ -2286,7 +2354,7 @@ rows.
 
 # 27. Object Stores
 
-IndexedDB version 38 SHALL define:
+IndexedDB version 40 SHALL define:
 
 ```text
 campaigns

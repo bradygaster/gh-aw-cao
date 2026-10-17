@@ -146,6 +146,8 @@
     "select": [
       { "field": "id" }, { "field": "runId", "as": "run-id" },
       { "field": "evalId", "as": "eval-id" }, { "field": "source-eval-id" },
+      { "field": "auditId", "as": "audit-id" },
+      { "field": "experimentId", "as": "experiment-id" },
       { "field": "eval" }, { "field": "experiment" },
       { "field": "variant" }, { "field": "included" },
       { "field": "exclusionReason", "as": "exclusion-reason" },
@@ -728,48 +730,6 @@
         "args": [
           { "field": "_github-run-id" }
         ]
-      },
-      {
-        "as": "_firewall-allowed",
-        "function": "equals-any",
-        "args": [
-          { "field": "type" },
-          {
-            "value": "net_allowed"
-          }
-        ]
-      },
-      {
-        "as": "_firewall-blocked",
-        "function": "equals-any",
-        "args": [
-          { "field": "type" },
-          {
-            "value": "net_blocked"
-          }
-        ]
-      },
-      {
-        "as": "_allowed-event-type",
-        "function": "if",
-        "args": [
-          { "field": "_firewall-allowed" },
-          {
-            "value": "firewall.request.allowed"
-          },
-          { "field": "type" }
-        ]
-      },
-      {
-        "as": "event-type",
-        "function": "if",
-        "args": [
-          { "field": "_firewall-blocked" },
-          {
-            "value": "firewall.request.blocked"
-          },
-          { "field": "_allowed-event-type" }
-        ]
       }
     ],
     "select": [
@@ -782,10 +742,13 @@
       { "field": "id", "as": "event" },
       { "field": "timestamp", "as": "event-timestamp" },
       { "field": "source", "as": "event-source" },
-      { "field": "event-type" },
+      { "field": "type", "as": "event-type" },
       { "field": "summary", "as": "event-summary" },
       { "field": "status", "as": "event-status" },
       { "field": "requestCount", "as": "request-count" },
+      { "field": "method" },
+      { "field": "responseBytes", "as": "response-bytes" },
+      { "field": "latencyMs", "as": "latency-ms" },
       { "field": "correlationId", "as": "correlation-id" },
       { "field": "payloadRef", "as": "payload-ref" },
       { "field": "domain" },
@@ -1231,6 +1194,37 @@
       { "field": "name" },
       { "field": "activationSource", "as": "activation-source" },
       { "field": "measurementState", "as": "measurement-state" },
+      { "field": "component" },
+      { "field": "phase" },
+      { "field": "model", "as": "telemetry-model" },
+      { "field": "provider" },
+      { "field": "effort" },
+      { "field": "sourceEngine", "as": "telemetry-engine" },
+      { "field": "durationMs", "as": "duration-ms" },
+      { "field": "exitCode", "as": "exit-code" },
+      { "field": "httpStatus", "as": "http-status" },
+      { "field": "method" },
+      { "field": "direction" },
+      { "field": "requestBytes", "as": "request-bytes" },
+      { "field": "responseBytes", "as": "response-bytes" },
+      { "field": "premiumRequests", "as": "premium-requests" },
+      { "field": "totalCostUsd", "as": "total-cost-usd" },
+      { "field": "totalAic", "as": "total-aic" },
+      { "field": "errorsCount", "as": "errors-count" },
+      { "field": "permissionDenialsCount", "as": "permission-denials-count" },
+      { "field": "resource" },
+      { "field": "resetAt", "as": "rate-limit-reset-at" },
+      { "field": "rateLimit", "as": "limit" },
+      { "field": "remaining" },
+      { "field": "used" },
+      { "field": "requestAttempt", "as": "request-attempt" },
+      { "field": "delayMs", "as": "delay-ms" },
+      { "field": "threshold" },
+      { "field": "value" },
+      { "field": "transport" },
+      { "field": "required" },
+      { "field": "scope" },
+      { "field": "digest" },
       { "field": "totalEvents", "as": "total-events" },
       { "field": "linkedInvocations", "as": "linked-invocations" },
       { "field": "aic" },
@@ -1405,7 +1399,7 @@
     "from": "issues",
     "filter": {
       "predicates": [
-        { "field": "event-type", "equals": "safe_output.created" }
+        { "field": "event-type", "equals": "safe_output.result" }
       ]
     },
     "joins": [
@@ -1792,7 +1786,7 @@
     "filter": {
       "predicates": [
         { "field": "event-source", "equals": "mcp" },
-        { "field": "event-type", "equals": "tool.call" }
+        { "field": "event-type", "in": ["mcp.tool_call", "tool.execution_start", "mcp.rpc.request"] }
       ]
     },
     "select": [
@@ -2030,12 +2024,7 @@
         },
         {
           "field": "type",
-          "in": [
-            "net_allowed",
-            "net_blocked",
-            "firewall.request.allowed",
-            "firewall.request.blocked"
-          ]
+          "equals": "firewall.http_access"
         }
       ]
     },

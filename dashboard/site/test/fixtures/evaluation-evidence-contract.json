@@ -1,0 +1,20 @@
+{
+  "graders": {
+    "query": "grader-status-ledger",
+    "view": "graders-statuses",
+    "fields": ["workflow", "grader", "repository", "value", "unit", "status", "observed-at", "run"],
+    "scatter": {
+      "query": "grader-value-scatter",
+      "view": "graders-value-scatter",
+      "x": "observed-at",
+      "y": "normalized-value",
+      "color": "grader-series",
+      "href": "run-link"
+    }
+  },
+  "evals": {
+    "query": "eval-yes-no-status",
+    "view": "evals-statuses",
+    "fields": ["workflow", "eval", "repository", "eval-result", "observed-at", "run"]
+  }
+}
