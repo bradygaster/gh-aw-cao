@@ -262,7 +262,7 @@ isolated workspace with a single-use, repository-scoped GitHub App installation
 token that is revoked on completion. A bounded broker pre-mints tokens for
 backlog.
 The Go planner translates the hosted CAO package-update action into a native
-`gh-aw update`; it never invokes `cao.sh` or executes control-repository scripts.
+`gh-aw update`; it never executes control-repository shell scripts.
 The executor runs only `gh` or the Go `gh-aw` CLI in the official digest-pinned
 gh-aw container by default, mounting only command-owned workspace and egress
 relay/socket resources and passing the
@@ -544,7 +544,7 @@ before workflow enablement/disablement. The extension groups guided setup at
 `setup-auth` command. Native authentication preserves the `setup-auth` result
 contract, options, credential prompts, consent, and read/write scope boundaries.
 Repository enrollment (`gh cao repos add OWNER/REPO`),
-updates, validation, onboarding, downloads, computations, and all evidence commands
+updates, onboarding, downloads, computations, and all evidence commands
 run entirely in Go. No production command invokes Node.js, npm, or JavaScript
 modules; `CAO_RUNTIME_ROOT` is no longer an extension input. The default reviewed
 catalog, fragments, canonical source projections, and MCP contract are embedded
@@ -561,8 +561,27 @@ and basic local policy structure/compiler-pin checks, with text or JSON results
 and nonzero status for failed or skipped checks. Authentication may contact
 GitHub; raw authentication output and subprocess errors are never reported.
 Doctor does not replace production policy/workflow validation, grant authority,
-or invoke the Node snapshot-repair command. Activity and Dashboard Actions, pipeline commands,
-`cao.sh`, canonical installation paths, and runtime ownership remain unchanged.
+or invoke the Node snapshot-repair command. Actions and Node-only tools invoke
+`node activity/cao.mjs <command>` explicitly, including SQLite snapshot `doctor`
+and the unmigrated `setup-auth hosted-cli` profile. There is no shell launcher.
+Internal Node implementations remain available for Actions and parity tests,
+not as an alternative operator surface. Root runtime upgrades remove only
+content-verified retired launchers; consumer-owned files, links, and directories
+are preserved. Verified older archives may contain the retired launcher but
+never install it. Quickstart stages its deletion only when present, never a
+nonexistent launcher on a fresh installation.
+User-facing commands belong in the Go extension; Actions execution support
+belongs in the shipped JavaScript runtime. Control-plane validation is
+Actions-only, with one implementation invoked directly as
+`node activity/cao.mjs validate --json`, using the installed runtime revision
+and production policy resolver. The extension exposes no `validate` command.
+Native policy parsing still guards operator construction
+and mutation; it is not a second control-plane validator. The workflow does not
+build or download the Go extension or require consumer npm metadata. Runtime
+tests preserve report and exit-code contracts. The JSON report remains under `RUNNER_TEMP`, outside
+the checkout, so creating it cannot trigger a dirty-working-tree warning.
+Dashboard CAO actions and marketplace copy commands use the Go hierarchy;
+their executor launches `gh cao` without invoking repository shell scripts.
 From the repository root, `make build` creates the ignored local extension
 binary and `make check` runs formatting checks, `go vet`, race-enabled unit
 tests, and a build. Go checks are scoped to `cmd/`, `internal/`, and the root
@@ -573,6 +592,15 @@ Linux, macOS, and Windows binaries for amd64 and arm64 with CGO disabled and the
 exact stable release tag embedded in `main.version`, then creates SHA-256
 checksums. `make release VERSION=vX.Y.Z` writes these assets to an empty
 `dist/gh-cao/` directory.
+The root installer downloads the matching platform asset and `checksums.txt`,
+requires one exact SHA-256 entry and the expected embedded version, then
+atomically replaces the binary in GitHub CLI's `gh-cao` extension data directory.
+It honors `XDG_DATA_HOME` and Windows `LOCALAPPDATA`, refuses linked/source
+installations, and never replaces a working binary on download or verification
+failure. An explicit stable-format catalog tag selects the same extension
+release; other catalog refs use the latest stable extension independently of
+the runtime revision. Initialization, setup and quickstart invoke `gh cao`;
+Node.js remains an installation/pipeline prerequisite, not an operator dependency.
 
 Campaign manifests are the catalog's source of truth for installed workflows and
 the trusted materializer bootstrap. The materializer copies executable resources
@@ -622,7 +650,7 @@ artifact/attestation access, not npm.
 The materializer installs only owned canonical destinations from the archive
 and does not replace consumer-owned root package metadata. Installed control
 repositories keep the
-repository-local operator CLI, collection and query runtime, local preview,
+repository-local pipeline CLI, collection and query runtime, local preview,
 dashboard production sources, build inputs, and dependency manifests. Tests,
 fixtures, screenshots, contributor tooling, and catalog-only component
 manifests stay in the catalog. Dashboard workflow builds install production
@@ -667,7 +695,7 @@ registry access, but does not create credentials or dispatch workflows.
 readiness before installing or upgrading anything. Repository creation and
 cloning are private-only and require an explicit `--create-repo OWNER/NAME`;
 existing clone directories are never overwritten. Bare installation ends with
-the explicit `./cao.sh setup` next step. `--setup` attaches guided setup directly
+the explicit `gh cao setup` next step. `--setup` attaches guided setup directly
 to the controlling terminal after verified materialization when one is
 available. Without a terminal or when `CI` is set, setup applies only an exact
 public-control-repository profile: self-only read and Activity scope, no
