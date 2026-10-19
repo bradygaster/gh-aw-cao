@@ -16,8 +16,10 @@ import { configureSourceLoader, refreshSources as refreshBoundSources } from "..
 import { dashboardViewAliasName } from "./queries/view-payload-compiler.js";
 import { usesRemoteDataBackend } from "../remote-data-backend.js";
 import { createDebug, diagnosticErrorName } from "../debug.js";
-import { publishNotification } from "../notification-service.js";
-import { browserFirstLoad } from "../browser-first-load.js";
+import { publishNotification, resolveNotification } from "../notification-service.js";
+import { browserFirstLoad, recordPreparationEvent, recordPreparationStorage, resetPreparationDiagnostics, finishPreparationDiagnostics } from "../browser-first-load.js";
+import { inspectBrowserStorage, TEMPORARY_STORAGE_WARNING } from "../browser-storage.js";
+import { dashboardDataStatus } from "../dashboard-data-status.js";
 import { mountFirstLoadOverlay } from "../components/first-load-overlay.js";
 
 const debugStartup = createDebug("startup");
@@ -138,6 +140,7 @@ export function waitForDashboardUi(browserWindow) {
  *     dashboardRepository?: string | null,
  *     pages: import('../presenter.js').PresentationDocument['dashboard']['pages'],
  *     queries: unknown[],
+ *     callouts?: import('../components/site-callout.js').SiteCallout[],
  *   },
  *   preparePage?: (pageId: string) => Promise<void>,
  *   pageSourceNames: (pageId: string, viewMode?: 'chart'|'table'|'card') => string[],
@@ -148,6 +151,9 @@ export function waitForDashboardUi(browserWindow) {
  * @returns {Promise<() => void>}
  */
 export async function startDashboardData(options) {
+  resetPreparationDiagnostics();
+  recordPreparationEvent("startup");
+  dashboardDataStatus.set({ phase: "loading", snapshot: null });
   const {
     browserWindow,
     document,
@@ -163,14 +169,16 @@ export async function startDashboardData(options) {
   const failedSubscriptions = new Set();
   /** @type {ReturnType<typeof publishNotification> | undefined} */
   let updateNotice;
-  const clearUpdateNotice = () => {
+  const clearUpdateNotice = (resolved = true) => {
     if (failedSubscriptions.size) return;
     updateNotice?.dismiss();
+    if (resolved) resolveNotification("dashboard:subscription-error", document);
     updateNotice = undefined;
   };
   cleanup.signal.addEventListener("abort", () => {
+    finishPreparationDiagnostics();
     failedSubscriptions.clear();
-    clearUpdateNotice();
+    clearUpdateNotice(false);
   }, { once: true });
   let nextViewSubscriptionId = 0;
   let stopAutomaticDataUpdates = () => {};
@@ -272,6 +280,7 @@ export async function startDashboardData(options) {
             } else {
               failedSubscriptions.add(options.subscriptionId);
               updateNotice ??= publishNotification({
+                id: "dashboard:subscription-error",
                 message: "Some dashboard data could not be updated. Existing data remains visible.",
                 tone: "warning",
                 duration: 0,
@@ -315,7 +324,7 @@ export async function startDashboardData(options) {
     }
     const subscriptionSourceNames = [...new Set(sourceNames)].toSorted();
     return subscribeSources({
-      subscriptionId: `sources:${subscriptionSourceNames.join(",")}`,
+      subscriptionId: `sources:${subscriptionSourceNames.join(",")}:${++nextViewSubscriptionId}`,
       sourceNames: subscriptionSourceNames,
       pageOptions
     });
@@ -338,11 +347,14 @@ export async function startDashboardData(options) {
   const bootstrapStep = async (step, run) => {
     const stepStartedAt = performance.now();
     debugStartup({ op: "bootstrap", step, status: "started" });
+    recordPreparationEvent("bootstrap", { step, status: "started" });
     try {
       const result = await run();
+      recordPreparationEvent("bootstrap", { step, status: "completed", durationMs: Math.round(performance.now() - stepStartedAt) });
       debugStartup({ op: "bootstrap", step, status: "completed", durationMs: Math.round(performance.now() - stepStartedAt) });
       return result;
     } catch (error) {
+      recordPreparationEvent("bootstrap", { step, status: "failed", errorName: diagnosticErrorName(error) });
       debugStartup({
         op: "bootstrap",
         step,
@@ -354,6 +366,22 @@ export async function startDashboardData(options) {
     }
   };
   const remoteDataBackend = usesRemoteDataBackend(document);
+  const storageInspection = remoteDataBackend ? null : inspectBrowserStorage(browserWindow.navigator?.storage);
+  void storageInspection?.then((diagnostics) => {
+    if (cleanup.signal.aborted) return;
+    recordPreparationStorage(diagnostics);
+    if (diagnostics.persisted === true) {
+      resolveNotification("dashboard:browser-storage", document);
+    } else {
+      const notice = publishNotification({
+        id: "dashboard:browser-storage",
+        message: TEMPORARY_STORAGE_WARNING,
+        tone: "warning",
+        duration: 0
+      }, document);
+      cleanup.signal.addEventListener("abort", () => notice.dismiss(), { once: true });
+    }
+  });
   let upgradeStarted = false;
   let overlayMounted = false;
   const showFirstLoadOverlay = () => {
@@ -369,9 +397,20 @@ export async function startDashboardData(options) {
   });
   /** @type {{ createdAt: string } | null} */
   let snapshot;
+  /** @type {DashboardSources} */
+  let shellSources = {};
+  const shellSourceNames = [...new Set((dashboardContext.callouts ?? []).flatMap((callout) => (
+    callout['visible-when'] ? [callout['visible-when'].source] : []
+  )))];
+  const readShellSources = async () => {
+    if (shellSourceNames.length) {
+      shellSources = await loadCanonicalDashboardPage(shellSourceNames, dashboardContext);
+    }
+  };
   try {
     await bootstrapStep("open-canonical-database", () => loadCanonicalDashboardPage([], dashboardContext));
     snapshot = await bootstrapStep("read-snapshot-metadata", () => loadDashboardSnapshotMetadata());
+    if (shellSourceNames.length) await bootstrapStep("read-shell-sources", readShellSources);
   } catch (error) {
     if (upgradeStarted) {
       cleanup.abort();
@@ -405,6 +444,9 @@ export async function startDashboardData(options) {
     });
     stopFirstLoadProgress = subscribeWorkerLoadingProgress((progress) => {
       if (browserFirstLoad.get().status !== "loading" || progress.phase !== "update") return;
+      recordPreparationEvent("import-progress", {
+        stage: progress.stage ?? null, completed: progress.completed ?? null, total: progress.total ?? null
+      });
       browserFirstLoad.set((current) => ({
         ...current,
         completed: progress.completed,
@@ -416,7 +458,8 @@ export async function startDashboardData(options) {
   } else if (upgradeStarted) {
     browserFirstLoad.set({ status: "inactive", dismissed: false });
   }
-  render({}, hasCompleteSnapshot ? "cached" : "loading", loadPageSources, undefined, snapshot);
+  dashboardDataStatus.set({ phase: hasCompleteSnapshot ? "cached" : "loading", snapshot });
+  render(shellSources, hasCompleteSnapshot ? "cached" : "loading", loadPageSources, undefined, snapshot);
   let refreshFailed = false;
   let refreshPending = false;
   /** @param {unknown} error */
@@ -424,7 +467,9 @@ export async function startDashboardData(options) {
     if (refreshFailed || cleanup.signal.aborted) return;
     refreshFailed = true;
     refreshPending = false;
+    dashboardDataStatus.set({ phase: "stale", snapshot });
     const message = error instanceof Error ? error.message : String(error);
+    recordPreparationEvent("refresh", { status: "failed", errorName: diagnosticErrorName(error) });
     console.error(`Unable to refresh live dashboard data: ${message}`);
     debugStartup({
       op: "refresh-sources",
@@ -439,12 +484,14 @@ export async function startDashboardData(options) {
     if (firstBrowserLoad && !hasCompleteSnapshot) {
       browserFirstLoad.set((current) => ({ ...current, status: "failed" }));
     }
-    render({}, hasCompleteSnapshot ? "stale" : "loading", loadPageSources, refreshSources, snapshot);
+    render(shellSources, hasCompleteSnapshot ? "stale" : "loading", loadPageSources, refreshSources, snapshot);
   };
   const refreshSources = (showRefreshing = true) => {
     if (refreshPending || cleanup.signal.aborted) return;
     refreshFailed = false;
     refreshPending = true;
+    recordPreparationEvent("refresh", { status: "started" });
+    dashboardDataStatus.set({ phase: hasCompleteSnapshot ? "cached" : "loading", snapshot });
     if (firstBrowserLoad && !hasCompleteSnapshot) {
       browserFirstLoad.set((current) => ({ ...current, status: "loading", completed: undefined, total: undefined, stage: undefined, ingestion: undefined }));
     }
@@ -453,7 +500,7 @@ export async function startDashboardData(options) {
       status: "started",
     });
     if (showRefreshing) {
-      render({}, hasCompleteSnapshot ? "cached" : "loading", loadPageSources, undefined, snapshot);
+      render(shellSources, hasCompleteSnapshot ? "cached" : "loading", loadPageSources, undefined, snapshot);
     }
     void refreshCanonicalDashboardSources(
       sourceUrl,
@@ -465,8 +512,14 @@ export async function startDashboardData(options) {
         snapshot = await loadDashboardSnapshotMetadata() ?? snapshot;
         if (cleanup.signal.aborted) return;
         hasCompleteSnapshot = remoteDataBackend || snapshot !== null;
+        recordPreparationEvent("snapshot", { present: hasCompleteSnapshot });
         if (!hasCompleteSnapshot) throw new Error("Dashboard import finished without a complete snapshot.");
+        await readShellSources();
+        if (cleanup.signal.aborted) return;
         refreshPending = false;
+        dashboardDataStatus.set({ phase: "ready", snapshot });
+        recordPreparationEvent("refresh", { status: "completed", changed });
+        finishPreparationDiagnostics();
         if (firstBrowserLoad) finishFirstLoad();
         emitDashboardDebugEvent(document, DASHBOARD_DATA_EVENT, {
           kind: "refresh",
@@ -479,7 +532,7 @@ export async function startDashboardData(options) {
           dashboard?.classList.remove("dashboard-refreshing");
           dashboard?.removeAttribute("aria-busy");
         } else {
-          render({}, "ready", loadPageSources, undefined, snapshot);
+          render(shellSources, "ready", loadPageSources, undefined, snapshot);
         }
       },
     ).catch(showStaleSources);

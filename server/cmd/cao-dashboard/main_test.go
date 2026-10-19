@@ -18,10 +18,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/operational/postgres"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
-	"github.com/githubnext/gh-aw-cao/server/internal/server"
-	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/operational/postgres"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/server"
+	"github.com/githubnext/gh-cao/server/internal/telemetry"
 )
 
 func TestServeWithExistingPostgresOperationalTables(t *testing.T) {
@@ -66,11 +67,19 @@ func TestServeWithExistingPostgresOperationalTables(t *testing.T) {
 	if err := operational.Close(); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("CAO_OPERATIONAL_NAMESPACE", namespace)
+	canonical, err := postgresx.NewWithNamespace(t.Context(), parsed.String(), namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := canonical.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cmd := newServeCommand()
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
-	cmd.SetArgs([]string{"--dashboard-queries", filepath.Join(t.TempDir(), "missing-dashboard-queries.json")})
+	cmd.SetArgs([]string{"--postgres-url=", "--dashboard-queries", filepath.Join(t.TempDir(), "missing-dashboard-queries.json")})
 	err = cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "missing-dashboard-queries.json") {
 		t.Fatalf("serve must reach dashboard query loading after both stores initialize: %v", err)
@@ -90,12 +99,37 @@ func TestServeHostedLoadsMaterializedDashboardQueriesByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	catalogPath, err := cmd.Flags().GetString("agent-catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalogPath != "../dashboard/site/src/agent/catalog.generated.json" {
+		t.Fatalf("agent catalog default = %q", catalogPath)
+	}
+	content, err := os.ReadFile("../../../dashboard/site/src/agent/catalog.generated.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog struct {
+		Queries []struct {
+			ID string `json:"id"`
+		} `json:"queries"`
+	}
+	if err := json.Unmarshal(content, &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Queries) == 0 {
+		t.Fatal("default agent catalog has no queries")
+	}
+	loaded := make(map[string]bool, len(definitions))
 	for _, definition := range definitions {
-		if definition.Name == "database-campaign-count" {
-			return
+		loaded[definition.Name] = true
+	}
+	for _, entry := range catalog.Queries {
+		if !loaded[entry.ID] {
+			t.Errorf("default dashboard query definitions omit catalog query %q", entry.ID)
 		}
 	}
-	t.Fatal("default dashboard query definitions omit database-campaign-count")
 }
 
 func TestServeHostedRejectsUnsupportedOperationalBackend(t *testing.T) {
@@ -105,6 +139,18 @@ func TestServeHostedRejectsUnsupportedOperationalBackend(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "must be redis, memory, or postgres") {
 		t.Fatalf("error = %v, want unsupported operational backend", err)
+	}
+}
+
+func TestServeHostedCLIRequiresExperimentalFlag(t *testing.T) {
+	cmd := newServeHostedCommand()
+	cmd.SetArgs([]string{"--hosted-cli-actions"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--hosted-cli-actions requires --experimental") {
+		t.Fatalf("error = %v, want experimental feature gate", err)
+	}
+	if cmd.Flags().Lookup("experimental") == nil {
+		t.Fatal("serve-hosted does not expose --experimental")
 	}
 }
 
@@ -646,6 +692,36 @@ func TestResolveBackfillMode(t *testing.T) {
 	}
 }
 
+func TestResolveDoctorBackendSource(t *testing.T) {
+	tests := []struct {
+		name        string
+		selected    bool
+		policyPath  string
+		marketplace string
+		redisFlag   bool
+		redisEnv    string
+		want        doctorBackendSource
+	}{
+		{name: "nothing configured", want: doctorBackendSourceDefault},
+		{name: "selected policy", selected: true, want: doctorBackendSourcePolicy},
+		{name: "policy path", policyPath: "policy.json", want: doctorBackendSourcePolicy},
+		{name: "marketplace policy path", marketplace: "market.json", want: doctorBackendSourcePolicy},
+		{name: "blank policy paths are ignored", policyPath: "  ", marketplace: "\t", want: doctorBackendSourceDefault},
+		{name: "redis flag", redisFlag: true, want: doctorBackendSourceRedis},
+		{name: "redis env", redisEnv: "redis://127.0.0.1:6379/0", want: doctorBackendSourceRedis},
+		{name: "blank redis env is ignored", redisEnv: "  ", want: doctorBackendSourceDefault},
+		{name: "policy outranks redis", policyPath: "policy.json", redisFlag: true, redisEnv: "redis://x", want: doctorBackendSourcePolicy},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveDoctorBackendSource(tt.selected, tt.policyPath, tt.marketplace, tt.redisFlag, tt.redisEnv)
+			if got != tt.want {
+				t.Errorf("resolveDoctorBackendSource() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassifyWorkerStop(t *testing.T) {
 	someErr := errors.New("lease failed")
 
@@ -763,7 +839,7 @@ func TestActionsEnvironmentPresentReportsPresenceNotValues(t *testing.T) {
 }
 
 func TestRootCommandRegistersEverySubcommand(t *testing.T) {
-	want := []string{"backfill", "benchmark-queries", "collect", "compile-queries", "doctor", "ingest", "otel-smoke", "serve", "serve-hosted", "simulate-api", "simulate-webhooks"}
+	want := []string{"audit", "backfill", "benchmark-queries", "collect", "compile-queries", "database", "doctor", "execute-cli", "hosted-cli", "ingest", "otel-smoke", "serve", "serve-hosted", "simulate-api", "simulate-webhooks"}
 	root := newRootCommand()
 
 	got := make([]string, 0, len(want))

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -26,7 +26,9 @@ const olderGhAw = patch > 0 ? `v${major}.${minor}.${patch - 1}` : `${supportedGh
 const newerGhAw = `v${major}.${minor + 1}.0`;
 const manifestGhAw = `v${major}.${minor}.${patch + 1}`;
 const revision = "1".repeat(40);
-const timeout = 30_000;
+// Windows runtime extraction/copying can exceed a minute on hosted runners.
+// Keep a finite subprocess deadline without imposing that budget on other hosts.
+const timeout = process.platform === "win32" ? 120_000 : 30_000;
 const policyPath = path.join(".github", "workflows", "cao.json");
 const materializer = path.join(".github", "workflows", "shared", "materialize-cao.mjs");
 const curlCommand = "curl --fail --show-error --location";
@@ -37,9 +39,9 @@ test("quickstart keeps terminal presentation and filters Node experimental warni
   assert.match(installerSource, /--disable-warning=ExperimentalWarning/);
   assert.match(installerSource, /quickstart_arguments=\(quickstart\)/);
   assert.match(installerSource, /quickstart_arguments\+=\(--target "\$target_repository"\)/);
-  assert.match(installerSource, /default_quickstart_control_repository/);
+  assert.doesNotMatch(installerSource, /default_quickstart_control_repository|default_repository_name/);
   assert.match(installerSource, /Quickstart requires a clean control-repository checkout before installation/);
-  assert.match(installerSource, /Quickstart selected stable CAO release \$quickstart_release/);
+  assert.match(installerSource, /Quickstart selected published CAO release \$quickstart_release/);
 });
 const upgradePrompt = new RegExp(`Upgrade it now with ${curlCommand} \\S+/install-gh-aw\\.sh \\| bash -s -- v\\S+\\? \\[y/N\\]`);
 const addedFiles = [
@@ -56,7 +58,7 @@ const addedFiles = [
 ];
 
 const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "cao-install-fixture-"));
-const archive = path.join(fixtureRoot, "gh-aw-cao.tar.gz");
+const archive = path.join(fixtureRoot, "gh-cao.tar.gz");
 const archiveName = path.basename(archive);
 const runtimeArchive = buildCaoRuntime(catalog, fixtureRoot, revision).archive;
 const mockFetch = path.join(fixtureRoot, "mock-fetch.mjs");
@@ -64,7 +66,6 @@ const archiveResources = [
   "activity",
   "dashboard",
   "runtime/package.json",
-  "cao.sh",
   "skills",
   "plugin.json",
   "com.github.copilot/extensions/cao-dashboard",
@@ -103,7 +104,7 @@ if (process.env.FAKE_GH_SCRIPT && [process.execPath, process.argv0].some((execut
  process.exit(result.status ?? 1);
 }
 
-const expected = "https://codeload.github.com/githubnext/gh-aw-cao/tar.gz/${revision}";
+const expected = "https://codeload.github.com/githubnext/gh-cao/tar.gz/${revision}";
 const responses = process.env.FAKE_GITHUB_RESPONSES ? JSON.parse(process.env.FAKE_GITHUB_RESPONSES) : {};
 globalThis.fetch = async (input) => {
   const url = typeof input === "string" ? input : input.url ?? String(input);
@@ -130,14 +131,35 @@ if [[ "$*" == "--version" ]]; then
   echo "gh version \${FAKE_GH_VERSION:-${supportedGh}} (fake)"
   exit 0
 fi
+if [[ "\${1:-}" == cao ]]; then
+  shift
+  executable="$XDG_DATA_HOME/gh/extensions/gh-cao/gh-cao"
+  [[ ! -f "$executable.exe" ]] || executable="$executable.exe"
+  if [[ "$*" == init && -n "\${FAKE_CAO_POLICY_SCHEMA:-}" ]]; then
+    "$executable" "$@" || exit "$?"
+    node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const file=".github/workflows/cao.json"; const policy=JSON.parse(readFileSync(file,"utf8")); policy.$schema=process.env.FAKE_CAO_POLICY_SCHEMA; writeFileSync(file,JSON.stringify(policy));'
+    exit 0
+  fi
+  exec "$executable" "$@"
+fi
 if [[ "$*" == "auth status" ]]; then
   [[ -z "\${FAKE_AUTH_DELAY:-}" ]] || sleep "$FAKE_AUTH_DELAY"
   [[ -z "\${FAKE_AUTH_FAILURE:-}" ]] || { echo "not signed in" >&2; exit 1; }
   exit 0
 fi
-if [[ "$*" == "api --hostname github.com --paginate repos/githubnext/gh-aw-cao/releases?per_page=100 --jq .[] | [.draft, .prerelease, .tag_name] | @tsv" ]]; then
+if [[ "$*" == "api --hostname github.com --paginate repos/githubnext/gh-cao/releases?per_page=100 --jq .[] | [.draft, .prerelease, .tag_name] | @tsv" ]]; then
   [[ -z "\${FAKE_LATEST_CAO_RELEASE_FAILURE:-}" ]] || { echo "release lookup failed" >&2; exit 1; }
   printf '%b\\n' "\${FAKE_CAO_RELEASE_LIST:-false\\\\tfalse\\\\t\${FAKE_LATEST_CAO_RELEASE:-v1.2.3}}"
+  exit 0
+fi
+if [[ "\${1:-} \${2:-}" == "api --hostname" && "\${4:-}" == repos/githubnext/gh-cao/releases/tags/* ]]; then
+  echo "$4" >> "$FAKE_CAO_RELEASE_REQUESTS"
+  [[ -z "\${FAKE_CAO_ASSET_LOOKUP_FAILURE:-}" ]] || { echo "release asset lookup failed" >&2; exit 1; }
+  if [[ -n "\${FAKE_CAO_RELEASE_ASSETS+set}" ]]; then
+    printf '%b\\n' "$FAKE_CAO_RELEASE_ASSETS"
+  else
+    printf '%s\\n' gh-cao-darwin-amd64 gh-cao-darwin-arm64 gh-cao-linux-amd64 gh-cao-linux-arm64 gh-cao-windows-amd64.exe gh-cao-windows-arm64.exe checksums.txt
+  fi
   exit 0
 fi
 if [[ "\${1:-} \${2:-}" == "api graphql" ]]; then
@@ -147,22 +169,16 @@ if [[ "\${1:-} \${2:-}" == "api graphql" ]]; then
   printf '%b\\n' "\${FAKE_REPOSITORY_OWNERS:-alpha-user\\\\nalpha-org}"
   exit 0
 fi
-if [[ "$*" == "api user --jq .login" ]]; then
-  printf '%s\\n' "\${FAKE_USER_LOGIN:-alpha-user}"
-  exit 0
-fi
 if [[ "\${1:-}" == api && "\${2:-}" == repos/*/pages ]]; then
   printf '{"build_type":"workflow","public":true,"html_url":"https://example.invalid/cao/"}\\n'
   exit 0
 fi
 if [[ "\${1:-}" == api && "\${2:-}" == repos/* && "$#" -eq 2 ]]; then
-  if [[ -n "\${FAKE_DEFAULT_REPOSITORY_CHECK_FAILURE:-}" ||
-    "\${2#repos/}" == "\${FAKE_REPOSITORY_CHECK_FAILURE:-}" ]]; then
+  if [[ "\${2#repos/}" == "\${FAKE_REPOSITORY_CHECK_FAILURE:-}" ]]; then
     echo "gh: service unavailable (HTTP 503)" >&2
     exit 1
   fi
-  if [[ -n "\${FAKE_DEFAULT_REPOSITORY_EXISTS:-}" && "$2" == repos/*/cao ]] ||
-    [[ ",\${FAKE_EXISTING_REPOSITORIES:-}," == *",\${2#repos/},"* ]]; then
+  if [[ ",\${FAKE_EXISTING_REPOSITORIES:-}," == *",\${2#repos/},"* ]]; then
     exit 0
   fi
   echo "gh: Not Found (HTTP 404)" >&2
@@ -228,8 +244,8 @@ if [[ "\${1:-} \${2:-}" == "aw version" ]]; then
   echo "gh aw version $(cat "$FAKE_GH_AW_INSTALLED")" >&2
   exit 0
 fi
-if [[ "\${1:-} \${2:-}" == "aw add" && "\${3:-}" == githubnext/gh-aw-cao* ]]; then
-  [[ "\${3:-}" == githubnext/gh-aw-cao || "\${3:-}" == githubnext/gh-aw-cao@* ]] || { echo "unexpected CAO package: \${3:-}" >&2; exit 2; }
+if [[ "\${1:-} \${2:-}" == "aw add" && "\${3:-}" == githubnext/gh-cao* ]]; then
+  [[ "\${3:-}" == githubnext/gh-cao || "\${3:-}" == githubnext/gh-cao@* ]] || { echo "unexpected CAO package: \${3:-}" >&2; exit 2; }
   [[ -z "\${FAKE_EXPECT_CAO_SOURCE:-}" || "\${3:-}" == "$FAKE_EXPECT_CAO_SOURCE" ]] ||
     { echo "expected CAO package $FAKE_EXPECT_CAO_SOURCE, got \${3:-}" >&2; exit 2; }
   stdin_bytes="$(wc -c | tr -d ' ')"
@@ -249,8 +265,8 @@ if [[ "\${1:-} \${2:-}" == "aw add" && "\${3:-}" == githubnext/gh-aw-cao* ]]; th
 ${addedFiles.map(({ source, destination }) => `  mkdir -p "$(dirname '${destination}')"
   cp "$FAKE_CATALOG/${source}" '${destination}'`).join("\n")}
   mkdir -p .github/aw/packages
-  cat > .github/aw/packages/githubnext-gh-aw-cao-c6b3479204cc.json <<'EOF'
-{"package":"githubnext/gh-aw-cao","source":"githubnext/gh-aw-cao@${revision}","resolvedCommit":"${revision}"}
+  cat > .github/aw/packages/githubnext-gh-cao-c6b3479204cc.json <<'EOF'
+{"package":"githubnext/gh-cao","source":"githubnext/gh-cao@${revision}","resolvedCommit":"${revision}"}
 EOF
   exit 0
 fi
@@ -259,6 +275,50 @@ exit 2
 
 // Serves gh-aw's install script, which records the requested version as installed.
 const fakeCurl = `#!/usr/bin/env bash
+set -euo pipefail
+url=""
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) output="$2"; shift 2 ;;
+    https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+if [[ "$url" == https://github.com/githubnext/gh-cao/releases/download/* ]]; then
+  echo "$url" >> "$FAKE_CAO_DOWNLOADS"
+  [[ -z "\${FAKE_CAO_BINARY_FAILURE:-}" ]] || { echo "binary download failed" >&2; exit 22; }
+  asset="\${url##*/}"
+  release="\${url%/*}"
+  release="\${release##*/}"
+  if [[ "$asset" == checksums.txt ]]; then
+    downloaded_suffix=""
+    case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) downloaded_suffix=.exe ;; esac
+    downloaded_binary="$(dirname "$output")/gh-cao$downloaded_suffix"
+    node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      import { createHash } from "node:crypto";
+      const mode = process.env.FAKE_CAO_CHECKSUM_MODE;
+      const digest = mode === "corrupt" ? "0".repeat(64) : createHash("sha256").update(readFileSync(process.argv[1])).digest("hex");
+      if (mode !== "missing") for (const os of ["darwin", "linux", "windows"]) for (const arch of ["amd64", "arm64"]) {
+        const prefix = process.env.FAKE_CAO_ASSET_PREFIX ?? "gh-cao-";
+        const line = digest + "  " + prefix + os + "-" + arch + (os === "windows" ? ".exe" : "");
+        console.log(line);
+        if (mode === "duplicate") console.log(line);
+      }
+    ' "$downloaded_binary" > "$output"
+  else
+    cat > "$output" <<EOF
+#!/usr/bin/env bash
+if [[ "\\$*" == --version ]]; then
+  echo "gh cao version \${FAKE_CAO_BINARY_VERSION:-$release}"
+else
+  exec node activity/cao.mjs "\\$@"
+fi
+EOF
+  fi
+  exit 0
+fi
 echo "curl" >> "$FAKE_COMMAND_LOG"
 if [[ -n "\${FAKE_INSTALL_FAILURE:-}" ]]; then
   echo "curl: (22) The requested URL returned error: 503" >&2
@@ -287,12 +347,6 @@ async function createConsumer(t, ghAwVersion, { repository = "alpha-org/control"
     ["gh.cmd", "@echo off\r\nbash \"%~dp0gh\" %*\r\n"],
     ["curl", fakeCurl],
     ["curl.exe", fakeCurl],
-    ["date", `#!/usr/bin/env bash
-set -euo pipefail
-[[ "$*" == "-u +%Y%m%d-%H%M%S" ]] || exit 2
-[[ -z "\${FAKE_DATE_FAILURE:-}" ]] || exit 1
-printf '%s\\n' "\${FAKE_DATE_TIMESTAMP:-20261014-111151}"
-`],
     ["npm", "#!/usr/bin/env bash\necho 'npm must not run during installation' >&2\nexit 1\n"],
   ]) {
     await writeFile(path.join(bin, name), source);
@@ -319,6 +373,9 @@ printf '%s\\n' "\${FAKE_DATE_TIMESTAMP:-20261014-111151}"
     FAKE_COMMAND_LOG: log,
     FAKE_GH_AW_INSTALLED: ghAwInstalled,
     FAKE_CONTROL_REPOSITORY: repository,
+    XDG_DATA_HOME: path.join(root, "data"),
+    FAKE_CAO_DOWNLOADS: path.join(root, "cao-downloads.log"),
+    FAKE_CAO_RELEASE_REQUESTS: path.join(root, "cao-release-requests.log"),
   };
   return {
     root,
@@ -376,10 +433,6 @@ async function exists(file) {
   }
 }
 
-async function assertExecutable(file) {
-  if (process.platform !== "win32") assert.notEqual((await stat(file)).mode & 0o111, 0);
-}
-
 async function assertCompleteInstall(consumer, env, ghAwVersion, repository, { activity = false } = {}) {
   const policy = JSON.parse(await readFile(path.join(consumer, policyPath), "utf8"));
   assert.equal(policy.version, 1);
@@ -391,16 +444,23 @@ async function assertCompleteInstall(consumer, env, ghAwVersion, repository, { a
       registries: [{
         id: "official",
         name: "Official CAO catalog",
-        repository: "githubnext/gh-aw-cao",
+        repository: "githubnext/gh-cao",
+        ref: "main",
+        auth: { type: "none" },
+      }, {
+        id: "agentics",
+        name: "Agentics workflows",
+        repository: "githubnext/agentics",
+        path: "workflows",
+        format: "workflows",
         ref: "main",
         auth: { type: "none" },
       }],
     },
     campaigns: {},
   });
-  await assertExecutable(path.join(consumer, "cao.sh"));
-  const launcher = process.platform === "win32" ? ["bash", ["./cao.sh", "--help"]] : ["./cao.sh", ["--help"]];
-  await executeFile(...launcher, { cwd: consumer, env, timeout });
+  assert.equal(await exists(path.join(consumer, "cao.sh")), false);
+  await executeFile(process.execPath, ["activity/cao.mjs", "--help"], { cwd: consumer, env, timeout });
   for (const bundle of ["activity", "dashboard"]) {
     await executeFile(process.execPath, [materializer, "verify", bundle], { cwd: consumer, env, timeout });
   }
@@ -548,7 +608,7 @@ test("documented staging preserves the complete curated runtime in a fresh check
   const { root, consumer, repository, env } = await createConsumer(t, supportedGhAw);
   await streamInstaller(consumer, env);
   await executeFile("git", ["init", "--quiet"], { cwd: consumer });
-  await executeFile("git", ["add", ".github", "activity", "dashboard", "cao.sh"], { cwd: consumer });
+  await executeFile("git", ["add", ".github", "activity", "dashboard"], { cwd: consumer });
   const { stdout: untracked } = await executeFile("git", ["ls-files", "--others", "--exclude-standard"], { cwd: consumer });
   assert.equal(untracked, "", "the documented commit must include every installed resource");
   await executeFile("git", [
@@ -580,7 +640,7 @@ test("install.sh reports useful progress and does not silence curl", async (t) =
   assert.doesNotMatch(result.stdout, /Making the CAO launcher executable/);
   assert.match(result.stdout, /Initializing the CAO policy/);
   assert.match(result.stdout, /CAO installed and verified/);
-  assert.match(result.stdout, /Next: \.\/cao\.sh setup/);
+  assert.match(result.stdout, /Next: gh cao setup/);
   assert.doesNotMatch(result.stdout, /Continue to guided setup/);
   assert.doesNotMatch(installerSource, /--silent|curl -s/);
 });
@@ -699,7 +759,7 @@ for (const { name, initialVersion, answer, environment = {}, manifest, expectedL
   });
 }
 
-test("install.sh reruns restore missing policy and launcher mode without replacing consumer policy", async (t) => {
+test("install.sh reruns restore missing policy without replacing consumer policy or requiring a launcher", async (t) => {
   const { root, consumer, repository, env, log } = await createConsumer(t, supportedGhAw);
   await runFile(consumer, env);
   assert.equal(await log(), "add\n");
@@ -714,13 +774,12 @@ test("install.sh reruns restore missing policy and launcher mode without replaci
   const { FAKE_CONTROL_REPOSITORY: _, ...withoutLookup } = env;
   const customPolicy = '{"version":1,"gh-aw-version":"v9.9.9","control-plane":{"campaigns":{"custom":{}}}}\n';
   await writeFile(path.join(consumer, policyPath), customPolicy);
-  await chmod(path.join(consumer, "cao.sh"), 0o644);
   await streamInstaller(consumer, withoutLookup);
   assert.equal(await log(), "add\n");
   assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), customPolicy);
-  await assertExecutable(path.join(consumer, "cao.sh"));
+  assert.equal(await exists(path.join(consumer, "cao.sh")), false);
 
-  await runFile(consumer, withoutLookup, ["githubnext/gh-aw-cao@v1.2.3"]);
+  await runFile(consumer, withoutLookup, ["githubnext/gh-cao@v1.2.3"]);
   assert.equal(await log(), "add\nadd-force\n");
   assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), customPolicy);
 
@@ -730,7 +789,7 @@ test("install.sh reruns restore missing policy and launcher mode without replaci
     "control-plane": { scope: { "allowed-owners": ["alpha-org"] }, campaigns: {} },
   })}\n`;
   await writeFile(path.join(consumer, policyPath), ownerPolicy);
-  await streamInstaller(consumer, withoutLookup, ["githubnext/gh-aw-cao@v1.2.3"]);
+  await streamInstaller(consumer, withoutLookup, ["githubnext/gh-cao@v1.2.3"]);
   assert.equal(await log(), "add\nadd-force\nadd-force\n");
   assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), ownerPolicy);
   await executeFile(process.execPath, [path.join(".github", "workflows", "shared", "control.mjs"), "validate-policy", policyPath], {
@@ -788,38 +847,38 @@ test("install.sh interactively selects an eligible owner and repository name", {
     cwd: consumer,
     env: { ...env, TERM: "xterm-256color", ACCESSIBLE: "", NO_COLOR: "" },
     timeout,
-    input: "\x1b[B\ncontrol\nn\n",
+    input: "alpha-org\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /Prerequisites and GitHub sign-in verified/);
   assert.match(result.stdout, /Create a private CAO control repository/);
-  assert.match(result.stdout, /alpha-user/);
-  assert.match(result.stdout, /> alpha-org/);
-  assert.match(result.stdout, /enter select/);
-  assert.match(result.stdout, /Repository owner\s+alpha-org/);
+  assert.match(result.stdout, /Repository owner \(OWNER\):/);
+  assert.doesNotMatch(result.stdout, /enter select|Owner \[1-/);
   assert.match(result.stdout, /Repository name\s+control/);
   assert.equal(await log(), "owners-query\ncreate-private\nadd\n");
   await assertNothingInstalled(consumer);
   await assertCompleteInstall(path.join(consumer, "control"), env, supportedGhAw, repository);
 });
 
-test("install.sh suggests the available cao repository name", { skip: process.platform === "win32" }, async (t) => {
-  const repository = "alpha-org/cao";
+test("install.sh requires typing both owner and repository name without defaults", { skip: process.platform === "win32" }, async (t) => {
+  const repository = "alpha-org/control";
   const { consumer, env, log } = await createConsumer(t, supportedGhAw, { repository });
   const quoted = `'${installScript.replaceAll("'", "'\\''")}'`;
   const result = await runTerminal("bash", ["-c", `cat ${quoted} | bash -s -- --create-repo`], {
     cwd: consumer,
     env: { ...env, TERM: "xterm-256color", ACCESSIBLE: "", NO_COLOR: "" },
     timeout,
-    input: "\x1b[B\n\nn\n",
+    input: "\nalpha-org\n\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /Repository name\s+cao/);
+  assert.match(result.stdout, /blank input does not choose an owner/);
+  assert.doesNotMatch(result.stdout, /Repository name\s+cao|Repository name \[/);
+  assert.match(result.stdout, /Repository name\s+control/);
   assert.equal(await log(), "owners-query\ncreate-private\nadd\n");
-  await assertCompleteInstall(path.join(consumer, "cao"), env, supportedGhAw, repository);
+  await assertCompleteInstall(path.join(consumer, "control"), env, supportedGhAw, repository);
 });
 
-test("install.sh does not suggest cao when that repository exists", { skip: process.platform === "win32" }, async (t) => {
+test("install.sh rejects an ineligible typed owner before accepting an eligible owner", { skip: process.platform === "win32" }, async (t) => {
   const { consumer, env, repository, log } = await createConsumer(t, supportedGhAw);
   const quoted = `'${installScript.replaceAll("'", "'\\''")}'`;
   const result = await runTerminal("bash", ["-c", `cat ${quoted} | bash -s -- --create-repo`], {
@@ -829,19 +888,19 @@ test("install.sh does not suggest cao when that repository exists", { skip: proc
       TERM: "xterm-256color",
       ACCESSIBLE: "",
       NO_COLOR: "",
-      FAKE_DEFAULT_REPOSITORY_EXISTS: "1",
     },
     timeout,
-    input: "\x1b[B\ncontrol\nn\n",
+    input: "unknown-owner\nalpha-org\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.doesNotMatch(result.stdout, /Repository name\s+cao/);
   assert.match(result.stdout, /Repository name\s+control/);
+  assert.match(result.stdout, /Type an account where you can create repositories/);
   assert.equal(await log(), "owners-query\ncreate-private\nadd\n");
   await assertCompleteInstall(path.join(consumer, "control"), env, supportedGhAw, repository);
 });
 
-test("install.sh reports default-name availability failures before creating files", { skip: process.platform === "win32" }, async (t) => {
+test("install.sh reports explicit-name availability failures before creating files", { skip: process.platform === "win32" }, async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const quoted = `'${installScript.replaceAll("'", "'\\''")}'`;
   const result = await runTerminal("bash", ["-c", `cat ${quoted} | bash -s -- --create-repo`], {
@@ -851,13 +910,13 @@ test("install.sh reports default-name availability failures before creating file
       TERM: "xterm-256color",
       ACCESSIBLE: "",
       NO_COLOR: "",
-      FAKE_DEFAULT_REPOSITORY_CHECK_FAILURE: "1",
+      FAKE_REPOSITORY_CHECK_FAILURE: "alpha-org/control",
     },
     timeout,
-    input: "\x1b[B\n",
+    input: "alpha-org\ncontrol\n",
   });
   assert.notEqual(result.code, 0);
-  assert.match(result.stdout + result.stderr, /Unable to check whether alpha-org\/cao is available/);
+  assert.match(result.stdout + result.stderr, /Unable to check whether alpha-org\/control is available/);
   assert.equal(await log(), "owners-query\n");
   await assertNothingInstalled(consumer);
 });
@@ -876,7 +935,7 @@ test("install.sh offers to create a private GitHub repository for a checkout wit
       FAKE_REPOSITORY_LOOKUP_FAILURE: "1",
     },
     timeout,
-    input: "y\n\x1b[B\ncontrol\nn\n",
+    input: "y\nalpha-org\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /No GitHub control repository found/);
@@ -902,6 +961,30 @@ test("install.sh defaults missing-remote repository creation to no", { skip: pro
   await assertNothingInstalled(consumer);
 });
 
+for (const [environment, message] of [
+  [{ FAKE_EXISTING_REPOSITORIES: "alpha-org/control" }, /Repository alpha-org\/control already exists/],
+  [{ FAKE_REPOSITORY_CHECK_FAILURE: "alpha-org/control" }, /Unable to check whether alpha-org\/control is available/],
+]) {
+  test(`install.sh validates the typed remote name before in-place creation: ${message}`, { skip: process.platform === "win32" }, async (t) => {
+    const { consumer, env, log } = await createConsumer(t);
+    await executeFile("git", ["remote", "remove", "origin"], { cwd: consumer });
+    const result = await runTerminal("bash", [installScript], {
+      cwd: consumer,
+      env: {
+        ...env, ...environment, TERM: "", ACCESSIBLE: "1", NO_COLOR: "1",
+        FAKE_REPOSITORY_LOOKUP_FAILURE: "1",
+      },
+      timeout,
+      input: "y\nalpha-org\ncontrol\n",
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stdout + result.stderr, message);
+    assert.equal(await log(), "owners-query\n");
+    assert.equal((await executeFile("git", ["remote"], { cwd: consumer })).stdout, "");
+    await assertNothingInstalled(consumer);
+  });
+}
+
 test("install.sh offers to create and clone from outside a Git checkout", { skip: process.platform === "win32" }, async (t) => {
   const { root, env, repository, log } = await createConsumer(t, supportedGhAw);
   const start = path.join(root, "start");
@@ -911,7 +994,7 @@ test("install.sh offers to create and clone from outside a Git checkout", { skip
     cwd: start,
     env: { ...env, TERM: "xterm-256color", ACCESSIBLE: "", NO_COLOR: "" },
     timeout,
-    input: "y\n\x1b[B\ncontrol\nn\n",
+    input: "y\nalpha-org\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /Create and clone a new private control repository/);
@@ -919,18 +1002,21 @@ test("install.sh offers to create and clone from outside a Git checkout", { skip
   await assertCompleteInstall(path.join(start, "control"), env, supportedGhAw, repository);
 });
 
-test("install.sh uses numbered repository-owner prompts in accessible mode", { skip: process.platform === "win32" }, async (t) => {
+test("install.sh requires typed owner and name in accessible mode", { skip: process.platform === "win32" }, async (t) => {
   const { consumer, env, repository, log } = await createConsumer(t, supportedGhAw);
   const quoted = `'${installScript.replaceAll("'", "'\\''")}'`;
   const result = await runTerminal("bash", ["-c", `cat ${quoted} | bash -s -- --create-repo`], {
     cwd: consumer,
     env: { ...env, TERM: "", ACCESSIBLE: "1", NO_COLOR: "1" },
     timeout,
-    input: "2\ncontrol\nn\n",
+    input: "2\nalpha-org\n\ncontrol\nn\n",
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /1\) alpha-user/);
-  assert.match(result.stdout, /2\) alpha-org/);
+  assert.match(result.stdout, /Repository owner \(OWNER\):/);
+  assert.match(result.stdout, /Repository name \(NAME\):/);
+  assert.match(result.stdout, /Type an account where you can create repositories/);
+  assert.match(result.stdout, /Use a repository name containing/);
+  assert.doesNotMatch(result.stdout, /1\) alpha-user|2\) alpha-org|Repository name \[/);
   assert.doesNotMatch(result.stdout, /enter select/);
   assert.equal(await log(), "owners-query\ncreate-private\nadd\n");
   await assertNothingInstalled(consumer);
@@ -1005,7 +1091,7 @@ test("interactive bare installation stops cleanly with an explicit setup next st
   });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.doesNotMatch(result.stdout, /Continue to guided setup|Repositories CAO should read/);
-  assert.match(result.stdout, /Next: \.\/cao\.sh setup/);
+  assert.match(result.stdout, /Next: gh cao setup/);
   assert.equal(await log(), "add\n");
   await assertCompleteInstall(consumer, env, supportedGhAw, repository);
 });
@@ -1091,7 +1177,7 @@ test("install.sh refuses an explicit clone path occupied by a dangling symlink",
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const occupied = path.join(consumer, "control");
   await fs.promises.symlink("missing-clone", occupied);
-  const result = await runStreamed(consumer, env, ["--quickstart", "--create-repo", "alpha-org/control"]);
+  const result = await runStreamed(consumer, env, ["--quickstart", "--target", "alpha-org/project", "--create-repo", "alpha-org/control"]);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Cannot clone into existing path/);
   assert.equal(await log(), "");
@@ -1159,10 +1245,27 @@ test("headless guided reinstallation preserves incompatible operator-owned polic
   assert.equal(await log(), "add\n");
 });
 
+test("headless setup does not reconfigure an existing standalone control plane", async (t) => {
+  const { consumer, env, log } = await createConsumer(t, supportedGhAw);
+  await streamInstaller(consumer, env);
+  const customPolicy = JSON.stringify({
+    version: 1, "gh-aw-version": supportedGhAw,
+    "control-plane": { campaigns: {}, workflows: { audit: { enabled: true } } },
+  });
+  await writeFile(path.join(consumer, policyPath), customPolicy);
+  const result = await runStreamed(consumer, {
+    ...env, CI: "1", FAKE_CONTROL_VISIBILITY: "PUBLIC",
+  }, ["--setup"]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /requires a bare control plane with no declared standalone workflows/);
+  assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), customPolicy);
+  assert.equal(await log(), "add\n");
+});
+
 test("headless quickstart selects the current checkout and validates it before mutation", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   await writeFile(path.join(consumer, "README.md"), "existing change\n");
-  const result = await runStreamed(consumer, { ...env, CI: "1" }, ["--quickstart"]);
+  const result = await runStreamed(consumer, { ...env, CI: "1" }, ["--quickstart", "--target", "alpha-org/project"]);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /requires a clean control-repository checkout/);
   assert.doesNotMatch(result.stderr, /Interactive repository creation requires a terminal/);
@@ -1170,27 +1273,27 @@ test("headless quickstart selects the current checkout and validates it before m
   await assertNothingInstalled(consumer);
 });
 
-test("implicit quickstart pins the latest stable CAO release", async (t) => {
+test("implicit quickstart pins the latest published CAO release", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const result = await runStreamed(consumer, {
     ...env,
     CI: "1",
     FAKE_ADD_FAILURE: "1",
-    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-aw-cao@v1.2.3",
-  }, ["--quickstart"]);
+    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-cao@v1.2.3",
+  }, ["--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
-  assert.match(result.stdout, /Quickstart selected stable CAO release v1\.2\.3/);
+  assert.match(result.stdout, /Quickstart selected published CAO release v1\.2\.3/);
   assert.equal(await log(), "add\n");
 });
 
-test("quickstart skips malformed tags, drafts, and prereleases when selecting a stable release", async (t) => {
+test("quickstart skips malformed tags and drafts but selects a published prerelease", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const result = await runStreamed(consumer, {
     ...env,
     CI: "1",
     FAKE_ADD_FAILURE: "1",
-    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-aw-cao@v1.2.3",
+    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-cao@v1.2.5",
     FAKE_CAO_RELEASE_LIST: [
       "false\tfalse\tuntagged-a58de5448231a0eed5d3",
       "true\tfalse\tv1.3.0",
@@ -1199,35 +1302,36 @@ test("quickstart skips malformed tags, drafts, and prereleases when selecting a 
       "false\tfalse\tv1.2.3",
       "false\tfalse\tv1.2.2",
     ].join("\n"),
-  }, ["--quickstart"]);
+  }, ["--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
-  assert.match(result.stdout, /Quickstart selected stable CAO release v1\.2\.3/);
+  assert.match(result.stdout, /Quickstart selected published CAO release v1\.2\.5/);
+  assert.equal(await readFile(env.FAKE_CAO_RELEASE_REQUESTS, "utf8"), "repos/githubnext/gh-cao/releases/tags/v1.2.5\n");
   assert.equal(await log(), "add\n");
 });
 
 for (const releases of [
   "",
   "false\tfalse\tuntagged-a58de5448231a0eed5d3",
-  "true\tfalse\tv1.3.0\nfalse\ttrue\tv1.2.5",
+  "true\tfalse\tv1.3.0\ntrue\ttrue\tv1.2.5",
 ]) {
-  test(`quickstart fails closed without a published stable version tag: ${JSON.stringify(releases)}`, async (t) => {
+  test(`quickstart fails closed without a published version tag: ${JSON.stringify(releases)}`, async (t) => {
     const { consumer, env, log } = await createConsumer(t, supportedGhAw);
     const result = await runStreamed(consumer, {
       ...env,
       CI: "1",
       FAKE_CAO_RELEASE_LIST: releases || "\n",
-    }, ["--quickstart"]);
+    }, ["--quickstart", "--target", "alpha-org/project"]);
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Unable to resolve the latest stable CAO release with a vX\.Y\.Z tag/);
+    assert.match(result.stderr, /Unable to resolve the latest published CAO release with a vX\.Y\.Z tag/);
     assert.match(result.stderr, /No CAO files were written/);
     assert.equal(await log(), "");
     await assertNothingInstalled(consumer);
   });
 }
 
-test("implicit quickstart refreshes an existing control plane to the stable release", async (t) => {
+test("implicit quickstart refreshes an existing control plane to the published release", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   await streamInstaller(consumer, env);
   await executeFile("git", ["add", "."], { cwd: consumer });
@@ -1243,8 +1347,8 @@ test("implicit quickstart refreshes an existing control plane to the stable rele
     ...env,
     CI: "1",
     FAKE_ADD_FAILURE: "1",
-    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-aw-cao@v1.2.3",
-  }, ["--quickstart"]);
+    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-cao@v1.2.3",
+  }, ["--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
   assert.match(result.stdout, /Refreshing control plane components/);
@@ -1257,185 +1361,393 @@ test("quickstart preserves an explicit main source", async (t) => {
     ...env,
     CI: "1",
     FAKE_ADD_FAILURE: "1",
-    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-aw-cao@main",
-    FAKE_LATEST_CAO_RELEASE_FAILURE: "1",
-  }, ["githubnext/gh-aw-cao@main", "--quickstart"]);
+    FAKE_EXPECT_CAO_SOURCE: "githubnext/gh-cao@main",
+  }, ["githubnext/gh-cao@main", "--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
-  assert.doesNotMatch(result.stdout + result.stderr, /Unable to resolve the latest stable CAO release/);
+  assert.doesNotMatch(result.stdout + result.stderr, /Unable to resolve the latest published CAO release/);
+  assert.doesNotMatch(result.stdout, /Quickstart selected published CAO release/);
   assert.equal(await log(), "add\n");
 });
 
-test("quickstart fails closed when no stable CAO release can be resolved", async (t) => {
+test("quickstart fails closed when no published CAO release can be resolved", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const result = await runStreamed(consumer, {
     ...env,
     CI: "1",
     FAKE_LATEST_CAO_RELEASE_FAILURE: "1",
-  }, ["--quickstart"]);
+  }, ["--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Unable to resolve the latest stable CAO release/);
+  assert.match(result.stderr, /Unable to resolve the latest published CAO release/);
   assert.match(result.stderr, /No CAO files were written/);
   assert.equal(await log(), "");
   await assertNothingInstalled(consumer);
 });
 
-test("quickstart rejects a prerelease as the implicit stable source", async (t) => {
+test("an explicit release downloads the matching Go binary without a latest-release lookup", async (t) => {
+  const { consumer, env } = await createConsumer(t, supportedGhAw);
+  await streamInstaller(consumer, { ...env, FAKE_LATEST_CAO_RELEASE_FAILURE: "1" }, ["githubnext/gh-cao@v2.3.4"]);
+  const downloads = await readFile(env.FAKE_CAO_DOWNLOADS, "utf8");
+  assert.match(downloads, /\/v2\.3\.4\/gh-cao-(?:darwin|linux|windows)-(?:amd64|arm64)(?:\.exe)?\n/);
+  assert.match(downloads, /\/v2\.3\.4\/checksums\.txt\n/);
+  const version = await executeFile("gh", ["cao", "--version"], { cwd: consumer, env });
+  assert.equal(version.stdout.trim(), "gh cao version v2.3.4");
+  assert.equal(await readFile(env.FAKE_CAO_RELEASE_REQUESTS, "utf8"), "repos/githubnext/gh-cao/releases/tags/v2.3.4\n");
+});
+
+const publishedExtensionAssets = [
+  "gh-cao-darwin-amd64", "gh-cao-darwin-arm64", "gh-cao-linux-amd64", "gh-cao-linux-arm64",
+  "gh-cao-windows-amd64.exe", "gh-cao-windows-arm64.exe", "checksums.txt",
+];
+for (const [name, assets, missing] of [
+  ["runtime-only stable release", ["cao-runtime-sha.tgz", "cao-runtime-sha.tgz.sha256"], "checksums.txt"],
+  ["mixed binary names", publishedExtensionAssets.map((asset) => asset === "gh-cao-linux-amd64" ? "linux-amd64" : asset), "gh-cao-linux-amd64"],
+  ["missing Windows binary", publishedExtensionAssets.filter((asset) => asset !== "gh-cao-windows-arm64.exe"), "gh-cao-windows-arm64.exe"],
+  ["missing checksums", publishedExtensionAssets.filter((asset) => asset !== "checksums.txt"), "checksums.txt"],
+  ["duplicate binary", [...publishedExtensionAssets, "gh-cao-linux-amd64"], "gh-cao-linux-amd64"],
+]) {
+  test(`installer rejects a ${name} before installing or replacing tools`, async (t) => {
+    const { consumer, env, log } = await createConsumer(t);
+    const directory = path.join(env.XDG_DATA_HOME, "gh", "extensions", "gh-cao");
+    const binary = path.join(directory, process.platform === "win32" ? "gh-cao.exe" : "gh-cao");
+    await mkdir(directory, { recursive: true });
+    await writeFile(binary, "previous verified executable");
+    const result = await runStreamed(consumer, {
+      ...env,
+      FAKE_CAO_RELEASE_ASSETS: assets.join("\n"),
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /CAO release v1\.2\.3 is not installable/);
+    assert.ok(result.stderr.includes(`expected exactly one uploaded, nonempty ${missing} asset`), result.stderr);
+    assert.match(result.stderr, /publish a corrected release/);
+    assert.match(result.stderr, /No CAO files were written/);
+    assert.equal(await log(), "", "gh-aw must not be installed before release preflight");
+    assert.equal(await exists(env.FAKE_CAO_DOWNLOADS), false);
+    assert.equal(await readFile(binary, "utf8"), "previous verified executable");
+    assert.deepEqual(await fs.promises.readdir(directory), [path.basename(binary)]);
+    assert.equal(await readFile(env.FAKE_CAO_RELEASE_REQUESTS, "utf8"), "repos/githubnext/gh-cao/releases/tags/v1.2.3\n");
+    await assertNothingInstalled(consumer);
+  });
+}
+
+test("installer prefers the modern naming set when both complete sets are published", async (t) => {
+  const { consumer, env } = await createConsumer(t, supportedGhAw);
+  await streamInstaller(consumer, {
+    ...env,
+    FAKE_CAO_RELEASE_ASSETS: [
+      ...publishedExtensionAssets,
+      ...publishedExtensionAssets.slice(0, -1).map((asset) => asset.replace(/^gh-cao-/, "")),
+    ].join("\n"),
+  });
+  const downloads = await readFile(env.FAKE_CAO_DOWNLOADS, "utf8");
+  assert.match(downloads, /\/gh-cao-(?:darwin|linux|windows)-(?:amd64|arm64)(?:\.exe)?\n/);
+});
+
+for (const corrupt of [false, true]) {
+  test(`published prerelease with legacy binaries ${corrupt ? "rejects a corrupt checksum" : "installs with verified checksums"}`, async (t) => {
+    const { consumer, env, log } = await createConsumer(t, supportedGhAw);
+    const result = await runStreamed(consumer, {
+      ...env,
+      FAKE_CAO_RELEASE_LIST: "false\ttrue\tv1.2.5\nfalse\tfalse\tv1.2.3",
+      FAKE_CAO_RELEASE_ASSETS: publishedExtensionAssets.map((asset) => asset.replace(/^gh-cao-/, "")).join("\n"),
+      FAKE_CAO_ASSET_PREFIX: "",
+      ...(corrupt ? { FAKE_CAO_CHECKSUM_MODE: "corrupt" } : {}),
+    }, [`githubnext/gh-cao@${revision}`]);
+    assert.equal(result.code, corrupt ? 1 : 0, result.stderr);
+    const downloads = await readFile(env.FAKE_CAO_DOWNLOADS, "utf8");
+    assert.match(downloads, /\/v1\.2\.5\/(?:darwin|linux|windows)-(?:amd64|arm64)(?:\.exe)?\n/);
+    assert.doesNotMatch(downloads, /\/gh-cao-(?:darwin|linux|windows)/);
+    assert.equal(await readFile(env.FAKE_CAO_RELEASE_REQUESTS, "utf8"), "repos/githubnext/gh-cao/releases/tags/v1.2.5\n");
+    if (corrupt) {
+      assert.match(result.stderr, /checksum verification failed/);
+      assert.equal(await log(), "");
+      await assertNothingInstalled(consumer);
+    } else {
+      const version = await executeFile("gh", ["cao", "--version"], { cwd: consumer, env });
+      assert.equal(version.stdout.trim(), "gh cao version v1.2.5");
+      assert.equal(await log(), "add\n");
+    }
+  });
+}
+
+test("an older extension's initial schema URI is aligned with the verified catalog without changing existing policy", async (t) => {
+  const { consumer, repository, env } = await createConsumer(t, supportedGhAw);
+  const legacyEnv = {
+    ...env,
+    FAKE_CAO_POLICY_SCHEMA: "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/.github/workflows/shared/cao.schema.json",
+  };
+  await streamInstaller(consumer, legacyEnv);
+  await assertCompleteInstall(consumer, env, supportedGhAw, repository);
+  const policy = JSON.parse(await readFile(path.join(consumer, policyPath), "utf8"));
+  assert.equal(policy.$schema, "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json");
+  const existing = `${JSON.stringify({ ...policy, $schema: legacyEnv.FAKE_CAO_POLICY_SCHEMA })}\n`;
+  await writeFile(path.join(consumer, policyPath), existing);
+  await streamInstaller(consumer, legacyEnv);
+  assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), existing);
+});
+
+test("initial schema alignment rejects an unknown schema rather than repairing it", async (t) => {
+  const { consumer, env } = await createConsumer(t, supportedGhAw);
+  const result = await runStreamed(consumer, {
+    ...env,
+    FAKE_CAO_POLICY_SCHEMA: "https://example.invalid/untrusted.schema.json",
+  });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /initialized policy schema does not match the installed catalog/);
+  assert.doesNotMatch(result.stdout, /CAO installed and verified/);
+  assert.equal(JSON.parse(await readFile(path.join(consumer, policyPath), "utf8")).$schema, "https://example.invalid/untrusted.schema.json");
+});
+
+test("explicit release asset lookup failures stop before installing tools or CAO files", async (t) => {
+  const { consumer, env, log } = await createConsumer(t);
+  const result = await runStreamed(consumer, {
+    ...env,
+    FAKE_LATEST_CAO_RELEASE_FAILURE: "1",
+    FAKE_CAO_ASSET_LOOKUP_FAILURE: "1",
+  }, ["githubnext/gh-cao@v2.3.4"]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /release asset lookup failed/);
+  assert.match(result.stderr, /Unable to inspect CAO extension release v2\.3\.4/);
+  assert.equal(await log(), "");
+  assert.equal(await exists(env.FAKE_CAO_DOWNLOADS), false);
+  assert.equal(await exists(env.XDG_DATA_HOME), false);
+  await assertNothingInstalled(consumer);
+});
+
+for (const [name, override, message] of [
+  ["download failure", { FAKE_CAO_BINARY_FAILURE: "1" }, /binary download failed/],
+  ["checksum mismatch", { FAKE_CAO_CHECKSUM_MODE: "corrupt" }, /checksum verification failed/],
+  ["missing checksum", { FAKE_CAO_CHECKSUM_MODE: "missing" }, /exactly one SHA-256 digest/],
+  ["duplicate checksum", { FAKE_CAO_CHECKSUM_MODE: "duplicate" }, /exactly one SHA-256 digest/],
+  ["embedded version mismatch", { FAKE_CAO_BINARY_VERSION: "v0.0.1" }, /version verification failed/],
+]) {
+  test(`Go extension installation preserves an existing binary on ${name}`, async (t) => {
+    const { consumer, env, log } = await createConsumer(t, supportedGhAw);
+    const directory = path.join(env.XDG_DATA_HOME, "gh", "extensions", "gh-cao");
+    const binary = path.join(directory, process.platform === "win32" ? "gh-cao.exe" : "gh-cao");
+    await mkdir(directory, { recursive: true });
+    await writeFile(binary, "previous verified executable");
+    const result = await runStreamed(consumer, { ...env, ...override });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, message);
+    assert.equal(await readFile(binary, "utf8"), "previous verified executable");
+    assert.equal(await log(), "");
+    assert.deepEqual((await fs.promises.readdir(directory)).sort(), [path.basename(binary)]);
+    await assertNothingInstalled(consumer);
+  });
+}
+
+async function runExtensionInstaller(consumer, env, prefix = "gh-cao-") {
+  const extensionInstaller = installerSource.match(/^install_cao_extension\(\) \([\s\S]*?^\)/m)?.[0];
+  assert.ok(extensionInstaller, "the production extension installer is available");
+  return executeFile("bash", [
+    "-c",
+    `set -euo pipefail\ninfo() { :; }\nsuccess() { :; }\n${extensionInstaller}\ninstall_cao_extension v1.2.3 "$1"`,
+    "extension-installer",
+    prefix,
+  ], { cwd: consumer, env, timeout });
+}
+
+test("Go extension verifies checksums without filename-escape markers in native Windows paths", async (t) => {
+  const { root, consumer, env } = await createConsumer(t, supportedGhAw);
+  await writeFile(path.join(root, "bin", "sha256sum"), `#!/usr/bin/env bash
+node --input-type=module -e '
+  import { readFileSync } from "node:fs";
+  import { createHash } from "node:crypto";
+  const file = process.argv.slice(1).filter((argument) => argument !== "-b")[0];
+  const digest = createHash("sha256").update(readFileSync(file ?? 0)).digest("hex");
+  console.log((file ? "\\\\" : "") + digest + "  " + (file ?? "-"));
+' -- "$@"
+`, { mode: 0o755 });
+  await runExtensionInstaller(consumer, {
+    ...env,
+    XDG_DATA_HOME: path.join(root, "data\\native-windows-path"),
+  });
+  const binary = path.join(root, "data\\native-windows-path", "gh", "extensions", "gh-cao", `gh-cao${process.platform === "win32" ? ".exe" : ""}`);
+  const { stdout } = await executeFile("bash", [binary, "--version"], { env });
+  assert.equal(stdout.trim(), "gh cao version v1.2.3");
+});
+
+for (const [system, machine, asset, prefix] of [
+  ["Linux", "x86_64", "linux-amd64"],
+  ["Linux", "aarch64", "linux-arm64"],
+  ["Darwin", "x86_64", "darwin-amd64"],
+  ["Darwin", "arm64", "darwin-arm64"],
+  ["MINGW64_NT-10.0", "x86_64", "windows-amd64.exe"],
+  ["MSYS_NT-10.0", "aarch64", "windows-arm64.exe"],
+].flatMap(([system, machine, asset]) => ["gh-cao-", ""].map((prefix) => [system, machine, asset, prefix]))) {
+  test(`Go extension selects and installs the published ${prefix}${asset} asset`, async (t) => {
+    const { root, consumer, env } = await createConsumer(t, supportedGhAw);
+    await writeFile(path.join(root, "bin", "uname"), `#!/usr/bin/env bash\nif [[ "$1" == -s ]]; then echo "${system}"; else echo "${machine}"; fi\n`, { mode: 0o755 });
+    const useLocalAppData = system.startsWith("MSYS");
+    const useHome = system === "Darwin" && machine === "x86_64";
+    const installEnv = {
+      ...env,
+      HOME: path.join(root, "home"),
+      LOCALAPPDATA: path.join(root, "local-app-data"),
+      FAKE_CAO_ASSET_PREFIX: prefix,
+      ...((useLocalAppData || useHome) ? { XDG_DATA_HOME: "" } : {}),
+    };
+    await runExtensionInstaller(consumer, installEnv, prefix);
+    const downloads = (await readFile(env.FAKE_CAO_DOWNLOADS, "utf8")).trim().split("\n");
+    assert.deepEqual(downloads, [
+      `https://github.com/githubnext/gh-cao/releases/download/v1.2.3/${prefix}${asset}`,
+      "https://github.com/githubnext/gh-cao/releases/download/v1.2.3/checksums.txt",
+    ]);
+    const extensionRoot = useLocalAppData
+      ? path.join(installEnv.LOCALAPPDATA, "GitHub CLI")
+      : useHome ? path.join(installEnv.HOME, ".local", "share", "gh") : path.join(env.XDG_DATA_HOME, "gh");
+    const binary = path.join(extensionRoot, "extensions", "gh-cao", `gh-cao${asset.endsWith(".exe") ? ".exe" : ""}`);
+    const { stdout } = await executeFile("bash", [binary, "--version"], { env: installEnv });
+    assert.equal(stdout.trim(), "gh cao version v1.2.3");
+  });
+}
+
+for (const [system, machine, message] of [
+  ["FreeBSD", "x86_64", /Unsupported CAO extension operating system/],
+  ["Linux", "riscv64", /Unsupported CAO extension architecture/],
+]) {
+  test(`Go extension rejects unsupported ${system}/${machine} before downloading`, async (t) => {
+    const { root, consumer, env } = await createConsumer(t, supportedGhAw);
+    await writeFile(path.join(root, "bin", "uname"), `#!/usr/bin/env bash\nif [[ "$1" == -s ]]; then echo "${system}"; else echo "${machine}"; fi\n`, { mode: 0o755 });
+    await assert.rejects(runExtensionInstaller(consumer, env), (error) => {
+      assert.match(error.stderr, message);
+      return true;
+    });
+    assert.equal(fs.existsSync(env.FAKE_CAO_DOWNLOADS), false);
+    assert.equal(fs.existsSync(env.XDG_DATA_HOME), false);
+  });
+}
+
+for (const kind of ["source", "linked", "non-file"]) {
+  test(`Go extension refuses to overwrite a ${kind} installation`, async (t) => {
+    const { root, consumer, env } = await createConsumer(t, supportedGhAw);
+    const directory = path.join(env.XDG_DATA_HOME, "gh", "extensions", "gh-cao");
+    await mkdir(path.dirname(directory), { recursive: true });
+    if (kind === "linked") {
+      const source = path.join(root, "linked-source");
+      await mkdir(source);
+      await symlink(source, directory, "junction");
+    } else {
+      await mkdir(directory);
+      if (kind === "source") await writeFile(path.join(directory, ".git"), "gitdir: source\n");
+      else await mkdir(path.join(directory, `gh-cao${process.platform === "win32" ? ".exe" : ""}`));
+    }
+    await assert.rejects(runExtensionInstaller(consumer, env), (error) => {
+      assert.match(error.stderr, /Refusing to replace/);
+      return true;
+    });
+    assert.equal(fs.existsSync(env.FAKE_CAO_DOWNLOADS), false);
+  });
+}
+
+test("quickstart rejects a non-vX.Y.Z tag as the implicit source", async (t) => {
   const { consumer, env, log } = await createConsumer(t, supportedGhAw);
   const result = await runStreamed(consumer, {
     ...env,
     CI: "1",
     FAKE_LATEST_CAO_RELEASE: "v1.2.3-rc.1",
-  }, ["--quickstart"]);
+  }, ["--quickstart", "--target", "alpha-org/project"]);
 
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Unable to resolve the latest stable CAO release/);
+  assert.match(result.stderr, /Unable to resolve the latest published CAO release/);
   assert.equal(await log(), "");
   await assertNothingInstalled(consumer);
 });
 
-test("headless quickstart keeps USERNAME/cao when the repository and clone path are available", async (t) => {
-  const { root, env, log } = await createConsumer(t, supportedGhAw);
-  const outsideCheckout = path.join(root, "outside-checkout");
-  await mkdir(outsideCheckout);
-  const result = await runStreamed(outsideCheckout, {
-    ...env,
-    CI: "1",
-    FAKE_CONTROL_REPOSITORY: "alpha-user/cao",
-    FAKE_ADD_FAILURE: "1",
-  }, ["--quickstart"]);
-  assert.notEqual(result.code, 0);
-  assert.match(result.stdout, /Created private control repository alpha-user\/cao\./);
-  assert.doesNotMatch(result.stderr, /creating a fresh private control repository/);
-  assert.equal(await log(), "create-private\nadd\n");
-  await assertNothingInstalled(outsideCheckout);
-});
-
-test("headless quickstart selects a UTC timestamp when USERNAME/cao exists", async (t) => {
-  const { root, env, log } = await createConsumer(t, supportedGhAw);
-  const outsideCheckout = path.join(root, "outside-checkout");
-  await mkdir(outsideCheckout);
-  const result = await runStreamed(outsideCheckout, {
-    ...env,
-    CI: "1",
-    FAKE_CONTROL_REPOSITORY: "alpha-user/cao-20261014-111151",
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1",
-    FAKE_ADD_FAILURE: "1",
-  }, ["--quickstart"]);
-  assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /alpha-user\/cao already exists; creating a fresh private control repository: alpha-user\/cao-20261014-111151\./);
-  assert.match(result.stdout, /Created private control repository alpha-user\/cao-20261014-111151\./);
-  assert.equal(await log(), "create-private\nadd\n");
-  await assertNothingInstalled(outsideCheckout);
-});
-
-for (const kind of ["directory", "file", "symlink"]) {
-  test(`quickstart preserves an occupied local cao ${kind} and selects a timestamp`, {
-    skip: kind === "symlink" && process.platform === "win32",
-  }, async (t) => {
-    const { root, env, log } = await createConsumer(t, supportedGhAw);
-    const outsideCheckout = path.join(root, "outside-checkout");
-    await mkdir(outsideCheckout);
-    const occupied = path.join(outsideCheckout, "cao");
-    if (kind === "directory") {
-      await mkdir(occupied);
-      await writeFile(path.join(occupied, "keep.txt"), "preserve\n");
-    } else if (kind === "file") {
-      await writeFile(occupied, "preserve\n");
+for (const location of ["outside", "disconnected", "disconnected-with-policy"]) {
+  test(`quickstart requires explicit creation: ${location}`, async (t) => {
+    const { root, consumer, env, log } = await createConsumer(t, supportedGhAw);
+    const inCheckout = location !== "outside";
+    const start = inCheckout ? consumer : path.join(root, "outside-checkout");
+    if (inCheckout) {
+      await executeFile("git", ["remote", "remove", "origin"], { cwd: consumer });
     } else {
-      await fs.promises.symlink("missing-clone", occupied);
+      await mkdir(start);
     }
-    const result = await runStreamed(outsideCheckout, {
-      ...env,
-      CI: "1",
-      FAKE_CONTROL_REPOSITORY: "alpha-user/cao-20261014-111151",
-      FAKE_ADD_FAILURE: "1",
-    }, ["--quickstart"]);
-    assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Local clone path cao already exists; creating a fresh private control repository: alpha-user\/cao-20261014-111151\./);
-    assert.equal(await log(), "create-private\nadd\n");
-    if (kind === "symlink") {
-      assert.equal(await fs.promises.readlink(occupied), "missing-clone");
-    } else {
-      assert.equal(await readFile(kind === "directory" ? path.join(occupied, "keep.txt") : occupied, "utf8"), "preserve\n");
+    if (location === "disconnected-with-policy") {
+      await mkdir(path.join(consumer, ".github/workflows"), { recursive: true });
+      await writeFile(path.join(consumer, policyPath), '{"operator":"preserve"}\n');
     }
-  });
-}
-
-test("quickstart handles timestamp collisions in both remote names and local clone paths", async (t) => {
-  const { root, env, log } = await createConsumer(t, supportedGhAw);
-  const outsideCheckout = path.join(root, "outside-checkout");
-  await mkdir(outsideCheckout);
-  const occupied = path.join(outsideCheckout, "cao-20261014-111151-2");
-  await mkdir(occupied);
-  const result = await runStreamed(outsideCheckout, {
-    ...env,
-    CI: "1",
-    FAKE_CONTROL_REPOSITORY: "alpha-user/cao-20261014-111151-3",
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1",
-    FAKE_EXISTING_REPOSITORIES: "alpha-user/cao-20261014-111151",
-    FAKE_ADD_FAILURE: "1",
-  }, ["--quickstart"]);
-  assert.notEqual(result.code, 0);
-  assert.match(result.stdout, /Created private control repository alpha-user\/cao-20261014-111151-3\./);
-  assert.equal(await log(), "create-private\nadd\n");
-  assert.ok((await stat(occupied)).isDirectory());
-});
-
-for (const [name, environment, message] of [
-  ["default lookup fails", { FAKE_DEFAULT_REPOSITORY_CHECK_FAILURE: "1" }, /Unable to check whether alpha-user\/cao is available/],
-  ["timestamp lookup fails", {
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1",
-    FAKE_REPOSITORY_CHECK_FAILURE: "alpha-user/cao-20261014-111151",
-  }, /Unable to check whether alpha-user\/cao-20261014-111151 is available/],
-  ["timestamp generation fails", {
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1", FAKE_DATE_FAILURE: "1",
-  }, /Unable to generate a UTC timestamp/],
-  ["timestamp is invalid", {
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1", FAKE_DATE_TIMESTAMP: "invalid",
-  }, /Unable to generate a UTC timestamp/],
-  ["all timestamped names are occupied", {
-    FAKE_DEFAULT_REPOSITORY_EXISTS: "1",
-    FAKE_EXISTING_REPOSITORIES: Array.from({ length: 10 }, (_, index) =>
-      `alpha-user/cao-20261014-111151${index ? `-${index + 1}` : ""}`).join(","),
-  }, /Unable to find an available quickstart repository after 10 timestamped names/],
-]) {
-  test(`quickstart fails without mutation when ${name}`, async (t) => {
-    const { root, env, log } = await createConsumer(t, supportedGhAw);
-    const outsideCheckout = path.join(root, "outside-checkout");
-    await mkdir(outsideCheckout);
-    const result = await runStreamed(outsideCheckout, {
-      ...env, CI: "1", ...environment,
-    }, ["--quickstart"]);
+    const result = await runStreamed(start, {
+      ...env, CI: "1", FAKE_REPOSITORY_LOOKUP_FAILURE: "1",
+    }, ["--quickstart", "--target", "alpha-org/project"]);
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, message);
+    assert.match(result.stderr, /connected GitHub checkout or explicit --create-repo OWNER\/NAME/);
     assert.equal(await log(), "");
-    assert.deepEqual(await fs.promises.readdir(outsideCheckout), []);
+    if (location === "disconnected-with-policy") {
+      assert.equal(await readFile(path.join(consumer, policyPath), "utf8"), '{"operator":"preserve"}\n');
+      assert.equal(await exists(path.join(consumer, "cao.sh")), false);
+    } else {
+      await assertNothingInstalled(start);
+    }
+    if (!inCheckout) assert.deepEqual(await fs.promises.readdir(start), []);
   });
 }
 
-for (const remoteExists of [false, true]) {
-  test(`quickstart connects a checkout without remotes in place${remoteExists ? " using a timestamp on collision" : " without checking a clone path"}`, async (t) => {
-    const repository = `alpha-user/${remoteExists ? "cao-20261014-111151" : "cao"}`;
-    const { consumer, env, log } = await createConsumer(t, supportedGhAw, { repository });
-    await executeFile("git", ["remote", "remove", "origin"], { cwd: consumer });
-    await mkdir(path.join(consumer, "cao"));
-    const result = await runStreamed(consumer, {
-      ...env,
-      CI: "1",
-      FAKE_REPOSITORY_LOOKUP_FAILURE: "1",
-      FAKE_DEFAULT_REPOSITORY_EXISTS: remoteExists ? "1" : "",
-      FAKE_ADD_FAILURE: "1",
-    }, ["--quickstart"]);
+for (const arguments_ of [
+  ["--quickstart"],
+  ["--quickstart", "--create-repo", "alpha-org/control"],
+  ["--quickstart", "--create-repo"],
+]) {
+  test(`quickstart requires target before mutation: ${arguments_.join(" ")}`, async (t) => {
+    const { consumer, env, log } = await createConsumer(t);
+    const result = await runStreamed(consumer, { ...env, FAKE_AUTH_FAILURE: "1" }, arguments_);
     assert.notEqual(result.code, 0);
-    assert.match(result.stdout, new RegExp(`Created private control repository ${repository}\\.`));
-    assert.equal(await log(), "create-private-current\nadd\n");
-    assert.equal((await executeFile("git", ["remote", "get-url", "origin"], { cwd: consumer })).stdout.trim(), `https://github.com/${repository}.git`);
-    assert.ok((await stat(path.join(consumer, "cao"))).isDirectory());
+    assert.match(result.stderr, /--quickstart requires explicit --target OWNER\/REPO/);
+    assert.doesNotMatch(result.stderr, /gh auth login|Interactive repository creation/);
+    assert.equal(await log(), "");
     await assertNothingInstalled(consumer);
   });
 }
+
+for (const [name, environment, message] of [
+  ["the selected name is occupied", { FAKE_EXISTING_REPOSITORIES: "alpha-org/control" }, /Repository alpha-org\/control already exists/],
+  ["the availability check fails", { FAKE_REPOSITORY_CHECK_FAILURE: "alpha-org/control" }, /Unable to check whether alpha-org\/control is available/],
+]) {
+  test(`explicit creation fails before mutation when ${name}`, async (t) => {
+    const { consumer, env, log } = await createConsumer(t);
+    const result = await runStreamed(consumer, {
+      ...env, CI: "1", ...environment,
+    }, ["--quickstart", "--target", "alpha-org/project", "--create-repo", "alpha-org/control"]);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, message);
+    assert.equal(await log(), "");
+    assert.equal(await exists(path.join(consumer, "control")), false);
+    await assertNothingInstalled(consumer);
+  });
+}
+
+test("quickstart explicitly creates the requested private repository outside a checkout", async (t) => {
+  const { root, env, log } = await createConsumer(t, supportedGhAw);
+  const start = path.join(root, "outside-checkout");
+  await mkdir(start);
+  const result = await runStreamed(start, {
+    ...env, CI: "1", FAKE_ADD_FAILURE: "1",
+  }, ["--quickstart", "--target", "alpha-org/project", "--create-repo", "alpha-org/control"]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stdout, /Created private control repository alpha-org\/control/);
+  assert.equal(await log(), "create-private\nadd\n");
+  await assertNothingInstalled(start);
+});
+
+test("interactive quickstart requires manually typed owner and name for explicit creation", { skip: process.platform === "win32" }, async (t) => {
+  const { root, env, log } = await createConsumer(t, supportedGhAw);
+  const start = path.join(root, "outside-checkout");
+  await mkdir(start);
+  const result = await runTerminal("bash", [installScript, "--quickstart", "--target", "alpha-org/project", "--create-repo"], {
+    cwd: start,
+    env: { ...env, TERM: "xterm-256color", ACCESSIBLE: "", NO_COLOR: "", FAKE_ADD_FAILURE: "1" },
+    timeout,
+    input: "\nalpha-org\n\ncontrol\n",
+  });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stdout, /blank input does not choose an owner/);
+  assert.match(result.stdout, /Repository name\s+control/);
+  assert.match(result.stdout, /Repo Assist for alpha-org\/project/);
+  assert.equal(await log(), "owners-query\ncreate-private\nadd\n");
+});
 
 test("quickstart never changes an explicitly requested repository name on collision", async (t) => {
   const { root, env, log } = await createConsumer(t, supportedGhAw);
@@ -1444,10 +1756,9 @@ test("quickstart never changes an explicitly requested repository name on collis
   const result = await runStreamed(outsideCheckout, {
     ...env,
     CI: "1",
-    FAKE_CONTROL_REPOSITORY: "alpha-user/cao",
+    FAKE_CONTROL_REPOSITORY: "alpha-org/control",
     FAKE_CREATE_REPOSITORY_FAILURE: "1",
-    FAKE_DATE_FAILURE: "1",
-  }, ["--quickstart", "--create-repo", "alpha-user/cao"]);
+  }, ["--quickstart", "--target", "alpha-org/project", "--create-repo", "alpha-org/control"]);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Repository already exists/);
   assert.doesNotMatch(result.stderr, /UTC timestamp|creating a fresh private control repository/);

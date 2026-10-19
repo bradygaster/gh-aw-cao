@@ -18,6 +18,38 @@ afterEach(() => {
 });
 
 describe("remote dashboard data backend", () => {
+  it("keeps a throttled view pending and returns its data after the server cooldown", async () => {
+    vi.useFakeTimers();
+    let queries = 0;
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).endsWith("/api/v1/query") && queries++ === 0) {
+        return new Response(JSON.stringify({ error: "rate limit exceeded" }), {
+          status: 429,
+          headers: { "Retry-After": "1" },
+        });
+      }
+      return new Response(JSON.stringify({
+        revision: 4,
+        sources: { runs: { source: "runs", rows: [], metadata: {} } },
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const pending = queryRemoteDashboard(["runs"], { pages: [], queries: [] });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(queries).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        revision: 4,
+        sources: { runs: { rows: [] } },
+      });
+      expect(queries).toBe(2);
+    } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a coded query limit and failing query ID", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: 'Query "campaign-repository-coverage" needs more retained data.',

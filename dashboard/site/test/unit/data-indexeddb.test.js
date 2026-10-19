@@ -31,7 +31,7 @@ function batch() {
       source: 'fixture',
       sourceId: 'repo-1',
       observedAt: '2026-09-09T05:00:00Z',
-      data: { id: 'repository:1', fullName: 'githubnext/gh-aw-cao' }
+      data: { id: 'repository:1', fullName: 'githubnext/gh-cao' }
     }
   ]);
 }
@@ -397,8 +397,8 @@ describe('canonical IndexedDB', () => {
       request.onupgradeneeded = () => {
         const repositories = request.result.createObjectStore('repositories', { keyPath: 'id' });
         repositories.put({
-          id: 'repository:dashboard-sources:githubnext%2Fgh-aw-cao',
-          fullName: 'githubnext/gh-aw-cao'
+          id: 'repository:dashboard-sources:githubnext%2Fgh-cao',
+          fullName: 'githubnext/gh-cao'
         });
       };
       request.onsuccess = () => resolve(request.result);
@@ -507,10 +507,10 @@ describe('canonical IndexedDB', () => {
     await upsertCanonicalBatch(indexedDB, batch());
 
     expect(await readCollection(indexedDB, 'repositories')).toEqual([
-      expect.objectContaining({ id: 'repository:1', owner: 'githubnext', name: 'gh-aw-cao' })
+      expect.objectContaining({ id: 'repository:1', owner: 'githubnext', name: 'gh-cao' })
     ]);
     expect(await readRecord(indexedDB, 'repositories', 'repository:1')).toMatchObject({
-      owner: 'githubnext', name: 'gh-aw-cao'
+      owner: 'githubnext', name: 'gh-cao'
     });
   });
 
@@ -685,16 +685,16 @@ describe('canonical IndexedDB', () => {
 
   it('uses run indexes without changing filtered collection order', async () => {
     const records = [
-      { id: 'event:1', runId: 'run:1', type: 'tool.call' },
-      { id: 'event:2', runId: 'run:2', type: 'tool.call' },
-      { id: 'event:3', runId: 'run:1', type: 'tool.result' },
-      { id: 'event:4', runId: 'run:1', type: 'tool.call' }
+      { id: 'event:1', runId: 'run:1', type: 'mcp.tool_call' },
+      { id: 'event:2', runId: 'run:2', type: 'mcp.tool_call' },
+      { id: 'event:3', runId: 'run:1', type: 'tool.execution_complete' },
+      { id: 'event:4', runId: 'run:1', type: 'mcp.tool_call' }
     ];
     const operators = /** @type {import('../../src/data-operations.js').DataOperator[]} */ ([{
       op: 'filter',
       predicates: [
         { field: 'runId', equals: 'run:1' },
-        { field: 'type', equals: 'tool.call' }
+        { field: 'type', equals: 'mcp.tool_call' }
       ]
     }]);
     await writeRecords('tools', records);
@@ -711,7 +711,7 @@ describe('canonical IndexedDB', () => {
   it('falls back to JavaScript for predicates IndexedDB cannot represent', async () => {
     const records = [
       { id: 'event:1', type: 'github-api.request' },
-      { id: 'event:2', type: 'tool.call' }
+      { id: 'event:2', type: 'mcp.tool_call' }
     ];
     const operators = /** @type {import('../../src/data-operations.js').DataOperator[]} */ ([{
       op: 'filter',

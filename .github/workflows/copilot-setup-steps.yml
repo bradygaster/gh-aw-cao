@@ -56,4 +56,4 @@ jobs:
       - name: Stage CAO dashboard evidence
         env:
           DASHBOARD_DATA_URL: ${{ vars.CAO_DASHBOARD_DATA_URL }}
-        run: ./cao.sh download
+        run: node activity/cao.mjs download

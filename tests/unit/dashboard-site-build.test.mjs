@@ -94,7 +94,7 @@ test("dashboard build uses GitHub Actions repository and server URL for the chro
     const queries = JSON.parse(await readFile(path.join(root, "output", "src/agent/queries.generated.json"), "utf8"));
     const catalog = JSON.parse(await readFile(path.join(root, "output", "src/agent/catalog.generated.json"), "utf8"));
     assert.deepEqual(queries, document.dashboard.queries);
-    assert.ok(queries.some(({ name }) => name === "database-campaign-count"));
+    assert.ok(queries.some(({ name }) => name === "overview-workflow-health-summary"));
     assert.equal(catalog.pages.find((page) => page.id === "friction")?.experimental, false);
     assert.ok(dashboard.dashboard.navigation.some(
       (section) => section.label === "Data" && section.pages.includes("friction"),
@@ -204,7 +204,7 @@ test("docs dashboard installs renderer assets without experimental campaign page
     ]) {
       assert.match(llms, new RegExp(section));
     }
-    assert.match(llms, /raw\.githubusercontent\.com\/githubnext\/gh-aw-cao\/main\/skills\/debug-cao\/SKILL\.md/);
+    assert.match(llms, /raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/skills\/debug-cao\/SKILL\.md/);
     assert.match(llms, /\[Agent summary\]\(\.\/agent-summary\.json\)/);
     const mainHash = builtIndex.match(/script\.src = '\.\/src\/main\.js\?sha=([a-f0-9]{64})'/)?.[1];
     assert.ok(mainHash, "entry module includes the site content SHA");
@@ -235,8 +235,10 @@ test("docs dashboard installs renderer assets without experimental campaign page
       JSON.parse(await readFile(new URL(`src/${file}.map`, destination), "utf8"))
     )));
     assert.ok(chunkMaps.some((map) => map.sources.some((source) => source.endsWith("/src/dashboard-app.js"))));
-    const preloadedChunks = [...builtIndex.matchAll(/<link rel="modulepreload" href="\.\/src\/([^"]+)">/g)]
+    const preloadedChunks = [...builtIndex.matchAll(/<link rel="modulepreload" href="\.\/src\/([^"]+)" fetchpriority="low">/g)]
       .map((match) => match[1]).filter((file) => file.startsWith("chunk-"));
+    assert.ok(preloadedChunks.length > 0 && preloadedChunks.length <= 6,
+      "startup preloads stay bounded and leave bandwidth for the render-blocking stylesheet");
     assert.ok(preloadedChunks.some((file) => chunkMaps[chunkFiles.indexOf(file)].sources
       .some((source) => source.endsWith("/src/dashboard-app.js"))), "application startup is preloaded");
     for (const file of preloadedChunks) {
@@ -244,6 +246,10 @@ test("docs dashboard installs renderer assets without experimental campaign page
       const map = chunkMaps[chunkFiles.indexOf(file)];
       assert.ok(!map.sources.some((source) => /\/(campaign-route-view|workflow-route-page)\.js$/.test(source)),
         "route modules remain deferred");
+      assert.ok(!map.sources.some((source) => /\/(dashboard-fixtures|diagnostics|configuration-view|campaign-memory|measure-history|outcome-detail|outcome-detail-sections)\.js$/.test(source)),
+        "optional and fixture modules remain deferred");
+      assert.ok(!map.sources.some((source) => source.endsWith("/webmcp/runtime.js")),
+        "WebMCP loads only when the browser supports it");
       assert.ok(!/^chunk-(reset-dashboard-control|browser-support)-/.test(file),
         "recovery and unsupported-browser entry points remain deferred");
     }
@@ -356,7 +362,7 @@ test("dashboard agent guide describes and validates the assembled public artifac
     assert.match(llms, /Agent summary.*57 bytes/);
     assert.doesNotMatch(llms, /(?:token|secret|password|private[-_ ]key)\s*[:=]\s*\S+/i);
     await writeFile(path.join(destination, "llms.txt"), llms.replace(
-      "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/skills/setup-cao/SKILL.md", "missing-skill-url",
+      "https://raw.githubusercontent.com/githubnext/gh-cao/main/skills/setup-cao/SKILL.md", "missing-skill-url",
     ));
     await assert.rejects(validateDashboardAgentArtifacts({ sitePath: destination }), /missing raw skill URL: setup-cao/);
     await writeFile(path.join(destination, "llms.txt"), llms);

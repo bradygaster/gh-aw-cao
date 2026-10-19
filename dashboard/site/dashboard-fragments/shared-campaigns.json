@@ -3,18 +3,14 @@
     {
       "name": "run-incomplete-outcomes",
       "subject": "Project retained report-incomplete terminal outcomes as concise run diagnoses.",
-      "objective": "Find retained report_incomplete safe outputs that can explain a specific run's incomplete reporting.",
-      "acceptance": "Include only matching audit safe_output.created records with run-attempt identity, outcome kind, and recorded diagnosis; absence is not proof that reporting completed.",
+      "objective": "Find recorded report_incomplete terminal outcomes that can explain a specific run's incomplete reporting.",
+      "acceptance": "Include only runs with a recorded report_incomplete terminal outcome, preserving run-attempt identity, outcome kind, and recorded diagnosis; absence is not proof that reporting completed.",
       "description": "One retained incomplete-evidence diagnosis per workflow Run when the agent explicitly reported that required evidence or access was unavailable.",
-      "from": "audits",
+      "from": "runs",
       "filter": {
         "predicates": [
           {
-            "field": "event-type",
-            "equals": "safe_output.created"
-          },
-          {
-            "field": "safe-output-type",
+            "field": "terminal-outcome",
             "equals": "report_incomplete"
           }
         ]
@@ -36,11 +32,11 @@
           "field": "run-attempt"
         },
         {
-          "field": "safe-output-type",
+          "field": "terminal-outcome",
           "as": "outcome-kind"
         },
         {
-          "field": "event-summary",
+          "field": "terminal-outcome-detail",
           "as": "outcome-diagnosis"
         }
       ]
@@ -883,70 +879,6 @@
       }
     },
     {
-      "name": "campaign-runtime-problem-candidates",
-      "subject": "Mark campaign workflow and runtime repository partitions whose latest retained run streak is failing.",
-      "objective": "Flag runtime-health groups with a nonzero latest retained failure streak for focused investigation.",
-      "acceptance": "Preserve the group identity and failure-count; has-current-failure reflects only failure-count greater than zero, while absent or incomplete run evidence cannot establish health.",
-      "description": "Campaign runtime partitions annotated with whether their current retained streak contains failures.",
-      "from": "campaign-runtime-health-groups",
-      "compute": [
-        {
-          "as": "has-current-failure",
-          "function": "greater-than",
-          "args": [
-            {
-              "field": "failure-count"
-            },
-            {
-              "value": 0
-            }
-          ]
-        },
-        {
-          "as": "problem-kind",
-          "function": "coalesce",
-          "args": [
-            {
-              "value": "failure"
-            },
-            {
-              "value": "failure"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "campaign-current-runtime-failures",
-      "subject": "Show only campaign workflow and runtime repository partitions whose latest retained run streak is failing.",
-      "objective": "Select failing retained runtime-health partitions for review of their underlying runs.",
-      "acceptance": "Return only groups flagged has-current-failure with their identity and streak count in declared order; no rows mean no matching observed streak, not verified healthy operation.",
-      "description": "Campaign runtime partitions with one or more consecutive failures after their latest retained success.",
-      "from": "campaign-runtime-problem-candidates",
-      "filter": {
-        "predicates": [
-          {
-            "field": "has-current-failure",
-            "equals": true
-          }
-        ]
-      },
-      "order-by": [
-        {
-          "field": "failure-count",
-          "direction": "desc"
-        },
-        {
-          "field": "workflow-name",
-          "direction": "asc"
-        },
-        {
-          "field": "runtime-repository",
-          "direction": "asc"
-        }
-      ]
-    },
-    {
       "name": "workflow-run-observation-counts",
       "subject": "Count retained Runs for each workflow identity in the selected horizon.",
       "objective": "Measure retained run presence by workflow identity to compare with active orchestrator declarations.",
@@ -1139,31 +1071,6 @@
           }
         ]
       }
-    },
-    {
-      "name": "campaign-runtime-problems",
-      "subject": "Combine current runtime failures with active orchestrators that have no retained Run evidence.",
-      "objective": "Present observed failing streaks and unobserved active orchestrators together, without conflating the two conditions.",
-      "acceptance": "Union the two candidate sets with their problem kind and identifying context; missing run evidence remains an observation gap rather than a confirmed runtime failure.",
-      "description": "Current campaign runtime problems requiring investigation.",
-      "from": "campaign-current-runtime-failures",
-      "union": [
-        "campaign-unobserved-orchestrators"
-      ],
-      "order-by": [
-        {
-          "field": "failure-count",
-          "direction": "desc"
-        },
-        {
-          "field": "workflow-name",
-          "direction": "asc"
-        },
-        {
-          "field": "runtime-repository",
-          "direction": "asc"
-        }
-      ]
     },
     {
       "name": "dispatches",

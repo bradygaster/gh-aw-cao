@@ -14,6 +14,26 @@ function observation(kind, sourceId, observedAt, data, source = 'dashboard-sourc
 }
 
 describe('canonical normalization', () => {
+  it('keeps measured usage through sparse refreshes but not across run attempts', () => {
+    const run = { owner: 'octo', repository: 'api', githubRunId: '303', attempt: 1 };
+    const measured = observation('run', 'measured', '2026-10-01T00:00:00Z',
+      { ...run, aicTotal: 2.5, inputTokens: 100, outputTokens: 0 });
+    const sparse = observation('run', 'refresh', '2026-10-02T00:00:00Z',
+      { ...run, aicTotal: null, inputTokens: null, outputTokens: null, conclusion: 'success' });
+    expect(normalize([sparse, measured]).runs[0]).toMatchObject({
+      aicTotal: 2.5, inputTokens: 100, outputTokens: 0, conclusion: 'success'
+    });
+    expect(normalize([measured, {
+      ...sparse, data: { ...sparse.data, aicTotal: 0 }
+    }]).runs[0]).toMatchObject({ aicTotal: 0 });
+    expect(normalize([measured, {
+      ...sparse, data: { ...run, attempt: 2, aicTotal: null }
+    }]).runs[0]).toMatchObject({ attempt: 2, aicTotal: null });
+    expect(normalize([measured, {
+      ...sparse, data: { ...run, attempt: 2 }
+    }]).runs[0]).not.toHaveProperty('inputTokens');
+  });
+
   it('normalizes marketplace packages without credential-shaped fields', () => {
     const batch = normalize([observation(
       'marketplace-package',
@@ -26,7 +46,7 @@ describe('canonical normalization', () => {
         repository: 'octo/packages',
         path: 'demo',
         source: 'octo/packages/demo@abc',
-        addCommand: './cao.sh add octo/packages/demo@abc'
+        addCommand: 'gh cao campaigns add octo/packages/demo@abc'
       }
     )]);
 
@@ -77,7 +97,7 @@ describe('canonical normalization', () => {
       }),
       observation('repository', 'repo-new', '2026-09-09T00:00:00Z', {
         githubId: 123,
-        name: 'gh-aw-cao'
+        name: 'gh-cao'
       })
     ];
 
@@ -87,7 +107,7 @@ describe('canonical normalization', () => {
     expect(batch.repositories[0]).toMatchObject({
       id: 'github:repository:123',
       owner: 'githubnext',
-      name: 'gh-aw-cao'
+      name: 'gh-cao'
     });
   });
 
@@ -96,7 +116,7 @@ describe('canonical normalization', () => {
       githubRunId: 456,
       attempt: 1,
       owner: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflowId: 'github:workflow:9',
       repositoryId: 'github:repository:123',
       status: 'completed'
@@ -110,20 +130,20 @@ describe('canonical normalization', () => {
 
     expect(batch.runs).toHaveLength(1);
     expect(batch.runs[0]).toMatchObject({
-      id: 'github:run:githubnext/gh-aw-cao:456',
+      id: 'github:run:githubnext/gh-cao:456',
       attempt: 2
     });
   });
 
   it('collapses repeated safe outputs under the repository issue key', () => {
     const first = observation('issue', 'run-1:issue', '2026-09-09T01:00:00Z', {
-      runId: 'github:run:githubnext/gh-aw-cao:456',
-      url: 'https://github.com/GitHubNext/GH-AW-CAO/issues/42',
+      runId: 'github:run:githubnext/gh-cao:456',
+      url: 'https://github.com/GitHubNext/GH-CAO/issues/42',
       status: 'created'
     });
     const repeated = observation('issue', 'run-2:issue', '2026-09-09T02:00:00Z', {
-      runId: 'github:run:githubnext/gh-aw-cao:789',
-      url: 'https://github.com/githubnext/gh-aw-cao/issues/42',
+      runId: 'github:run:githubnext/gh-cao:789',
+      url: 'https://github.com/githubnext/gh-cao/issues/42',
       status: 'updated'
     });
 
@@ -131,14 +151,14 @@ describe('canonical normalization', () => {
 
     expect(batch.issues).toHaveLength(1);
     expect(batch.issues[0]).toMatchObject({
-      id: 'github:issue:githubnext/gh-aw-cao:42',
+      id: 'github:issue:githubnext/gh-cao:42',
       status: 'updated'
     });
   });
 
   it('keeps operational values from different campaigns under separate identities', () => {
     const common = {
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       valueId: 'primary',
       timestamp: '2026-09-24T10:00:00Z'
     };
@@ -176,10 +196,24 @@ describe('canonical normalization', () => {
     ]);
   });
 
+  it('deduplicates standalone operational values without colliding with campaign measurements', () => {
+    const common = { repository: 'octo/api', valueId: 'remaining-alerts', timestamp: '2026-09-24T10:00:00Z', value: 0 };
+    const standalone = observation('operational-value', 'standalone', common.timestamp, common);
+    const batch = normalize([
+      standalone, standalone,
+      observation('operational-value', 'campaign', common.timestamp, { ...common, campaign: 'alpha', value: 4 })
+    ]);
+    expect(batch.operationalValues).toHaveLength(2);
+    expect(batch.operationalValues.find(row => row.campaign === undefined)?.value).toBe(0);
+    expect(new Set(batch.operationalValues.map(row => row.id)).size).toBe(2);
+    expect(batch.operationalValues.find(row => row.campaign === 'alpha')?.id)
+      .toBe(`operational-value:${encodeURIComponent(`alpha:octo/api:remaining-alerts:${common.timestamp}`)}`);
+  });
+
   it('orders run-linked records independently of ingestion order', () => {
     const records = [
-      ['result', '2026-09-09T03:00:03Z', 'tool.result', 30],
-      ['call', '2026-09-09T03:00:01Z', 'tool.call', 10]
+      ['result', '2026-09-09T03:00:03Z', 'tool.execution_complete', 30],
+      ['call', '2026-09-09T03:00:01Z', 'mcp.tool_call', 10]
     ].map(([sourceId, timestamp, type, sourceSequence]) => observation('tool', String(sourceId), String(timestamp), {
       runId: 'github:run:456:attempt:1',
       timestamp: String(timestamp),
@@ -191,8 +225,8 @@ describe('canonical normalization', () => {
     const batch = normalize(records.reverse());
 
     expect(batch.tools.map((event) => [event.sequence, event.type])).toEqual([
-      [0, 'tool.call'],
-      [1, 'tool.result']
+      [0, 'mcp.tool_call'],
+      [1, 'tool.execution_complete']
     ]);
   });
 
@@ -201,14 +235,14 @@ describe('canonical normalization', () => {
       githubRunId: 99,
       attempt: 1,
       owner: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       status: 'in_progress'
     });
     const authoritative = observation('run', 'run-github', '2026-09-09T03:00:00Z', {
       githubRunId: 99,
       attempt: 1,
       owner: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       status: 'completed',
       conclusion: 'success'
     }, 'github');

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/model"
 )
 
 // gitHubQuotaUsageSourceName is the admin-authorized runtime source that
@@ -20,7 +20,7 @@ const gitHubQuotaAggregateBucket = "all buckets"
 // aggregate. It exposes bucket identity and counts only, never credentials.
 func (a *App) gitHubQuotaUsage(response http.ResponseWriter, request *http.Request) {
 	if !a.adminAuthorized(request) {
-		writeError(response, http.StatusForbidden, "administrative authorization is required")
+		a.writeAdminDenied(response, request, "administrative authorization is required")
 		return
 	}
 	if a.quota == nil {

@@ -3,6 +3,7 @@ import { isReadOnlyCliAction, validateActionLevel } from './action-validator.js'
 import { CALLOUT_KEYS, ERROR_CODES, FIELD_DEFINITION_KEYS, LINK_FIELD_NAMES, FACTORY_FLOOR_STATION_VALUES, FACTORY_HEADER_SOURCE_ROLES, FACTORY_FLOOR_SOURCE_ROLES, GRAPHICAL_LAYOUT_EXEMPT_PAGE_IDS, IDENTIFIER_PATTERN, MAX_ESSENTIAL_VIEWS_PER_PAGE, PAGE_FORM_KEYS, PAGE_FORM_UPDATE_KEYS, PAGE_FORM_UPDATE_STRATEGY_VALUES, PAGE_FORM_FIELD_KEYS, PAGE_FORM_CONTROL_VALUES, PAGE_FORM_OPTION_KEYS, PAGE_FORM_MIN_DELAY_MS, PAGE_FORM_MAX_DELAY_MS, PAGE_ICON_VALUES, QUERY_SOURCE_VALUES, TABLE_ACTION_KEYS, TABLE_ACTION_PRESENTATION_VALUES, TABLE_ACTION_WHEN_KEYS, TREE_TABLE_KEYS, VIEW_DATA_KEYS, VIEW_DATA_ARGUMENT_KEYS, VIEW_CHART_VALUES, VIEW_CONTROL_VALUES, VIEW_LIST_DRILL_ARGUMENT_KEYS, VIEW_LIST_DRILL_KEYS, VIEW_LIST_DRILL_TYPE_VALUES, VIEW_LIST_LAYOUT_VALUES, VIEW_LIST_APPEARANCE_VALUES, VIEW_LIST_VIEW_ALL_KEYS, VIEW_DISCLOSURE_VALUES, VIEW_ELEMENT_CONFIG_KEYS, VIEW_ELEMENT_ANIMATION_VALUES, VIEW_ELEMENT_VALUES, PLURAL_LABEL_ELEMENTS, PLURAL_TEXT_KEYS, VIEW_KEYS, VIEW_REQUIREMENT_KEYS, VIEW_BACKEND_VALUES, VIEW_LAYOUT_VALUES, VIEW_LIST_KEYS, VIEW_LIST_STYLE_VALUES, VIEW_MARK_VALUES, VIEW_METRIC_KEYS, VIEW_METRIC_ANIMATION_VALUES, VIEW_METRIC_STYLE_VALUES, VIEW_METRIC_TONE_VALUES, VIEW_TITLE_LINK_KEYS } from './specification.js';
 import { OUTCOME_DETAIL_SECTION_BODY_VALUES, CAMPAIGN_ROUTE_BODY_VALUES, WORKFLOW_ROUTE_BODY_VALUES } from './components/route-body-specification.js';
 import { cliActionTemplateFields } from './cli-action-template.js';
+import { environmentDefaultsCommand } from './environment-defaults.js';
 import { validateViewFilterBar as validateViewFilterBarContract } from './view-filter-validator.js';
 import { validateSource, sourceFieldNames, validateSourceSequence, validateSemanticFieldLiterals, validateContext, validateDatasetMetadata } from './validator-queries.js';
 import { validateEncoding } from './validator-encoding.js';
@@ -11,7 +12,7 @@ import { validateRequiredIdentifier, validateStringField, validateSemanticMetada
 import { resolveReusablePageViews } from './validator-state.js';
 import { createDebug } from './debug.js';
 import { ChartLayerError, resolveChartLayers } from './chart-layer-specification.js';
-import { MAX_TREEMAP_LEAVES, TREEMAP_KEYS, TREEMAP_METHOD_VALUES } from './specification.js';
+import { MAX_TREEMAP_LEAVES, TREEMAP_KEYS, TREEMAP_METHOD_VALUES, SCATTER_KEYS } from './specification.js';
 
 /** @typedef {import('./validator.js').ValidationError} ValidationError */
 
@@ -85,6 +86,28 @@ export function validateView(view, viewNode, path, viewIds, errors) {
 
   const errorCountBeforeView = errors.length;
   validateChartFacet(view, viewNode, path, errors);
+  if (view.scatter !== undefined) {
+    const scatterPath = `${path}.scatter`;
+    if (view.mark !== 'chart' || view.chart !== 'scatter') {
+      errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'scatter options are allowed only on scatter charts.', scatterPath));
+    }
+    if (!isPlainObject(view.scatter)) {
+      errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'scatter must be a mapping.', scatterPath));
+    } else {
+      const scatterNode = getValueNodeByKey(viewNode, 'scatter');
+      validateObjectKeys(scatterNode, SCATTER_KEYS, scatterPath, errors);
+      if (!getMappingItems(scatterNode)) {
+        for (const key of Object.keys(view.scatter)) {
+          if (!SCATTER_KEYS.includes(key)) {
+            errors.push(createError(ERROR_CODES.unknownOrDuplicateKey, `Unknown key "${key}" is not allowed.`, `${scatterPath}.${key}`));
+          }
+        }
+      }
+      if (view.scatter.cluster !== undefined && typeof view.scatter.cluster !== 'boolean') {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'scatter cluster must be a Boolean when present.', `${scatterPath}.cluster`));
+      }
+    }
+  }
   if (view.treemap !== undefined) {
     const treemapPath = `${path}.treemap`;
     if (view.mark !== 'chart' || view.chart !== 'treemap') {
@@ -218,7 +241,7 @@ export function validateView(view, viewNode, path, viewIds, errors) {
     if (typeof view.controls === 'string' && !VIEW_CONTROL_VALUES.includes(view.controls)) {
       errors.push(createError(
         ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
-        'controls must use one canonical interactive or static value.',
+        'controls must use one canonical interactive, filter-only, or static value.',
         `${path}.controls`
       ));
     }
@@ -231,6 +254,10 @@ export function validateView(view, viewNode, path, viewIds, errors) {
     }
   }
 
+  if (isPlainObject(view.encoding) && view.encoding.card !== undefined && view['lazy-list'] !== true) {
+    errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
+      'encoding.card is allowed only on lazy table views.', `${path}.encoding.card`));
+  }
   if (view['lazy-list'] !== undefined) {
     if (typeof view['lazy-list'] !== 'boolean') {
       errors.push(createError(
@@ -366,6 +393,10 @@ export function validateView(view, viewNode, path, viewIds, errors) {
     ));
   }
 
+  if (view.element === 'environment-defaults' && view.config === undefined) {
+    errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+      'environment-defaults requires config.actions with scoped CLI action references.', `${path}.config`));
+  }
   if (view.config !== undefined) {
     if (!isPlainObject(view.config)) {
       errors.push(createError(
@@ -382,6 +413,35 @@ export function validateView(view, viewNode, path, viewIds, errors) {
     } else {
       const configNode = getValueNodeByKey(viewNode, 'config');
       validateObjectKeys(configNode, VIEW_ELEMENT_CONFIG_KEYS, `${path}.config`, errors);
+      const defaultsActions = view.config.actions;
+      if ((view.config.actions !== undefined || view.element === 'environment-defaults') && (view.element !== 'environment-defaults'
+        || !isPlainObject(defaultsActions)
+        || Object.keys(defaultsActions).length !== 6
+        || ['get-repo', 'update-repo', 'get-org', 'update-org', 'get-ent', 'update-ent']
+          .some((key) => typeof defaultsActions[key] !== 'string' || !IDENTIFIER_PATTERN.test(defaultsActions[key])))) {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+          'environment-defaults config.actions must map get/update for repo, org, and ent to CLI action IDs.',
+          `${path}.config.actions`));
+      } else if (view.element === 'environment-defaults' && isPlainObject(view.config.actions)) {
+        for (const [key, id] of Object.entries(view.config.actions)) {
+          const action = typeof id === 'string' ? state.declaredCliActions.get(id) : undefined;
+          const parsed = typeof action?.command === 'string' ? environmentDefaultsCommand(action.command) : null;
+          const [operation, scope] = key.split('-');
+          const args = action?.arguments;
+          const validUpdate = operation !== 'update' || typeof action?.command === 'string'
+            && !action.command.split(' ').includes('--dry-run')
+            && Array.isArray(args) && args.length === 1 && isPlainObject(args[0])
+            && args[0].id === 'dry-run' && args[0].flag === '--dry-run'
+            && args[0].type === 'boolean' && args[0].default === true;
+          if (!parsed || parsed.operation !== operation || parsed.scope !== scope
+            || action?.placement !== 'view' || action['copy-only'] === true
+            || action.level !== (operation === 'get' ? 'explore' : 'operate') || !validUpdate) {
+            errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
+              'Defaults actions must reference matching view-placed scoped gh aw env commands.',
+              `${path}.config.actions.${key}`));
+          }
+        }
+      }
       if ((view.element === 'workflow-route-page' || view.element === 'campaign-route' || view.element === 'outcome-detail-section') && view.config.body !== undefined) {
         validateStringField(view.config.body, `${path}.config.body`, true, errors);
        const allowedBodies = view.element === 'workflow-route-page'
@@ -490,12 +550,12 @@ export function validateView(view, viewNode, path, viewIds, errors) {
           ));
         }
       }
-      if (view.config['browser-first-load'] !== undefined) {
-        if (view.element !== 'factory-header' || typeof view.config['browser-first-load'] !== 'boolean') {
+      for (const key of ['browser-first-load', 'data-status']) {
+        if (view.config[key] !== undefined && (view.element !== 'factory-header' || typeof view.config[key] !== 'boolean')) {
           errors.push(createError(
             ERROR_CODES.missingOrInvalidRequiredField,
-            'config.browser-first-load must be a boolean on the factory-header element.',
-            `${path}.config.browser-first-load`
+            `config.${key} must be a boolean on the factory-header element.`,
+            `${path}.config.${key}`
           ));
         }
       }
@@ -626,6 +686,27 @@ export function validateView(view, viewNode, path, viewIds, errors) {
         ...(view.list.action !== undefined ? [{ id: view.list.action, path: `${listPath}.action` }] : []),
         ...(Array.isArray(view.list.actions) ? view.list.actions.map((id, index) => ({ id, path: `${listPath}.actions[${index}]` })) : [])
       ];
+      if (view.list['action-context'] !== undefined) {
+        const fields = view.list['action-context'];
+        if (typeof view.list.action !== 'string' || !Array.isArray(fields) || fields.length === 0
+          || fields.some((field) => typeof field !== 'string' || field.length === 0)
+          || new Set(fields).size !== fields.length || view['lazy-list'] === true
+          || state.declaredCliActions.get(view.list.action)?.selector) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+            'list.action-context requires one primary action, unique context fields, and a complete non-paginated list.',
+            `${listPath}.action-context`));
+        } else {
+          const sourceName = isPlainObject(view.data) && typeof view.data.source === 'string' ? view.data.source : '';
+          const available = sourceFieldNames(sourceName);
+          const action = state.declaredCliActions.get(view.list.action);
+          if (fields.some((field) => !available?.includes(field))
+            || (typeof action?.command === 'string' && cliActionTemplateFields(action.command).some((field) => !fields.includes(field)))) {
+            errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
+              'list.action-context must reference source fields and supply every command template field.',
+              `${listPath}.action-context`));
+          }
+        }
+      }
       for (const reference of actionReferences) {
         validateRequiredIdentifier(reference.id, reference.path, 'list action reference', errors);
         const declaredAction = typeof reference.id === 'string'
@@ -793,7 +874,7 @@ export function validateView(view, viewNode, path, viewIds, errors) {
       ));
     }
     if (view.mark === 'element') {
-      if (!(view.element === 'query-editor' && Array.isArray(view.data.sources) && view.data.sources.length === 0)) {
+      if (!(typeof view.element === 'string' && ['query-editor', 'command-terminal', 'storage-info', 'environment-defaults'].includes(view.element) && Array.isArray(view.data.sources) && view.data.sources.length === 0)) {
         validateSourceSequence(view.data.sources, `${path}.data.sources`, errors);
       }
       if (view.data.source !== undefined) {
@@ -1306,7 +1387,8 @@ export function validateTableActions(encoding, encodingNode, mark, sourceName, p
         const command = state.declaredCliActions.get(action.action)?.command;
         const templateFields = typeof command === 'string' ? cliActionTemplateFields(command) : [];
         const contextFieldNames = action.context.filter((field) => typeof field === 'string');
-        if (templateFields.length === 0 || templateFields.some((field) => !contextFieldNames.includes(field))) {
+        if (typeof command !== 'string' || cliActionTemplateFields(command, { includeContext: true }).length === 0
+          || templateFields.some((field) => !contextFieldNames.includes(field))) {
           errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, 'cli-action context must include every command template field.', `${actionPath}.context`));
         }
       }
@@ -1695,6 +1777,11 @@ export function validatePageForm(form, formNode, path, errors) {
       }
     } else if (field.control === 'radio') {
       validateRadioField(field, getSequenceItemNode(getValueNodeByKey(formNode, 'fields'), index), fieldPath, errors);
+    } else if (field.control === 'text') {
+      if (typeof field.default !== 'string' || ['min', 'max', 'step', 'options'].some((key) => field[key] !== undefined)) {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+          'text fields require a string default and cannot declare numeric bounds or options.', fieldPath));
+      }
     }
   }
 }

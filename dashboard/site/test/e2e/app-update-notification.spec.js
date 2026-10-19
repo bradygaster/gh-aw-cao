@@ -57,7 +57,7 @@ test('the footer shows an app download before offering the user a reload', async
         evaluatedAt: '2026-09-30T00:00:00Z',
         commitSha: '0123456789abcdef0123456789abcdef01234567',
         githubUrlBase: 'https://github.com',
-        dashboardRepository: 'githubnext/gh-aw-cao'
+        dashboardRepository: 'githubnext/gh-cao'
       }));
       const { startDashboardAppUpdates } = await import(moduleUrl);
       startDashboardAppUpdates();
@@ -72,7 +72,7 @@ test('the footer shows an app download before offering the user a reload', async
     await expect(indicator).toBeEmpty();
     await expect(page.locator('.dashboard-notification-message')).toHaveText('An update to the dashboard has been downloaded. Update now?');
     expect(await page.evaluate(() => sessionStorage.loads)).toBe('1');
-    await page.getByRole('button', { name: 'Update now' }).click();
+    await page.getByRole('button', { name: 'Update now', exact: true }).click();
     await expect.poll(() => page.evaluate(() => sessionStorage.loads)).toBe('2');
   } finally {
     download?.end();

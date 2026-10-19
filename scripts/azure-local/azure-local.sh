@@ -230,15 +230,30 @@ functions_ready() {
   curl -fsS "$1/api/readiness"
 }
 
+run_logged() {
+  local label log_file status
+  label="$1"
+  log_file="$LOG_DIR/$2"
+  shift 2
+  if "$@" >"$log_file" 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  printf 'azure-local: %s failed (exit %s); log: %s\n' "$label" "$status" "$log_file" >&2
+  cat "$log_file" >&2
+  return "$status"
+}
+
 prepare_application() {
   mkdir -p "$APP_DIR/site" "$APP_DIR/.github/workflows" "$LOG_DIR"
   printf '<!doctype html><title>CAO local Azure simulation</title>\n' >"$APP_DIR/site/index.html"
   cp "$ROOT/.github/workflows/cao.json" "$APP_DIR/.github/workflows/cao.json"
   cp "$ROOT/.github/workflows/cao.azure.json" "$APP_DIR/.github/workflows/cao.azure.json"
-  go -C "$ROOT/server" build -o "$APP_DIR/cao-functions" ./cmd/cao-functions \
-    >"$LOG_DIR/functions-build.log" 2>&1
-  go -C "$ROOT/server" build -o "$APP_DIR/cao-dashboard" ./cmd/cao-dashboard \
-    >"$LOG_DIR/server-build.log" 2>&1
+  run_logged "Azure Functions handler build" functions-build.log \
+    go -C "$ROOT/server" build -o "$APP_DIR/cao-functions" ./cmd/cao-functions
+  run_logged "dashboard server build" server-build.log \
+    go -C "$ROOT/server" build -o "$APP_DIR/cao-dashboard" ./cmd/cao-dashboard
   cat >"$APP_DIR/host.json" <<'JSON'
 {
   "version": "2.0",
@@ -341,11 +356,13 @@ start() {
   poll Postgres postgres_ready "$POSTGRES_CONTAINER_ID"
   poll Azurite azurite_ready "http://127.0.0.1:$blob_port/$AZURITE_ACCOUNT?comp=list"
 
-  "$APP_DIR/cao-dashboard" ingest \
+  CAO_DATABASE_ADMIN_URL="$CAO_POSTGRES_URL" run_logged "canonical database bootstrap" database-bootstrap.log \
+    "$APP_DIR/cao-dashboard" database bootstrap --store canonical --namespace "$namespace"
+
+  run_logged "fixture ingestion" ingest.log "$APP_DIR/cao-dashboard" ingest \
     --source "$ROOT/server/testdata/deployed-subset" \
     --redis-namespace "$namespace" \
-    --database-queries "$ROOT/dashboard/site/src/data/queries/database.json" \
-    >"$LOG_DIR/ingest.log" 2>&1
+    --database-queries "$ROOT/dashboard/site/src/data/queries/database.json"
 
   local storage_connection
   storage_connection="DefaultEndpointsProtocol=http;AccountName=$AZURITE_ACCOUNT;AccountKey=$azurite_key;BlobEndpoint=http://127.0.0.1:$blob_port/$AZURITE_ACCOUNT;QueueEndpoint=http://127.0.0.1:$queue_port/$AZURITE_ACCOUNT;TableEndpoint=http://127.0.0.1:$table_port/$AZURITE_ACCOUNT;"

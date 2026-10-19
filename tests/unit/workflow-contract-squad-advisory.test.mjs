@@ -42,6 +42,7 @@ test("Squad is a complete catalog package, not implicit control-plane activation
     assert.equal(manifest[forbidden], undefined);
   }
   const registration = controlPolicy["control-plane"].campaigns[declaration.campaign];
+  assert.equal(manifest.icon, `:${registration.icon}:`);
   assert.equal(registration.enabled, false);
   assert.equal(registration.mode, "review");
   assert.equal(registration.workers["farm-snapshot"].enabled, false);
@@ -176,4 +177,9 @@ test("Squad documents bounded proposals and the unsupported native installation 
   assert.match(readme, /owning\npackage can reconcile changes safely/);
   assert.match(readme, /Dispatch portability blocker/);
   assert.match(readme, /A different control repository's write App bot is not covered/);
+  assert.match(readme, /gh cao campaigns add OWNER\/CATALOG\/squad-advisory@COMMIT/);
+  assert.match(readme, /schedule-seed githubnext\/gh-cao/);
+  assert.doesNotMatch(readme, /\.\/cao\.sh|githubnext\/gh-aw-cao/);
+  assert.match(readme, /Native Squad already runs in the control repository/);
+  assert.match(readme, /Adopting Squad 2\.0 after it ships remains intentional future work/);
 });

@@ -21,7 +21,7 @@ The dashboard campaign publishes an access-controlled static view of Central Age
 - `dashboard/site`: the bundled Dashboard Language validator, presenter, configuration, and browser runtime.
 - `dashboard/local-server.mjs`: local preview server using Node.js built-ins and GitHub CLI, with live reload.
 
-The activity action reads trusted workflow data and writes a bounded JSONL and SQLite cache snapshot plus a deterministic `inventory-sources.json` sidecar from the reviewed control policy, installed campaign ownership records, local control workflow inventory, and paginated Actions workflow registries for resolved repositories. Campaign default-branch revisions, the latest stable gh-aw release, and generated lock compiler metadata are collected as independent version evidence. Registry and version lookup failures remain explicit partial evidence, and repository-owned workflows remain standalone rather than becoming campaign workers or rollout authority. The dashboard publisher restores these files from the same cache. The browser ingests the activity JSONL and then the sidecar so configured campaigns, including campaigns without recent runs, are available to Dashboard Language queries. AI agents do not receive `pages: write`, `id-token: write`, or deployment authority.
+The activity action reads trusted workflow data and writes a bounded JSONL and SQLite cache snapshot plus a deterministic `inventory-sources.json` sidecar from the reviewed control policy, installed campaign ownership records, local control workflow inventory, and paginated Actions workflow registries for resolved repositories. Campaign default-branch revisions, the latest stable gh-aw release, and generated lock compiler metadata are collected as independent version evidence. Registry and version lookup failures remain explicit partial evidence, and repository-owned workflows remain standalone rather than becoming campaign workers or rollout authority. An Activity-triggered dashboard build restores the exact triggering run and attempt's cache, or downloads that run's `cao-activity-index` artifact on a cache miss. It never substitutes another run's snapshot or an empty bootstrap. Manual builds can reuse the latest cached snapshot, falling back to a successful default-branch Activity run with a successful `index` job. The browser ingests the activity JSONL and then the sidecar so configured campaigns, including campaigns without recent runs, are available to Dashboard Language queries. AI agents do not receive `pages: write`, `id-token: write`, or deployment authority.
 
 The **GitHub API** view reads the activity snapshot's `cao-gh.jsonl` ledger. It charts rate-limit capacity and lists the before/after credential class and aggregate cache-hydration state for each instrumented collection operation.
 
@@ -36,15 +36,15 @@ canonical runtime files from the exact revision recorded by gh-aw:
 
 ```bash
 curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/install.sh |
-  bash -s -- githubnext/gh-aw-cao
+  https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh |
+  bash -s -- githubnext/gh-cao
 ```
 
 Direct `gh aw add` of the component `activity/` or `dashboard/` manifests is not
 a complete installation: gh-aw cannot run the required post-install materialization step
 for component manifests, and those manifests intentionally contain no duplicate
 runtime resources. The root installation adds the deterministic dashboard
-automation without an additional enable variable. Run `./cao.sh setup` to
+automation without an additional enable variable. Run `gh cao setup` to
 configure Pages for GitHub Actions with repository-restricted access for a
 private control repository. The standalone publisher remains manual-only and
 cannot enable Pages for the repository.
@@ -54,11 +54,11 @@ latest campaign release automatically:
 
 ```bash
 curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/install.sh |
-  bash -s -- githubnext/gh-aw-cao
+  https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh |
+  bash -s -- githubnext/gh-cao
 ```
 
-Use `./cao.sh update` to move installed campaigns to a newer reviewed
+Use `gh cao update` to move installed campaigns to a newer reviewed
 release. It runs gh-aw updates and rematerializes canonical runtime files from
 the immutable resolved commit recorded by gh-aw.
 
@@ -109,15 +109,113 @@ The preview composes `dashboard/site/dashboard.json` with every installed `<camp
 
 ### Canvas CLI actions
 
-Dashboard documents may declare canvas-only CLI actions. They are hidden from
-the published site and ordinary local previews. In the dashboard canvas, each
+Dashboard documents may declare local admin and trusted canvas CLI actions.
+They are hidden from the published site and ordinary local previews. In the
+dashboard canvas, each
 action appears in the **Actions** menu for a command preview. Native execution
 also requires independent confirmation in the trusted Copilot host, bound to
 the exact resolved command, working directory, and standard input. A page POST
-alone cannot authorize execution. Approval is never remembered and there is no
-unattended mode; hosts without interactive elicitation fail closed. Only one
-action per preview may await approval or run at a time. Closing a preview
-invalidates pending approvals.
+alone cannot authorize execution. Approval authorizes only the exact queued invocation; hosts without interactive
+elicitation fail closed. Approved commands run in the server-owned queue, not
+the browser request. Closing a terminal or browser detaches its output stream
+without canceling approved work. Pending approvals do not authorize execution.
+
+### CLI command queue
+
+The built-in campaign update and repository upgrade actions include a quoted
+`--pr-message` (gh-aw v0.92.4 or later). Generated pull requests explain that they
+were requested through CAO, identify the affected campaign or repository and the
+reason for maintenance, and link back to the CAO project and dashboard. The
+message is part of the declarative command shown for approval; existing
+pull-request creation and auto-merge choices are unchanged. Backlinks use the
+actual control repository and published dashboard URL, not the CAO catalog's
+deployment.
+
+Command text supports literal `{{field}}` substitutions for validated row
+values. Three reserved placeholders come from the host, never browser-supplied
+row values: `{{cao-url}}` is the public dashboard base URL (with a trailing
+slash), `{{cao-repository}}` is its control repository slug, and
+`{{cao-repository-url}}` is that repository's GitHub URL. For example:
+
+```text
+gh aw upgrade --repo {{repository}} --pr-message 'Requested through {{cao-repository}}. See {{cao-url}}#page-maintenance.'
+```
+
+Local executable previews resolve the published URL from the control
+repository's GitHub Pages API. For a custom-hosted dashboard, pass
+`--cao-url https://ops.example.com/central/` to the local server or set
+`CAO_DASHBOARD_URL` (also available to the canvas extension). URLs must use
+HTTPS and contain no credentials, query, fragment, whitespace, or command
+delimiters. Public dashboards use their own page base URL. Local preview
+capability URLs are never copied into PRs. Missing host context disables the
+action with an explicit message; queue admission rejects missing or overridden
+host context. Substitutions are literal, not expressions, and never run a shell.
+
+Local admin and trusted canvas sessions share one durable FIFO queue per
+checkout, stored in `.cao/cli-actions.sqlite`. The online dashboard and ordinary
+read-only previews do not initialize a queue or request its APIs. Execution
+continues while the local server is running, even with every browser closed.
+Stopping the server terminates running work; interrupted executions are recorded
+as failed rather than silently repeated, and queued commands survive restart.
+After an unclean crash, termination of detached subprocesses cannot be assumed:
+the queue preserves history but pauses execution across subsequent restarts.
+Verify that every interrupted subprocess has stopped before explicitly starting
+with `--acknowledge-command-recovery` to resume queued work. Interrupted entries
+remain failed and are never automatically retried. This acknowledgement is a
+local operator action, not a browser API.
+
+**Maintenance → Commands** lists queued, running, completed, failed, canceled,
+and timed-out commands. Attach by command ID to replay retained stdout/stderr
+and follow new output. Cancel explicitly to terminate work; Retry creates a new
+entry linked to a failed or timed-out command.
+
+The command service runs displayed `gh aw` and `gh cao` commands in a
+pseudo-terminal through `node-pty`, capturing colors even when gh-aw requires
+TTY detection. Install its native runtime with `npm ci` in `dashboard/site`.
+The pseudo-terminal combines stdout and stderr in terminal order. Authentication,
+JSON preparation, and stdin-backed commands retain separate pipes. Color settings
+apply only to displayed commands, not authentication or JSON preparation reads.
+The browser terminal preserves standard, bright, 256-color, and true-color
+sequences across chunks and retained replay on both stdout and stderr; stderr
+is not automatically recolored because it also carries progress and status.
+Copying a transcript removes ANSI formatting without changing the terminal or
+retained output; copying a pull-request result still copies only its URL.
+GitHub CLI prompts and pagers are disabled. These terminal settings do not
+change the parent shell environment.
+
+The queue defaults to four concurrent executions (configure with
+`--command-concurrency 1..32`) and a 15-minute execution deadline, beginning when
+a command starts. GitHub-dependent work uses the existing
+Go GitHub quota service through a local helper, refreshing quota with the same
+GitHub CLI authentication context as execution. Missing quota evidence pauses
+starts instead of bypassing protection. Running commands are not terminated
+merely because quota falls. A source checkout can run the helper with Go.
+Installed runtimes require a prebuilt `cao-cli-quota` on `PATH` or selected by
+`CAO_CLI_QUOTA_EXECUTABLE`; without it GitHub-dependent work remains paused.
+
+The capability-protected local API exposes:
+
+- `POST __cli_commands`: enqueue a declared action; an `Idempotency-Key` header
+  or `idempotencyKey` field deduplicates repeated requests.
+- `GET __cli_commands`: list commands with `status`, `limit`, and `offset`.
+- `GET __cli_commands/:id`: retrieve persistent execution details.
+- `GET __cli_commands/:id/output?after=N`: replay and stream ordered output
+  after sequence `N` as newline-delimited JSON.
+- `POST __cli_commands/:id/cancel` and `POST __cli_commands/:id/retry`: explicit
+  lifecycle operations; retries revalidate the current action and approval.
+
+The `status` filter accepts one status or a comma-separated set; filtering and
+the matching total count are applied before pagination.
+Mutations require same-origin JSON requests as well as the preview capability.
+Queue retention defaults to 30 days and removes terminal history only in wholly
+expired UTC Monday-based seven-day windows, including while idle; active commands never expire. Queue
+files contain operational command history and must remain local and uncommitted.
+Storage is bounded to 10,000 retained entries, 1 MiB output per command, 64 MiB
+retained output overall and a 128 MiB main SQLite database (excluding WAL
+overhead). Output is framed by line for cross-chunk credential redaction;
+overlong lines above 16 KiB and output beyond the budgets are discarded with an
+explicit truncation warning. Terminal output can therefore lag until a line
+ends or execution finishes.
 
 ```yaml
 dashboard:
@@ -175,7 +273,7 @@ This starts the local preview through Playwright with the Pixel 7 profile and a 
 
 ## Standalone Pages site
 
-Before running the standalone deployment, run `./cao.sh setup` in the control repository. It configures the Pages source as GitHub Actions and requires repository-restricted access for a private repository. If your plan does not support private Pages or you cannot manage Pages settings, setup fails rather than proceeding with a public dashboard. For an already configured review repository, verify the same settings:
+Before running the standalone deployment, run `gh cao setup` in the control repository. It configures the Pages source as GitHub Actions and requires repository-restricted access for a private repository. If your plan does not support private Pages or you cannot manage Pages settings, setup fails rather than proceeding with a public dashboard. For an already configured review repository, verify the same settings:
 
 1. In **Settings > Pages**, confirm **GitHub Actions** is the source.
 2. Confirm site access is restricted to the intended audience.

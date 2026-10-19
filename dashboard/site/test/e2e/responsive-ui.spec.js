@@ -49,7 +49,7 @@ test('mobile typography uses a larger base font size without changing desktop si
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).fontSize)).toBe('18px');
 });
 
-test('mobile footer hides update details and keeps versions within the viewport', async ({ page }) => {
+test('footer omits data update details and keeps versions within the viewport', async ({ page }) => {
   await page.evaluate(async ([stylesUrl, footerUrl]) => {
     const [{ getPrimerStyles }, { renderDashboardFooter }] = await Promise.all([
       import(stylesUrl),
@@ -64,7 +64,7 @@ test('mobile footer hides update details and keeps versions within the viewport'
       ghAwVersion: 'v0.91.1',
       commitSha: 'a7a23e1'.padEnd(40, '0'),
       githubUrlBase: 'https://github.com',
-      dashboardRepository: 'githubnext/gh-aw-cao'
+      dashboardRepository: 'githubnext/gh-cao'
     }));
   }, ['http://dashboard.test/src/styles.js', 'http://dashboard.test/src/components/dashboard-footer.js']);
 
@@ -72,9 +72,9 @@ test('mobile footer hides update details and keeps versions within the viewport'
   const status = footer.locator('.report-footer-status');
   const versions = footer.locator('.report-footer-versions');
   await page.setViewportSize({ width: 1200, height: 800 });
-  await expect(status).toBeVisible();
-  await expect(footer.locator('time')).toBeVisible();
-  await expect(footer.locator('.report-footer-provenance')).toBeVisible();
+  await expect(status).toHaveCount(0);
+  await expect(footer.locator('time')).toHaveCount(0);
+  await expect(footer.locator('.report-footer-provenance')).toHaveCount(0);
 
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 800 });
@@ -134,10 +134,11 @@ test('mobile prompt actions are accessible icon buttons with usable approval', a
     }
     await triggers.first().click();
     const dialog = page.locator('.cli-action-dialog[open]');
-    await expect(dialog.getByText(/Confirm the exact effect/)).toBeVisible();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText(/Confirm the exact effect/)).toHaveCount(0);
     await expect(dialog.locator('.cli-action-command')).toHaveText('gh aw compile');
     await expect(dialog.locator('.cli-action-confirm')).toBeVisible();
-    await dialog.locator('.cli-action-cancel').click();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await triggers.last().click();
     await expect(page.locator('.table-intent-dialog[open]')).toContainText('Proposal request preview');
     await page.locator('.table-intent-dialog-close').click();
@@ -237,8 +238,8 @@ test('mobile title bar keeps the dashboard subtitle adjacent to the page title',
         languageVersion: '0.1.0',
         dashboard: {
           id: 'mobile-title-dashboard',
-          title: 'gh-aw-cao',
-          repository: 'githubnext/gh-aw-cao',
+          title: 'gh-cao',
+          repository: 'githubnext/gh-cao',
           pages: [
             { id: 'overview', kind: 'custom', title: 'Overview', description: 'Operational dashboard', views: [], sections: [] }
           ]
@@ -250,7 +251,7 @@ test('mobile title bar keeps the dashboard subtitle adjacent to the page title',
 
   const mobileHeader = page.locator('.mobile-page-header');
   await expect(mobileHeader.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
-  await expect(mobileHeader.locator('.mobile-brand-name')).toHaveText('gh-aw-cao');
+  await expect(mobileHeader.locator('.mobile-brand-name')).toHaveText('gh-cao');
   await expect(mobileHeader.locator('[data-page-description]')).toHaveAttribute('aria-hidden', 'true');
 
   const titleGap = await mobileHeader.evaluate((element) => {
@@ -378,7 +379,6 @@ test('full-view content keeps a responsive horizontal inset', async ({ page }) =
         <aside class="org-sidebar"></aside>
         <div class="app-main">
           <div class="top-nav"><div class="shell">Campaigns</div></div>
-          <div class="site-callouts"><div data-callout>Refresh warning</div></div>
           <main class="dashboard-prototype">
             <div class="report-body" data-page-content>Campaigns content</div>
           </main>
@@ -711,11 +711,11 @@ test('mobile horizontal bar sections keep repository context outside concise wor
   await page.setViewportSize({ width: 390, height: 844 });
   await renderHorizontalBarFixture(page, {
     labels: ['dependabot-update-planner.md', 'dependabot-update-worker.md', 'deploy.md'],
-    sections: ['githubnext/gh-aw-cao', 'githubnext/gh-aw-cao', 'octo/app']
+    sections: ['githubnext/gh-cao', 'githubnext/gh-cao', 'octo/app']
   });
 
   await expect(page.locator('.horizontal-bar-chart-section-title'))
-    .toHaveText(['githubnext/gh-aw-cao', 'octo/app']);
+    .toHaveText(['githubnext/gh-cao', 'octo/app']);
   await expect(page.locator('.horizontal-bar-chart-label-text'))
     .toHaveText(['dependabot-update-planner.md', 'dependabot-update-worker.md', 'deploy.md']);
   await expect.poll(() => page.locator('.horizontal-bar-chart-label-text').evaluateAll((elements) => (
@@ -870,7 +870,7 @@ test('mobile chart cards keep content close to the viewport edges', async ({ pag
         languageVersion: '0.1.0',
         dashboard: {
           id: 'mobile-chart-dashboard',
-          title: 'gh-aw-cao',
+          title: 'gh-cao',
           pages: [{
             id: 'cost',
             kind: 'custom',

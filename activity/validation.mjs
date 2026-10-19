@@ -17,7 +17,7 @@ function finding(id, severity, category, title, details = {}) {
     key,
     key === "files" ? (details[key] ?? []) : (details[key] ?? null),
   ]).concat([["id", id], ["severity", severity], ["category", category], ["title", title],
-    ["validate", details.validate ?? "./cao.sh validate"]]));
+    ["validate", details.validate ?? "gh workflow run cao-validate.yml"]]));
 }
 
 async function filesIn(directory, suffix) {
@@ -102,7 +102,7 @@ export async function compileAndCompare(root, execute, expectedVersion) {
     }
     const result = run(execute, "gh", [
       "aw", "compile", "--strict", "--validate", "--show-all", "--no-check-update",
-      "--schedule-seed", "githubnext/gh-aw-cao", "--dir", WORKFLOW_DIRECTORY,
+      "--schedule-seed", "githubnext/gh-cao", "--dir", WORKFLOW_DIRECTORY,
     ], temporaryRoot);
     if (result.error || result.status !== 0) {
       findings.push(compilerFinding(commandOutput(result) || result.error?.message));
@@ -205,7 +205,7 @@ export async function validatePolicy(root, source) {
       files: [POLICY_PATH],
       expected: "Policy passes the production parser and resolver",
       observed: error.message,
-      remediation: `Fix ${POLICY_PATH} and run ./cao.sh validate`,
+      remediation: `Fix ${POLICY_PATH}, publish the reviewed changes, and run gh workflow run cao-validate.yml`,
     }));
     return { policy: null, findings };
   }
@@ -283,6 +283,30 @@ export async function validatePolicy(root, source) {
       remediation: `Install ${campaign} or remove its stale policy entry`,
     }));
   }
+  for (const workflowName of Object.keys(policy["control-plane"]?.workflows ?? {})) {
+    const workflowPath = path.posix.join(WORKFLOW_DIRECTORY, `${workflowName}.md`);
+    if (!workflowNames.has(workflowName)) {
+      findings.push(finding("missing-standalone-workflow", "error", "policy", "Policy references a missing standalone workflow", {
+        files: [POLICY_PATH, workflowPath],
+        expected: `${workflowName}.md is installed`,
+        observed: "Workflow source is missing",
+        remediation: `Install ${workflowName} or remove its stale policy entry`,
+      }));
+      continue;
+    }
+    try {
+      effectivePolicy(policy, {
+        workflowName, role: "standalone",
+        controlRepository: process.env.GITHUB_REPOSITORY || "local/control",
+      });
+    } catch (error) {
+      findings.push(finding("invalid-policy-resolution", "error", "policy", "Standalone workflow policy cannot be resolved", {
+        files: [POLICY_PATH, workflowPath],
+        observed: error.message,
+        remediation: `Reconcile ${workflowPath} with ${POLICY_PATH}`,
+      }));
+    }
+  }
   return { policy, installed, findings };
 }
 
@@ -296,7 +320,7 @@ export function validateEnablement(root, execute, installed) {
     return [finding("github-enablement-state-unavailable", "warning", "configuration", "GitHub workflow enablement state is unavailable", {
       expected: "GitHub Actions workflow states can be enumerated",
       observed: commandOutput(result) || result.error?.message || "GitHub API unavailable",
-      remediation: "Authenticate gh with Actions read access and rerun ./cao.sh validate",
+      remediation: "Verify Actions read access for the workflow token and rerun the CAO validation workflow",
     })];
   }
   let workflows;
@@ -306,7 +330,7 @@ export function validateEnablement(root, execute, installed) {
     return [finding("github-enablement-state-unavailable", "warning", "configuration", "GitHub workflow enablement state is unavailable", {
       expected: "gh workflow list returns JSON",
       observed: error.message,
-      remediation: "Verify the installed GitHub CLI and rerun ./cao.sh validate",
+      remediation: "Verify GitHub CLI in Actions and rerun the CAO validation workflow",
     })];
   }
   const states = new Map(workflows.map((workflow) => [normalizeWorkflowPath(workflow.path), workflow.state ?? "unknown"]));
@@ -338,7 +362,7 @@ export function validateEnablement(root, execute, installed) {
         files: observed.map(({ path: workflowPath }) => workflowPath),
         expected: "All campaign workflows share one enablement state",
         observed: observed.map(({ workflow, state }) => `${workflow}: ${state}`).join(", "),
-        remediation: `./cao.sh ${activeCount >= observed.length / 2 ? "enable" : "disable"} ${declaration.campaign}`,
+        remediation: `gh cao campaigns ${activeCount >= observed.length / 2 ? "enable" : "disable"} ${declaration.campaign}`,
       }));
     }
   }
@@ -361,7 +385,7 @@ export async function validateSecurity(root, policySource, installed = []) {
       }));
     }
     for (const match of source.matchAll(/^\s*(?:-\s*)?uses:\s*([^/\s]+\/[^@\s]+)@([^\s#]+)([^\r\n]*)/gm)) {
-      if (match[1] === "githubnext/gh-aw-cao/.github/workflows/cao-package-publish.yml"
+      if (match[1] === "githubnext/gh-cao/.github/workflows/cao-package-publish.yml"
         && match[2] === "main"
         && match[3].trim() === "# zizmor: ignore[unpinned-uses] protected default-branch publisher") {
         continue;
@@ -486,7 +510,7 @@ export async function validateRepository({
         files: [POLICY_PATH],
         expected: "A checked-in CAO policy",
         observed: `${POLICY_PATH} does not exist`,
-        remediation: "./cao.sh init",
+        remediation: "gh cao init",
       });
       return {
         validatorVersion: VALIDATOR_VERSION,
@@ -546,7 +570,7 @@ export async function validateRepository({
   } catch (error) {
     const infrastructureFinding = finding("validator-failure", "error", "infrastructure", "CAO validator failed", {
       observed: error.message,
-      remediation: "Verify the checkout, runtime, and validator configuration, then rerun ./cao.sh validate",
+      remediation: "Verify the Actions checkout, runtime, and validator configuration, then rerun the CAO validation workflow",
     });
     return {
       validatorVersion: VALIDATOR_VERSION,

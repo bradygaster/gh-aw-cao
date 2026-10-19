@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { posix } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, posix } from "node:path";
 import test from "node:test";
 import { parse } from "yaml";
-import { workflow } from "./workflow-contract.helpers.mjs";
+import { root, workflow } from "./workflow-contract.helpers.mjs";
 
 const mainOnlyWorkflows = [
   "actions.yml",
@@ -70,6 +71,117 @@ test("MCP parity keeps service-backed Go integration tests out of its contract s
   assert.equal(parity.run, "npm run test:e2e:dashboard-query-parity");
   assert.ok(job.env.REDIS_URL);
   assert.ok(job.env.CAO_POSTGRES_URL);
+});
+
+test("service integration harnesses provision canonical storage before starting runtime processes", () => {
+  const parity = readFileSync(join(root, "tests/e2e/dashboard-query-parity.mjs"), "utf8");
+  assert.match(parity, /const namespace = `query-parity-\$\{process\.pid\}`/);
+  assert.match(parity, /execFileSync\(binary, \[\s*"database", "bootstrap", "--store", "canonical", "--namespace", namespace,/);
+  assert.match(parity, /env: \{ \.\.\.process\.env, CAO_DATABASE_ADMIN_URL: process\.env\.CAO_POSTGRES_URL \}/);
+  assert.match(parity, /"--redis-namespace", namespace/);
+  assert.ok(parity.indexOf('execFileSync(binary, [') < parity.indexOf('const child = spawn(binary, ['));
+
+  const azure = readFileSync(join(root, "scripts/azure-local/azure-local.sh"), "utf8");
+  assert.match(azure, /CAO_DATABASE_ADMIN_URL="\$CAO_POSTGRES_URL" run_logged "canonical database bootstrap" database-bootstrap\.log \\\n\s+"\$APP_DIR\/cao-dashboard" database bootstrap --store canonical --namespace "\$namespace"/);
+  assert.ok(azure.indexOf('"$APP_DIR/cao-dashboard" database bootstrap') < azure.indexOf('"$APP_DIR/cao-dashboard" ingest'));
+  assert.doesNotMatch(azure, /export CAO_DATABASE_ADMIN_URL/);
+});
+
+test("Go extension quality checks cover root-module sources and lint configuration", () => {
+  for (const event of ["pull_request", "push"]) {
+    for (const file of [
+      ".github/workflows/go-extension.yml",
+      ".github/workflows/cao.json",
+      ".github/actions/setup-gh-aw/action.yml",
+      ".golangci.yml",
+      "cmd/gh-cao/main.go",
+      "internal/cli/doctor.go",
+      "internal/cli/doctor_test.go",
+      "internal/cli/doctor_auth_test.go",
+      "internal/ghcli/gh.go",
+      "internal/cli/native_queries.go",
+      "dashboard/catalog.go",
+      "dashboard/site/src/data/queries/database.json",
+      "dashboard/site/src/data/queries/declarative.js",
+      "dashboard/site/src/data/storage/sqlite-indexeddb.js",
+      "dashboard/site/src/semantic-view-prompt.js",
+      "go.mod",
+      "go.sum",
+      "package.json",
+      "package-lock.json",
+    ]) {
+      assert.ok(runsForFile("go-extension.yml", event, file), `${event}: ${file}`);
+    }
+    assert.equal(runsForFile("go-extension.yml", event, "server/internal/server/server.go"), false);
+  }
+
+  const { jobs, defaults } = parse(workflow("go-extension.yml"));
+  const job = jobs["extension-quality"];
+  const steps = job.steps;
+  const go = steps.find((step) => step.uses?.startsWith("actions/setup-go@"));
+  const install = steps.find((step) => step.name === "Install golangci-lint");
+  const format = steps.find((step) => step.name === "Check formatting");
+  const lint = steps.find((step) => step.name === "Lint");
+  const serverSteps = parse(workflow("cgo.yml")).jobs["server-quality"].steps;
+  assert.equal(job.if, undefined);
+  assert.equal(defaults?.run?.["working-directory"] ?? ".", ".");
+  assert.equal(job.defaults?.run?.["working-directory"] ?? ".", ".");
+  assert.equal(go.with["go-version-file"], "go.mod");
+  assert.equal(install.run, serverSteps.find((step) => step.name === "Install golangci-lint").run);
+  assert.ok(steps.indexOf(go) < steps.indexOf(install));
+  assert.ok(steps.indexOf(install) < steps.indexOf(format));
+  assert.ok(steps.indexOf(install) < steps.indexOf(lint));
+  assert.equal(format["working-directory"] ?? ".", ".");
+  assert.equal(lint["working-directory"] ?? ".", ".");
+  assert.equal(format.shell, "bash");
+  assert.equal(format.run, [
+    'golangci-lint fmt --diff ./cmd/... ./internal/... ./dashboard | tee "$RUNNER_TEMP/go-extension-fmt.diff"',
+    'test ! -s "$RUNNER_TEMP/go-extension-fmt.diff"',
+    "",
+  ].join("\n"));
+  assert.equal(lint.run, "golangci-lint run ./cmd/... ./internal/... ./dashboard");
+  const standalone = steps.find((step) => step.name === "Check standalone execution without Node.js");
+  assert.match(standalone.run, /PATH="" "\$binary" pages --json/);
+  assert.match(standalone.run, /PATH="" "\$binary" query --database explicit.sqlite --collection runs/);
+  const parity = steps.find((step) => step.name === "Install JavaScript parity-oracle dependencies");
+  const check = steps.find((step) => step.run === "make check");
+  assert.equal(parity.run, "npm ci --ignore-scripts --no-audit --no-fund");
+  assert.ok(steps.indexOf(parity) < steps.indexOf(check));
+});
+
+test("Go extension keeps authenticated doctor integration separate from unit and smoke tests", () => {
+  const { jobs, permissions } = parse(workflow("go-extension.yml"));
+  const quality = jobs["extension-quality"];
+  assert.ok(quality.steps.some((step) => step.run === "make check"));
+  assert.equal(quality.steps.some((step) => step.uses === "./.github/actions/setup-gh-aw"), false);
+  assert.equal(quality.env?.GH_TOKEN, undefined);
+  const smoke = quality.steps.find((step) => step.name === "Smoke test extension");
+  assert.equal(smoke.env, undefined);
+  assert.ok(smoke.run.split("\n").includes("./gh-cao doctor --help"));
+  assert.equal(smoke.run.split("\n").includes("./gh-cao doctor"), false);
+
+  const job = jobs["extension-authtests"];
+  const steps = job.steps;
+  const go = steps.find((step) => step.uses?.startsWith("actions/setup-go@"));
+  const node = steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+  const install = steps.find((step) => step.uses === "./.github/actions/setup-gh-aw");
+  const auth = steps.find((step) => step.name === "Run authenticated doctor integration tests");
+  assert.ok(install, "doctor requires the policy-pinned gh-aw installation");
+  assert.equal(go.with["go-version-file"], "go.mod");
+  assert.ok(steps.indexOf(node) < steps.indexOf(install));
+  assert.ok(steps.indexOf(install) < steps.indexOf(auth));
+  assert.deepEqual(auth.env, { GH_TOKEN: "${{ github.token }}" });
+  assert.deepEqual(permissions, { contents: "read" });
+  assert.equal(job.permissions, undefined);
+  assert.equal(job.env?.GH_TOKEN, undefined);
+  assert.equal(job.if, undefined);
+  assert.equal(job.needs, undefined);
+  assert.equal(quality.needs, undefined);
+  assert.equal(install.if, undefined);
+  assert.equal(install["continue-on-error"], undefined);
+  assert.equal(auth.if, undefined);
+  assert.equal(auth["continue-on-error"], undefined);
+  assert.equal(auth.run, "make authtests");
 });
 
 test("pull request triggers route frontend, control, server, and test changes selectively", () => {

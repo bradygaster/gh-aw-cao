@@ -21,6 +21,7 @@ These are the default product destinations. They are custom pages composed from 
 | --- | --- | --- | --- |
 | `overview` | Overview | `factory-header`, `factory-floor`, `link-button-list` | Summarizes campaign health, repository coverage, weekly rhythm, and campaign shortcuts. |
 | `configuration` | Settings | `configuration-policy` | Presents checked-in control policy and its editable settings surface. |
+| `governance` | Governance | `environment-defaults` | Visible only in local `--admin` mode or to authorized hosted administrators; loads, previews, and explicitly approves gh-aw compiler default variables through authorized local CLI actions. |
 
 ## Built-in pages
 
@@ -127,6 +128,7 @@ Named elements own specialized DOM, accessibility, interaction, local state, and
 | `problem-detail` | Presents one campaign runtime problem with its failure evidence, scope, environment, and repair action. |
 | `entity-route` | Allocates a route-selected entity title and native GitHub link. |
 | `configuration-policy` | Presents and edits checked-in CAO policy. |
+| `environment-defaults` | Edits the full gh-aw defaults YAML through declared `gh aw env` actions, with scope selection, dry-run preview, explicit approval, and private temporary-file transport; does not query activity evidence or grant rollout authority. |
 | `measure-history` | Presents reusable grouped temporal-measure history from declarative query results. |
 | `factory-header` | Presents campaign status, retained-output context, work in motion, and weekly rhythm. |
 | `factory-floor` | Presents linked repository, run, dispatch, and value stations. |
@@ -134,6 +136,8 @@ Named elements own specialized DOM, accessibility, interaction, local state, and
 | `link-button-list` | Presents one source as an inset grouped list of Octicon navigation rows with disclosure chevrons. |
 | `markdown` | Presents retained Markdown from a declared source field with safe repository-relative links. |
 | `query-editor` | Authors ephemeral query-and-view previews through tool-free Copilot SDK sessions; available only in SDK-enabled canvases. |
+| `command-terminal` | Replays and follows durable local CLI output by command ID, with explicit Cancel and Retry actions through the data worker; detachment never cancels execution. |
+| `storage-info` | Identifies the configured dashboard storage engine and location without querying activity evidence; supports browser IndexedDB, local-server SQLite, server PostgreSQL, and unknown configuration. |
 
 ## Testing standard
 

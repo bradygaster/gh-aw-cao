@@ -24,6 +24,7 @@ import {
   installSqliteIndexedDB
 } from '../../src/data/storage/sqlite-indexeddb.js';
 import { CANONICAL_SCHEMA_VERSION } from '../../src/data/model/schema.js';
+import { sqliteRetention } from '../../../../activity/sqlite-retention.mjs';
 
 const temporaryDirectories = /** @type {string[]} */ ([]);
 const originalIndexedDB = globalThis.indexedDB;
@@ -57,6 +58,31 @@ function batch() {
   );
   return canonical;
 }
+
+it('keeps a year of outcome history through ingestion and doctor independently of run and detail TTLs', async () => {
+  const filename = temporaryDatabase();
+  const indexedDB = installSqliteIndexedDB(filename);
+  const now = Date.parse('2026-10-01T00:00:00Z');
+  const day = 86_400_000;
+  const canonical = normalize([]);
+  canonical.repositories.push({ id: 'repository:1', owner: 'octo', name: 'api' });
+  canonical.campaigns.push({ id: 'campaign:example', slug: 'example' });
+  canonical.operationalValues.push(...[15, 40, 364, 365, 366].map((age) => ({
+    id: `value:${age}`, repositoryId: 'repository:1', campaignId: 'campaign:example',
+    campaign: 'example', valueId: 'worker.remaining', value: 0,
+    timestamp: new Date(now - age * day).toISOString()
+  })));
+  await upsertCanonicalBatch(indexedDB, canonical);
+  await maintainCanonicalDatabase(indexedDB, {
+    now, maxDatabaseBytes: 100 * 1024 * 1024, ...sqliteRetention(7 * day, 30 * day, day)
+  });
+  const expected = ['value:15', 'value:40', 'value:364', 'value:365'].sort();
+  expect((await readCollection(indexedDB, 'operationalValues')).map((row) => row.id).sort()).toEqual(expected);
+  const diagnosis = await doctorSqliteDatabase(filename, { now, ttlDays: 7, runTtlDays: 30 });
+  expect(diagnosis.healthy).toBe(true);
+  expect((await readCollection(indexedDB, 'operationalValues')).map((row) => row.id).sort()).toEqual(expected);
+  expect(sqliteRetention(undefined, 730 * day, day).retentionWindowMsByStore.operationalValues).toBe(730 * day);
+});
 
 afterEach(() => {
   globalThis.indexedDB = originalIndexedDB;
@@ -358,7 +384,7 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       '--where', 'conclusion=success'
     ], { encoding: 'utf8' }));
     expect(runs).toEqual([
-      expect.objectContaining({ id: 'github:run:githubnext/gh-aw-cao:303' })
+      expect.objectContaining({ id: 'github:run:githubnext/gh-cao:303' })
     ]);
 
     const diagnosis = JSON.parse(execFileSync(process.execPath, [
@@ -490,7 +516,7 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     const input = (databaseId, timestamp) => JSON.stringify({
       schema_version: 2,
       kind: 'workflow_runs',
-      request: { repository: 'githubnext/gh-aw-cao' },
+      request: { repository: 'githubnext/gh-cao' },
       payload: [{
         databaseId,
         attempt: 1,
@@ -525,8 +551,8 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       '--collection', 'runs'
     ], { encoding: 'utf8' }));
     expect(/** @type {{ id: string }[]} */ (runs).map((run) => run.id)).toEqual([
-      'github:run:githubnext/gh-aw-cao:100',
-      'github:run:githubnext/gh-aw-cao:200'
+      'github:run:githubnext/gh-cao:100',
+      'github:run:githubnext/gh-cao:200'
     ]);
 
     const diagnosis = JSON.parse(execFileSync(process.execPath, [

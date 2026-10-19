@@ -1,88 +1,111 @@
 ---
 title: What Is Central Agentic Ops?
-description: Learn how CAO runs, observes, and evolves governed agentic campaigns across an enterprise.
+description: Observe, evaluate, and operate agentic work across repositories, with shared visibility and controlled rollout.
+next:
+  link: /gh-cao/setup-quickstarts/
+  label: Set up CAO and monitor your workflows
 ---
 
-Central Agentic Ops (CAO) is a control plane for agentic work at enterprise scale. It runs governed campaigns across authorized repositories and connects every run to evidence, cost, and results.
+You have workflows triaging issues in one repository and investigating failures
+in another. **Central Agentic Ops (CAO)** helps you understand and operate this
+work across repositories: observe activity, evaluate available cost and outcome
+evidence, and coordinate the execution and rollout of shared workflows.
+Existing workflows stay with their owners; shared work does not require moving
+every workflow into one central repository.
 
-## Common Use Cases
+**GitHub Agentic Workflows (AWs)** are AI-powered workflows that run in GitHub
+Actions. You describe a task in Markdown, and an agent carries it out with
+configured tools and permissions. They can respond to events, run on a schedule,
+or be requested on demand. CAO monitors these workflows, not every ordinary
+Actions job. [Learn about GitHub Agentic Workflows](https://github.github.com/gh-aw/).
 
-CAO supports many kinds of bounded agentic campaigns. It often delivers the clearest immediate value on necessary work that individual development teams should not have to carry manually:
+**[Set up CAO and monitor your workflows](setup-quickstarts.md)**.
+Connect one repository to get started.
 
-- **Maintenance:** dependency upkeep, configuration drift, stale automation, and repository hygiene.
-- **Compliance:** evidence collection, control assessment, policy checks, and bounded remediation.
-- **Operational toil:** repetitive investigations, updates, and follow-up work that compete with product delivery.
+## What you can do today
 
-These jobs are easy to defer one repository at a time and expensive to ignore across an enterprise. CAO lets a central team encode the outcome once and return reviewable results to repository teams instead of asking every team to adopt and operate another process.
+| Capability | What it gives you |
+| --- | --- |
+| **Observe activity** | See collected activity across configured repositories, inspect recorded runs, and follow them back to GitHub. |
+| **Evaluate results** | Inspect costs, outputs, and outcomes where evidence is available. Use them to investigate what the work produced, not just whether it ran. |
+| **Scale and roll out shared work** | Standalone workflows and campaigns can opt into admission and bounded rollout across explicitly allowed repositories. In `review` mode, proposals go to a review destination; target repositories stay unchanged until live output is explicitly authorized. |
 
-## How CAO Scales
+Workflows can stay repository-local, be shared across projects, or run centrally.
+**Campaigns are one opinionated way to package, scale, and roll out shared work,
+not the only operating pattern.** Integrated review and rollout controls also
+support [standalone agentic workflows](configuration.md#standalone-agentic-workflows),
+but do not apply automatically to every observed workflow.
 
-Scaling CAO is not simply running many prompts in parallel. It means operating the same campaign safely across a large, changing repository fleet:
+For example, after an issue-triage workflow runs, you can inspect its run and
+follow the collected evidence to see what it produced. The dashboard helps you
+investigate whether the work was useful; a green run alone does not answer that.
+**A successful run is not automatically a successful outcome.** Missing cost or
+outcome evidence is not proof of zero cost or success.
 
-- discover only repositories admitted by policy;
-- dispatch bounded workers with one target each;
-- keep credentials, modes, and output permissions explicit;
-- correlate activity, cost, outputs, and outcomes;
-- improve the campaign from evidence without silently expanding its authority.
+## See the product
 
-A campaign can start with one repository and retain the same control model as it grows to thousands.
+<figure aria-labelledby="intro-dashboard-caption">
+<div class="cao-intro-screenshot">
 
-## Run, Observe, Evolve
+<img src="https://github.com/user-attachments/assets/1c408552-1a2d-45cc-967e-b46d8811798d" alt="CAO Repositories chart view: selected sidebar entry, ranked retained runs by repository, and retained issue outputs across public repositories." width="1200" height="766" loading="lazy" decoding="async">
+
+<span class="cao-intro-marker cao-intro-marker-navigation" aria-hidden="true">1</span>
+<span class="cao-intro-marker cao-intro-marker-activity" aria-hidden="true">2</span>
+<span class="cao-intro-marker cao-intro-marker-outputs" aria-hidden="true">3</span>
+</div>
+<figcaption id="intro-dashboard-caption">
+<p>Public sample, 19 October 2026, after import completed. Not a live feed. <a href="https://github.com/user-attachments/assets/1c408552-1a2d-45cc-967e-b46d8811798d">Open full-size capture</a>.</p>
+<ol>
+<li><strong>Start with your repositories.</strong> See configured projects in one place.</li>
+<li><strong>Read activity.</strong> Ranked bars compare distinct retained runs. Zero means no retained runs, not confirmed inactivity.</li>
+<li><strong>Follow outputs.</strong> Inspect retained issue outputs; output counts alone do not prove successful outcomes.</li>
+</ol>
+</figcaption>
+</figure>
+
+[Explore the public Repositories view](https://githubnext.github.io/gh-cao/cao/#page-repositories).
+Wait for import to finish before reading the charts.
+See the [dashboard guide](dashboard.md) for more.
+
+## How evidence reaches the dashboard
+
+<span id="operating-workflows-across-repositories"></span>
+
+A **control repository** is an ordinary GitHub repository that stores your CAO
+configuration, holds credentials in Actions secrets, and runs collection and
+participating shared workflows.
+
+CAO Activity collects read-only evidence from the repositories you configure
+and publishes a snapshot for the dashboard:
 
 ```mermaid
-flowchart LR
-  outcome["Define an outcome"]
-  run["Run<br/>bounded agents"]
-  observe["Observe<br/>evidence · cost · value"]
-  evolve["Evolve<br/>campaigns and coverage"]
-  approve["Human review<br/>and approval"]
-
-  outcome --> run --> observe --> evolve --> approve --> run
+flowchart TB
+  accTitle: Monitoring existing agentic workflows
+  accDescr: CAO Activity collects read-only evidence from configured repositories and publishes a snapshot for the shared dashboard. Observation grants no write authority.
+  workflows["Existing AWs"] -->|"Read evidence only"| activity["CAO Activity"]
+  activity -->|"Collected snapshot"| dashboard["Shared dashboard"]
 ```
 
-### Run
+The dashboard shows collected evidence, not a live feed. Collection can be
+partial or stale; an empty chart does not establish that no workflows ran.
+See [CAO Activity](activity.md) for collection and data-quality details.
 
-A control repository owns campaign definitions, credentials, rollout policy, and workflow runs. It may be public only when its policy, run metadata, dashboard data, evidence, and review outputs can also be public. Orchestrators select eligible repositories within policy. Workers receive one dispatched target and only the tools and safe outputs declared by their workflow.
+## Essential safety boundaries
 
-### Observe
+- **Seeing is not authorizing.** Observing a workflow grants no write authority.
+  Collecting evidence does not change its permissions or authorize writes.
+- **Local owners keep control.** Project workflows and review requirements stay
+  with their owners. A shared dashboard does not transfer credentials or
+  authority.
+- **Public means public-safe.** Use a public control repository only when its
+  configuration, run metadata, dashboard data, evidence, and review outputs can
+  be public. A private repository does not by itself guarantee private Pages;
+  [setup](setup-quickstarts.md) checks publication visibility.
 
-CAO correlates orchestrator and worker activity with review items, operational evidence, cost, and measured value. Operators can see whether a campaign ran, what it produced, where it stopped, and whether the intended outcome occurred.
+## Get started
 
-### Evolve
+**[Set up CAO and monitor your workflows](setup-quickstarts.md)**.
+Connect a repository to see its existing evidence.
 
-Evidence reveals recurring failures, missing capabilities, and campaigns that need refinement. CAO can recommend what to improve, adopt, or author next. Maintainers still review and approve workflow changes, campaign installation, and rollout.
-
-## The Operating Boundary
-
-CAO separates four responsibilities:
-
-| Part | Responsibility |
-| --- | --- |
-| **Catalog** | Publishes reusable campaigns |
-| **Control repository** | Owns policy, credentials, workflows, and runs |
-| **Orchestrator** | Selects and dispatches repositories within policy |
-| **Worker** | Handles one authorized repository and emits declared safe outputs |
-
-“Central” does not mean one global installation. An organization, enterprise, team, region, or trust boundary can operate its own control repository. Control is centralized within that boundary; execution is distributed across enrolled repositories.
-
-Credential reach never grants authority by itself. The effective boundary is the intersection of checked-in policy, the dispatch request, worker limits, credential reach, and compiled workflow capabilities.
-
-## Review Before Live
-
-Campaigns begin in `review` mode. In review, proposed outputs stay in the declared review destination and the target repository does not change. Operators can inspect the evidence, behavior, and cost before explicitly approving live output for a bounded scope.
-
-This makes CAO suitable for work that must be automated without making agent autonomy open-ended.
-
-## One Operator Interface
-
-The installer adds a repository-local `./cao.sh` command. Operators use it to add and update campaigns, configure authentication, switch between preview and live policy, enable or disable campaign workflows, inspect runtime health, and query activity evidence.
-
-Workflow execution remains with gh-aw: use `gh aw run` to start a campaign and `gh run` to watch it. See [CAO Commands](cao-cli.md) for the complete operator loop.
-
-## Where to Go Next
-
-- [Set up the control plane](setup-quickstarts.md) for the exact repositories it may need to reach.
-- [Learn the CAO commands](cao-cli.md) for configuration, campaign control, and operational queries.
-- [Browse ready campaigns](catalog.md) for an outcome you can install.
-- [Build a campaign](author-your-first-operation.md) when your outcome is not in the catalog.
-- Read the [control plane overview](architecture.md) for the detailed execution and safety architecture.
+Explore [workflow operating patterns and ownership](deployment-and-governance.md)
+or [browse campaigns](catalog.md) for shared tasks and rollout.

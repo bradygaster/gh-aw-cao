@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/simulator"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/simulator"
 )
 
 func TestPostgresBackfillStress(t *testing.T) {
@@ -122,8 +122,10 @@ func TestPostgresBackfillStress(t *testing.T) {
 	}
 	backfillReadiness(t, ctx, local, http.StatusOK)
 	traceID := backfillStressSamples(t, ctx, local, scenario, horizon)
-	flush(t)
-	assertBackfillTelemetry(t, ctx, service, traceID, started)
+	if flush != nil {
+		flush(t)
+		assertBackfillTelemetry(t, ctx, service, traceID, started)
+	}
 	report := map[string]any{
 		"repositories": repositories, "runsPerDay": runsPerDay, "horizonDays": horizon,
 		"expectedRuns": expected, "queuedRuns": depth, "counts": state.Counts,

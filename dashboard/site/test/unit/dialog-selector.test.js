@@ -3,6 +3,11 @@ import { createDialogSelector } from '../../src/components/dialog-selector.js';
 import { renderDeclaredCliAction, setDeclaredCliActions } from '../../src/components/cli-actions.js';
 import { validateDashboardDocument } from '../../src/validator.js';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
+import { DataRequestWorker } from '../data-request-worker.js';
+
+vi.mock('../../src/components/cli-terminal-runtime.js', () => ({
+  mountTerminal: () => ({ write: vi.fn(), reset: vi.fn() })
+}));
 
 const definition = /** @type {import('../../src/dialog-selector.js').DialogSelector} */ ({
   label: 'Repository', 'debounce-ms': 300,
@@ -11,7 +16,7 @@ const definition = /** @type {import('../../src/dialog-selector.js').DialogSelec
 });
 const action = {
   id: 'add-repository', level: /** @type {const} */ ('operate'), label: 'Add repository', icon: 'plus',
-  command: './cao.sh add --repository {{repository}}', placement: /** @type {const} */ ('view'), selector: definition
+  command: 'gh cao repos add {{repository}}', placement: /** @type {const} */ ('view'), selector: definition
 };
 const option = { value: 'octo/repo', label: 'octo/repo', description: 'Example repository' };
 const response = (options = [option]) => ({ ok: true, json: async () => ({ options }) });
@@ -177,10 +182,14 @@ describe('declarative external dialog selector', () => {
 
   it('requires selection and explicit confirmation, with no selector outside canvas mode', async () => {
     vi.useFakeTimers();
+    vi.stubGlobal('__CLI_QUEUE__', true);
+    vi.stubGlobal('Worker', DataRequestWorker);
     setDeclaredCliActions([action], { canExecute: false });
     expect(renderDeclaredCliAction(action.id)).toBeNull();
     setDeclaredCliActions([action], { canExecute: true });
-    const fetch = vi.fn().mockResolvedValueOnce(response()).mockResolvedValueOnce({
+    const fetch = vi.fn().mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(Response.json({ id: 'persistent-1', status: 'queued' }, { status: 202 }))
+      .mockResolvedValueOnce({
       ok: true, body: new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('{"type":"complete","result":{"ok":true}}\n'));
         controller.close();
@@ -201,13 +210,16 @@ describe('declarative external dialog selector', () => {
     await vi.advanceTimersByTimeAsync(300);
     root.querySelector('.dialog-selector-option')?.dispatchEvent(new MouseEvent('click'));
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(root.querySelector('.cli-action-command')?.textContent).toBe('./cao.sh add --repository octo/repo');
+    expect(root.querySelector('.cli-action-command')?.textContent).toBe('gh cao repos add octo/repo');
     expect(confirm.textContent).toBe('Add repository');
     expect(confirm.disabled).toBe(false);
     confirm.click();
+    await vi.dynamicImportSettled();
     await vi.advanceTimersByTimeAsync(0);
-    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ id: action.id, arguments: {}, values: { repository: 'octo/repo' } });
-    expect(root.querySelector('.cli-action-status')?.textContent).toBe('Completed');
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ id: action.id, arguments: {}, values: { repository: 'octo/repo' }, idempotencyKey: expect.any(String) });
+    expect(window.location.hash).toBe('#page-command?command=persistent-1');
+    expect(root.querySelector('dialog')?.open).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(2);
     root.remove();
     await vi.advanceTimersByTimeAsync(0);
   });

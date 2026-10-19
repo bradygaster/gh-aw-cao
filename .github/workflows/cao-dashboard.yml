@@ -24,6 +24,10 @@ concurrency:
   # Finish publishing the current snapshot; coalesce newer eligible builds behind it.
   cancel-in-progress: false
 
+env:
+  REPORT_MAX_CACHE_BYTES: ${{ vars.CAO_ACTIVITY_MAX_RAW_CACHE_BYTES || '1073741824' }}
+  REPORT_MAX_NORMALIZED_CACHE_BYTES: ${{ vars.CAO_ACTIVITY_MAX_NORMALIZED_CACHE_BYTES || '268435456' }}
+
 jobs:
   build:
     if: >-
@@ -84,16 +88,42 @@ jobs:
             ${{ runner.temp }}/cao-activity/agent-summary.json
             ${{ runner.temp }}/cao-activity/drain3_weights.json
             ${{ runner.temp }}/cao-activity/memory
-          key: cao-activity-v5-lookup-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            cao-activity-v5-
+          key: >-
+            ${{ github.event_name == 'workflow_run'
+              && format('cao-activity-v5-{0}-{1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt)
+              || format('cao-activity-v5-lookup-{0}-{1}', github.run_id, github.run_attempt) }}
+          # An automatic build must never substitute an older snapshot.
+          restore-keys: ${{ github.event_name == 'workflow_dispatch' && 'cao-activity-v5-' || '' }}
 
       - name: Resolve fallback activity run
         id: activity-artifact-run
-        if: steps.activity-cache.outputs.cache-matched-key == ''
+        if: github.event_name == 'workflow_run' || steps.activity-cache.outputs.cache-matched-key == ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ACTIVITY_CACHE_MATCHED_KEY: ${{ steps.activity-cache.outputs.cache-matched-key }}
         with:
           script: |
+            if (context.eventName === 'workflow_run') {
+              const run = context.payload.workflow_run
+              const matchedKey = process.env.ACTIVITY_CACHE_MATCHED_KEY
+              if (matchedKey) {
+                if (matchedKey !== `cao-activity-v5-${run.id}-${run.run_attempt}`) {
+                  throw new Error('Restored activity cache does not match the triggering run and attempt')
+                }
+                return
+              }
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                ...context.repo,
+                run_id: run.id,
+                per_page: 100,
+              })
+              if (!jobs.some((job) => job.name === 'index' && job.conclusion === 'success')) {
+                throw new Error(`CAO Activity run ${run.id} did not produce a successful index; refusing to publish another snapshot`)
+              }
+              core.info(`Using activity artifact from triggering workflow run ${run.id}`)
+              core.setOutput('run-id', String(run.id))
+              return
+            }
             let run
             for (let page = 1; !run; page += 1) {
               const { data } = await github.rest.actions.listWorkflowRuns({
@@ -110,7 +140,7 @@ jobs:
                   run_id: candidate.id,
                   per_page: 100,
                 })
-                if (jobs.some((job) => job.name === 'index' && job.conclusion === 'skipped')) continue
+                if (!jobs.some((job) => job.name === 'index' && job.conclusion === 'success')) continue
                 run = candidate
                 break
               }
@@ -175,7 +205,6 @@ jobs:
           NODE_DEBUG: cao:ingest
           ACTIVITY_DATABASE: ${{ runner.temp }}/cao-activity/gh-aw-logs.sqlite
           REPORT_GH_AW_LOGS_SHARDS: ${{ runner.temp }}/cao-activity/gh-aw-logs-shards
-          REPORT_GH_AW_LOGS_NORMALIZED: ${{ runner.temp }}/cao-activity/gh-aw-logs-normalized
           REPORT_GH_AW_LOGS_RUNS: ${{ runner.temp }}/cao-activity/gh-aw-logs-runs
           REPORT_GH_AW_LOGS_RECORDS: ${{ runner.temp }}/cao-activity/gh-aw-logs-records
           REPORT_INVENTORY_SOURCES: ${{ runner.temp }}/cao-activity/inventory-sources.json
@@ -184,13 +213,19 @@ jobs:
           script: |
             const path = require('path')
             await exec.exec(process.execPath, [
+              'activity/cao.mjs', 'recycle-cache',
+              '--input-dir', process.env.REPORT_GH_AW_LOGS_SHARDS,
+              '--retention-days', '30',
+              '--max-bytes', process.env.REPORT_MAX_CACHE_BYTES,
+            ])
+            await exec.exec(process.execPath, [
               'activity/cao.mjs',
               'hash-payloads',
               '--shard-dir', process.env.REPORT_GH_AW_LOGS_SHARDS,
-              '--normalized-dir', process.env.REPORT_GH_AW_LOGS_NORMALIZED,
               '--runs-dir', process.env.REPORT_GH_AW_LOGS_RUNS,
               '--records-dir', process.env.REPORT_GH_AW_LOGS_RECORDS,
               '--inventory', process.env.REPORT_INVENTORY_SOURCES,
+              '--max-cache-bytes', process.env.REPORT_MAX_NORMALIZED_CACHE_BYTES,
             ])
             await exec.exec(process.execPath, [
               'activity/cao.mjs',
@@ -210,6 +245,7 @@ jobs:
               '--records-dir', process.env.REPORT_GH_AW_LOGS_RECORDS,
               '--inventory', process.env.REPORT_INVENTORY_SOURCES,
               '--output', process.env.REPORT_PAYLOAD_HASHES,
+              '--max-cache-bytes', process.env.REPORT_MAX_NORMALIZED_CACHE_BYTES,
             ])
             await exec.exec(process.execPath, [
               'activity/agent-summary.mjs',
@@ -493,7 +529,7 @@ jobs:
             const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com'
             const runUrl = `${serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             const workflowSha = process.env.GITHUB_WORKFLOW_SHA
-            const debugSkillUrl = `${serverUrl}/githubnext/gh-aw-cao/blob/main/skills/debug-cao/SKILL.md`
+            const debugSkillUrl = `${serverUrl}/githubnext/gh-cao/blob/main/skills/debug-cao/SKILL.md`
             const rows = failures
               .map(({ code, message, result }) => `| \`${code}\` | ${message} | ${result} |`)
               .join('\n')

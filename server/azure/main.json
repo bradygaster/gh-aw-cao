@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "11677100637105602780"
+      "templateHash": "7167146577774843723"
     }
   },
   "parameters": {
@@ -24,24 +24,24 @@
     },
     "functionPublicNetworkAccess": {
       "type": "string",
-      "defaultValue": "Disabled",
+      "defaultValue": "Enabled",
       "allowedValues": [
         "Disabled",
         "Enabled"
       ],
       "metadata": {
-        "description": "Default endpoint access. Disabled is fail-closed; enabling requires a reviewed policy-permitted access model with restriction rules or an explicit public-main default action."
+        "description": "Default endpoint access. Enabled (default) serves the dashboard over public HTTPS behind GitHub OAuth sign-in; no VPN, proxy, or corporate-network rule is required. Set Disabled only for a deliberately private deployment."
       }
     },
     "functionAccessRestrictionsDefaultAction": {
       "type": "string",
-      "defaultValue": "Deny",
+      "defaultValue": "Allow",
       "allowedValues": [
         "Allow",
         "Deny"
       ],
       "metadata": {
-        "description": "Default action for unmatched main-site requests. Deny is fail-closed; Allow requires an explicitly approved public-main access model and does not change SCM restrictions."
+        "description": "Default action for unmatched main-site requests. Allow (default) is the public-main model: GitHub OAuth remains the access control. Use Deny with explicit rules only for a deliberately restricted deployment. Never changes SCM restrictions."
       }
     },
     "functionAccessRestrictions": {
@@ -135,6 +135,13 @@
     "postgresSkuTier": {
       "type": "string",
       "defaultValue": "Burstable"
+    },
+    "subnetNetworkSecurityGroupId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional existing network security group kept attached to every private subnet. Supply it when an approved NSG is already attached so redeployment does not detach it."
+      }
     },
     "ingestionImageRepository": {
       "type": "string",
@@ -322,7 +329,7 @@
   "variables": {
     "collectionEnabled": "[not(empty(parameters('collectorImage')))]",
     "tags": {
-      "workload": "gh-aw-cao-dashboard",
+      "workload": "gh-cao-dashboard",
       "hostingMode": "azure-functions"
     },
     "githubRedirectUri": "[format('https://{0}.azurewebsites.net/auth/callback', parameters('functionAppName'))]"
@@ -612,6 +619,9 @@
           },
           "postgresSkuTier": {
             "value": "[parameters('postgresSkuTier')]"
+          },
+          "subnetNetworkSecurityGroupId": {
+            "value": "[parameters('subnetNetworkSecurityGroupId')]"
           }
         },
         "template": {
@@ -621,7 +631,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "14205678585711118420"
+              "templateHash": "1531899568038257409"
             }
           },
           "parameters": {
@@ -647,7 +657,17 @@
             "postgresSkuTier": {
               "type": "string",
               "defaultValue": "Burstable"
+            },
+            "subnetNetworkSecurityGroupId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional existing network security group to keep attached to every subnet. Empty leaves subnets without an NSG."
+              }
             }
+          },
+          "variables": {
+            "subnetNetworkSecurityGroup": "[if(empty(parameters('subnetNetworkSecurityGroupId')), createObject(), createObject('networkSecurityGroup', createObject('id', parameters('subnetNetworkSecurityGroupId'))))]"
           },
           "resources": [
             {
@@ -664,37 +684,15 @@
                 "subnets": [
                   {
                     "name": "functions",
-                    "properties": {
-                      "addressPrefix": "10.42.0.0/24",
-                      "delegations": [
-                        {
-                          "name": "functions",
-                          "properties": {
-                            "serviceName": "Microsoft.Web/serverFarms"
-                          }
-                        }
-                      ]
-                    }
+                    "properties": "[union(variables('subnetNetworkSecurityGroup'), createObject('addressPrefix', '10.42.0.0/24', 'delegations', createArray(createObject('name', 'functions', 'properties', createObject('serviceName', 'Microsoft.Web/serverFarms')))))]"
                   },
                   {
                     "name": "postgres",
-                    "properties": {
-                      "addressPrefix": "10.42.1.0/24",
-                      "delegations": [
-                        {
-                          "name": "postgres",
-                          "properties": {
-                            "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
-                          }
-                        }
-                      ]
-                    }
+                    "properties": "[union(variables('subnetNetworkSecurityGroup'), createObject('addressPrefix', '10.42.1.0/24', 'delegations', createArray(createObject('name', 'postgres', 'properties', createObject('serviceName', 'Microsoft.DBforPostgreSQL/flexibleServers')))))]"
                   },
                   {
                     "name": "containers",
-                    "properties": {
-                      "addressPrefix": "10.42.2.0/23"
-                    }
+                    "properties": "[union(variables('subnetNetworkSecurityGroup'), createObject('addressPrefix', '10.42.2.0/23'))]"
                   }
                 ]
               }

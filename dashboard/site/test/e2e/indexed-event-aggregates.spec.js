@@ -68,11 +68,11 @@ test('production worker counts event sources beyond input thresholds using nativ
     });
     const inventory = database.transaction(['campaigns', 'repositories', 'workflows', 'runs'], 'readwrite');
     inventory.objectStore('campaigns').put({ id: 'campaign:activity', slug: 'activity' });
-    inventory.objectStore('repositories').put({ id: 'repo', owner: 'githubnext', name: 'gh-aw-cao' });
+    inventory.objectStore('repositories').put({ id: 'repo', owner: 'githubnext', name: 'gh-cao' });
     inventory.objectStore('workflows').put({ id: 'workflow', repositoryId: 'repo', path: 'activity.md', campaignId: 'campaign:activity' });
     for (const attempt of [1, 2]) {
       inventory.objectStore('runs').put({
-        id: `attempt-${attempt}`, owner: 'githubnext', repository: 'gh-aw-cao',
+        id: `attempt-${attempt}`, owner: 'githubnext', repository: 'gh-cao',
         workflowPath: 'activity.md', githubRunId: '42', attempt
       });
     }
@@ -86,7 +86,7 @@ test('production worker counts event sources beyond input thresholds using nativ
           store.put(storage.prepareCanonicalRecord(storeName, {
             id: `${storeName}-${position}`, runId: `attempt-${position % 2 + 1}`,
             source: storeName === 'tools' ? 'mcp' : 'audit',
-            type: storeName === 'tools' ? 'tool.call' : 'audit.finding',
+            type: storeName === 'tools' ? 'mcp.tool_call' : 'audit.finding',
             status: storeName === 'tools' ? 'success' : position % 3 === 0 ? 'medium' : 'high',
             ...(storeName === 'tools' ? {
               mcpServer: position === 0 ? 'server/with' : position === 1 ? 'server' : 'other',

@@ -55,7 +55,7 @@ const metadata = { 'as-of': '2026-09-09T05:00:00Z', 'artifact-generation': 'gene
 function runRows(count) {
   return Array.from({ length: count }, (unused, index) => ({
     organization: 'githubnext',
-    repository: index % 2 === 0 ? 'gh-aw-cao' : 'other',
+    repository: index % 2 === 0 ? 'gh-cao' : 'other',
     workflow: '.github/workflows/dashboard.md',
     run: String(index + 1),
     'run-attempt': 1,
@@ -68,7 +68,7 @@ function runRows(count) {
 
 /** @param {number} count */
 function fixtureSources(count) {
-  const repositories = ['gh-aw-cao', 'other'];
+  const repositories = ['gh-cao', 'other'];
   return {
     runs: { rows: runRows(count), metadata },
     campaigns: { rows: [], metadata },
@@ -163,6 +163,22 @@ describe('named query execution', () => {
     expect(result.metadata.limit).toBe(DEFAULT_NAMED_QUERY_LIMIT);
   });
 
+  it('preserves database-query dependencies behind bounded dashboard queries', async () => {
+    const queryId = 'repository-run-inventory';
+    const resolvedDocument = JSON.parse(JSON.stringify(authoritativeDashboard), (_key, value) =>
+      value?.context === 'time-end' ? { value: '2026-09-10T00:00:00Z' } : value
+    );
+    const sources = await loadDatabaseQuerySources(indexedDB, {}, {
+      sourceNames: [queryId], queries: resolvedDocument.dashboard.queries
+    });
+    const source = /** @type {import('../../src/presenter.js').LogicalSourceInput} */ (sources[queryId]);
+    expect(source.rows).toHaveLength(2);
+    const result = await executeNamedQuery({
+      indexedDB, document: resolvedDocument, queryId
+    });
+    expect(result.rows).toEqual(source.rows);
+  });
+
   it('preserves the declarative filter of the reviewed query', async () => {
     const result = await execute({ queryId: 'failed-runs' });
     expect(result.rows.length).toBeGreaterThan(0);
@@ -172,11 +188,11 @@ describe('named query execution', () => {
   it('narrows rows with declared parameters', async () => {
     const result = await execute({
       queryId: 'all-runs',
-      parameters: { repository: 'gh-aw-cao' }
+      parameters: { repository: 'gh-cao' }
     });
-    expect(result.rows.every((row) => row.repository === 'gh-aw-cao')).toBe(true);
+    expect(result.rows.every((row) => row.repository === 'gh-cao')).toBe(true);
     expect(result.rows).toHaveLength(6);
-    expect(result.metadata.parameters).toEqual({ repository: 'gh-aw-cao' });
+    expect(result.metadata.parameters).toEqual({ repository: 'gh-cao' });
   });
 
   it('reports an empty result as empty rather than unavailable', async () => {

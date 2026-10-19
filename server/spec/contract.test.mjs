@@ -51,7 +51,7 @@ test('agent discovery describes public GET and body-free HEAD responses', () => 
 
 test('the generated contract describes the implemented security and wire formats', () => {
   assert.equal(openapi.openapi, '3.1.0')
-  assert.equal(openapi.info.version, '2.4.0')
+  assert.equal(openapi.info.version, '2.6.0')
   for (const path of ['/api/runs/{id}/jobs', '/api/runs/{id}/sessions', '/api/sessions/{id}/events']) {
     assert.equal(openapi.paths[path], undefined)
   }
@@ -106,6 +106,57 @@ test('the generated contract describes the implemented security and wire formats
   )
 })
 
+test('GitHub resource operations describe authenticated conditional reads and graceful unavailability', () => {
+  for (const [path, model] of [
+    ['/api/v1/github/repos/{owner}/{repo}', 'GitHubRepository'],
+    ['/api/v1/github/repos/{owner}/{repo}/releases/latest', 'GitHubRelease']
+  ]) {
+    const operation = openapi.paths[path].get
+    assert.ok(operation.security.some(entry => 'BearerAuth' in entry))
+    assert.ok(operation.security.some(entry => 'ApiKeyAuth' in entry))
+    assert.ok(operation.security.some(entry => 'LocalGitHubResourceSession' in entry))
+    assert.ok(operation.parameters.some(parameter => parameter.name === 'If-None-Match'))
+    assert.equal(operation.responses['200'].content['application/json'].schema.$ref, `#/components/schemas/${model}`)
+    for (const status of ['200', '304']) {
+      assert.ok(operation.responses[status].headers.ETag)
+      assert.ok(operation.responses[status].headers['Cache-Control'])
+    }
+    assert.equal(operation.responses['304'].content, undefined)
+    for (const status of ['400', '401', '403', '404', '429', '503']) {
+      assert.ok(operation.responses[status])
+    }
+    for (const status of ['429', '503']) {
+      assert.ok(operation.responses[status].headers['Retry-After'])
+    }
+  }
+  assert.equal(openapi.components.securitySchemes.LocalGitHubResourceSession.name, 'cao_github_local')
+})
+
+test('hosted repository consent is explicit and server-authorized', () => {
+  const login = openapi.paths['/auth/login'].get
+  const consent = login.parameters.find(parameter => parameter.name === 'hosted_cli')
+  assert.equal(consent.in, 'query')
+  assert.deepEqual(consent.schema.enum, ['1'])
+  assert.equal(consent.required, false)
+  for (const status of ['302', '400', '401', '403']) {
+    assert.ok(login.responses[status])
+  }
+  assert.match(login.description, /existing server-side session/)
+  assert.match(login.description, /configured administrator/)
+  assert.match(openapi.paths['/auth/callback'].get.description, /matching GitHub account ID and login/)
+})
+
+test('local OAuth is an explicit single-user exception rather than a hosted policy bypass', () => {
+  const login = openapi.paths['/auth/login'].get
+  assert.match(login.description, /CAO_GITHUB_LOCAL_USER/)
+  assert.match(login.description, /read:user without read:org/)
+  assert.match(login.description, /loopback HTTPS/)
+  assert.equal(login.parameters.some(parameter => parameter.name === 'local_user'), false)
+  const callback = openapi.paths['/auth/callback'].get
+  assert.match(callback.description, /exact configured developer/)
+  assert.match(callback.description, /cannot be reused in ordinary hosted mode/)
+})
+
 test('structured payload fields stay in sync with Go JSON tags', () => {
   const pairs = [
     ['../internal/server/server.go', 'queryRequest', 'QueryRequest'],
@@ -119,6 +170,8 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     ['../internal/server/operations.go', 'rebuildStatus', 'RebuildStatus'],
     ['../internal/server/logs.go', 'serverLogSnapshot', 'ServerLogSnapshot'],
     ['../internal/server/logs.go', 'serverLogRedis', 'ServerLogRedis'],
+    ['../internal/server/github_resources.go', 'githubRepositoryResource', 'GitHubRepository'],
+    ['../internal/server/github_resources.go', 'githubReleaseResource', 'GitHubRelease'],
     ['../internal/collect/recovery.go', 'Status', 'CollectionStatus'],
     ['../internal/githubquota/usage.go', 'UsageReport', 'QuotaUsage'],
     ['../internal/repositorymemory/memory.go', 'Campaign', 'MemoryCampaign']

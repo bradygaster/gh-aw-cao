@@ -148,9 +148,12 @@ model domains {
   decision?: string;
   domain?: string;
   id: string;
+  latencyMs?: decimal;
+  method?: string;
   observedAt?: utcDateTime;
   payloadRef?: string;
   requestCount?: int64;
+  responseBytes?: int64;
   @parent("runs")
   runId: string;
   source?: string;
@@ -269,6 +272,76 @@ model friction {
  */
 @runPartition
 model audits {
+  routingStage?: string;
+  routingSchema?: string;
+  routingStatus?: string;
+  routingGoal?: string;
+  routingConfiguredMode?: string;
+  routingMode?: string;
+  routingSelectedModel?: string;
+  routingSelectedEffort?: string;
+  routingRequestedModel?: string;
+  routingRequestedEffort?: string;
+  routingAppliedEffort?: string;
+  routingTaskType?: string;
+  routingScope?: string;
+  routingComplexity?: string;
+  routingPurpose?: string;
+  routingAgentName?: string;
+  routingAgentId?: string;
+  routingRouted?: string;
+  routingOutcome?: string;
+  routingRouterVersion?: string;
+  routingAwfVersion?: string;
+  routingClassifierModel?: string;
+  routingClassifierEffort?: string;
+  routingClassifierAttempts?: decimal;
+  routingLatencyMs?: decimal;
+  routingDegraded?: boolean;
+  routingDegradedReason?: string;
+  routingEnabled?: boolean;
+  routingSubstitution?: string;
+  routingEffectiveModel?: string;
+  routingSteeringType?: string;
+  routingSteeringThreshold?: decimal;
+  routingMaxCredits?: decimal;
+  routingSessionClock?: decimal;
+  routingDeviations?: string;
+  routingInventoryComplete?: boolean;
+  resolutionRole?: string;
+  resolutionConfiguredModel?: string;
+  resolutionResolvedModel?: string;
+  component?: string;
+  phase?: string;
+  `model`?: string;
+  provider?: string;
+  effort?: string;
+  durationMs?: decimal;
+  sourceEngine?: string;
+  exitCode?: int64;
+  httpStatus?: int64;
+  method?: string;
+  direction?: string;
+  requestBytes?: int64;
+  responseBytes?: int64;
+  premiumRequests?: decimal;
+  totalCostUsd?: decimal;
+  totalAic?: decimal;
+  errorsCount?: int64;
+  permissionDenialsCount?: int64;
+  resource?: string;
+  resetAt?: utcDateTime;
+  rateLimit?: int64;
+  remaining?: int64;
+  used?: int64;
+  requestAttempt?: int64;
+  delayMs?: decimal;
+  threshold?: decimal;
+  value?: decimal;
+  transport?: string;
+  required?: boolean;
+  scope?: string;
+  digest?: string;
   acceptedAt?: utcDateTime;
   activationSource?: string;
   actor?: string;
@@ -368,6 +441,16 @@ model issues {
 }
 
 model operationalValues {
+  @minValueExclusive(0)
+  `cadence-days`?: decimal;
+  `window-start`?: utcDateTime;
+  `window-end`?: utcDateTime;
+  `measurement-kind`?: string;
+  `coverage-status`?: string;
+  `missing-reason`?: string;
+  `eligible-count`?: int64;
+  `population-digest`?: string;
+  `evidence-digest`?: string;
   `adoption-at`?: utcDateTime;
   `baseline-value`?: decimal;
   campaign?: string;
@@ -504,6 +587,7 @@ model evals {
 
 @runPartition
 model evalObservations {
+  auditId?: string;
   direction?: string;
   @parent("evals")
   evalId: string;
@@ -663,6 +747,34 @@ namespace Inputs {
   }
 
   namespace Runtime {
+    /** Local authorized queue projections, unavailable without an execution host. */
+    model cliCommands {
+      id: int64;
+      actionId: string;
+      command: string;
+      status: string;
+      createdAt: int64;
+      startedAt?: int64;
+      completedAt?: int64;
+      deadline?: int64;
+      completionWeek?: string;
+      retryOf?: int64;
+      exitCode?: int64;
+      error?: string;
+      reason?: string;
+      outputBytes?: int64;
+      outputChunks?: int64;
+      outputTruncated?: boolean;
+    }
+    model cliCommandSummary {
+      total: int64;
+      running: int64;
+      revision: int64;
+      `paused-reason`?: string;
+    }
+    model cliCommandStatuses {
+      status: string;
+    }
     model simulationDays {
       day: int64;
       date: utcDateTime;
@@ -712,6 +824,29 @@ namespace Inputs {
   }
 
 namespace Storage {
+  /** Credential-partitioned normalized GitHub resources, separate from canonical evidence. */
+  model caoGithubResources {
+    `namespace`: string;
+    id: string;
+    etag: string;
+    upstreamEtag: string;
+    validatedAt: utcDateTime;
+    release: boolean;
+    fullName?: string;
+    description?: string;
+    htmlUrl: string;
+    defaultBranch?: string;
+    stargazersCount?: int64;
+    forksCount?: int64;
+    openIssuesCount?: int64;
+    archived?: boolean;
+    visibility?: string;
+    tagName?: string;
+    name?: string;
+    publishedAt?: string;
+    draft?: boolean;
+    prerelease?: boolean;
+  }
   model caoContract {
     digest: string;
   }

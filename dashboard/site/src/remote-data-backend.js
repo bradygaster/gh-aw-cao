@@ -4,15 +4,25 @@ import {
   resolveDashboardQueryParameters
 } from "./data/queries/view-payload-compiler.js";
 import { resolveDashboardQuerySources } from "./data/queries/declarative.js";
-import { csrfHeaders, ensureCsrfToken, usesGitHubAuthentication } from "./auth.js";
+import { csrfHeaders, csrfToken, ensureCsrfToken, usesGitHubAuthentication, githubResourcePrincipal, invalidateGitHubResourceAuthentication } from "./auth.js";
+import { usesRemoteDataBackend } from "./backend-mode.js";
 import { createDebug, diagnosticErrorName } from "./debug.js";
 import { updateRateLimitNotification } from "./rate-limit-notification.js";
 import { publishNotification } from "./notification-service.js";
+import { createQueryRequestQueue } from "./query-request-queue.js";
 export { disableRemoteDashboardPwa, usesRemoteDataBackend } from "./backend-mode.js";
 
 const debugRemoteBackend = createDebug("remote-data-backend");
+const queryRequests = createQueryRequestQueue(
+  (response) => updateRateLimitNotification("/api/v1/query", response.status),
+);
 
 const ACCESS_TOKEN_STORAGE_KEY = "cao-dashboard-access-token";
+/** @type {string | undefined} */
+let githubSessionCacheIdentity;
+/** @type {string | undefined} */
+let githubObservedAuthentication;
+globalThis.addEventListener?.('cao-authentication-change', () => { githubSessionCacheIdentity = undefined; });
 
 export class DashboardServerError extends Error {
   /**
@@ -87,6 +97,29 @@ function accessToken() {
   } catch {
     return "";
   }
+
+}
+
+/** Serializable backend configuration for worker-owned GitHub resource requests. */
+export function githubWorkerBackendConfiguration() {
+  const previewBase = globalThis.document?.querySelector?.('meta[name="dashboard-github-api-base"]')?.getAttribute("content");
+  if (previewBase) return {
+    baseUrl: new URL("api/v1/github/", new URL(previewBase, globalThis.location?.origin ?? "https://localhost")).href,
+    credentials: /** @type {RequestCredentials} */ ("omit"),
+    cacheIdentity: `preview:${githubSessionCacheIdentity ??= crypto.randomUUID()}`
+  };
+  const configured = usesRemoteDataBackend()
+    || Boolean(globalThis.document?.querySelector?.('meta[name="dashboard-api-base"]')?.getAttribute("content"));
+  const oauth = usesGitHubAuthentication();
+  const authentication = JSON.stringify([oauth, githubResourcePrincipal(), oauth ? csrfToken() : "local-session"]);
+  const changed = githubObservedAuthentication !== undefined && githubObservedAuthentication !== authentication;
+  githubObservedAuthentication = authentication;
+  if (changed) invalidateGitHubResourceAuthentication(true);
+  return {
+    baseUrl: configured ? apiUrl("/api/v1/github/") : null,
+    credentials: /** @type {RequestCredentials} */ ("same-origin"),
+    cacheIdentity: `${oauth ? githubResourcePrincipal() || "unverified" : "capability"}:${githubSessionCacheIdentity ??= crypto.randomUUID()}`
+  };
 }
 
 /**
@@ -111,7 +144,7 @@ async function apiRequest(path, init = {}, signal) {
   };
   let response;
   try {
-    response = await fetch(apiUrl(path), {
+    const send = () => fetch(apiUrl(path), {
       ...init,
       signal,
       cache: "no-store",
@@ -120,6 +153,7 @@ async function apiRequest(path, init = {}, signal) {
         ? csrfHeaders(headers)
         : headers,
     });
+    response = operation === "query" ? await queryRequests(send, signal) : await send();
   } catch (error) {
     debugRemoteBackend({
       event: "request-network-failed", operation,

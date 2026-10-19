@@ -26,12 +26,12 @@ test('Node CLI ingests a gh-aw artifact directory through IndexedDB queries', as
       cao, 'query', '--database', database, '--collection', collection
     ])).stdout);
     const runs = await query('runs');
-    assert.equal(runs[0].id, 'github:run:githubnext/gh-aw-cao:303');
+    assert.equal(runs[0].id, 'github:run:githubnext/gh-cao:303');
     const records = (await Promise.all(['domains', 'tools', 'audits'].map(query))).flat();
     assert.equal(records.every((record) => record.runId === runs[0].id), true);
     assert.deepEqual(records.map((record) => record.type).sort(), [
-      'net_allowed', 'tool_call', 'agent_tool_start', 'agent_tool_done',
-      'agent_turn', 'assistant_message'
+      'firewall.http_access', 'mcp.tool_call', 'tool.execution_start', 'tool.execution_complete',
+      'user.message', 'assistant.message'
     ].sort());
   } finally {
     await rm(directory, { recursive: true, force: true });

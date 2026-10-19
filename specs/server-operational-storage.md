@@ -15,7 +15,8 @@ application owns maintenance scheduling and MUST stop owned work before close.
 `OperationalServices` separates backend lifecycle, cache, request limiting,
 sessions, atomic session invalidation, revocations, leases, state, delivery
 deduplication, task queue, atomic delivery admission, collection metadata,
-GitHub quota, rate-limit state, health, and ingestion metrics. One backend MAY
+GitHub quota, rate-limit state, health, ingestion metrics, and optional durable
+CLI command queues. One backend MAY
 implement multiple services; the split does not relax atomic transitions.
 Only composition boundaries MAY consume `Store` and its
 `OperationalServices()` bundle. Runtime consumers MUST retain the focused
@@ -70,6 +71,15 @@ bounded to at most 512 expired protected records and 512 expired cache records
 per pass. Operational durability depends on the database's persistence
 configuration; it does not reconstruct every external GitHub delivery.
 Diagnostics MUST open existing state without creating tables or namespaces.
+Production runtime MUST also open pre-provisioned state without DDL. Only an
+explicit schema-owner bootstrap operation may create namespaces, migrate the
+operational contract, or replace audit functions/triggers. Runtime credentials
+MUST NOT own tables/functions, inherit privileged roles, create permanent
+objects, change triggers, truncate audit history, or destroy namespaces.
+Canonical bootstrap and partition maintenance MUST be separate operator jobs;
+runtime MUST validate the canonical contract and provisioned partition window.
+The fixed canonical statistics capability MAY grant runtime ANALYZE without
+granting ownership or caller-selected SQL/object names.
 The shared conformance suite and real PostgreSQL cross-connection tests MUST
 cover atomicity, isolation, capacity rollback, restart, and cancellation.
 
@@ -86,6 +96,83 @@ trimming accepted work. Replacement or delayed retry MUST commit before removing
 the original lease, in one atomic transition. Delay MUST NOT block unrelated
 ready work. Enrollment changes MUST serialize and preserve current ownership
 when repositories transfer between installations.
+
+The PostgreSQL adapter also provides the `AuditLog` service in
+`cao_operational_audit_events`. Appends MUST serialize on the namespace row,
+assign a gap-free per-namespace sequence, and chain
+`hash = SHA-256(prev_hash || record)` over the exact stored canonical record. A
+trigger MUST reject updates and MUST reject deletes except owner-authorized
+retention and namespace removal. A namespace-delete guard MUST check the
+initiating caller before foreign-key cascades assume owner identity.
+Runtime MUST have only SELECT/INSERT on audit history; evidence readers MUST
+have only SELECT. Audit retention MUST NOT run in ordinary `Maintain`.
+A separately granted SECURITY DEFINER function MUST pin a safe search path,
+qualify its tables, revoke PUBLIC execution, reject nonexistent namespaces,
+and accept no caller-supplied cutoff or object name.
+Audit rows are not charged to protected-record capacity;
+retention maintenance MUST keep at least 400 days, delete at most 512 rows per
+pass as a contiguous oldest prefix, and always keep the newest row. Redis and
+volatile memory do not provide this service, so hosted CLI actions require
+PostgreSQL. `server/POSTGRES.md` defines operator provisioning and rollout.
+`specs/server-hosted-cli.md` §7 defines the events.
+
+For local debugging only, `server/internal/operational/sqlite` provides the
+`CLICommandQueues` and `AuditLog` contracts in one SQLite file (mode `0600`,
+WAL, immediate transactions) shared by `serve-hosted --hosted-cli-sqlite` and
+`execute-cli --sqlite` on one host. It is not an `operational.Store` backend,
+has one global namespace and no capacity accounting, uses host-clock
+timestamps, and its append-only triggers can be dropped by anyone who can
+write the file; the hash chain still detects edits that do not rewrite every
+later hash. `specs/server-hosted-cli.md` §2 restricts it to loopback
+listeners.
+
+## Durable CLI command queue service
+
+`OperationalServices.CLICommands` exposes `CLICommandQueues`, whose
+`OpenCLICommandQueue` returns a focused `CLICommandQueue`. It is separate from
+the collection `TaskQueue`. PostgreSQL advertises deployment-scoped restart
+persistence; Redis and memory leave this capability unsupported. A composition
+requiring CLI commands MUST set `Requirements.CLICommands` and reject an absent,
+typed-nil, unsupported, or volatile service. Storage support MUST NOT enable
+hosted execution, expose new HTTP actions, bypass declared-action validation or
+trusted approval, or provide credentials, quota admission, or subprocess control.
+The existing local-admin/canvas SQLite queue remains unchanged. Hosted
+execution is a separate opt-in contract defined by
+[`server-hosted-cli.md`](server-hosted-cli.md).
+
+Queue configuration is immutable across connections. Commands and ordered
+stdout/stderr chunks live in namespace-isolated `cao_operational_cli_*` tables,
+separate from canonical entities and disposable caches. Per-queue limits MUST
+bound jobs, input, chunks, output bytes, concurrency, execution deadlines, and
+retention, in addition to the namespace's protected byte and entry budgets.
+Capacity failures MUST roll back identity and output accounting atomically.
+An explicit output-truncation result and retained truncation flag distinguish
+intentional bounded output from storage errors.
+
+Enqueue accepts only caller-validated, approved invocations. Callers MUST remove
+credential values known to their execution environment and frame/redact output
+before storage; the service additionally rejects recognized credential patterns,
+invalid UTF-8, and NULs. Credentials MUST NOT enter queue configuration,
+invocations, output, or diagnostics. Reusing an idempotency key MUST return the
+same command only for the same invocation and retry ancestry. Retry creates a
+new command only from failed or timed-out work; the caller MUST revalidate its
+current declaration and obtain fresh approval before enqueueing it.
+
+Only a live database-time owner lease and its monotonic fence MAY claim FIFO
+work, append output, finish, or settle execution. Owners MUST renew their lease
+and abort executors if renewal fails. Expiry MUST NOT be interpreted as proof
+of subprocess termination. A replacement owner marks interrupted running work
+failed, preserves all uncertain execution claims, and blocks starts until
+`AcknowledgeRecovery` explicitly records operator reconciliation. Stale owners
+MUST NOT renew, append, settle, or acknowledge recovery.
+
+Cancellation and timeouts retain execution claims until `Settle` confirms that
+the executor exited; late completion MUST NOT overwrite a terminal state.
+History filtering and counts MUST precede bounded SQL pagination. Output
+replay MUST use a persistent sequence cursor. Browser detachment does not own
+execution lifetime. `Retain` and application-owned `Maintain` remove at most
+512 fully expired terminal commands per pass, preserving partial cutoff weeks
+and every active or uncertain claim and cascading only their owned output.
 
 ## Volatile memory exception
 

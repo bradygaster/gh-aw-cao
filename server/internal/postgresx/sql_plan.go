@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/sqlbuilder"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/query"
 )
 
 type SQLPage struct{ Offset, Limit int }
@@ -55,7 +54,6 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	definitions = collectionDefinitions(definitions)
 	metadata := map[string]model.Metadata{}
 	retrievedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	resolve := func(name string) (query.SQLRelation, error) {
@@ -119,8 +117,12 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 		for rows.Next() {
 			var name string
 			var size relationSize
-			if err := rows.Scan(&name, &size.rows, &size.bytes); err != nil {
+			var duplicateJoin bool
+			if err := rows.Scan(&name, &size.rows, &size.bytes, &duplicateJoin); err != nil {
 				return nil, err
+			}
+			if duplicateJoin {
+				return nil, errors.New("joined source has more than one row per join key")
 			}
 			result[name] = size
 		}
@@ -169,23 +171,6 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 			metrics.LimitCount++
 		}
 		metrics.PushedDown = append(metrics.PushedDown, step.Operation)
-	}
-	for _, check := range plan.JoinKeys {
-		var duplicate int
-		scoped, scopedArgs, rewritten := plan.Scoped(check)
-		builder := sqlbuilder.New(scopedArgs...)
-		builder.Write("{}\n{}", sqlbuilder.Fragment(scoped), sqlbuilder.Fragment(rewritten[0]))
-		statement, args, err := builder.Statement()
-		if err != nil {
-			return nil, metrics, err
-		}
-		err = r.tx.QueryRowContext(ctx, statement, args...).Scan(&duplicate)
-		if err == nil {
-			return nil, metrics, errors.New("joined source has more than one row per join key")
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return nil, metrics, fmt.Errorf("validate SQL join cardinality: %w", err)
-		}
 	}
 	output := make(map[string]model.Source, len(requested))
 	for _, name := range requested {
@@ -278,17 +263,6 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 }
 
 func (r *readTransaction) rootMetadata(ctx context.Context, name string) (model.Metadata, error) {
-	if name == "$records" {
-		result := model.Metadata{"availability": "empty", "completeness": "complete", "freshness": "current"}
-		for _, source := range recordSources {
-			value, err := r.rootMetadata(ctx, source)
-			if err != nil {
-				return nil, err
-			}
-			result = mergeMetadata(result, value, false)
-		}
-		return result, nil
-	}
 	var availability, completeness, freshness string
 	var asOf, retrieved sql.NullTime
 	err := r.tx.QueryRowContext(ctx, `SELECT availability,completeness,freshness,as_of,retrieved_at FROM cao_quality

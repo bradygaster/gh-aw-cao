@@ -10,7 +10,7 @@ const siteRoot = fileURLToPath(new URL('../..', import.meta.url));
 const origin = 'http://ingestion-backend.dashboard.test';
 const asOf = '2026-09-24T00:00:00Z';
 const hash = 'a'.repeat(64);
-const shardName = `gh-aw-logs-runs/logs-${hash}-${'b'.repeat(16)}.jsonl`;
+const shardName = `gh-aw-logs-runs/2026-09-24-0000-${'b'.repeat(16)}.jsonl`;
 const contract = JSON.parse(readFileSync(join(siteRoot, 'test/fixtures/ingestion-backend-contract.json'), 'utf8'));
 const pageDefinition = authoritativeDashboard.dashboard.pages.find(
   (/** @type {{ id: string }} */ page) => page.id === contract.page
@@ -19,13 +19,14 @@ const { core, pageChunks } = splitDashboardDocument({
   ...authoritativeDashboard,
   dashboard: {
     ...authoritativeDashboard.dashboard,
-    pages: [pageDefinition],
-    navigation: [{ pages: [contract.page] }],
-    callouts: undefined
+    pages: [authoritativeDashboard.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'runs'), pageDefinition],
+    navigation: [{ pages: ['runs', contract.page] }]
   }
 });
 
-test('static Ingestion queries retained canonical evidence but not hosted telemetry', async ({ context, page }) => {
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+test(`stale data links to ingested shards without hosted telemetry at ${viewport.width}px`, async ({ context, page }, testInfo) => {
+  await page.setViewportSize(viewport);
   await page.addInitScript(() => {
     const prototype = Worker.prototype;
     const post = prototype.postMessage;
@@ -52,8 +53,9 @@ test('static Ingestion queries retained canonical evidence but not hosted teleme
       await route.fulfill({ json: core });
       return;
     }
-    if (url.pathname === `/dashboard-pages/${contract.page}.json`) {
-      await route.fulfill({ json: pageChunks.get(contract.page) });
+    const chunk = /^\/dashboard-pages\/([\w-]+)\.json$/.exec(url.pathname);
+    if (chunk) {
+      await route.fulfill({ json: pageChunks.get(chunk[1]) });
       return;
     }
     if (url.pathname === '/payload-hashes.json') {
@@ -63,9 +65,9 @@ test('static Ingestion queries retained canonical evidence but not hosted teleme
     if (url.pathname === '/inventory-sources.json') {
       await route.fulfill({
         json: {
-          repositories: { rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }], metadata: { 'as-of': asOf } },
+          repositories: { rows: [{ organization: 'githubnext', repository: 'gh-cao' }], metadata: { 'as-of': asOf } },
           workflows: {
-            rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'dashboard.md', 'workflow-name': 'Dashboard' }],
+            rows: [{ organization: 'githubnext', repository: 'gh-cao', workflow: 'dashboard.md', 'workflow-name': 'Dashboard' }],
             metadata: { 'as-of': asOf }
           }
         }
@@ -78,7 +80,7 @@ test('static Ingestion queries retained canonical evidence but not hosted teleme
         body: route.request().method() === 'HEAD' ? '' : normalizedRunShard(`${JSON.stringify({
           schema_version: 2, kind: 'run',
           run: {
-            run_id: 3001, run_attempt: 1, organization: 'githubnext', repository: 'gh-aw-cao',
+            run_id: 3001, run_attempt: 1, organization: 'githubnext', repository: 'gh-cao',
             workflow_path: 'dashboard.md', workflow_name: 'Dashboard', status: 'completed',
             conclusion: 'success', created_at: asOf, updated_at: asOf
           }
@@ -96,15 +98,74 @@ test('static Ingestion queries retained canonical evidence but not hosted teleme
     }
     await route.fulfill({ status: 404, body: 'Not found' });
   });
-  await page.goto(`${origin}/#page-indexing`);
+  await page.goto(`${origin}/#page-runs`);
+  const banner = page.locator('[data-notification-id="site-callout:stale-data"]');
+  await expect(banner).toBeVisible();
+  const bannerBounds = await banner.boundingBox();
+  const noticesBounds = await page.getByRole('region', { name: 'Notifications' }).boundingBox();
+  if (!bannerBounds || !noticesBounds) {
+    throw new Error('The notice and notification region must have visible bounds.');
+  }
+  expect(bannerBounds.x).toBeGreaterThanOrEqual(0);
+  expect(bannerBounds.x + bannerBounds.width).toBeLessThanOrEqual(viewport.width);
+  expect(noticesBounds.y + noticesBounds.height).toBeLessThanOrEqual(viewport.height);
+  await expect(banner).toHaveCSS('border-radius', '6px');
+  await expect(banner).toContainText('24 hours');
+  await banner.screenshot({ path: testInfo.outputPath('stale-data-banner.png') });
+  await testInfo.attach(`Managed stale-data notice (${viewport.width}px)`, {
+    path: testInfo.outputPath('stale-data-banner.png'), contentType: 'image/png'
+  });
+  await expect(banner.getByRole('link', { name: 'View Ingestion' })).toHaveAttribute('href', '#page-indexing');
+  await banner.getByRole('link', { name: 'View Ingestion' }).click();
+  await expect(page.locator('#page-title')).toHaveText('Ingestion');
+  await expect(page.locator('[data-view-id="ingestion-storage"]')).toContainText('Browser-local storage (IndexedDB)');
+  await expect(page.getByRole('heading', { name: 'Indexed data over time' })).toHaveCount(0);
   await expect(page.locator('[data-view-id="indexing-database-table-counts"] [data-chart-widget="horizontal-bar"]')).toBeVisible();
+  const shards = page.locator('[data-view-id="ingested-shards"]');
+  await expect(shards).toContainText(shardName);
+  await expect(shards).toContainText('Committed records');
+  await expect(shards).toContainText(hash);
+  const scatter = page.locator('[data-view-id="indexing-workflow-runs"]');
+  await scatter.scrollIntoViewIfNeeded();
+  await expect(scatter.getByRole('heading', { name: 'Runs per ingestion' })).toBeVisible();
+  await expect(scatter.locator('[data-chart-widget="scatter"]')).toBeVisible();
+  const ingestionRows = await page.evaluate(async () => {
+    const { processDataRequest } = await import(new URL('/src/data-worker.js', window.location.href).href);
+    const response = await fetch('/dashboard-pages/indexing.json');
+    const chunk = await response.json();
+    const result = await processDataRequest({
+      operation: 'query-canonical-dashboard',
+      sourceNames: ['indexing-ingestion-runs'],
+      context: { queries: chunk.queries, pages: [chunk.page] }
+    });
+    return result['indexing-ingestion-runs'];
+  });
+  expect(ingestionRows.metadata.availability).toBe('available');
+  expect(ingestionRows.rows.length).toBeGreaterThan(0);
+  expect(ingestionRows.rows.find((/** @type {any} */ row) => row['shard-day'])?.['shard-day']).toBe('2026-09-24');
+  await expect(scatter.locator('.scatter-chart-point')).toHaveCount(
+    ingestionRows.rows.filter((/** @type {any} */ row) => row['shard-day']).length
+  );
+  await expect(scatter).toContainText('UTC activity date in the source shard filename');
+  await expect(scatter).toContainText('Missing run counts are labeled');
+  await expect(page.locator('.first-load-overlay')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('stale-data-ingestion.png'), fullPage: true });
+  await testInfo.attach(`Fixture-backed Ingestion page (${viewport.width}px)`, {
+    path: testInfo.outputPath('stale-data-ingestion.png'), contentType: 'image/png'
+  });
   for (const id of contract.hostedViews) {
     await expect(page.locator(`[data-view-id="${id}"]`)).toHaveCount(0);
   }
-  const requests = await page.evaluate(() => /** @type {Window & { dashboardWorkerRequests?: Array<{ sourceNames?: string[] }> }} */ (window).dashboardWorkerRequests ?? []);
+  const requests = await page.evaluate(() => /** @type {Window & { dashboardWorkerRequests?: Array<{ operation: string, sourceNames?: string[] }> }} */ (window).dashboardWorkerRequests ?? []);
+  expect(requests.some((request) => request.operation === 'query-dashboard-callouts')).toBe(true);
   const sources = requests.flatMap((request) => request.sourceNames ?? []);
   for (const source of contract.hostedSources) expect(sources).not.toContain(source);
   expect(sources).not.toContain('collection-health');
   expect(sources).not.toContain('github-quota-usage');
   expect(sources).toContain('indexing-database-table-counts');
+  expect(sources).toContain('dashboard-data-freshness');
+  await banner.getByRole('button', { name: 'Dismiss Dashboard data may be stale' }).click();
+  await expect(banner).toHaveCount(0);
 });
+}

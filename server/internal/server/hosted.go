@@ -11,9 +11,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/audit"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
 )
 
 var hostedLog = logger.New("cao:server:hosted")
@@ -127,12 +128,18 @@ func newHostedAppWithPolicy(
 	if databaseNamespace == "" {
 		databaseNamespace = "hosted-dashboard"
 	}
-	database, err := postgresx.NewWithNamespace(ctx, postgresURL, databaseNamespace)
+	database, err := postgresx.OpenWithNamespace(ctx, postgresURL, databaseNamespace)
 	if err != nil {
 		return nil, errors.New("connect to dashboard Postgres failed")
 	}
+	auditLog, err := audit.FromEnv()
+	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
 	config := Config{
 		Database:               database,
+		Audit:                  auditLog,
 		HostProfile:            host.Profile,
 		SingleReplicaConfirmed: host.SingleReplicaConfirmed,
 		AllowVolatile:          host.AllowVolatile,
@@ -158,15 +165,18 @@ func newHostedAppWithPolicy(
 			TrustedProxyPrefixes: trustedProxyPrefixes,
 		},
 		GitHubOAuth: &GitHubOAuthConfig{
-			ClientID:              os.Getenv("CAO_GITHUB_CLIENT_ID"),
-			ClientSecret:          os.Getenv("CAO_GITHUB_CLIENT_SECRET"),
-			RedirectURL:           os.Getenv("CAO_GITHUB_REDIRECT_URL"),
-			SessionSecret:         os.Getenv("CAO_SESSION_SECRET"),
-			PreviousSessionSecret: os.Getenv("CAO_SESSION_SECRET_PREVIOUS"),
-			AllowedUsers:          splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_USERS")),
-			AllowedOrganizations:  splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_ORGS")),
-			AllowedTeams:          splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_TEAMS")),
-			RevocationKeyPrefix:   revocationKeyPrefix,
+			ClientID:                    os.Getenv("CAO_GITHUB_CLIENT_ID"),
+			ClientSecret:                os.Getenv("CAO_GITHUB_CLIENT_SECRET"),
+			RedirectURL:                 os.Getenv("CAO_GITHUB_REDIRECT_URL"),
+			SessionSecret:               os.Getenv("CAO_SESSION_SECRET"),
+			PreviousSessionSecret:       os.Getenv("CAO_SESSION_SECRET_PREVIOUS"),
+			AllowedUsers:                splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_USERS")),
+			AllowedOrganizations:        splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_ORGS")),
+			AllowedTeams:                splitCSV(os.Getenv("CAO_GITHUB_ALLOWED_TEAMS")),
+			LocalDevelopmentUser:        os.Getenv("CAO_GITHUB_LOCAL_USER"),
+			AdminReauthenticationMaxAge: envStrictDuration("CAO_ADMIN_REAUTH_MAX_AGE"),
+			SSOOrganizations:            splitCSV(os.Getenv("CAO_GITHUB_SSO_ORGANIZATIONS")),
+			RevocationKeyPrefix:         revocationKeyPrefix,
 		},
 		Logger: logger,
 	}

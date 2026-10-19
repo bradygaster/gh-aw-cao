@@ -23,10 +23,10 @@ export function renderFactoryRhythm(source, scope) {
     headingClassName: 'factory-rhythm-heading',
     legendClassName: 'factory-rhythm-legend',
     plotClassName: 'factory-rhythm-bars',
-    title: 'Campaign rhythm',
-    subtitle: 'Successful runs',
-    ariaLabel: 'Successful Actions runs this week and last week from Monday through Sunday',
-    legendLabel: 'Campaign rhythm legend',
+    title: 'Weekly rhythm',
+    subtitle: 'Agnetic Workflow runs',
+    ariaLabel: 'Agnetic Workflow runs this week and last week from Monday through Sunday',
+    legendLabel: 'Weekly rhythm legend',
     legend: [
       { label: 'This week', className: 'factory-rhythm-legend-current' },
       { label: 'Last week', className: 'factory-rhythm-legend-previous' }
@@ -77,9 +77,9 @@ export function renderFactoryRhythm(source, scope) {
 /** @param {RhythmDay} day */
 function rhythmDayDescription(day) {
   const counts = [];
-  if (day.count > 0) counts.push(`${formatCount(day.count)} successful ${day.count === 1 ? 'run' : 'runs'} this week`);
-  if (day.previous > 0) counts.push(`${formatCount(day.previous)} successful ${day.previous === 1 ? 'run' : 'runs'} last week`);
-  const summary = counts.length ? counts.join('; ') : 'No successful runs this week or last week';
+  if (day.count > 0) counts.push(`${formatCount(day.count)} workflow ${day.count === 1 ? 'run' : 'runs'} this week`);
+  if (day.previous > 0) counts.push(`${formatCount(day.previous)} workflow ${day.previous === 1 ? 'run' : 'runs'} last week`);
+  const summary = counts.length ? counts.join('; ') : 'No workflow runs this week or last week';
   return `${day.label}${day.date ? ` ${day.date}` : ''}: ${summary}${day.reached ? '' : ' (day not yet reached)'}.`;
 }
 

@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
 )
 
 func TestMergeBenchmarkDefinitionsDeclaresDashboardNames(t *testing.T) {
@@ -439,5 +439,21 @@ func TestLoadBenchmarkCandidatesRejectsEmptyList(t *testing.T) {
 	_, err := loadBenchmarkCandidates(path)
 	if err == nil || !strings.Contains(err.Error(), "no query candidates") {
 		t.Fatalf("expected an empty-candidates error, got %v", err)
+	}
+}
+
+func TestBenchmarkExecutionOptionsBoundsPageAndRaisesBudgets(t *testing.T) {
+	options := benchmarkExecutionOptions("runs-overview")
+	if len(options.Pages) != 1 || options.Pages["runs-overview"].Limit != benchmarkPageLimit {
+		t.Fatalf("pages = %#v, want only runs-overview limited to %d", options.Pages, benchmarkPageLimit)
+	}
+	limits := options.ResourceLimits
+	if limits == nil {
+		t.Fatal("resource limits missing")
+	}
+	if limits.MaxInputRows != query.MaxWorkingRows ||
+		limits.MaxOperations != 10*query.MaxOperations ||
+		limits.MaxWorkingBytes != 4*query.MaxWorkingBytes {
+		t.Fatalf("limits = %#v, want benchmark budgets", limits)
 	}
 }

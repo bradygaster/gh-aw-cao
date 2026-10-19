@@ -198,6 +198,8 @@ export const chartStyles = `.chart-widget { min-height: 230px; display: grid; pl
 .temporal-metric-plot .temporal-plot-metric { fill: none; }
 .temporal-metric-plot.temporal-metric-plot-provisional .temporal-plot-metric { stroke: var(--attention); stroke-dasharray: 8 6; }
 .temporal-metric-plot.temporal-metric-plot-provisional .temporal-plot-point { fill: var(--attention-muted); stroke: var(--attention); stroke-width: 3; }
+.temporal-plot-metric.temporal-plot-metric-provisional { stroke: var(--attention); stroke-dasharray: 8 6; }
+.temporal-plot-point.temporal-plot-point-provisional { fill: var(--attention-muted); stroke: var(--attention); stroke-width: 3; }
 .line-chart-context { opacity: .3; stroke-width: 1.1; }
 .chart-point-context { opacity: .35; }
 .line-chart-current { opacity: 1; stroke-width: 2; }
@@ -356,6 +358,7 @@ export const chartStyles = `.chart-widget { min-height: 230px; display: grid; pl
 .pie-chart-card > .view-description { align-self: start; }
 .pie-chart-card > .view-source, .pie-chart-card > .view-metadata, .pie-chart-card > .view-context { grid-column: 1; margin: 0; font-size: .6875rem; }
 .pie-chart-layout { min-width: 0; display: grid; grid-column: 2; grid-row: 1 / span 6; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); align-items: center; gap: 20px; }
+.pie-chart-layout > .view-state-card { grid-column: 1 / -1; grid-row: 1 / span 2; align-self: start; margin: 0; }
 .chart-view-pie[data-view-layout="full"] > .pie-chart-layout { grid-column: 1; grid-row: auto; }
 .pie-chart-layout .chart-widget { min-width: 0; min-height: 160px; margin: 0; }
 #page-preview .pie-chart-layout .chart-widget { border: 0; background: transparent; }

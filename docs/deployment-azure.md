@@ -11,7 +11,7 @@ description: Run the Central Agentic Ops dashboard server on Azure Functions wit
 The Azure deployment runs the Go dashboard server from the `server/` directory as a custom Linux container on Azure Functions. Browsers connect only to the Function App, over HTTPS on the same origin. The Function App:
 
 - Signs users in with GitHub OAuth.
-- Authorizes users by their membership in GitHub organizations or teams that you allow.
+- Authorizes explicitly allowed GitHub users or members of organizations or teams that you allow.
 - Reads secrets through Key Vault references.
 - Runs bounded [Dashboard Language](dashboard-language.md) queries against dashboard data in PostgreSQL.
 - Uses a separate PostgreSQL operational adapter for sessions, rate limits, queues, deduplication, coordination, and bounded caches.
@@ -63,24 +63,29 @@ The `server/azure/main.bicep` template creates the following resources in one re
   ```
 
 - Docker, or an Azure Container Registry build agent.
-- A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. Personal access tokens aren't supported.
+- A GitHub OAuth app, or a GitHub App configured for the user authorization-code flow. For membership authorization, the GitHub App needs organization **Members: read** and an approved installation in each allowed organization. PATs and pasted user tokens aren't supported.
 - At least one allowed GitHub user, organization, or team in `ORGANIZATION/TEAM-SLUG` format.
 - An adopter-owned reviewed `cao.json` and a verified local dashboard snapshot, or an explicit choice to initialize an empty dashboard. Neither campaigns nor public Pages are required for empty initialization. Private repository snapshots must be collected with credentials authorized for those repositories and kept private.
-- An approved ingress topology. The template now defaults the Function App's
-  `publicNetworkAccess` to `Disabled` and unmatched main-site and SCM traffic to
-  `Deny`. Without an existing approved ingress path it is intentionally unreachable. This changes
-  the older implicit public-access baseline; existing deployments must review
-  ingress parameters and preserve their approved restrictions before redeploying.
+- An ingress choice. The template defaults to the public-main model: the
+  Function App's `publicNetworkAccess` is `Enabled`, unmatched main-site traffic
+  is `Allow` with no custom rules, and GitHub OAuth sign-in plus the allowed
+  user, organization, or team list is the access control. No VPN, proxy, or
+  corporate-network rule is required. SCM/Kudu remains independently
+  default-deny. For a deliberately private deployment, set
+  `functionPublicNetworkAccess=Disabled` or `functionAccessRestrictionsDefaultAction=Deny`
+  with explicit rules.
+- After deployment, confirm that tenant automation has not rewritten ingress
+  (for example, `publicNetworkAccess=Disabled` or corporate-network-only service
+  tag rules). Such out-of-band changes aren't Azure Policy denials and aren't
+  prevented by the template; restore the public-main settings described in
+  [Explicit public-main access](#explicit-public-main-access-with-independently-restricted-scm)
+  and ask the automation owner for an exemption if it recurs.
 
 ### Ingress changes on an existing app
 
-The disabled default is not evidence that a subscription requires private-only
-ingress. Establish the applicable subscription and inherited policy requirements
-before changing the deployed access mode. If those requirements cannot be read
-or confirmed by the responsible owner, leave access unchanged; an Audit or
-Compliant status alone does not establish permission to enable public access.
-The blocker is the exact permitted ingress model, not a presumed requirement
-to construct a private endpoint.
+The public-main default does not override a subscription that genuinely requires
+private-only ingress. Establish the applicable subscription and inherited policy requirements
+before changing the deployed access mode.
 
 If the applicable requirements permit restricted public access, the smallest
 repair may be an app access-mode change retaining the existing approved rules,
@@ -92,7 +97,7 @@ set it to `true` only to preserve an approved shared-rule configuration. Keep
 distinct SCM rules out of the main-site array so deployment access does not
 widen application access. Omitting either rule array uses an empty list, not
 the deployed rules. Main-site unmatched requests use
-`functionAccessRestrictionsDefaultAction`, which defaults to `Deny` and accepts
+`functionAccessRestrictionsDefaultAction`, which defaults to `Allow` and accepts
 only `Allow` or `Deny`. SCM's independent default remains `Deny`.
 `functionPublicNetworkAccess=Enabled`
 does not itself grant permission, and allow rules cannot override `Disabled`.
@@ -194,6 +199,13 @@ later does not restore dropped partitions.
 
 1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
 
+   Alternatively, reuse a GitHub App with the same callback URL and organization
+   **Members: read**. With its `Iv...` client ID, CAO requests `offline_access`
+   for expiring user tokens and refresh tokens without changing expiration for
+   other clients of that App. This requires GitHub.com or GHES 3.23 or later.
+   Manage client secrets and key pairs in the App's **Credentials** tab on
+   current GitHub versions; no App private key is needed for browser sign-in.
+
    > [!CAUTION]
    > Never commit the client secret to a repository.
 
@@ -262,8 +274,12 @@ later does not restore dropped partitions.
 
 1. Review the template with `az deployment group what-if` before using
    `az deployment group create`. Replace the placeholders with your own values.
-   The example below is a fail-closed bootstrap, **not a reachable deployment**:
-   it leaves public access disabled and does not provision client connectivity.
+   The example below uses the public-main default: the dashboard is reachable
+   over public HTTPS, GitHub OAuth and the allowed user, organization, or team
+   list control access, and SCM/Kudu stays default-deny. No VPN or proxy is
+   required. If tenant automation has attached a network security group to the
+   subnets, pass its resource ID as `subnetNetworkSecurityGroupId` so
+   redeployment keeps it attached.
    Do not use it to overwrite an existing app's access rules; follow
    [the ingress guidance](#ingress-changes-on-an-existing-app) for an existing app.
 
@@ -540,7 +556,7 @@ to make delivery work.
 ## What this deployment does not guarantee
 
 - **Production readiness.** This deployment is experimental. CAO offers no support commitment or SLA. Availability depends on your Azure resources.
-- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to disabled public access. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
+- **Complete ingress connectivity.** The database has private VNet access and the Function App defaults to public main-site access behind GitHub OAuth, with SCM/Kudu denied. The template does not establish the subscription's permitted ingress model or provide new client connectivity, a web application firewall, or Azure Front Door. Review the applicable requirements before changing access. OAuth authorization remains required.
 - **Automatic data loading.** In the default profile, nothing loads new data into PostgreSQL. Schedule ingestion yourself, or use the collection profile.
 - **Live updates.** Server-sent events at `GET /api/v1/events` are best effort. Cold starts, scale-in, idle timeouts, and plan limits can end them. Clients then fall back to `POST /api/v1/refresh`. WebSockets aren't supported.
 - **Disaster recovery.** PostgreSQL holds rebuildable dashboard data and restart-persistent operational state in separate tables, with seven-day local backups but no high availability or geo-redundancy in this baseline. Rehearse restore and credential recovery. Rebuild canonical data from the retained artifact or collected evidence. For long-term retention, see [Create a historical archive](dashboard-data-ingestion.md#create-a-historical-archive).
@@ -564,15 +580,14 @@ retention window.
 | Rotate the OAuth client secret | Generate a new secret in GitHub, add a new version of the Key Vault secret, and restart the Function App. |
 | Roll back the application | Redeploy the last known-good package. If PostgreSQL dashboard data is unusable, ingest the retained artifact again. Use a new operational namespace only when intentionally invalidating operational state and active sessions. |
 
-If you suspect an incident, see [Incident response](operations.md#incident-response). For the complete threat model and list of controls, see the [hosted Azure architecture](https://github.com/githubnext/gh-aw-cao/blob/main/server/README.md#hosted-azure-architecture) in `server/README.md` and the [Azure Functions profile](https://github.com/githubnext/gh-aw-cao/blob/main/server/SECURITY.md#azure-functions-profile) in `server/SECURITY.md`.
+If you suspect an incident, see [Incident response](operations.md#incident-response). For the complete threat model and list of controls, see the [hosted Azure architecture](https://github.com/githubnext/gh-cao/blob/main/server/README.md#hosted-azure-architecture) in `server/README.md` and the [Azure Functions profile](https://github.com/githubnext/gh-cao/blob/main/server/SECURITY.md#azure-functions-profile) in `server/SECURITY.md`.
 
 ## Further reading
 
 - [About deployment options](deployment.md)
 - [Deploying the dashboard with GitHub Actions](deployment-actions.md)
-- [Deploying the dashboard to Coolify](deployment-coolify.md)
 - [Data ingestion](dashboard-data-ingestion.md)
 - [Data model](dashboard-data-model.md)
-- [`server/README.md`](https://github.com/githubnext/gh-aw-cao/blob/main/server/README.md)
-- [`server/SECURITY.md`](https://github.com/githubnext/gh-aw-cao/blob/main/server/SECURITY.md)
-- [`scripts/azure-local/README.md`](https://github.com/githubnext/gh-aw-cao/blob/main/scripts/azure-local/README.md)
+- [`server/README.md`](https://github.com/githubnext/gh-cao/blob/main/server/README.md)
+- [`server/SECURITY.md`](https://github.com/githubnext/gh-cao/blob/main/server/SECURITY.md)
+- [`scripts/azure-local/README.md`](https://github.com/githubnext/gh-cao/blob/main/scripts/azure-local/README.md)

@@ -1,4 +1,4 @@
-# Go dashboard server with Postgres and operational storage
+# Go dashboard server with Postgres, local SQLite, and operational storage
 
 The [TypeSpec HTTP contract](spec/README.md) is the source for generated
 OpenAPI 3.1 and selected JSON Schemas; consult it before changing server routes.
@@ -9,8 +9,10 @@ same compacted data published with the deployed dashboard, stores current
 native entity rows in PostgreSQL and executes hosted Dashboard Language plans
 as SQL through the bounded PostgreSQL query engine,
 and serves the built dashboard either over loopback HTTP or through an
-authenticated host-neutral service profile. PostgreSQL is also the default
-operational adapter, so the default deployment requires no Redis service.
+authenticated host-neutral service profile. Local `serve` defaults to a cached
+SQLite snapshot, downloading deployed data only when the file is missing.
+PostgreSQL is the hosted default operational adapter, so the default deployment
+requires no Redis service.
 Explicit Redis configuration remains supported; an acknowledged single-process memory adapter supports the
 same OAuth, signed-webhook, collection, quota, and backfill services with volatile
 state. The PostgreSQL operational adapter supports durable,
@@ -30,10 +32,142 @@ the focused contracts.
 The browser never connects directly to Postgres or Redis and never receives
 database credentials. It communicates only with the same-origin HTTP(S) API.
 
+## Local SQLite snapshot serving
+
+Build the dashboard once, then run the local server without PostgreSQL, Redis,
+`gh`, or a separate download command:
+
+```bash
+# From the repository root:
+npm ci
+npm --prefix dashboard/site ci
+npm --prefix dashboard/site run build
+go -C server run ./cmd/cao-dashboard serve
+```
+
+Plain `serve` reuses `.cao/gh-aw-logs.sqlite` in this checkout without network
+access. If that cache is missing, startup downloads the public CAO Pages snapshot,
+or `DASHBOARD_DATA_URL` when set. `--sqlite PATH` selects another cache and has the
+same download-if-missing behavior. Database service environment variables alone
+do not change this local default.
+
+Use `--download-sqlite` to explicitly refresh the cache, even when it exists.
+Its optional URL overrides `DASHBOARD_DATA_URL` and accepts any GitHub Pages site,
+including project sites and custom domains:
+
+```bash
+go -C server run ./cmd/cao-dashboard serve \
+  --download-sqlite https://OWNER.github.io/REPOSITORY/
+
+# A dashboard directory or direct payload-hashes.json URL also works.
+go -C server run ./cmd/cao-dashboard serve \
+  --download-sqlite=https://dashboard.example.org/cao/ \
+  --sqlite ../.cao/custom.sqlite
+```
+
+For a site URL, the downloader looks for `payload-hashes.json` in that directory,
+then under `cao/` if the first location returns HTTP 404. The image is fetched
+beside the discovered manifest; the hostname is not restricted to
+`githubnext.github.io`. URLs must use HTTP or HTTPS without embedded credentials
+or fragments. HTTPS redirects cannot downgrade to HTTP.
+
+The download streams only the SQLite image, not inventory or JSONL shards.
+It verifies the manifest's SHA-256 checksum and canonical database version
+before atomically replacing the selected cache. Transient failures and
+deployment-time checksum mismatches retry up to three times with fresh manifest
+requests; failures leave an existing cache unchanged and do not start a server
+against stale data. Requests have a five-minute timeout within a ten-minute
+overall deadline; manifests are limited to 8 MiB and images to 2 GiB.
+An unbuilt `--site` fails before downloading. Stop any existing snapshot users
+before refreshing; symlink destinations and existing SQLite journal sidecars
+are rejected rather than risking corruption. Checkpoint a locally modified
+snapshot with its owning tool, or select a different `--sqlite` path.
+
+For offline startup, use plain `serve` with an existing default cache, or select
+another existing snapshot:
+
+```bash
+go -C server run ./cmd/cao-dashboard serve \
+  --sqlite ../.cao/gh-aw-logs.sqlite \
+  --listen 127.0.0.1:8443
+```
+
+The built site defaults to `dashboard/site/dist`. Use `--site` for a different
+build directory and `--mcp-enabled` to expose the existing read-only MCP endpoint.
+Paths in this example resolve from `server/` because of `go -C server`.
+`gh cao download` prepares the default CAO snapshot; use `--url` with another
+dashboard's `payload-hashes.json` URL to select different data.
+The snapshot must use
+the canonical IndexedDB-compatible SQLite layout and database version 42.
+Only a genuinely missing cache triggers automatic acquisition. Unreadable or
+invalid existing files, dangling symlinks, unsupported versions, and missing
+requested stores fail closed without a repair download. Startup never creates
+an empty database, repairs, migrates, or ingests SQLite data. Acquisition installs
+a verified file before the read-only server opens it; it is not ingestion or a
+fallback from a failed database connection.
+
+This is the default **local bearer-only, read-only** profile.
+Only loopback listeners are accepted; HTTP is supported locally, with optional
+`--cert` and `--key` for HTTPS. Existing access-token authentication and the HTTP
+query, canonical API, diagnostics, revision events, and optional MCP protocols
+remain in use. Queries execute in Go against one consistent SQLite read
+transaction, using the same bounded local Dashboard Language evaluator as
+`gh cao`. Both storage paths share the server's query validation, dependency
+traversal, generated runtime-source registry, and source-quality propagation;
+only storage reads and query execution differ. The local snapshot profile admits
+500,000 input/intermediate rows and 50 million operations per query plan, with
+1 GiB per working source and 2 GiB / 2 million rows of simultaneously retained
+results. Completed dependency inputs are released after their final consumer.
+The planner traces live fields across consumers, prunes unused row-local
+computations, and projects only required properties inside SQLite. Requested
+raw sources and unknown result shapes keep full documents; original-record byte
+limits, JSON types, missing fields, and canonical UTF-16 key order are preserved.
+Read-only SQLite memory mapping is capped at 1 GiB to reduce page-read overhead.
+These are bounded accounting limits, not an RSS guarantee; large snapshots can
+require several GiB of developer-machine memory. Hosted PostgreSQL and CLI
+defaults are unchanged. Wire results remain bounded to 100,000 rows per source;
+ordinary continuation pagination remains available. Local query admission has
+a 300-unit/minute token bucket so expensive snapshot plans do not exhaust the
+hosted 30-unit burst during ordinary page navigation; per-plan cost accounting,
+other request limits, and explicit embedding overrides remain enforced. Snapshot
+quality is reported as unknown rather than verified complete or current.
+In-place SQLite commits update revisions and active subscriptions without a
+server restart. Restart after replacing the snapshot file itself.
+
+After building the site, profile the production Repositories query against an
+existing snapshot without modifying it:
+
+```sh
+CAO_SQLITE_SNAPSHOT=/absolute/path/to/gh-aw-logs.sqlite \
+  go -C server test ./internal/sqlitex -run '^$' \
+  -bench '^BenchmarkSnapshotRepositoryActivity$' -benchtime=1x -benchmem
+```
+
+Repository queries reduce row-local counts and positive recorded AIC before
+repository-grain joins, and carry only run-attempt keys into import matching.
+PostgreSQL compiles the declarative plan to SQL; IndexedDB and the Node SQLite
+facade use bounded native storage scans and exact streaming reductions where
+eligible. The local Go SQLite server pushes field projection into SQL and runs
+the remaining bounded declarative operators in its shared Go evaluator.
+
+Operational request services are bounded, process-local, and volatile. Query
+result caching is disabled so a changed snapshot cannot serve stale results.
+OAuth, collection, ingestion, rebuilds, webhooks, and persisted GitHub-resource
+caching are unavailable in this profile. Neither `--sqlite` nor `--download-sqlite` can be combined with
+`--postgres-url`, `--redis-url`, or `--source`; database service environment
+variables are not used to select its storage. Reviewed hosted operational-store
+selection still requires `serve-hosted` and cannot be overridden by local serving.
+To select PostgreSQL locally, pass `--postgres-url="$CAO_POSTGRES_URL"`; an
+explicit empty `--postgres-url=` reads that environment variable instead.
+The existing PostgreSQL-specific `--source` and `--redis-url` flags also select
+the PostgreSQL profile and require its configured database. Hosted deployments
+and PostgreSQL SQL execution remain unchanged; SQLite is never a fallback from
+a failed PostgreSQL connection.
+
 ## Single-process memory operational storage
 
-PostgreSQL remains the default. To select memory in reviewed
-`control-plane.web.host` configuration, replace legacy `host.redis` with:
+PostgreSQL remains the hosted operational-storage default. To select memory in
+reviewed `control-plane.web.host` configuration, replace legacy `host.redis` with:
 
 ```json
 {
@@ -103,8 +237,16 @@ constructing an empty store. See the [normative operational contract](../specs/s
 
 ## PostgreSQL operational storage
 
+**Provision before startup.** Production and local PostgreSQL entrypoints open
+existing state without DDL. Follow [PostgreSQL privilege separation and rollout](POSTGRES.md)
+to run owner-only `database bootstrap`, apply runtime/evidence/retention grants,
+and schedule separate canonical partition and audit-retention jobs. Do not mount
+owner credentials in runtime processes. Local SQLite hosted-CLI debugging uses
+the same explicit bootstrap/retention commands with `--sqlite PATH`; see that
+guide for the no-PostgreSQL local test command and the limits of SQLite testing.
+
 PostgreSQL is the default when a reviewed host has no backend selector or legacy
-`redis` configuration. Coolify selects it explicitly. No Redis connection or
+`redis` configuration. No Redis connection or
 volatile-memory acknowledgement is required:
 
 ```json
@@ -123,8 +265,10 @@ the same database without sharing tables or lifecycle. Keep connection strings
 in server-side secrets, not policy. TLS is required for non-loopback TCP
 connections, including every configured fallback. The canonical namespace
 remains the existing `REDIS_NAMESPACE`; changing the operational namespace
-does not move canonical data. Local bearer `serve` also defaults to PostgreSQL operational
-storage; supplying `--redis-url` explicitly opts in to Redis instead. Hosted
+does not move canonical data. The explicit PostgreSQL profile of local bearer
+`serve` also defaults to PostgreSQL operational storage; supplying `--redis-url`
+opts in to Redis instead. Plain `serve` uses SQLite with bounded volatile
+request services and requires neither database service. Hosted
 `serve-hosted`, external/platform hosts, collection roles, and `doctor` resolve
 the reviewed policy; the presence of a Redis credential never overrides it.
 
@@ -151,8 +295,7 @@ records and 512 cache entries per pass, never unfinished work.
 
 Standalone collector and backfill roles can share this deployment-scoped
 adapter. OAuth, HTTPS/proxy, authorization, signatures, quota governance, and
-campaign rollout authority remain unchanged. The default Coolify profile now
-selects PostgreSQL, but selection does not migrate
+campaign rollout authority remain unchanged. Selecting PostgreSQL does not migrate
 Redis or memory state, enable collection, provide
 automatic fallback, or dual-write. Use a new operational namespace for a new
 configuration and plan an explicit cutover; changing namespaces invalidates
@@ -180,6 +323,14 @@ row evaluator: unsupported definitions and unregistered sources fail closed.
 Generated TypeSpec identifiers are used, values and namespace are
 parameterized, missing values remain distinct from explicit null, and SQL
 resource checks enforce operation, output, retained-row, and memory budgets.
+Full-plan cardinality and byte accounting share one materialized SQL execution
+with join-key uniqueness checks, so validation does not rerun the upstream
+dependency graph for every join. These checks cover all rows before returning
+the requested result page. Read transactions prefer hash/merge joins by disabling
+nested-loop plans locally: PostgreSQL 16 can estimate window-filtered intermediate
+relations as one row and otherwise rescan thousands of derived rows per match.
+This planner preference, like disabled JIT, is reset on commit or rollback and
+does not change query semantics or resource budgets.
 Explicitly registered operational sources are provided at the server boundary
 and participate as bounded SQL input relations.
 
@@ -464,7 +615,7 @@ flowchart LR
 | Shared API model | `internal/model/` | Defines logical sources, diagnostics, and query metrics. |
 | Telemetry | `internal/telemetry/` | Configures OpenTelemetry trace, metric, and opt-in log providers, exposes the server's tracer, and writes W3C trace/span id response headers. |
 | Local Redis | `docker-compose.yml` | Runs plain Redis on `127.0.0.1:6379`. |
-| Coolify container profile | `Dockerfile`, `coolify/compose.yml` | Builds the dashboard and Go service into a non-root image and runs `serve-hosted` behind an explicitly trusted Coolify TLS proxy. |
+| Container image | `Dockerfile` | Builds the dashboard and Go service into a non-root image for host-neutral deployments. |
 
 ### Host capability profiles
 
@@ -566,6 +717,7 @@ settings:
 | `CAO_SESSION_SECRET` | Current session encryption/signing secret of at least 32 characters. |
 | `CAO_SESSION_SECRET_PREVIOUS` | Optional previous session secret retained only during controlled rotation. |
 | `CAO_GITHUB_ALLOWED_USERS`, `CAO_GITHUB_ALLOWED_ORGS`, `CAO_GITHUB_ALLOWED_TEAMS` | Explicit authorization policy. Direct users avoid organization OAuth-visibility dependencies. |
+| `CAO_GITHUB_LOCAL_USER` | Optional exact developer login for [single-user local OAuth](#local-oauth-without-organization-access); removes organization scopes/checks only on a direct loopback HTTPS listener. Cannot be combined with user/organization/team/SSO policy. |
 | `CAO_GITHUB_ADMIN_USERS` | Required comma-separated GitHub logins allowed to trigger rebuilds. |
 | `CAO_GITHUB_WEBHOOK_SECRET` | Required GitHub webhook signature secret of at least 32 characters. |
 | `CAO_SOURCE_DIRECTORY` | Required authoritative deployed gh-aw artifact directory used by rebuild/reconciliation. |
@@ -577,6 +729,575 @@ Supply secrets through the deployment platform's secret manager (for example,
 Key Vault references, Kubernetes Secrets mounted into the process environment,
 or an equivalent managed facility), never command-line arguments or checked-in
 configuration.
+
+### Administrator step-up
+
+Every hosted administrator operation requires a fresh, assured interactive
+OAuth authentication. This covers `/mcp`, collection, quota, operations, and
+hosted CLI routes. Administrators re-authenticate through `/auth/login`.
+
+| Variable | Purpose |
+| --- | --- |
+| `CAO_ADMIN_REAUTH_MAX_AGE` | Maximum age of the interactive authentication. The default is `15m`, and the value must be between `1m` and `1h`. |
+| `CAO_GITHUB_SSO_ORGANIZATIONS` | Comma-separated organizations that the operator attests enforce SAML SSO. A successful membership read with the fresh token counts as assurance. |
+
+Without SSO attestation, GitHub must explicitly report two-factor
+authentication for the user. A stale or unassured administrator receives `401`
+with a `CAO-Step-Up` challenge. Everyone else receives `403`. See
+[`SECURITY.md`](SECURITY.md#administrator-step-up).
+
+#### OAuth permissions and onboarding
+
+Classic OAuth Apps request `read:org read:user`: membership access plus the
+least user scope that lets `/user` disclose `two_factor_authentication`.
+GitHub omits that private field from a `read:org`-only token. After upgrading
+from that grant, sign out and complete `/auth/login` again, consenting to the
+new scope. Refreshing an existing token or revalidating membership cannot add
+scopes or establish new step-up evidence. If consent omits `read:user`, or
+GitHub reports 2FA disabled, non-SSO administrator access still fails closed.
+
+GitHub App clients (`Iv...`) instead request only `offline_access`; configure
+organization **Members: read** and approved installations in each allowed
+organization. OAuth scopes do not grant App permissions. Do not assume a
+GitHub App user token discloses 2FA: if the field is absent, administrator
+access requires a successfully verified membership in an operator-attested
+`CAO_GITHUB_SSO_ORGANIZATIONS` organization. Otherwise that configuration
+cannot satisfy administrator step-up.
+
+Neither `read:user` nor `prompt=select_account` forces an MFA challenge.
+Step-up records recent OAuth completion with 2FA enabled or attested SSO
+access, not proof that the user just performed MFA.
+
+### Local OAuth without organization access
+
+For dashboard-only development, `cao-dashboard serve` already uses a local
+bearer capability and does not require GitHub OAuth or organization access.
+To exercise the OAuth and hosted CLI paths locally with a personal GitHub
+account, opt into **single-user development OAuth** with
+`CAO_GITHUB_LOCAL_USER`. Classic OAuth requests only `read:user`, and login,
+refresh, and revalidation check that exact GitHub login instead of reading
+organization or team membership. GitHub App clients retain `offline_access`.
+
+From `server/`, with the ordinary database, reviewed host policy, OAuth App
+credentials, session secret, webhook secret, source/site, and trusted local
+TLS certificate already configured:
+
+```bash
+export CAO_GITHUB_LOCAL_USER=YOUR_GITHUB_LOGIN
+export CAO_GITHUB_ADMIN_USERS="$CAO_GITHUB_LOCAL_USER"
+export CAO_ALLOWED_HOSTS=127.0.0.1
+export CAO_GITHUB_REDIRECT_URL=https://127.0.0.1:8443/auth/callback
+unset CAO_GITHUB_ALLOWED_ORGS CAO_GITHUB_ALLOWED_TEAMS
+unset CAO_GITHUB_SSO_ORGANIZATIONS CAO_TRUSTED_PROXY_CIDRS
+go run ./cmd/cao-dashboard serve-hosted --listen 127.0.0.1:8443 \
+  --cert ./localhost.pem --key ./localhost-key.pem
+```
+
+Register that exact callback on a development OAuth App and use a certificate
+trusted by your browser for the chosen loopback host. `localhost` is also
+supported when the listener, allowed host, and callback all use it. Startup
+rejects public/private-network listeners, nonmatching callbacks, reverse
+proxies, CORS, external/platform listeners, and mixed organization/team/SSO
+authorization. Requests must arrive directly from loopback over TLS. Do not
+expose this development server through a tunnel or reverse proxy. Production
+hosted authorization is unchanged when `CAO_GITHUB_LOCAL_USER` is unset.
+
+Only the configured developer can sign in; this is not anonymous access.
+Secure cookies, CSRF, administrator allowlisting, 2FA evidence, and live
+target-repository writer checks remain required for their respective
+operations. To test hosted CLI, keep both `--experimental` and
+`--hosted-cli-actions`, then use `/auth/login?hosted_cli=1` for explicit
+classic `read:user repo` consent. No `read:org` is requested. A GitHub App
+that does not disclose 2FA cannot satisfy administrator assurance in this
+no-SSO development mode; use a classic development OAuth App for that path.
+
+Changing between development and ordinary hosted mode, or changing the
+configured developer, requires a new sign-in: existing sessions cannot cross
+those authorization boundaries. Use a separate development operational
+namespace and secrets. Removing a mode or scope does not revoke previously
+issued GitHub grants; revoke the development App authorization when finished.
+
+### Hosted CLI actions
+
+Hosted CLI actions are an experimental feature and are off by default. To
+enable them, run the web server with both `--experimental` and
+`--hosted-cli-actions` (and optionally `--cli-actions-catalog`), plus the
+PostgreSQL operational store and OAuth. Then run a separate executor:
+
+```bash
+node activity/cao.mjs setup-auth hosted-cli --repo OWNER/CONTROL \
+  --target-repository OWNER/TARGET --private-key-out ./hosted-cli.pem
+cao-dashboard serve-hosted --experimental --hosted-cli-actions ...
+cao-dashboard execute-cli --max-pooled-tokens 8
+```
+
+Ordinary hosted **classic OAuth App** sign-in requests only
+`read:org read:user`, even when hosted CLI is enabled and even for
+administrators; the single-user local mode above omits `read:org`.
+To authorize private-target probes, first sign in normally,
+then open `/auth/login?hosted_cli=1` while signed in as a configured
+`CAO_GITHUB_ADMIN_USERS` administrator and consent to the additional `repo`
+scope. This explicit flow is unavailable to anonymous users and viewers,
+and when hosted CLI is disabled. Sessions created before account-ID binding
+was introduced must complete ordinary sign-in again first.
+
+The signed, HttpOnly state cookie binds consent to the initiating session,
+GitHub numeric account ID, login, and a ten-minute expiry. Keep the same
+account selected in GitHub's account chooser. The callback rejects switched
+accounts (including another allowlisted administrator), missing/replaced
+sessions, removed administrator access, disabled hosted CLI, and missing
+factor evidence; rejected issued credentials are revoked or queued for
+revocation. A query flag alone grants no authority. Private-target probes
+remain denied until the user's token actually has the required access.
+
+GitHub's classic `repo` scope is broad read/write access to the consenting
+administrator's accessible public and private repositories, not a metadata-only
+or selected-repository grant. Prefer a separate **GitHub App for browser sign-in** to
+avoid that broad grant: retain **Members: read**, approve its installation
+for the selected private targets with **Metadata: read**, and ensure its
+user token's live repository response reports the requester's `admin`,
+`maintain`, or `push` permission. An App installation alone never establishes
+the user's write authority. OAuth App access restrictions and SSO approval
+must also permit the token to access the organization.
+
+The server only reads repository permissions with the browser user's token;
+execution still uses the separately scoped hosted CLI App installation token.
+Missing repository access or permission fields fail closed without falling
+back to that executor token. `offline_access` remains unchanged for GitHub
+App sign-ins and grants no repository permissions. Disabling the feature
+blocks new administrator consent but does not revoke previously granted GitHub scopes;
+revoke the OAuth App authorization in GitHub when removing that access.
+
+In production, all web and executor replicas must share the same PostgreSQL
+operational namespace. Web replicas can admit work concurrently; executor
+replicas coordinate through the durable, fenced queue lease, and a persisted
+execution claim prevents another replica from claiming an already-running
+command. The configured concurrency limit applies across executor replicas.
+Command deadlines and queue state survive process restarts.
+
+If an executor crashes or loses its lease while a subprocess may still be
+running, the replacement marks the outcome interrupted and blocks new claims.
+It will not replay the command automatically because external side effects may
+already have occurred. After confirming that the old subprocess has stopped,
+an operator must explicitly acknowledge recovery before queue processing
+resumes. This provides at-most-once dispatch, not exactly-once external effects.
+
+The executor plans commands in Go and runs only `gh` or the native Go `gh-aw`
+CLI inside the digest-pinned `ghcr.io/github/gh-aw` container. The campaign
+update action is translated to `gh-aw update`; the server never invokes
+repository shell scripts or checks out and executes control-repository code. The executor
+requires a local Docker daemon using its `default` context. Each container has a
+read-only root filesystem, no added capabilities, and only its per-command
+workspace mounted writable. A temporary mode-`0600` environment file passes the
+scoped token; the executor's home, Docker socket, App key, and database
+credentials are not mounted or passed into the container. A fixed in-container
+bootstrap initializes the private Git root required by `gh-aw update/upgrade
+--repo`, then execs the planned CLI with unchanged positional arguments.
+Cancellation, deadlines, and lease loss attempt bounded forced removal.
+The container name and original Docker daemon identity are stored before
+creation. Docker CLI exit is not workload exit evidence: failed confirmation
+retains the execution claim and workspace, preventing reuse of that capacity.
+Recovery acknowledgement requires the old executor and its Docker requests to
+have stopped and successful reconciliation on the original daemon. Remove any
+retained workspace only after reconciliation; never switch Docker contexts to
+bypass recovery.
+
+`ContainerRunner` delegates runtime identity, creation, startup, inspection,
+stopping, and output collection to `ContainerLifecycle`. Docker remains the
+production adapter: it starts detached, then replays and follows logs while
+workload exit evidence remains a separate inspection. SQLite-only local
+development may explicitly use Apple container or Windows Sandbox as described
+below. These profiles do not enable Podman or managed jobs, change retry policy,
+or promise exactly-once effects. Idempotent updates may overlap within the
+configured concurrency limit; workflow dispatch does not inherit that
+idempotency assumption.
+
+`setup-auth hosted-cli` writes the downloaded key to a temporary local
+bootstrap file; that file is not a vault. Import it directly into the secret
+manager used by the `execute-cli` deployment, then securely remove the local
+copy. At runtime, expose the secret only to the executor, preferably as a
+secret-manager-mounted file configured with `CAO_HOSTED_CLI_PRIVATE_KEY_FILE`.
+Never put the key in checked-in configuration, command arguments, logs, or the
+`serve-hosted` process. The Azure Function App deployment does not host
+`execute-cli`; do not add this key to its settings.
+
+| Variable | Purpose |
+| --- | --- |
+| `CAO_HOSTED_CLI_CONTROL_REPOSITORY` | Control repository, given as `OWNER/REPOSITORY`. It falls back to `CAO_COLLECT_CONTROL_REPOSITORY`. |
+| `CAO_HOSTED_CLI_APP_ID` | Hosted CLI GitHub App ID (`execute-cli` only). |
+| `CAO_HOSTED_CLI_PRIVATE_KEY` (`_FILE`, `_BASE64`) | App private key (`execute-cli` only). |
+| `CAO_HOSTED_CLI_GITHUB_API_URL`, `CAO_HOSTED_CLI_GITHUB_URL` | GitHub API and web URLs for GHES. |
+| `CAO_HOSTED_CLI_DASHBOARD_URL` | Dashboard URL used in command backlinks. |
+| `CAO_HOSTED_CLI_CONTAINER_IMAGE` | Optional digest-pinned gh-aw image or approved mirror; defaults to `ghcr.io/github/gh-aw@sha256:7ff77dc03182d4edcebc902fa94b0239eb9cde65ea212509aef700bcab354090`. |
+| `CAO_HOSTED_CLI_DOCKER` | Optional Docker CLI path; defaults to `docker`. |
+| `CAO_HOSTED_CLI_CONTAINER_RUNTIME` | `docker` (default), `apple`, or `windows-sandbox`. Native profiles require `execute-cli --sqlite` and the matching OS; there is no automatic fallback. |
+| `CAO_HOSTED_CLI_EGRESS_POLICY_FILE` | Required production Docker exact-host HTTPS policy file; see the rollout contract below. No implicit allowed hosts. |
+| `CAO_HOSTED_CLI_EGRESS_RELAY` | Required production path to the static Linux relay artifact built from the reviewed server source. |
+| `CAO_HOSTED_CLI_EGRESS_RELAY_SHA256` | Required reviewed SHA-256 of that relay artifact. Startup snapshots and verifies the bytes; each create verifies the Linux daemon architecture. |
+| `CAO_HOSTED_CLI_APPLE_CONTAINER` | Optional Apple container CLI path for the `apple` development profile; defaults to `container`. |
+| `CAO_HOSTED_CLI_WINDOWS_SANDBOX` | Optional Windows Sandbox CLI path for the `windows-sandbox` development profile. |
+| `CAO_HOSTED_CLI_WINDOWS_BUNDLE` | Required path to the approved ZIP archive containing Windows gh, gh-aw, and portable Git, including dependencies. |
+| `CAO_HOSTED_CLI_WINDOWS_BUNDLE_SHA256` | Required reviewed SHA-256 digest of the Windows tools archive. The Windows profile rejects `CAO_HOSTED_CLI_CONTAINER_IMAGE` rather than silently replacing an OCI image. |
+| `CAO_HOSTED_CLI_WORK_ROOT` | Executor workspace root. |
+| `CAO_SESSION_SECRET`, `CAO_SESSION_SECRET_PREVIOUS` | Required current encryption secret (at least 32 characters) and optional previous key for the executor's durable token cleanup journal. Keep previous keys until their cleanup debt is cleared or expires. |
+| `CAO_AUDIT_LOG` | Optional append-only file (mode `0600`) for the JSON mirror of audit events from `serve-hosted` and `execute-cli`; defaults to standard error. The authoritative trail is the PostgreSQL `cao_operational_audit_events` table. |
+
+#### Production Docker egress rollout
+
+**Migration gate:** production `execute-cli` now refuses startup without all
+three `CAO_HOSTED_CLI_EGRESS_*` settings above. Before upgrading, stop admission
+or drain the queue, build and approve the relay and policy with the executor
+release, and configure every standby replica. Do not disable isolation to
+recover an interrupted command. Keep the previous executor stopped and use the
+existing original-daemon reconciliation procedure; changing egress configuration
+never releases unsettled claims. No policy, campaign, or global feature enablement
+is implied by deploying these files.
+
+Each production workload uses Docker **`--network none`**: it has only loopback,
+not a bridge interface, default route, or directly usable external DNS. A
+per-command mode-`0600` Unix socket in a mode-`0700` directory is the only egress
+path. The directory contains only the verified relay and socket, is bind-mounted
+read-only at `/cao-egress`, and its writable workspace alias is hidden behind a
+read-only tmpfs. The relay makes that socket available as a loopback HTTP proxy
+for `gh`, `gh-aw`, and HTTPS Git; it holds no policy or host credentials. Clearing
+proxy variables, connecting by IP, using IPv6, UDP, custom DNS, or selecting SSH
+does not bypass Docker's network namespace. The executor does not modify global
+Docker configuration or shared host networks.
+
+The executor-side proxy permits **CONNECT to exact approved DNS names on port
+443 only**, never plaintext HTTP, arbitrary ports, IP-literal authorities, or
+wildcards. It validates every resolved address and dials a validated numeric
+address without a second DNS lookup. Private, loopback, link-local, multicast,
+special-use, transition, and known metadata addresses are denied; IPv4-mapped
+IPv6 is normalized before validation. A private GHES exception must pair an
+exact hostname with exact RFC1918/ULA addresses; every DNS answer must match an
+approved address. This never enables a private subnet or permits known metadata/loopback/link-local
+addresses. The guarantee is **CONNECT destination control, not TLS SNI or
+application-content inspection**. An allowed GitHub endpoint can still receive
+data, and network policy does not grant repository permissions.
+
+Approve only endpoints required by the selected commands. A GitHub.com starting
+policy for API, Git, package contents, and release redirects is:
+
+```json
+{
+  "hosts": [
+    "github.com", "api.github.com", "codeload.github.com",
+    "raw.githubusercontent.com", "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com"
+  ]
+}
+```
+
+For GHES, add its API/web hostname to `hosts` when it resolves publicly, or an
+explicit entry such as `"privateEndpoints": [{"host": "github.corp.example",
+"addresses": ["10.20.30.40"]}]` for a private deployment. Redirected asset hosts
+must be independently approved. HTTPS certificate validation in gh/Git remains
+enabled; custom GHES trust must already be in the approved pinned workload
+image. Artifact registries used by the Docker daemon to pull that image are not
+workload egress. No package-manager or arbitrary HTTP/SSH reach is implied.
+
+Build the authenticated relay artifact **from the reviewed release checkout**
+using the existing pinned build image (repository root, choose the daemon's
+`linux/amd64` or `linux/arm64` platform):
+
+```bash
+docker --context default buildx build --platform linux/amd64 \
+  --file server/Dockerfile --target hosted-cli-relay-artifact \
+  --build-arg REVISION="$(git rev-parse HEAD)" \
+  --output type=local,dest=./.tmp/hosted-cli-relay .
+```
+
+The target requires a 40-character source revision and exports `cao-cli-relay`,
+`cao-cli-relay.sha256`, and `cao-cli-relay.json` (source revision, platform and
+digest). The manifest is build metadata, not an independent attestation.
+Bind the artifact
+digest, platform, source commit and build provenance to the reviewed executor
+release in your deployment artifact store; distribute it through that trusted
+release, not an arbitrary binary download. Set the relay path and the approved
+checksum separately in deployment configuration. Do not compute the expected
+checksum from an untrusted installed file at startup. The loader rejects
+digest mismatch, non-ELF/dynamically linked binaries, and unsupported
+architectures, snapshots verified bytes to prevent later path substitution,
+and refuses a mismatched daemon at command creation. Upgrades require a newly
+reviewed digest. The gh-aw image remains separately OCI-digest-pinned.
+
+Run `execute-cli` on the same Linux host/kernel and filesystem as the local
+default Docker daemon, with a short `CAO_HOSTED_CLI_WORK_ROOT` (for example a
+private directory under `/var/lib/cao`) so Unix socket paths fit the OS limit.
+The host must allow execution of the read-only relay bind mount. Docker Desktop
+socket forwarding or remote filesystems are not production substitutes; failure
+to mount/connect/execute the relay fails the command with no bridge fallback.
+The proxy has 32 connection slots per command, 8 KiB configured HTTP headers,
+a 5-second header timeout, 10-second DNS/dial limits, 30-second tunnel I/O idle
+limits, and a maximum 15-minute lifetime additionally bounded by command
+cancellation. Closing the proxy or losing the executor kills tunnels but does
+not prove workload termination: the retained identity, claim, token-revocation
+obligations, and workspace follow existing bounded stop/recovery rules.
+
+SQLite-only Docker development keeps its previous bridge behavior **only when
+all three egress settings are absent**. Supplying any setting opts into the
+complete boundary and fails closed if anything is unavailable. Apple and Windows
+remain explicit SQLite-only development profiles, not production fallbacks.
+
+Before enabling production admission, run the credential-free real-boundary
+test on the intended dedicated Linux executor:
+
+```bash
+cd server
+CAO_TEST_DOCKER_EGRESS=1 go test ./internal/hostedcli \
+  -run '^TestDockerEgressRealBoundary$' -count=1 -v
+```
+
+It uses only its own named container/workspace, checks loopback-only interfaces
+and direct TCP/UDP/DNS denial, protected relay mounts, approved GitHub HTTPS Git,
+gh reaching GitHub's expected unauthenticated `401`, and denied CONNECT targets.
+It does not write to GitHub or use real credentials. Missing
+`/var/run/docker.sock` is an explicit skip, not successful runtime validation;
+do not switch contexts to avoid it. Deterministic policy, proxy and lifecycle
+tests run without Docker but are not evidence of the kernel boundary.
+
+#### Native runtimes for local development
+
+Native runtime selection changes only execution isolation. Keep the existing
+OAuth/App configuration, durable session-secret configuration, scoped tokens,
+and loopback-only SQLite debug server; never substitute a disposable secret or
+run the hosted command directly on the host. Native profiles are rejected for
+the production PostgreSQL executor.
+
+On **Apple Silicon macOS 26**, install Apple's
+[`container` CLI](https://github.com/apple/container) and start its services:
+
+```bash
+container system start --enable-kernel-install
+CAO_HOSTED_CLI_CONTAINER_RUNTIME=apple \
+  cao-dashboard execute-cli --sqlite ./.tmp/hosted-cli.sqlite
+```
+
+The adapter targets the verified container 1.2.2 CLI contract. It runs the
+existing AMD64 digest-pinned Linux image with Rosetta, using a private VM,
+read-only root, no capabilities, in-guest `no-new-privileges`, two CPUs, 1 GiB
+memory, a 256-process user limit, and bounded `/tmp`. Only the command workspace
+is mapped. It preserves stdout/stderr from startup instead of relying on
+`container logs --follow`, which does not signal workload exit. An identity-bound
+guest receipt supplies the exit code, but termination additionally requires
+the native container to be stopped and its launchd VM service absent.
+
+Native recovery is bound to the service-reported data root and a private
+durable identity under that root. Do not delete or replace the native runtime's
+data root to bypass recovery. The executor never starts global runtime services
+or installs Rosetta automatically. To exercise the installed runtime without
+GitHub writes, run from `server/`:
+
+```bash
+TMPDIR=/private/tmp CAO_TEST_APPLE_CONTAINER=1 \
+  go test -race ./internal/hostedcli -run '^TestAppleContainerNative' -v
+```
+
+On **Windows 11 24H2 or later**, enable
+[Windows Sandbox](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/)
+on a supported Windows edition and ensure its `wsb` CLI is available. Windows
+Sandbox cannot execute the Linux image: this explicit development profile
+instead requires an approved ZIP archive of Windows gh, gh-aw, and portable
+Git with a reviewed SHA-256 digest. All tool execution stays inside Sandbox,
+and the archive is checked both before launch and in the guest.
+
+The ZIP must have these root-relative paths, without an enclosing directory:
+
+```text
+gh/gh.exe
+gh-aw/gh-aw.exe
+git/cmd/git.exe
+git/usr/bin/sh.exe
+```
+
+Include the matching vendor-relative DLLs, certificates, Git helpers, and
+supporting files; the executable architecture must match the Windows host.
+The digest covers the entire archive. Limits are 512 MiB compressed and 1 GiB
+expanded. The fixed bootstrap runs as System inside the VM; this does not
+provide a restricted-user boundary inside the guest.
+
+```powershell
+$env:CAO_HOSTED_CLI_CONTAINER_RUNTIME = 'windows-sandbox'
+$env:CAO_HOSTED_CLI_WINDOWS_BUNDLE = 'C:\dev\approved-hosted-cli-tools.zip'
+$env:CAO_HOSTED_CLI_WINDOWS_BUNDLE_SHA256 = '<reviewed SHA-256>'
+$env:CAO_HOSTED_CLI_WORK_ROOT = 'C:\dev\cao-private-work'
+cao-dashboard execute-cli --sqlite .\.tmp\hosted-cli.sqlite
+```
+
+Windows Sandbox permits only one instance. This profile serializes execution
+across local executor namespaces and refuses an unrelated running Sandbox;
+it never adopts or terminates the user's session. Clipboard, device, printer,
+and GPU sharing are disabled. Only private command inputs and workspace are
+shared. Guest output/results do not release capacity until the owned VM is
+independently confirmed stopped or absent. Failed ownership or termination
+checks remain blocked for explicit recovery.
+
+This conservative profile also requires **no other HCS-managed VM**, including
+WSL2 or Docker Desktop VMs. It checks Windows Host Compute Service inventory
+before launch and after exact-owned-ID shutdown; it never stops foreign VMs.
+The provider does not assume Sandbox IDs equal host-compute VM IDs. Missing
+host-compute inventory access fails closed rather than relying on a guest
+receipt, launcher exit, or current-user CLI inventory alone.
+
+The executor account must be able to access the machine-global mutex and its
+private `%ProgramData%\CAO.WindowsSandboxExecutor.v1` ownership directory.
+The directory's owner and protected ACL must match the executor account, SYSTEM,
+and Administrators. Host-compute inventory requires an **elevated administrator
+or effective Hyper-V Administrators membership**. Enabling Sandbox requires
+administrator privileges; local policy may also require administrator
+provisioning for the ownership directory. The executor never elevates or changes
+these policies.
+
+Pre-provision `CAO_HOSTED_CLI_WORK_ROOT` with a protected, inheritable private
+DACL before starting the executor. Supported SDDL, substituting the executor
+account's SID for `<SID>`:
+
+```text
+O:<SID>D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;<SID>)
+```
+
+The adapter validates the root and every existing workspace descendant before
+staging and immediately before VM creation, accepting inherited private child
+ACLs and ownership by the account, SYSTEM, or Administrators. It rejects
+reparse paths and unsafe ACLs rather than changing permissions. Unix `0700`
+modes alone do not establish Windows privacy.
+
+Set the same runtime selector for both `serve-hosted --hosted-cli-sqlite` and
+`execute-cli --sqlite`. Windows uses a queue concurrency limit of one, so use
+a separate SQLite file when switching from another profile: existing queue
+configuration is not silently rewritten. Never discard a database or ownership
+record to bypass unsettled execution recovery.
+
+An indeterminate `starting` reservation remains fenced even when both inventories
+are empty: a delayed launch request cannot be ruled out. The current recovery
+acknowledgment does not clear that reservation.
+
+The Windows adapter is protocol-tested and cross-compiled, but has not been
+exercised on a Windows host. Microsoft documents `wsb --raw` without publishing
+its JSON schema. This adapter accepts only an array of records with `Id`,
+`Status` (`running` or `stopped`), and optional string `Uptime`; unknown formats
+fail closed. Native CLI, ACL, mapping, and bootstrap compatibility must be
+confirmed on the installed Windows build before using this development profile.
+
+#### Rotate the hosted CLI App key
+
+GitHub permits two active private keys for an App. The executor reads its
+configured key at startup, so changing the secret or key file does not update a
+running executor. Use a two-key rollover:
+
+1. Generate a new private key in the hosted CLI App's **Private keys** settings
+   and save it to a new, versioned secret in the executor's secret manager. Do
+   not overwrite the old key or leave the downloaded bootstrap file on disk.
+2. Update the `execute-cli` deployment to use the new key through
+   `CAO_HOSTED_CLI_PRIVATE_KEY_FILE`, `_BASE64`, or the inline variable. Do not
+   expose it to `serve-hosted`.
+3. Pause new CLI admissions and wait until queued and running commands have
+   finished before restarting the executor. Shutdown cancels in-flight
+   commands. Restart every executor instance so none depends on the old key.
+4. Resume admissions for a controlled validation. Confirm the restarted
+   executor can mint a token and complete a safe, catalog-declared action. If
+   validation fails, pause admissions and restore the old configuration while
+   both keys are still active.
+5. After validation succeeds and commands have drained, pause admissions again,
+   revoke the old private key in the App settings, then resume admissions.
+
+Never put either key in logs, command output, or checked-in configuration.
+
+For local hosted-CLI storage debugging, both processes can share one SQLite
+file holding the queue, audit table, and encrypted token cleanup journal. `--hosted-cli-sqlite` requires
+`--experimental`, `--hosted-cli-actions`, and a loopback `--listen`, and the
+explicit bootstrap creates the file with mode `0600`. Anyone who can write the SQLite file can
+drop its triggers, so never use this in production:
+
+```bash
+mkdir -p .tmp
+cao-dashboard database bootstrap --store operational --sqlite ./.tmp/hosted-cli.sqlite
+cao-dashboard serve-hosted --listen 127.0.0.1:8443 --experimental --hosted-cli-actions \
+  --hosted-cli-sqlite ./.tmp/hosted-cli.sqlite ...
+cao-dashboard execute-cli --sqlite ./.tmp/hosted-cli.sqlite
+```
+
+Runtime now requires the provisioned file and never performs audit retention.
+Use `database retain-audit --store operational --sqlite PATH` explicitly.
+`audit deliver --sqlite PATH` reads and verifies existing state through a
+read-only SQLite connection; `audit verify --sqlite PATH` still appends its own
+verification result. This only replaces hosted-CLI storage, not the full
+dashboard's canonical PostgreSQL backend or authentication configuration.
+See [POSTGRES.md](POSTGRES.md#local-sqlite-testing) for local end-to-end tests.
+
+Each command runs with a single-use installation token scoped to its target
+repository, and the token is revoked when the command finishes. The broker
+pool is bounded: `--max-pooled-tokens` sets the total, `0` disables pooling,
+and pooled tokens are capped at two per scope with a two-minute idle lifetime.
+`--prefetch` (default 2) sets how many queued commands get tokens minted
+ahead of execution.
+
+Every received token, including rejected grants, is journaled in the protected
+revocation store before it can be used. The journal is encrypted with the same
+current/previous-key envelope as sessions, in a separate hosted-token namespace.
+Only the queue-lease holder retries recovered tokens; its own active tokens
+remain owned until release. Failed audit appends never drop cleanup ownership.
+Revocation failures survive executor restarts and remain visible until confirmed
+revocation or expiry. If both journaling and revocation fail, the broker refuses
+further token issuance (including pooled tokens), and graceful shutdown keeps
+retrying until cleanup is durable or the token expires. An explicitly canceled
+`Broker.Close` reports failure and retains
+its in-memory owner. The executor's graceful cleanup ignores command cancellation
+and may wait up to the last token's one-hour lifetime from receipt, plus bounded
+in-flight mint, storage, revocation, and audit requests (storage/revocation use a
+ten-second request timeout). Missing or excessive expiry evidence rejects use
+and retains that conservative one-hour cleanup bound. A forced process kill
+between GitHub issuing a token and local durable persistence cannot be made
+atomic; the token's GitHub-enforced lifetime remains the final bound.
+
+DevOps can inspect or cancel queue entries directly through the backend CLI.
+These commands use the configured operational store, require durable audit
+storage, and intentionally return command summaries without input values or
+output:
+
+```bash
+cao-dashboard hosted-cli queue list --status queued --limit 50
+cao-dashboard hosted-cli queue list --status queued --limit 50 \
+  --continuation-token TOKEN_FROM_PREVIOUS_PAGE
+cao-dashboard hosted-cli queue show 42
+cao-dashboard hosted-cli queue cancel 42 --actor octocat
+```
+
+The list response includes `limit`, `hasMore`, and, when another page is
+available, `nextContinuationToken`. Pass that opaque token to
+`--continuation-token` with the same status filters to retrieve the next page.
+The cursor follows command IDs and does not count or skip preceding rows.
+
+Cancellation is a privileged backend operation and does not perform the
+dashboard user's repository-permission check. The supplied GitHub login is
+recorded in the append-only audit trail as a self-reported identity, not proof
+of the caller's identity. Only trusted operators should have access to the
+backend database and CLI environment. `--sqlite PATH` is for local debugging
+only.
+
+Verify and export the audit trail with the same store settings (PostgreSQL
+from the environment, or `--sqlite PATH`):
+
+```bash
+cao-dashboard audit verify                          # prints lastSequence and lastHash
+cao-dashboard audit verify --anchor 4182:<lastHash> # fails on rewrite or rollback
+cao-dashboard audit export --event cli_command.admitted --actor octocat > audit.jsonl
+```
+
+Schedule `audit verify` and keep the printed heads in write-once storage, so
+later runs can pass them as anchors. Hosted CLI spans, metrics, and OTLP
+audit logs are listed in
+[`specs/server-hosted-cli.md`](../specs/server-hosted-cli.md#7a-telemetry).
+For bounded, restart-safe replay of committed rows, use the opt-in
+[`audit deliver` job](audit-delivery/README.md). It requires an independently
+administered HTTPS object adapter, reads back events before advancing a
+destination-resident CAS checkpoint, and fails closed on missing/stale anchors
+or retention gaps. The deployment guide includes explicit enrollment, an
+executable adapter conformance test, disabled-by-default scheduling templates,
+and monitoring/evidence requirements. Neither a local JSON mirror nor an OTLP
+emission confirms independent delivery or write-once retention.
+The normative contract is [`specs/server-hosted-cli.md`](../specs/server-hosted-cli.md).
 
 ### Upstash Redis provider
 
@@ -598,12 +1319,11 @@ Server-side collection and standalone collection roles are rejected. Policy
 validation requires `target.replicas: 1`, and operators must set the hosting
 platform itself to the same replica count. Do not configure the Upstash REST URL
 or REST token. For the operator procedure, see [Deploying the dashboard with Upstash
-Redis](https://github.com/githubnext/gh-aw-cao/blob/main/docs/deployment-upstash.md).
+Redis](https://github.com/githubnext/gh-cao/blob/main/docs/deployment-upstash.md).
 
-### Coolify container profile
+### Container image
 
-Coolify is a peer deployment profile to Azure Functions. Both profiles default
-operational services to PostgreSQL without Redis. The image reuses
+The host-neutral image uses
 `serve-hosted`, so GitHub OAuth, explicit organization/team authorization,
 server-side encrypted sessions, CSRF checks, webhook signature verification and
 deduplication, deployment-scoped rate limits, and secret-redacting logging remain the
@@ -620,7 +1340,7 @@ docker build -f server/Dockerfile \
 ```
 
 The official `.github/workflows/cao-package.yml` workflow publishes the same
-image as `ghcr.io/githubnext/gh-aw-cao/cao-server`. Pushes to `main` receive an
+image as `ghcr.io/githubnext/gh-cao/cao-server`. Pushes to `main` receive an
 immutable `sha-<full-commit>` identity; published releases receive their exact
 Docker-safe semantic version tag. Use the resulting digest in downstream
 Compose files. Multiple services can share that digest and select
@@ -633,66 +1353,51 @@ source tests, and protected-main ancestry. Syft produces an SPDX SBOM, and the
 protected-main `.github/workflows/cao-package-publish.yml` reusable workflow
 revalidates caller authority, source metadata, checksums, and OCI labels before
 attesting both build provenance and the SBOM for the exact OCI digest.
-Those package guarantees apply to consumers of the published image. The native
-Coolify resource builds from repository source instead and does not use the
-published package as its deployment input.
+Those package guarantees apply to consumers of the published image, not to
+locally source-built images.
 
-`server/coolify/compose.yml` expects:
+The Dockerfile includes the base `cao.json` policy. Configure a reviewed
+`control-plane.web.host` before building, or mount a reviewed policy and set
+`CAO_POLICY_PATH` at runtime. Supply database, OAuth, session, and webhook
+credentials through the host's secret manager.
 
-- `CAO_ARTIFACT_VOLUME` as the name of an existing Coolify-managed volume;
-- the public host and the exact private CIDR of Coolify's proxy network;
-- OAuth, session, webhook, and Redis credentials supplied as Coolify secrets.
-
-Configure the resource through the Coolify GitHub App, select protected `main`,
-set the Compose file to `server/coolify/compose.yml`, enable automatic
-deployments, and enable **Include Source Commit in Build**. Compose passes
-Coolify's `SOURCE_COMMIT` to `server/Dockerfile` as the image version and
-revision. The Dockerfile bakes `cao.json` and `cao.coolify.json` into the image,
-generates a deterministic control-plane inventory from that exact checkout,
-and packages the shared policy resolver. Runtime policy or catalog bind mounts
-and **Preserve Repository During Deployment** are not required.
+The `dashboard-runtime` target contains the public server without collection
+tools. The `collector-runtime` target adds Node, the GitHub CLI, a
+checksum-verified policy-pinned gh-aw binary, the Activity projection catalog,
+a deterministic source-bound control-plane inventory, and the shared policy
+resolver. Deploy standalone collection roles without public ingress, keep the
+collection App private key out of admission-only web replicas, and share a
+persistent evidence volume between collector and backfill roles.
 
 The external artifact volume is authoritative input, not checked-in deployment
 data. Before the first start, populate an unattached staging volume with a
 complete `payload-hashes.json` and every referenced inventory, run, and record
 file from a trusted dashboard build. Verify every manifest hash, then atomically
-select that completed volume as `CAO_ARTIFACT_VOLUME` and deploy it; never copy
+mount that completed volume read-only at `/app/source`; never copy
 individual files into the volume attached to a running service. Apply updates
 the same way with a newly staged volume.
 
-The Compose file publishes no host port. Coolify's proxy is the only ingress
-path. The app listens on the private service network, but accepts
+For private proxy ingress, configure the host so only the trusted proxy can
+reach the application. The app accepts
 `X-Forwarded-Host` and `X-Forwarded-Proto` only when the direct connection comes
 from `CAO_TRUSTED_PROXY_CIDRS`; it still requires the forwarded protocol to be
 `https` and the forwarded host to match `CAO_ALLOWED_HOSTS`. Startup fails when
-the CIDR is absent, malformed, or public. Use the narrow subnet Coolify assigns,
+the CIDR is absent, malformed, or public. Use the narrow proxy subnet,
 not `0.0.0.0/0` or an entire RFC1918 range.
 
-Use `rediss://` whenever Coolify or an external provider offers TLS. A
-Coolify-managed Redis service may use plaintext only on the private service
+Use `rediss://` whenever the Redis provider offers TLS. A
+deployment-managed Redis service may use plaintext only on the private service
 network when `control-plane.web.host.redis.allow-private-plaintext` is `true`
 and the endpoint uses a private service hostname or IP. This policy does not
 affect explicitly selected Redis in Azure, which still requires `rediss://`.
 The default Azure deployment uses PostgreSQL and creates no Redis resource.
 
-The GitHub App webhook starts production delivery after a protected `main`
-update. Coolify checks out that commit, builds the Compose service, and replaces
-the running service after health evaluation. No GitHub deployment workflow,
-Coolify API token, public Coolify API endpoint, Tailscale runner access,
-registry credential, or mutable registry tag is required.
-
-This simpler source-build path has a deliberate tradeoff: the deployed image
-does not pass through the official package workflow's Trivy, Grype, Dockle,
-SBOM, or GitHub provenance admission gates. Those checks and attestations still
-protect the published `cao-server` package, but they are not production
-delivery evidence for Coolify. Branch protection, restricted GitHub App
-access, Coolify build isolation, and operator review of failed builds are the
-source-deployment controls.
+Deployment promotion and rollback belong to the application host. Review
+source changes, isolate source builders, and verify readiness before promotion.
 
 #### Rollback
 
-Redeploy the last known-good entry from Coolify's deployment history, or revert
-the responsible commit on `main` and let automatic deployment rebuild it.
+Redeploy the last known-good image digest through the host's deployment process.
 Confirm `/api/readiness`, OAuth login and authorization, a bounded query,
 webhook signature handling, and rate-limit behavior. Redis is disposable: if
 the new binary wrote an unusable projection, clear only that deployment
@@ -1177,8 +1882,8 @@ matching UTC Monday-to-Monday PostgreSQL RANGE partitions. `run_at` uses the
 run's `createdAt`, then `startedAt`, `completedAt`, or `updatedAt`; records
 without any of these use ingestion time. Linked records inherit their run's
 partition timestamp. PostgreSQL routes parent-table inserts; missing weeks
-fail closed rather than creating partitions during ingestion. At startup and
-every 24 hours while the process is running, maintenance checks existing
+fail closed rather than creating partitions during ingestion. The separately
+scheduled owner-run `database maintain --store canonical` checks existing
 partitions, creates any missing current and four future weeks first, and removes complete
 run weeks older than `CAO_POSTGRES_RUN_RETENTION_DAYS` (default 30, allowed 7–3650).
 Run-linked tables (audits, domains, eval observations, experiment assignments,
@@ -1187,15 +1892,19 @@ complete weekly shards older than `CAO_POSTGRES_LINKED_RETENTION_DAYS` (default 
 allowed 7 up to the run retention). A partial week remains until the entire
 shard is past its cutoff. Maintenance detaches and drops linked shards before
 expired run shards, updating affected source counts and revisions. Repeated maintenance
-is a no-op when partitions are already present and none have expired; a restart
-reruns maintenance to catch up after downtime. Choose a window
+is a no-op when partitions are already present and none have expired. Run it
+at least daily and before restarting after downtime; runtime startup checks the
+full provisioned window but never repairs it. Alert on missed maintenance before
+the four-week runway expires. Choose a window
 that covers all authoritative run timestamps before ingestion; historical linked
 records outside the linked window are skipped while their retained runs are
 still ingested.
 
-Startup initializes this fresh schema and its partitions. There is no old-layout detection,
+Owner-run `database bootstrap --store canonical` initializes the schema and its
+partitions. Runtime opens it without DDL. There is no old-layout detection,
 conversion, backfill, or backward-compatible import. Use a new database and
-re-ingest authoritative inputs when changing the physical contract.
+re-ingest authoritative inputs when changing the physical contract; never drop
+operational audit/queue state if it shares the old database.
 Redis remains namespaced operational storage for caches, queues, sessions, and
 it does not hold dashboard entity rows or query indexes.
 Neither store grants control-plane authority. Credentials stay server-side.
@@ -1553,7 +2262,7 @@ mode fails closed unless all of the following are configured:
 - a TLS PostgreSQL URL available through `CAO_POSTGRES_URL`;
 - distinct canonical and operational namespaces;
 - `CAO_AZURE_ALLOWED_HOSTS` and HTTPS forwarded-protocol enforcement;
-- GitHub OAuth App client ID/secret and redirect URL;
+- GitHub OAuth App or GitHub App client ID/secret and redirect URL;
 - at least 32 characters of `CAO_SESSION_SECRET`;
 - at least one explicit `CAO_GITHUB_ALLOWED_USERS`,
   `CAO_GITHUB_ALLOWED_ORGS`, or `CAO_GITHUB_ALLOWED_TEAMS` value.
@@ -1575,8 +2284,16 @@ PostgreSQL TLS and HTTPS exactly as production does.
 
 Azure mode does not accept the local bearer capability and does not support
 PATs. Login alone does not grant access: after exchanging the OAuth code, the
-server calls GitHub with the minimum `read:org` scope needed for organization
-or team membership checks. Access and refresh tokens remain server-side,
+server matches an allowed user or verifies active organization or team membership. OAuth App clients
+request `read:org read:user` for membership and disclosed 2FA-enabled evidence;
+GitHub App clients (`Iv...`) request `offline_access` for
+expiring user tokens and server-side refresh even if the App's global
+expiration setting is disabled. For a GitHub App, configure organization
+**Members: read** on the registration; scopes do not grant App permissions.
+Install the App in each organization whose membership authorizes dashboard access.
+This scope requires GitHub.com or GHES 3.23 or later. The browser sign-in App
+need not be the collection or workflow App, and its credentials do not grant
+campaign authority. Access and refresh tokens remain server-side,
 encrypted before operational storage, and are never written to browser-readable
 storage, URLs, API payloads, or Bicep outputs. Session cookies are `Secure`,
 `HttpOnly`, and `SameSite=Lax`; mutating API requests must include the
@@ -1653,22 +2370,32 @@ npm run dashboard:server:setup:macos
 ```
 
 The command installs Homebrew Go, Node.js 24, the Docker CLI, Docker Compose,
-Colima, and the dashboard npm dependencies. Plain Redis runs only through
-`server/docker-compose.yml`; the setup does not install or start a native Redis
+Colima, and the dashboard npm dependencies. Docker and the optional
+PostgreSQL/Redis stack in `server/docker-compose.yml` are not required for the
+default SQLite profile; the setup does not install or start a native Redis
 service.
 
-From the repository root:
+From the repository root, start with the default SQLite cache:
 
 ```bash
-docker-compose -f server/docker-compose.yml up -d
-
 npm --prefix dashboard/site ci
 npm run dashboard:server:build
+
+go -C server run ./cmd/cao-dashboard serve
+```
+
+The server downloads the deployed snapshot if missing and reuses it offline on
+later starts. To exercise PostgreSQL instead, start the optional database stack,
+configure `CAO_POSTGRES_URL`, and provision storage as described in
+[`POSTGRES.md`](POSTGRES.md) before ingesting:
+
+```bash
+docker compose -f server/docker-compose.yml up -d
 
 go -C server run ./cmd/cao-dashboard ingest \
   --source /absolute/path/to/deployed-dashboard
 
-go -C server run ./cmd/cao-dashboard serve
+go -C server run ./cmd/cao-dashboard serve --postgres-url="$CAO_POSTGRES_URL"
 ```
 
 To inspect local traces and metrics, start the optional
@@ -1749,9 +2476,16 @@ queue/deduplication metric samples. Fault tests exercise paginated resume after
 primary/secondary limits, bootstrap/token-mint failures, and cancellation.
 Missing quota headers must leave unknown request cost reserved.
 
+If the OpenObserve image registry rate-limits its pull, the harness reports the
+reason and runs all PostgreSQL/Redis replay, fault, and stress assertions without
+OpenObserve. Only telemetry export, searches, and telemetry artifacts are
+disabled for that run. The pull log is retained as `openobserve-pull.log`.
+Other image-pull errors and service readiness failures remain fatal.
+
 Service-backed replay/fault tests also run during ordinary Go tests when
-Postgres and Redis endpoints are configured. Explicit OTEL runs fail rather
-than skip when any required service or exporter configuration is missing. The
+Postgres and Redis endpoints are configured. Outside the explicit registry
+rate-limit fallback, OTEL runs fail rather than skip when a required service
+or exporter configuration is missing. The
 separate **Postgres backfill and OpenObserve integration** job in
 `.github/workflows/cgo.yml` runs the same harness and uploads Go results and
 service logs to `go-server-backfill`. Local reports are in `.tmp/go-backfill/`
@@ -1825,7 +2559,8 @@ initializing origin-scoped browser local storage. Refreshes continue to work
 without restoring the token in the URL. Use `--access-token` with a
 value of at least 32 characters only when deterministic automation requires it.
 
-Ingest and serve in one process:
+To ingest into PostgreSQL and serve in one process, configure and provision
+`CAO_POSTGRES_URL` first; `--source` explicitly selects that profile:
 
 ```bash
 go -C server run ./cmd/cao-dashboard serve \
@@ -1901,8 +2636,7 @@ is unavailable, the log download still succeeds with `redis.status` set to
 `unavailable`. The response uses `Cache-Control: no-store`. Hosted access requires either an authorized
 administrator session or the same bearer GitHub Actions token and OIDC
 provenance required by hosted MCP; local access uses the dashboard bearer
-capability or the configured Actions token and actor. Coolify enables this
-setting and `cao:server*` debug logging by default. The buffer covers the
+capability or the configured Actions token and actor. The buffer covers the
 current process only and does not include logs emitted before it was enabled.
 On the hosted GitHub-authenticated dashboard, administrators can open **Settings → Logs →
 Server logs** to inspect this snapshot as a full-page, preformatted view and

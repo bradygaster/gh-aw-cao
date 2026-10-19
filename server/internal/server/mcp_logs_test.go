@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
 )
 
 func mcpLogsRequest(t *testing.T, method string, params map[string]any) *http.Request {
@@ -250,7 +250,7 @@ func TestMCPLogsSharesHTTPAuthorizationAndSafeSnapshot(t *testing.T) {
 	}{
 		{"no session", t.Context(), http.StatusForbidden},
 		{"viewer", context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "viewer"}), http.StatusForbidden},
-		{"admin", context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "operator"}), http.StatusOK},
+		{"admin", context.WithValue(t.Context(), oauthSessionContextKey{}, assuredSession("operator")), http.StatusOK},
 		{"actions", context.WithValue(t.Context(), githubActionsActorContextKey{}, "workflow"), http.StatusOK},
 		{"empty actor", context.WithValue(t.Context(), githubActionsActorContextKey{}, ""), http.StatusForbidden},
 	} {

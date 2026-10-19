@@ -28,11 +28,11 @@ test('Documented bootstrap supplies required inputs and explicit reviewed retent
   assert.deepEqual(missing, [], 'the bootstrap must supply every parameter without a default');
 });
 
-test('Azure ingress defaults to disabled with explicit rules and default-deny app and SCM access', () => {
-  assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Disabled');
+test('Azure ingress defaults to public main site behind GitHub sign-in with default-deny SCM', () => {
+  assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Enabled');
   assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
   assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.type, 'string');
-  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.defaultValue, 'Deny');
+  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.defaultValue, 'Allow');
   assert.deepEqual(generated.parameters.functionAccessRestrictionsDefaultAction.allowedValues, ['Allow', 'Deny']);
   assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
   assert.deepEqual(generated.parameters.functionScmAccessRestrictions.defaultValue, []);
@@ -260,4 +260,13 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /ftpsState:\s*'Disabled'/);
   assert.match(bicep, /allowBlobPublicAccess:\s*false/);
   assert.match(bicep, /supportsHttpsTrafficOnly:\s*true/);
+});
+
+test('Azure redeployment can keep an existing subnet NSG without forcing one on other deployments', () => {
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.type, 'string');
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.defaultValue, '');
+  assert.match(bicep, /subnetNetworkSecurityGroupId: subnetNetworkSecurityGroupId/);
+  assert.match(network, /param subnetNetworkSecurityGroupId string = ''/);
+  assert.equal(network.match(/properties: union\(subnetNetworkSecurityGroup, \{/g)?.length, 3,
+    'every subnet must carry the optional NSG');
 });

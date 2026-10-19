@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
-	"github.com/githubnext/gh-aw-cao/server/internal/simulator"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/simulator"
 )
 
 type testReconciler struct {
@@ -251,7 +251,7 @@ func TestHostedRebuildRequiresExplicitAdministrator(t *testing.T) {
 	request = request.WithContext(context.WithValue(
 		request.Context(),
 		oauthSessionContextKey{},
-		oauthSession{Login: "CAO-ADMIN"},
+		assuredSession("CAO-ADMIN"),
 	))
 	if !app.adminAuthorized(request) {
 		t.Fatal("explicit administrator was denied")

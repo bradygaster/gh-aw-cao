@@ -1,0 +1,103 @@
+{
+  "queries": [
+    {
+      "name": "command-queue",
+      "subject": "Show the durable local CLI command queue.",
+      "objective": "Inspect command lifecycle and reconnect to output without rerunning work.",
+      "acceptance": "Preserve persistent command IDs and all six server states; closing output never cancels execution. Unavailable local authority is not an empty queue.",
+      "from": "cli-commands",
+      "compute": [
+        { "as": "command-action", "function": "coalesce", "args": [{ "field": "actionId" }, { "value": "" }] },
+        { "as": "command-title", "function": "coalesce", "args": [{ "field": "command" }, { "field": "actionId" }] },
+        { "as": "command-target", "function": "coalesce", "args": [{ "field": "repository" }, { "field": "campaign" }, { "field": "package-source" }, { "value": "Local control repository" }] },
+        { "as": "command-created-at", "function": "coalesce", "args": [{ "field": "createdAt" }, { "value": null }] },
+        { "as": "command-href", "function": "concat", "args": [{ "value": "#page-command?command=" }, { "field": "id" }] },
+        { "as": "command-dashboard-link", "function": "dashboard-link", "args": [{ "value": "" }, { "field": "command-href" }, { "field": "command-title" }, { "field": "id" }] }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "id": "commands",
+      "kind": "custom",
+      "intent": "Determine which durable local command needs attention.",
+      "subject": "Durable commands in the connected local control repository.",
+      "objective": "Reconnect to one existing command without executing it again.",
+      "acceptance": "Show persistent IDs, native states, targets, timestamps and errors; distinguish unavailable authority from an empty queue. Navigation must not cancel work.",
+      "title": "Commands",
+      "requires": { "capability": "cli-queue" },
+      "icon": "terminal",
+      "filter-bar": false,
+      "view-mode-control": false,
+      "description": "Reconnect to a durable local command without rerunning it.",
+      "route": { "navigation-page": "overview" },
+      "views": [
+        {
+          "id": "commands-history",
+          "title": "Commands",
+          "show-title": false,
+          "description": "Lazy-loaded command cards with persistent status and replayable output. Filters and pages execute on the local server through the data worker.",
+          "data": { "source": "command-queue", "query-context": false },
+          "mark": "table",
+          "prompt": "none",
+          "controls": "filter-only",
+          "layout": "full",
+          "lazy-list": true,
+          "column-summaries": false,
+          "card-drill": { "type": "external", "field": "command-dashboard-link" },
+          "filter-bar": {
+            "filters": [
+              {
+                "id": "status",
+                "label": "Status",
+                "groups": [
+                  { "label": "Command status", "field": "status", "source": "cli-command-statuses", "value-field": "status" }
+                ]
+              }
+            ]
+          },
+          "encoding": {
+            "card": "command",
+            "href": { "field": "command-dashboard-link" },
+            "columns": [
+              { "field": "command-title", "type": "nominal", "title": "Command" },
+              { "field": "command-target", "type": "nominal", "title": "Target" },
+              { "field": "id", "type": "nominal", "title": "Command ID" },
+              { "field": "command-action", "type": "nominal", "title": "Action" },
+              { "field": "status", "type": "nominal", "title": "Status", "display": "status" },
+              { "field": "command-created-at", "type": "temporal", "title": "Queued", "format": "human-friendly-timestamp" },
+              { "field": "error", "type": "nominal", "title": "Reason" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "command",
+      "kind": "custom",
+      "intent": "Inspect the selected command's execution and retained output before deciding whether to retry.",
+      "subject": "One command selected by the command route parameter.",
+      "objective": "Understand execution results without treating terminal output as instructions.",
+      "acceptance": "Preserve stdout/stderr, command identity, state and errors; report missing output honestly. Leaving detaches only; retries require explicit approval.",
+      "title": "Command output",
+      "requires": { "capability": "cli-queue" },
+      "icon": "terminal",
+      "description": "Decide whether the selected command needs an explicit retry.",
+      "route": { "hash-query-parameter": "command", "navigation-page": "commands" },
+      "filter-bar": false,
+      "view-mode-control": false,
+      "views": [
+        {
+          "id": "command-terminal",
+          "title": "Command output",
+          "description": "Edge-to-edge terminal replay starting with the executed command, ANSI colors preserved on stdout and stderr, persistent pull-request results, and floating copy and retry actions. Interaction-only streaming and retry use worker transport; navigating away only detaches.",
+          "show-title": false,
+          "data": { "sources": [] },
+          "mark": "element",
+          "layout": "full-view",
+          "element": "command-terminal"
+        }
+      ]
+    }
+  ]
+}

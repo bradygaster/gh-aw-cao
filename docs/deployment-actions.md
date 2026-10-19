@@ -69,13 +69,13 @@ For more information, see [Configure authentication](authentication.md).
    release automatically.
 
    ```bash
-   gh aw add githubnext/gh-aw-cao/activity
-   gh aw add githubnext/gh-aw-cao/dashboard
+   gh aw add githubnext/gh-cao/activity
+   gh aw add githubnext/gh-cao/dashboard
    ```
 
 1. Review, commit, and push the installed files. These include `.github/workflows/cao-activity.yml`, `.github/workflows/cao-dashboard.yml`, and the `activity/` and `dashboard/` directories.
 1. Configure your cross-repository credential profile. Follow the procedure for [GitHub Apps](deployment-actions-github-app.md#deploying-the-dashboard) or for [fine-grained PATs](deployment-actions-pat.md#deploying-the-dashboard).
-1. Run `./cao.sh setup` in the control repository to configure GitHub Pages with GitHub Actions as its source. For a private repository it also restricts access to repository readers; this requires a plan that supports private Pages and permission to manage Pages settings. Setup fails rather than leaving a public site eligible for deployment if access cannot be restricted. If setup was already completed, confirm the Pages source and visibility in **Settings > Pages**.
+1. Run `gh cao setup` in the control repository to configure GitHub Pages with GitHub Actions as its source. For a private repository it also restricts access to repository readers; this requires a plan that supports private Pages and permission to manage Pages settings. Setup fails rather than leaving a public site eligible for deployment if access cannot be restricted. If setup was already completed, confirm the Pages source and visibility in **Settings > Pages**.
 
 1. Optionally, protect the `github-pages` environment. For more information, see [Managing environments for deployment](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment) in the GitHub documentation.
 1. Run the Activity workflow.
@@ -102,7 +102,12 @@ Dashboard has no push trigger or schedule. Every successful default-branch
 Activity run triggers one Dashboard build, so a relevant push produces one
 collection-and-publication sequence without a duplicate deployment.
 
-Failed or cancelled Activity runs produce skipped Dashboard runs rather than publishing an incomplete snapshot. If every Activity-triggered Dashboard run is skipped, inspect the upstream Activity run first. Manual dispatch and default-branch source changes can still rebuild from the last collected snapshot.
+Failed or cancelled Activity runs produce skipped Dashboard runs rather than publishing an invalid snapshot. If every Activity-triggered Dashboard run is skipped, inspect the upstream Activity run first. A confirmed API capacity limit is recoverable: Activity indexes retained and downloaded runs, marks the affected repository coverage as partial, and skips further issue-status and operational-value API work. Authentication, visibility, and invalid-data failures still block publication.
+
+An automatically triggered Dashboard build restores the exact triggering
+Activity run and attempt's cache, falling back only to that run's artifact.
+It cannot silently publish a different run's older snapshot. Manual dispatch can
+still rebuild from the last cached snapshot without collecting fresh evidence.
 
 ## Configuration reference
 

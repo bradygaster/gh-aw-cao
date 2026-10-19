@@ -7,6 +7,7 @@
     "cao-setup": ".github/workflows/shared/setup-github-apps.mjs"
   },
   "scripts": {
+    "postinstall": "node dashboard/site/scripts/prepare-terminal.mjs",
     "install:gh-aw": "GH_AW_VERSION=$(node .github/workflows/shared/control.mjs compiler-version .github/workflows/cao.json) && curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash -s -- \"$GH_AW_VERSION\"",
     "setup:github-apps": "node .github/workflows/shared/setup-github-apps.mjs",
     "dashboard:local": "node dashboard/local-server.mjs",
@@ -25,7 +26,7 @@
     "test:stress:dashboard-backfill": "CAO_BACKFILL_STRESS=1 bash scripts/test-dashboard-backfill.sh",
     "dashboard:server:spec": "npm --prefix server/spec run generate",
     "dashboard:server:spec:check": "npm --prefix server/spec run check",
-    "dashboard:local:mobile": "DASHBOARD_DATA_URL=https://githubnext.github.io/gh-aw-cao/cao/payload-hashes.json MOBILE_BROWSER=chromium MOBILE_DEVICE='Pixel 7' MOBILE_PROFILE=low-memory MOBILE_MEMORY_MB=256 playwright test --config=tests/playwright/configs/mobile.config.mjs",
+    "dashboard:local:mobile": "DASHBOARD_DATA_URL=https://githubnext.github.io/gh-cao/cao/payload-hashes.json MOBILE_BROWSER=chromium MOBILE_DEVICE='Pixel 7' MOBILE_PROFILE=low-memory MOBILE_MEMORY_MB=256 playwright test --config=tests/playwright/configs/mobile.config.mjs",
     "dashboard:data": "node activity/cao.mjs",
     "dashboard:data:download": "npm run dashboard:data -- download",
     "generate:agent-catalog": "node scripts/generate-agent-catalog.mjs",
@@ -41,7 +42,7 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --test tests/unit/*.test.mjs",
     "test:unit:area": "node scripts/run-unit-area.mjs",
-    "test:integration": "node --test --test-concurrency=1 tests/integration/activity-cache.test.mjs tests/integration/activity-discovery-cli.test.mjs tests/integration/cao-configuration-cli.test.mjs tests/integration/cao-issue-status.test.mjs tests/integration/cao-operational-value-local.test.mjs tests/integration/control-admission.test.mjs tests/integration/control-failure.test.mjs tests/integration/control-policy-resolver.test.mjs tests/integration/dashboard-bootstrap.test.mjs tests/integration/dashboard-inventory-ingestion.test.mjs tests/integration/dashboard-query-cost.test.mjs",
+    "test:integration": "node --test --test-concurrency=1 tests/integration/activity-cache.test.mjs tests/integration/activity-discovery-cli.test.mjs tests/integration/cao-configuration-cli.test.mjs tests/integration/cao-issue-status.test.mjs tests/integration/cao-operational-value-local.test.mjs tests/integration/control-admission.test.mjs tests/integration/control-failure.test.mjs tests/integration/control-policy-resolver.test.mjs tests/integration/control-standalone-compilation.test.mjs tests/integration/dashboard-bootstrap.test.mjs tests/integration/dashboard-inventory-ingestion.test.mjs tests/integration/dashboard-query-cost.test.mjs",
     "test:campaign-lifecycle": "node --test --test-concurrency=1 tests/integration/campaign-lifecycle.test.mjs",
     "test:campaign-root": "node --test --test-concurrency=1 --test-name-pattern=\"^root campaign bootstraps\" tests/integration/campaign-lifecycle.test.mjs",
     "test:runtime-producer": "node scripts/validate-cao-runtime.mjs",
@@ -49,8 +50,8 @@
     "runtime:pack": "node scripts/build-cao-runtime.mjs",
     "test:load": "node --test tests/load/*.test.mjs",
     "check:svg": "node scripts/check-svg-visual-language.mjs",
-    "compile": "gh aw compile --strict --no-emit --no-check-update --schedule-seed githubnext/gh-aw-cao",
-    "compile:locks": "gh aw compile --strict --no-check-update --schedule-seed githubnext/gh-aw-cao",
+    "compile": "gh aw compile --strict --no-emit --no-check-update --schedule-seed githubnext/gh-cao",
+    "compile:locks": "gh aw compile --strict --no-check-update --schedule-seed githubnext/gh-cao",
     "check": "npm run lint && npm run typecheck:cao && npm run typecheck:copilot && npm test && npm run test:load && npm run check:svg && npm run dashboard:server:spec:check && npm run compile && npm run docs:build",
     "update-deps": "npx npm-check-updates -u && npm install",
     "test:e2e:docs": "npm run docs:build && playwright test --config=tests/playwright/configs/docs.config.mjs",
@@ -78,7 +79,9 @@
     "astro": "7.3.2",
     "astro-mermaid": "2.1.0",
     "esbuild": "0.28.2",
+    "http-cache-semantics": "file:packages/astro-no-cache",
     "mermaid": "11.17.2",
+    "node-pty": "^1.1.0",
     "source-map-js": "file:dashboard/site/packages/source-map-compat",
     "starlight-blog": "0.30.0",
     "starlight-github-alerts": "0.4.0",
@@ -99,9 +102,20 @@
   },
   "overrides": {
     "astro": {
-      "http-cache-semantics": "4.2.0"
+      "http-cache-semantics": "$http-cache-semantics"
     },
+    "mermaid": {
+      "katex": "0.18.2"
+    },
+    "postcss-nested": {
+      "postcss-selector-parser": "7.1.6"
+    },
+    "sharp": "^0.35.5",
+    "smol-toml": "^1.9.0",
     "source-map-js": "$source-map-js",
+    "starlight-llms-txt": {
+      "micromatch": "npm:picomatch@4.0.7"
+    },
     "undici": "^6.28.1"
   }
 }

@@ -117,6 +117,141 @@ npm run check
 Workflow source changes must pass `npm run compile`. Run
 `npm run compile:locks` only when generated lock files should be updated.
 
+### Go extension development
+
+The root Go module provides the operator-facing `gh cao` GitHub CLI extension.
+It is independent of the existing `server/` module. `make check` scopes Go checks to `cmd/` and `internal/`,
+excluding dashboard server tests and Go files inside npm dependencies.
+Extension CI also runs golangci-lint with the root `.golangci.yml`, including
+gofmt/goimports checks and the standard linters. To run those checks locally:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+golangci-lint fmt --diff ./cmd/... ./internal/...
+golangci-lint run ./cmd/... ./internal/...
+```
+
+Formatting diffs must be empty; CI fails when the formatter reports changes.
+
+`make test-doctor` runs the dependency-free doctor unit suite with injected
+GitHub CLI responses, an empty executable search path, isolated GitHub CLI
+configuration, and no authentication tokens. These tests also run in `make check`;
+they require neither `gh`, gh-aw, Node.js, nor network access.
+
+`make authtests` separately runs the `authtests`-tagged doctor integration suite
+against the real GitHub CLI, the policy-pinned gh-aw installation, and GitHub
+authentication. It checks both text and JSON diagnostics without changing policy.
+Missing prerequisites fail the integration suite rather than skipping checks.
+CI provisions gh-aw and a read-only token only in the separate authenticated
+integration job; unit tests and ordinary smoke tests do not need them.
+
+Use the Go version declared in `go.mod` or newer, GitHub CLI, and Make. For local
+extension installation, the checkout directory must be named `gh-cao`:
+
+```bash
+make check
+make build VERSION=dev
+gh extension install .
+gh cao --help
+gh cao version
+gh cao doctor
+```
+
+Build before installing locally: GitHub CLI links to the root `gh-cao`
+executable, and rebuilding updates that local installation. The extension is
+named `gh cao`; the Go module path is `github.com/githubnext/gh-cao`.
+In a differently named worktree, run `./gh-cao` directly instead.
+The root installer downloads verified release assets directly into GitHub CLI's
+extension data directory under `gh-cao`, so released installs use `gh cao`
+without requiring a local checkout. It refuses to overwrite local linked/source
+installations.
+On Windows, build `gh-cao.exe` with
+`go build -o gh-cao.exe ./cmd/gh-cao`.
+
+| Path | Responsibility |
+| --- | --- |
+| `cmd/gh-cao/` | Process entry point, interrupt cancellation, exit status, and link-time version (`-X main.version=...`). |
+| `internal/cli/` | Native Cobra operator commands, onboarding and authentication, policy and campaign management, read-only SQLite and Dashboard Language queries, computations, MCP, help, and diagnostics. |
+| `internal/ghcli/` | Context-aware GitHub CLI calls through `github.com/cli/go-gh/v2`, the same helper used by gh-aw. |
+| `dashboard/catalog.go` | Embeds the authoritative dashboard JSON, fragments, canonical query projections, and MCP contract in the standalone binary. |
+| `go.mod`, `go.sum` | Pinned extension dependencies, separate from `server/go.mod`. |
+| `Makefile` | `build`, `release`, `fmt`, `lint` (gofmt and go vet), `test` (race detector), dependency-free `test-doctor`, opt-in `authtests`, and `check`. |
+| `scripts/build-release.sh` | Cross-compile six extension binaries with the exact release tag embedded in `main.version`, then write SHA-256 checksums. |
+| `.golangci.yml` | Root-module standard linters and gofmt/goimports formatting, separate from the server configuration. |
+| `.github/workflows/go-extension.yml` | Path-scoped extension formatting, golangci-lint (including tagged auth tests), vet, tests, build, smoke checks, and separate authenticated integration tests. |
+
+Reuse `github.com/github/gh-aw/pkg/logger` rather than implementing another
+logger. Enable its namespaces with `DEBUG=cao:*` and disable debug colors with
+`DEBUG_COLORS=0`. Log only non-sensitive metadata, never credentials, raw
+arguments, or subprocess payloads. Import small shared gh-aw utility packages
+as needed rather than its full CLI command implementation.
+
+Help for every operator command and version work offline without GitHub authentication.
+Guided onboarding runs as `gh cao setup`; independent authentication profiles
+are grouped under `gh cao setup auth github-app|enterprise-app|token`, not a
+root-level `setup-auth` command. These native commands preserve the setup and
+setup-auth JSON result contracts and secure credential prompts.
+Actions and Node-only tools invoke `node activity/cao.mjs <command>` directly,
+including SQLite `doctor` and `setup-auth hosted-cli`. There is no shell launcher;
+retained internal Node implementations serve Actions and parity tests, not operators.
+`doctor` checks GitHub CLI, gh-aw, authentication, and basic local policy structure
+and compiler pin without loading Node.js. Authentication may contact GitHub.
+Every operator command runs in Go without Node.js or an installed JavaScript
+runtime. `CAO_RUNTIME_ROOT` has no effect. Run policy mutations from the control
+checkout root. Keep the root Go module independent of the server module.
+
+Preserve production onboarding, authentication, policy handling, computation,
+and Dashboard Language semantics with focused native tests and the JavaScript
+implementation as a parity oracle in tests only. Never invoke a JavaScript
+runtime from a production extension command. Node.js 24+ and root `npm ci`
+enable parity-oracle coverage; tests skip those comparisons when Node is absent.
+Catalog definitions and canonical
+source mappings are embedded directly from their authoritative JSON; do not
+maintain a separate catalog. SQLite evidence access is read-only and does not
+migrate or repair downloaded projections. `TestNativeStandaloneBinary` runs
+the built binary with an empty `PATH` outside the checkout to enforce this boundary.
+`campaigns add` and `update` pass evolving gh-aw options unchanged.
+Activity/Dashboard pipeline commands are deliberately not registered in Go;
+their Actions, Node command modules and runtime ownership remain unchanged.
+CI invokes the shipped JavaScript validator directly with
+`node activity/cao.mjs validate --json`; it does not build or download the Go
+extension or require consumer npm metadata. User-facing commands belong in
+`gh cao`; Actions execution support belongs in JavaScript. Control-plane
+validation has one JavaScript implementation and no Go or shell-wrapper command.
+Preserve its report and exit-code contracts in `tests/unit/cao-validation.test.mjs`.
+Retain native policy guards used by operator construction and mutation.
+The CI JSON artifact stays outside the
+checkout in `RUNNER_TEMP`.
+See [the operator migration table](docs/cao-cli.md#github-cli-extension).
+
+#### Release binaries
+
+Following the gh-aw release pattern, `make release VERSION=v1.2.3` writes
+standalone `gh-cao-OS-ARCH` assets for Darwin, Linux and Windows on amd64/arm64
+(`.exe` on Windows), plus `checksums.txt` under
+`dist/gh-cao/`. The version must be a stable `vMAJOR.MINOR.PATCH` tag, and the
+output directory must be empty to prevent stale assets from entering a release.
+For a different output directory, run:
+
+```bash
+bash scripts/build-release.sh v1.2.3 .tmp/extension-release
+```
+
+Builds disable CGO, trim source paths, and use
+`-ldflags="-s -w -X main.version=v1.2.3"`. Both `version` and `--version`
+report that exact tag. Verify downloaded assets with
+`sha256sum --check checksums.txt` on Linux or
+`shasum -a 256 --check checksums.txt` on macOS.
+
+The Release workflow runs extension checks and builds at the exact release SHA
+in a read-only job with Go caching disabled, then checks the embedded version
+before uploading its artifact. A separate source-free attachment job verifies
+the binary checksums and the existing attested runtime. Publication requires
+the exact nine-asset set before the release becomes an immutable prerelease;
+the highlights agent remains restricted to updating release notes.
+`node --test tests/unit/build-release.test.mjs tests/unit/release-workflow.test.mjs`
+checks the build contract and release gates.
+
 ### CI feedback and post-merge coverage
 
 Pull requests run the fast checks relevant to their changed paths: repository

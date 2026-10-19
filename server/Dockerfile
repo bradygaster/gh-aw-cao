@@ -31,8 +31,10 @@ ARG VERSION=dev
 ARG REVISION=unknown
 WORKDIR /workspace/server
 COPY server/go.mod server/go.sum ./
+COPY internal/dashboardquery/go.mod internal/dashboardquery/go.sum /workspace/internal/dashboardquery/
 RUN go mod download
 COPY server/ ./
+COPY internal/dashboardquery/ /workspace/internal/dashboardquery/
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
@@ -54,7 +56,7 @@ LABEL org.opencontainers.image.title="Central Agentic Ops dashboard server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      org.opencontainers.image.source="https://github.com/githubnext/gh-aw-cao"
+      org.opencontainers.image.source="https://github.com/githubnext/gh-cao"
 
 # Keep Alpine packages and CA roots current on rebuilds.
 # hadolint ignore=DL3018
@@ -74,7 +76,6 @@ COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/src/a
 COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/src/agent/mcp-contract.json /app/agent/mcp-contract.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.json /app/.github/workflows/cao.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.azure.json /app/.github/workflows/cao.azure.json
-COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.coolify.json /app/.github/workflows/cao.coolify.json
 
 WORKDIR /app
 USER 65532:65532
@@ -133,14 +134,14 @@ SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 ARG VERSION=dev
 ARG REVISION=unknown
 ARG CREATED=unknown
-ARG GH_AW_VERSION=v0.91.5
+ARG GH_AW_VERSION=v0.92.5
 ARG TARGETARCH
 LABEL org.opencontainers.image.title="Central Agentic Ops collector" \
       org.opencontainers.image.description="Hosted CAO collection worker and backfill runtime" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      org.opencontainers.image.source="https://github.com/githubnext/gh-aw-cao"
+      org.opencontainers.image.source="https://github.com/githubnext/gh-cao"
 
 # Keep Alpine packages, CA roots, and the GitHub CLI current on rebuilds.
 # hadolint ignore=DL3018
@@ -150,8 +151,8 @@ RUN apk upgrade --no-cache \
     && adduser -S -D -H -u 65532 -G cao cao \
     && mkdir -p /app/catalog /app/evidence /app/.local/share/gh/extensions/gh-aw \
     && case "${TARGETARCH}" in \
-      amd64) checksum="814a0efbee964ee2acb286bf9b3cbaa133d47699a2a57cbeb3ea4040a7f3b099" ;; \
-      arm64) checksum="9767cbbfcd0f3c6cf68e5aff94a7efcfda911c7e865604434da391181c62e94d" ;; \
+      amd64) checksum="600c41015ce36b09d03a2dad63b589b9642ecbf83cdb2584851892c8dec32f5d" ;; \
+      arm64) checksum="4238430125d3219576e1fcfc3750ae0e1e8173f3a86952e282b69e35a6649416" ;; \
       *) echo "Unsupported collector architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && wget -q -O /usr/local/bin/gh-aw \
@@ -184,5 +185,24 @@ USER 65532:65532
 VOLUME ["/app/evidence"]
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["collect", "--database-queries", "/app/queries/database.json"]
+
+# Export only this target with BuildKit --output for a reviewed executor release.
+FROM server-build AS hosted-cli-relay-build
+ARG TARGETARCH
+ARG REVISION
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+WORKDIR /out
+RUN printf '%s' "${REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+    && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go -C /workspace/server build \
+    -trimpath -buildvcs=false -ldflags="-s -w" \
+    -o /out/cao-cli-relay ./cmd/cao-cli-relay \
+    && sha256sum cao-cli-relay > cao-cli-relay.sha256 \
+    && printf '{"source":"https://github.com/githubnext/gh-cao","revision":"%s","platform":"linux/%s","sha256":"%s"}\n' \
+      "${REVISION}" "${TARGETARCH}" "$(cut -d ' ' -f1 cao-cli-relay.sha256)" > cao-cli-relay.json
+
+FROM scratch AS hosted-cli-relay-artifact
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay /cao-cli-relay
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay.sha256 /cao-cli-relay.sha256
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay.json /cao-cli-relay.json
 
 FROM dashboard-runtime AS final

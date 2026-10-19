@@ -8,7 +8,7 @@ import test from "node:test";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const control = join(root, ".github", "workflows", "shared", "control.mjs");
-const schemaUri = "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/.github/workflows/shared/cao.schema.json";
+const schemaUri = "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json";
 
 function policy() {
   return {
@@ -88,7 +88,7 @@ test("control.mjs reads the configured gh-aw compiler version", () => {
 test("control.mjs resolves deployment profiles for control settings", () => {
   const directory = mkdtempSync(join(tmpdir(), "cao-policy-profile-"));
   const policyPath = join(directory, "cao.json");
-  const profilePath = join(directory, "cao.coolify.json");
+  const profilePath = join(directory, "cao.container.json");
   writeFileSync(policyPath, JSON.stringify(policy()));
   writeFileSync(profilePath, JSON.stringify({
     extends: "./cao.json",
@@ -97,7 +97,7 @@ test("control.mjs resolves deployment profiles for control settings", () => {
         host: {
           target: {
             module: "container",
-            name: "coolify",
+            name: "container",
           },
           redis: {
             module: "local",
@@ -118,7 +118,7 @@ test("control.mjs resolves deployment profiles for control settings", () => {
     assert.equal(result.status, 0, result.stderr);
     const settings = JSON.parse(result.stdout);
     assert.deepEqual(settings.allowed_repositories, ["acme/target"]);
-    assert.equal(settings.web.host.target.name, "coolify");
+    assert.equal(settings.web.host.target.name, "container");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -434,7 +434,7 @@ for (const [name, mutate, expected] of policyViolations) {
 }
 
 const effectivePolicyViolations = [
-  ["unknown roles", { CAO_ROLE: "unknown" }, "role must be orchestrator or worker"],
+  ["unknown roles", { CAO_ROLE: "unknown" }, "role must be orchestrator, worker, or standalone"],
   ["workers without identities", { CAO_ROLE: "worker" }, "worker identity is required"],
   ["orchestrators with worker identities", { CAO_WORKER: "auditor" }, "worker identity is forbidden for orchestrators"],
   ["undeclared workers", { CAO_ROLE: "worker", CAO_WORKER: "unknown" }, "unknown worker: operations/unknown"],

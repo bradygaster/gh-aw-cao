@@ -21,6 +21,7 @@ model Filter {
 model SelectedField { field: string; as?: string; }
 model Join {
   source: string;
+  /** inner and left require unique right keys; inner-many explicitly expands all matching rows within query budgets. Missing or blank keys never match. */
   type?: string;
   on: { left: string; right: string }[];
   fields: SelectedField[];
@@ -33,6 +34,7 @@ model ComputedField {
 model AggregateValue {
   field: string;
   as: string;
+  /** Includes median, p75, p90 and p95: continuous quantiles over known finite numeric values. */
   reducer: string;
   filter?: Filter;
 }
@@ -57,7 +59,7 @@ model Facet {
   column?: string;
   as: string;
 }
-/** One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection. */
+/** An ordered rolling, change, previous-value or row-number operation, evaluated after aggregation and before temporal-series projection. previous preserves scalar type; row-number is one-based. */
 model WindowField {
   operation: string;
   field: string;
@@ -92,7 +94,6 @@ model QueryDefinition {
   limit?: int32;
   facet?: Facet;
   stores?: string[];
-  @encodedName("application/json", "stores-by-source") storesBySource?: Record<string[]>;
 }
 
 model PaginationRequest {

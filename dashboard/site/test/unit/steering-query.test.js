@@ -35,11 +35,11 @@ function steeringAudit(id, code, workflow, run) {
   return {
     id,
     organization: 'githubnext',
-    repository: 'gh-aw-cao',
+    repository: 'gh-cao',
     workflow,
     run,
     code,
-    'event-type': 'audit.gateway_steering',
+    'event-type': 'firewall.steering',
     'event-status': code,
     'event-summary': `${code} warning`,
     'observed-at': '2026-09-24T11:00:00Z'
@@ -58,7 +58,7 @@ const sources = {
       {
         id: 'a5',
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/doctor.md',
         run: '1',
         code: 'high_token_usage',
@@ -75,7 +75,7 @@ const sources = {
     rows: [
       {
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/doctor.md',
         'workflow-name': 'AW Doctor',
         campaign: 'aw-doctor'
@@ -110,19 +110,19 @@ it('ranks workflows by steering warnings and links each one to its runtime page'
 
   expect(results['steering-top-workflows'].rows).toEqual([
     expect.objectContaining({
-      'workflow-coordinate': 'githubnext/gh-aw-cao:.github/workflows/doctor.md',
+      'workflow-coordinate': 'githubnext/gh-cao:.github/workflows/doctor.md',
       'workflow-label': 'AW Doctor',
       events: 3,
       runs: 2,
       'token-events': 2,
       'time-events': 1,
       'workflow-dashboard-link': expect.objectContaining({
-        'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-aw-cao%3A.github%2Fworkflows%2Fdoctor.md'
+        'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-cao%3A.github%2Fworkflows%2Fdoctor.md'
       })
     }),
     expect.objectContaining({
-      'workflow-coordinate': 'githubnext/gh-aw-cao:.github/workflows/triage.md',
-      'workflow-label': 'githubnext/gh-aw-cao:.github/workflows/triage.md',
+      'workflow-coordinate': 'githubnext/gh-cao:.github/workflows/triage.md',
+      'workflow-label': 'githubnext/gh-cao:.github/workflows/triage.md',
       events: 1,
       'token-events': 0,
       'time-events': 1

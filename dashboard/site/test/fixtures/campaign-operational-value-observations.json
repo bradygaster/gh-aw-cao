@@ -4,6 +4,7 @@
     "organization": "githubnext",
     "repository": "gh-aw",
     "operational-value": 12.5,
+    "cadence-days": 1,
     "operational-value-definition": "optimization-token-optimizer.aic-per-successful-run",
     "operational-value-role": "primary",
     "operational-value-name": "AI Credit per successful run",
@@ -13,7 +14,7 @@
     "observed-at": "2026-09-22T20:56:21Z",
     "run-link": {
       "relation": "run",
-      "href": "https://github.com/githubnext/gh-aw-cao/actions/runs/101",
+      "href": "https://github.com/githubnext/gh-cao/actions/runs/101",
       "label": "View run 101"
     }
   },
@@ -22,6 +23,7 @@
     "organization": "githubnext",
     "repository": "gh-aw",
     "operational-value": 8.25,
+    "cadence-days": 1,
     "operational-value-definition": "optimization-token-optimizer.aic-per-successful-run",
     "operational-value-role": "primary",
     "operational-value-name": "AI Credit per successful run",
@@ -31,7 +33,7 @@
     "observed-at": "2026-09-24T20:56:21Z",
     "run-link": {
       "relation": "run",
-      "href": "https://github.com/githubnext/gh-aw-cao/actions/runs/102",
+      "href": "https://github.com/githubnext/gh-cao/actions/runs/102",
       "label": "View run 102"
     }
   },

@@ -8,17 +8,17 @@ research, triage, or planning.
 
 ## Package boundary
 
-Install this package through the ordinary `cao add` campaign path in an already
+Install this package through the ordinary `gh cao campaigns add` path in an already
 initialized control repository, using a reviewed immutable catalog revision:
 
 ```sh
-./cao.sh add OWNER/CATALOG/squad-advisory@COMMIT
+gh cao campaigns add OWNER/CATALOG/squad-advisory@COMMIT
 ```
 
 Replace the package coordinate with the selected catalog and commit. The
 descriptor and workflow inventory are self-contained; this package does not
 reinstall the root control plane or replace the CAO CLI/runtime. It needs no
-Squad-specific materializer, `cao enable` handler, onboarding hook, or credential
+Squad-specific materializer, `gh cao campaigns enable` handler, onboarding hook, or credential
 resolver. Adding it does not install, activate, or validate native Squad.
 The root catalog manifest does not install operational campaigns by default.
 
@@ -106,8 +106,10 @@ Coverage must be checked against the current exact enrollment; missing,
 deferred, expired, inaccessible, or stale snapshots remain explicit gaps.
 Revalidate evidence older than 24 hours before planning.
 
-Native Squad must be installed through its own reviewed, compiler-compatible
-package process. Package coordinates and immutable revisions are chosen in
+Native Squad already runs in the control repository with its own cast and native
+lifecycle; this campaign does not replace it. Native Squad installation and
+updates remain its own reviewed, compiler-compatible package process.
+Package coordinates and immutable revisions are chosen in
 control-repository configuration, not baked into this campaign. Native Squad
 owns its installation receipts, cast, research state, review attribution, and
 implementation authority.
@@ -120,6 +122,10 @@ native package handoff and review-attribution contract; an ordinary CAO campaign
 cannot claim that integration by patching core or hand-editing ownership data.
 Existing Squad-owned farm files must remain untouched until their owning
 package can reconcile changes safely.
+
+Adopting Squad 2.0 after it ships remains intentional future work so Claude users
+can benefit too. This source integration neither upgrades Squad nor redesigns
+that handoff.
 
 ## Operational value
 
@@ -138,7 +144,7 @@ From the catalog checkout:
 ```sh
 gh aw compile .github/workflows/squad-advisory.md \
   .github/workflows/squad-advisory-farm-snapshot.md \
-  --strict --no-check-update --schedule-seed githubnext/gh-aw-cao
+  --strict --no-check-update --schedule-seed githubnext/gh-cao
 node --test tests/unit/workflow-contract-squad-advisory.test.mjs \
   tests/unit/workflow-contract-campaigns.test.mjs
 ```
