@@ -3,26 +3,26 @@ title: Set Up CAO
 description: Set up CAO, monitor one repository, and explore your dashboard before adding automation.
 ---
 
-**Start with visibility, not automation.** Connect one repository and see its
-existing GitHub Agentic Workflow runs, costs, and outcomes in your dashboard.
-You do not need to install or run a campaign.
+This guide walks you through installing CAO in a control repository, connecting
+one repository to monitor, and publishing a dashboard of its existing GitHub
+Agentic Workflow runs, costs, and outcomes.
 
-Your first milestone: **one repository in scope, a published dashboard, and no
-new agentic work running.**
+This setup is for monitoring only. You can add an agentic workflow or a campaign
+later if you choose.
 
 ## Prerequisites
 
-You need Git, Bash, `curl`, **Node.js 24+**, and **GitHub CLI 2.68+**.
-Sign in with `gh auth login` if needed. You need permission to configure
-Actions, credentials, and Pages in your control repository.
-
-CAO lives in a **control repository**: the repository that stores its
-configuration and runs collection. Prefer a separate repository; the repository
-you monitor does not need CAO installed in it.
-
-Use a private control repository for private or internal evidence. Dashboard
-visibility is a separate choice: a private repository does **not** guarantee a
-private Pages site. Setup checks this and asks before allowing public publication.
+- You need **Git**, **Bash**, **`curl`**, **Node.js 24+**, and **GitHub CLI 2.68+**.
+- Run **`gh auth login`** if needed.
+- You need permission to configure **Actions**, **credentials**, and
+  **Pages** in your control repository.
+- CAO lives in a **control repository** that stores its configuration
+  and runs collection. Prefer a separate repository; the repository you monitor
+  does not need CAO installed in it.
+- Use a **private control repository** for private or internal evidence.
+  **Dashboard visibility** is a separate choice: a private repository does **not**
+  guarantee a private Pages site. Setup checks this and asks before allowing
+  public publication.
 
 ## 1. Install CAO
 
