@@ -614,6 +614,13 @@ module ingestion 'ingestion.bicep' = {
     ingestionImage: '${registry.properties.loginServer}/${ingestionImageRepository}:${ingestionImageTag}'
     postgresRunRetentionDays: postgresRunRetentionDays
     postgresUrlSecretName: postgresUrlSecretName
+    canonicalNamespace: 'azure-dashboard'
+    operationalNamespace: 'azure-dashboard-operational'
+    operationalCacheMaxBytes: operationalCacheMaxBytes
+    operationalCacheMaxValueBytes: operationalCacheMaxValueBytes
+    operationalCacheMaxEntries: operationalCacheMaxEntries
+    operationalProtectedMaxBytes: operationalProtectedMaxBytes
+    operationalProtectedMaxEntries: operationalProtectedMaxEntries
   }
   dependsOn: [postgresConnectionStringValue]
 }

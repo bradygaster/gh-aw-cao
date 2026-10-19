@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "14384152885061689685"
+      "templateHash": "13795599401251205490"
     }
   },
   "parameters": {
@@ -1635,6 +1635,27 @@
           },
           "postgresUrlSecretName": {
             "value": "[parameters('postgresUrlSecretName')]"
+          },
+          "canonicalNamespace": {
+            "value": "azure-dashboard"
+          },
+          "operationalNamespace": {
+            "value": "azure-dashboard-operational"
+          },
+          "operationalCacheMaxBytes": {
+            "value": "[parameters('operationalCacheMaxBytes')]"
+          },
+          "operationalCacheMaxValueBytes": {
+            "value": "[parameters('operationalCacheMaxValueBytes')]"
+          },
+          "operationalCacheMaxEntries": {
+            "value": "[parameters('operationalCacheMaxEntries')]"
+          },
+          "operationalProtectedMaxBytes": {
+            "value": "[parameters('operationalProtectedMaxBytes')]"
+          },
+          "operationalProtectedMaxEntries": {
+            "value": "[parameters('operationalProtectedMaxEntries')]"
           }
         },
         "template": {
@@ -1644,7 +1665,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "110684539367479269"
+              "templateHash": "3561589804216115341"
             }
           },
           "parameters": {
@@ -1677,6 +1698,61 @@
               "metadata": {
                 "description": "Key Vault secret that stores the PostgreSQL URL."
               }
+            },
+            "canonicalNamespace": {
+              "type": "string",
+              "defaultValue": "azure-dashboard"
+            },
+            "operationalNamespace": {
+              "type": "string",
+              "defaultValue": "azure-dashboard-operational"
+            },
+            "operationalCacheMaxBytes": {
+              "type": "int",
+              "defaultValue": 33554432,
+              "minValue": 1
+            },
+            "operationalCacheMaxValueBytes": {
+              "type": "int",
+              "defaultValue": 4194304,
+              "minValue": 1
+            },
+            "operationalCacheMaxEntries": {
+              "type": "int",
+              "defaultValue": 1024,
+              "minValue": 1
+            },
+            "operationalProtectedMaxBytes": {
+              "type": "int",
+              "defaultValue": 134217728,
+              "minValue": 1
+            },
+            "operationalProtectedMaxEntries": {
+              "type": "int",
+              "defaultValue": 200000,
+              "minValue": 1
+            }
+          },
+          "variables": {
+            "retentionEnvironment": [
+              {
+                "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
+                "value": "[string(parameters('postgresRunRetentionDays'))]"
+              },
+              {
+                "name": "CAO_POSTGRES_LINKED_RETENTION_DAYS",
+                "value": "[string(parameters('postgresRunRetentionDays'))]"
+              }
+            ],
+            "adminEnvironment": [
+              {
+                "name": "CAO_DATABASE_ADMIN_URL",
+                "secretRef": "cao-postgres-url"
+              }
+            ],
+            "bootstrapResources": {
+              "cpu": "[json('0.5')]",
+              "memory": "1Gi"
             }
           },
           "resources": [
@@ -1722,6 +1798,42 @@
                   ]
                 },
                 "template": {
+                  "initContainers": [
+                    {
+                      "name": "bootstrap-canonical",
+                      "image": "[parameters('ingestionImage')]",
+                      "command": [
+                        "/app/cao-dashboard"
+                      ],
+                      "args": [
+                        "database",
+                        "bootstrap",
+                        "--store",
+                        "canonical",
+                        "--namespace",
+                        "[parameters('canonicalNamespace')]"
+                      ],
+                      "env": "[concat(variables('adminEnvironment'), variables('retentionEnvironment'))]",
+                      "resources": "[variables('bootstrapResources')]"
+                    },
+                    {
+                      "name": "bootstrap-operational",
+                      "image": "[parameters('ingestionImage')]",
+                      "command": [
+                        "/app/cao-dashboard"
+                      ],
+                      "args": [
+                        "database",
+                        "bootstrap",
+                        "--store",
+                        "operational",
+                        "--namespace",
+                        "[parameters('operationalNamespace')]"
+                      ],
+                      "env": "[concat(variables('adminEnvironment'), createArray(createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_BYTES', 'value', string(parameters('operationalCacheMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES', 'value', string(parameters('operationalCacheMaxValueBytes'))), createObject('name', 'CAO_OPERATIONAL_CACHE_MAX_ENTRIES', 'value', string(parameters('operationalCacheMaxEntries'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_BYTES', 'value', string(parameters('operationalProtectedMaxBytes'))), createObject('name', 'CAO_OPERATIONAL_PROTECTED_MAX_ENTRIES', 'value', string(parameters('operationalProtectedMaxEntries')))))]",
+                      "resources": "[variables('bootstrapResources')]"
+                    }
+                  ],
                   "containers": [
                     {
                       "name": "ingest",
@@ -1736,7 +1848,7 @@
                         "--database-queries",
                         "/app/queries/database.json",
                         "--redis-namespace",
-                        "azure-dashboard"
+                        "[parameters('canonicalNamespace')]"
                       ],
                       "env": [
                         {

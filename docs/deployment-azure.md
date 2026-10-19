@@ -40,7 +40,7 @@ The `server/azure/main.bicep` template creates the following resources in one re
 | Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, and no public blob access | Stores Azure Functions runtime state only |
 | PostgreSQL Flexible Server | PostgreSQL 16, private delegated subnet, TLS certificate verification, seven-day backups | Stores canonical data and isolated operational tables without Redis |
 | Virtual network and private DNS | Separate Functions, PostgreSQL, and Container Apps subnets | Provides private database access for all roles |
-| Container Apps environment and manual ingestion job | Internal environment, Key Vault secrets, managed-identity ACR pulls | Runs explicit snapshot ingestion inside the private network |
+| Container Apps environment and manual ingestion job | Internal environment, Key Vault secrets, managed-identity ACR pulls | Bootstraps the database schema, then runs explicit snapshot ingestion inside the private network |
 | Application Insights and Log Analytics | Exactly one workspace-backed component and one shared workspace | Receives container logs and configured application telemetry |
 
 ### Other requirements
@@ -320,6 +320,20 @@ later does not restore dropped partitions.
    and optional collection/backfill roles. This preserves the earlier shared
    window only when that existing effective value was carried forward explicitly.
 
+   Runtime roles only open storage; they never create it. Before ingesting,
+   every job execution runs two init containers from the ingestion image, in
+   order, with the administrator URL from Key Vault as `CAO_DATABASE_ADMIN_URL`:
+
+   - `database bootstrap --store canonical --namespace azure-dashboard`, with
+     the reviewed retention settings.
+   - `database bootstrap --store operational --namespace azure-dashboard-operational`,
+     with the template's `CAO_OPERATIONAL_*` capacities.
+
+   Both commands are idempotent. On a new database they create the schema; on
+   an existing one they verify it and apply the same partition maintenance as
+   runtime startup. If either fails, ingestion does not start. The ingest
+   container itself does not receive `CAO_DATABASE_ADMIN_URL`.
+
    ```bash
    az containerapp job start --resource-group cao-dashboard \
      --name FUNCTION-APP-NAME-ingest
@@ -398,7 +412,8 @@ with a reviewed redeployment, not by editing app settings by hand.
    secret. Every role now points at the new, empty database, so the dashboard
    reports `503` readiness until the next step succeeds.
 1. Start the ingestion job and wait for it to report `Succeeded`, as in
-   [Bootstrap steps](#bootstrap-steps). Then restart the Function App and any
+   [Bootstrap steps](#bootstrap-steps). Its init containers bootstrap both
+   stores in the new database before ingesting. Then restart the Function App and any
    collection roles and verify health, readiness, and sign-in.
 1. After the new database is verified and no longer needs rollback, delete the
    previous database and disable or delete its Key Vault secret as a separate,

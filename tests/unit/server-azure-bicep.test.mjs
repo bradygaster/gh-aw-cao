@@ -153,7 +153,8 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
     assert.match(ingestion, /server:\s*registry\.properties\.loginServer/);
     assert.match(ingestion, /identity:\s*identity\.id/);
     assert.match(ingestion, /keyVaultUrl:.*secrets\/\$\{postgresUrlSecretName\}/);
-    assert.match(ingestion, /'--redis-namespace'\s+'azure-dashboard'/);
+    assert.match(ingestion, /'--redis-namespace'\s+canonicalNamespace/);
+    assert.match(ingestion, /param canonicalNamespace string = 'azure-dashboard'/);
     assert.match(ingestion, /dependsOn:\s*\[roles\]/);
     assert.equal((collector.match(/registries:\s*registries/g) ?? []).length, 2);
     assert.equal((collector.match(/dependsOn:\s*\[roles\]/g) ?? []).length, 2);
@@ -291,4 +292,36 @@ test('Azure database and URL secret names are parameters whose defaults preserve
     assert.equal(module.properties.parameters.postgresUrlSecretName.value, "[parameters('postgresUrlSecretName')]");
   }
   assert.match(deploymentDocs, /### Moving to a new database/);
+});
+
+test('Azure ingestion idempotently bootstraps both stores before ingesting', () => {
+  const module = resources.find((resource) => resource.name === 'snapshot-ingestion');
+  const job = Object.values(module.properties.template.resources).find((resource) => resource.type === 'Microsoft.App/jobs');
+  const template = module.properties.template;
+  const [canonical, operational] = job.properties.template.initContainers;
+  assert.deepEqual(job.properties.template.initContainers.map((container) => container.name),
+    ['bootstrap-canonical', 'bootstrap-operational']);
+  for (const [container, store, namespace] of [
+    [canonical, 'canonical', "[parameters('canonicalNamespace')]"],
+    [operational, 'operational', "[parameters('operationalNamespace')]"],
+  ]) {
+    assert.equal(container.image, "[parameters('ingestionImage')]");
+    assert.deepEqual(container.command, ['/app/cao-dashboard']);
+    assert.deepEqual(container.args, ['database', 'bootstrap', '--store', store, '--namespace', namespace]);
+    assert.match(String(container.env), /variables\('adminEnvironment'\)/);
+  }
+  assert.deepEqual(template.variables.adminEnvironment, [{ name: 'CAO_DATABASE_ADMIN_URL', secretRef: 'cao-postgres-url' }]);
+  assert.match(String(canonical.env), /variables\('retentionEnvironment'\)/);
+  assert.deepEqual(template.variables.retentionEnvironment.map((entry) => entry.value),
+    ["[string(parameters('postgresRunRetentionDays'))]", "[string(parameters('postgresRunRetentionDays'))]"]);
+  for (const setting of ['CacheMaxBytes', 'CacheMaxValueBytes', 'CacheMaxEntries', 'ProtectedMaxBytes', 'ProtectedMaxEntries']) {
+    assert.match(String(operational.env), new RegExp(`parameters\\('operational${setting}'\\)`));
+    assert.equal(module.properties.parameters[`operational${setting}`].value, `[parameters('operational${setting}')]`);
+  }
+  assert.equal(module.properties.parameters.canonicalNamespace.value, 'azure-dashboard');
+  assert.equal(module.properties.parameters.operationalNamespace.value, 'azure-dashboard-operational');
+  assert.ok(!job.properties.template.containers[0].env.some((entry) => entry.name === 'CAO_DATABASE_ADMIN_URL'),
+    'the ingest container itself does not receive the bootstrap-only setting');
+  assert.match(deploymentDocs, /database bootstrap --store canonical/);
+  assert.match(deploymentDocs, /database bootstrap --store operational/);
 });
