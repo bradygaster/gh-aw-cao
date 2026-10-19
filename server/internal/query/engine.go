@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/model"
 )
 
 var queryLog = logger.New("cao:query")
@@ -47,7 +47,7 @@ func Validate(definitions []Definition) error {
 			if join.Source == "" || len(join.On) == 0 {
 				return fmt.Errorf("query %q contains an unbounded join", definition.Name)
 			}
-			if join.Type != "" && join.Type != "inner" && join.Type != "left" {
+			if join.Type != "" && join.Type != "inner" && join.Type != "left" && join.Type != "inner-many" {
 				return fmt.Errorf("query %q has unsupported join type %q", definition.Name, join.Type)
 			}
 			if seen[join.Source] && !available[join.Source] {
@@ -71,7 +71,7 @@ func Validate(definitions []Definition) error {
 			}
 		}
 		if definition.TemporalSeries != nil &&
-			(len(definition.TemporalSeries.Measures) > 64 || len(definition.TemporalSeries.Maps) > 64 || len(definition.TemporalSeries.Carry) > 16) {
+			(len(definition.TemporalSeries.Measures) > 64 || len(definition.TemporalSeries.Maps) > 64 || len(definition.TemporalSeries.Carry) > 16 || len(definition.TemporalSeries.PointCarry) > 16) {
 			return fmt.Errorf("query %q exceeds temporal-series resource limits", definition.Name)
 		}
 		if definition.TemporalSeries != nil && definition.TemporalSeries.Shape != "" &&
@@ -125,11 +125,11 @@ func computeArity(function string) (int, int, bool) {
 	arities := map[string][2]int{
 		"literal": {1, 1}, "coalesce": {1, 8}, "concat": {1, 8}, "lower": {1, 1}, "upper": {1, 1},
 		"title-case": {1, 1}, "trim": {1, 1}, "replace-suffix": {3, 3}, "url-encode": {1, 1},
-		"date-day": {1, 1}, "date-bucket": {2, 2}, "calendar-week-point": {3, 3}, "dashboard-link": {3, 4}, "link-href": {1, 1}, "link": {2, 2},
+		"date-day": {1, 1}, "activity-shard-day": {1, 1}, "timestamp": {1, 1}, "date-bucket": {2, 2}, "calendar-week-point": {3, 3}, "dashboard-link": {3, 4}, "link-href": {1, 1}, "link": {2, 2},
 		"equals-any": {2, 8}, "greater-than": {2, 2}, "if": {3, 3}, "format-count": {1, 1},
 		"format-percent": {1, 1}, "array-length": {1, 1}, "failure-streak-point": {3, 3},
 		"number": {1, 1}, "positive-integer": {2, 2}, "sum": {2, 8}, "difference": {2, 2},
-		"product": {2, 8}, "quotient": {2, 2},
+		"product": {2, 8}, "quotient": {2, 2}, "iso-timestamp": {1, 1}, "sqrt": {1, 1},
 	}
 	arity, ok := arities[function]
 	return arity[0], arity[1], ok
@@ -138,7 +138,7 @@ func computeArity(function string) (int, int, bool) {
 func supportedReducer(reducer string) bool {
 	switch reducer {
 	case "count", "distinct-count", "distinct-list", "distinct-values", "calendar-week-rhythm",
-		"latest-failure-streak", "sum", "mean", "min", "max", "unique":
+		"latest-failure-streak", "sum", "mean", "min", "max", "unique", "median", "p75", "p90", "p95":
 		return true
 	default:
 		return false
@@ -166,6 +166,46 @@ func validateFilter(filter *Filter) error {
 func Dependencies(definitions []Definition, requested []string) ([]string, error) {
 	order, _, _, err := dependencyPlan(definitions, requested)
 	return order, err
+}
+
+// WalkPlan resolves every root before visiting its dependent definition.
+// The loader owns source authorization, including optional join/union inputs.
+func WalkPlan(definitions []Definition, requested []string, load func(string) error, visit func(Definition) error) error {
+	if err := Validate(definitions); err != nil {
+		return err
+	}
+	order, err := Dependencies(definitions, requested)
+	if err != nil {
+		return err
+	}
+	index := make(map[string]Definition, len(definitions))
+	for _, definition := range definitions {
+		index[definition.Name] = definition
+	}
+	for _, name := range order {
+		definition, derived := index[name]
+		if !derived {
+			if err := load(name); err != nil {
+				return err
+			}
+			continue
+		}
+		inputs := append([]string{definition.From}, definition.Union...)
+		for _, join := range definition.Joins {
+			inputs = append(inputs, join.Source)
+		}
+		for _, input := range inputs {
+			if _, derived := index[input]; !derived {
+				if err := load(input); err != nil {
+					return err
+				}
+			}
+		}
+		if err := visit(definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func alias(field SelectedField) string {
@@ -259,7 +299,7 @@ func estimateRowsBytes(rows []model.Row, remaining int64) int64 {
 	for _, row := range rows {
 		total += 64
 		for key, value := range row {
-			total += int64(len(key)) + 48 + estimateValueBytes(value, 0)
+			total += int64(len(key)) + 48 + estimateValueBytes(value, 0, remaining)
 			if total > remaining {
 				return total
 			}
@@ -272,9 +312,13 @@ func EstimateRowsBytes(rows []model.Row) int64 {
 	return estimateRowsBytes(rows, MaxRetainedBytes)
 }
 
-func estimateValueBytes(value any, depth int) int64 {
+func EstimateRowsBytesWithLimit(rows []model.Row, limit int64) int64 {
+	return estimateRowsBytes(rows, limit)
+}
+
+func estimateValueBytes(value any, depth int, limit int64) int64 {
 	if depth > 32 {
-		return MaxWorkingBytes + 1
+		return limit + 1
 	}
 	switch typed := value.(type) {
 	case nil:
@@ -292,13 +336,19 @@ func estimateValueBytes(value any, depth int) int64 {
 	case []any:
 		total := int64(24)
 		for _, item := range typed {
-			total += 16 + estimateValueBytes(item, depth+1)
+			total += 16 + estimateValueBytes(item, depth+1, limit)
+			if total > limit {
+				return total
+			}
 		}
 		return total
 	case map[string]any:
 		total := int64(48)
 		for key, item := range typed {
-			total += int64(len(key)) + 32 + estimateValueBytes(item, depth+1)
+			total += int64(len(key)) + 32 + estimateValueBytes(item, depth+1, limit)
+			if total > limit {
+				return total
+			}
 		}
 		return total
 	default:

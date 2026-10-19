@@ -56,7 +56,7 @@ export async function addCaoCampaign(campaignSpec, ghAwOptions = [], {
 } = {}) {
   if (!campaignSpec || campaignSpec.startsWith('-')) throw new UsageError('cao add requires a campaign');
   const expectedCampaign = campaignSlugFromSpec(campaignSpec);
-  if (expectedCampaign === 'gh-aw-cao') {
+  if (expectedCampaign === 'gh-cao') {
     throw new UsageError('cao add cannot install the CAO root package; use install.sh');
   }
   let localSourceRoot;
@@ -109,10 +109,18 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
   policyPath = DEFAULT_POLICY_PATH,
   execute = spawnSync
 } = {}) {
-  const { ref, includePrereleases, updateOptions } = parseUpdateArguments(ghAwOptions, UsageError);
+  const { ref, campaign: selectedCampaign, includePrereleases, updateOptions } = parseUpdateArguments(ghAwOptions, UsageError);
   const policy = await readCaoPolicy(policyPath);
-  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
-  const campaigns = await installedCampaignRecords();
+  let campaigns = await installedCampaignRecords();
+  const campaignSlug = (record) => record.campaign === 'githubnext/gh-cao'
+    ? 'root'
+    : record.campaign.split('/').at(-1);
+  if (selectedCampaign !== undefined) {
+    campaigns = campaigns.filter((record) => campaignSlug(record) === selectedCampaign);
+    if (campaigns.length !== 1) {
+      throw new UsageError(`${campaigns.length === 0 ? 'Unknown' : 'Ambiguous'} installed CAO campaign: ${selectedCampaign}`);
+    }
+  }
   if (campaigns.length === 0) {
     throw new Error('No installed gh-aw package records found under .github/aw/packages');
   }
@@ -122,6 +130,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     }
   }
 
+  const ghAw = await ensureGhAwMinimumVersion({ policyPath, execute });
   const resolvedCommit = resolveUpdateCommit(ref, execute, commandFailureMessage, compareGhAwVersions);
   const updatedCampaigns = [];
   const mergedDeclarations = [];
@@ -135,7 +144,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
     // must be reapplied through add, which also writes the ownership record.
     // Match install.sh: root resources contain an intentional App setup form
     // that gh-aw's Markdown scanner rejects.
-    const addOptions = record.campaign === 'githubnext/gh-aw-cao' && !updateOptions.includes('--no-security-scanner')
+    const addOptions = record.campaign === 'githubnext/gh-cao' && !updateOptions.includes('--no-security-scanner')
       ? ['--no-security-scanner', ...updateOptions]
       : updateOptions;
     const updateArguments = resolvedCommit
@@ -155,9 +164,7 @@ export async function updateCaoCampaigns(ghAwOptions = [], {
         throw new Error(`CAO package ${record.campaign} did not record requested commit ${resolvedCommit}; refusing to materialize`);
       }
     }
-    const campaign = record.campaign === 'githubnext/gh-aw-cao'
-      ? 'root'
-      : record.campaign.split('/').at(-1);
+    const campaign = campaignSlug(record);
     materializeInstalledCao(campaign, execute);
     const declaration = await readInstalledCaoDeclaration(record.campaign);
     if (declaration) {

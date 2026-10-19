@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { IDBFactory } from 'fake-indexeddb';
+import { configureCliQueue, isCliQueueQuery } from '../../src/data/cli-queue.js';
+import commandQueueFixture from '../fixtures/cli-command-queue.json' with { type: 'json' };
+import commandsContract from '../fixtures/commands-view-contract.json' with { type: 'json' };
 import { processDataRequest } from '../../src/data-worker.js';
 import { dashboardQueryDefects, executeDashboardQueries } from '../../src/data/queries/declarative.js';
 import { compileDashboardViewPayloadQueries } from '../../src/data/queries/view-payload-compiler.js';
 import { CAMPAIGN_ROUTE_BODY_VALUES } from '../../src/components/route-body-specification.js';
 import { SERVER_SOURCE_VALUES, TABLE_FIELDS } from '../../src/specification.js';
 import campaignNavigationContract from '../fixtures/campaign-navigation-contract.json' with { type: 'json' };
+import evaluationContract from '../fixtures/evaluation-evidence-contract.json' with { type: 'json' };
 
 import { authoritativeDashboard as document } from '../authoritative-dashboard.js';
 const dashboard = document.dashboard;
@@ -14,6 +19,52 @@ const tableNames = new Set(Object.keys(TABLE_FIELDS));
 const dataSourceNames = new Set([...tableNames, ...SERVER_SOURCE_VALUES]);
 const queriesByName = new Map(queries.map((/** @type {{ name: string }} */ query) => [query.name, query]));
 const serverSourceNames = new Set(SERVER_SOURCE_VALUES);
+
+describe('Commands view contract', () => {
+  it('resolves durable card rows through the production worker and declares the console route', async () => {
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === commandsContract.page);
+    expect(page.requires).toEqual(commandsContract.requires);
+    const view = page.views.find((/** @type {{ id: string }} */ view) => view.id === commandsContract.view);
+    expect(view).toMatchObject({
+      mark: 'table', layout: 'full', 'lazy-list': true,
+      data: { source: commandsContract.query, 'query-context': false },
+      encoding: { card: commandsContract.card }
+    });
+    expect(view.encoding.columns.map((/** @type {{ field: string }} */ column) => column.field)).toEqual(commandsContract.fields);
+    const template = dashboard['card-templates'].find((/** @type {{ id: string }} */ template) => template.id === commandsContract.card);
+    expect(template).toMatchObject({
+      icon: 'terminal', title: { field: 'command-title' }, subtitle: { field: 'command-target' },
+      status: { field: 'status' },
+      labels: [],
+      timing: [{ field: 'command-created-at', type: 'temporal', format: 'human-friendly-timestamp' }]
+    });
+    const outputPage = dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'command');
+    expect(outputPage.requires).toEqual(commandsContract.requires);
+    expect(outputPage.route).toMatchObject({ 'hash-query-parameter': 'command', 'navigation-page': commandsContract.page });
+    expect(outputPage.views[0]).toMatchObject({
+      mark: 'element', element: commandsContract.element, data: { sources: [] },
+      layout: commandsContract['terminal-layout'], 'show-title': commandsContract['terminal-show-title']
+    });
+    configureCliQueue(true);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => Response.json(commandQueueFixture)));
+    try {
+      const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (await processDataRequest({
+        operation: 'query-canonical-dashboard',
+        sourceNames: [commandsContract.query],
+        context: { queries, pages: dashboard.pages }
+      }));
+      const source = result[commandsContract.query];
+      expect(source.metadata.availability).toBe('available');
+      expect(source.rows.map((row) => row.status)).toEqual(commandsContract.statuses);
+      for (const row of source.rows) {
+        expect(row['command-dashboard-link']).toMatchObject({ 'dashboard-href': `${commandsContract.route}${row.id}` });
+      }
+    } finally {
+      configureCliQueue(false);
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 /** @type {import('../../src/presenter.js').SourceMetadata} */
 const metadata = {
@@ -92,7 +143,7 @@ function declaredQueryReferences(value) {
   if (Array.isArray(value)) return value.flatMap(declaredQueryReferences);
   const configured = /** @type {Record<string, unknown>} */ (value);
   return Object.entries(configured).flatMap(([key, nested]) => {
-    if ((key === 'from' || key === 'source' || key === 'partial-source' || key === 'query') && typeof nested === 'string' && queryNames.has(nested)) {
+    if (['from', 'source', 'partial-source', 'query', 'freshness-source', 'health-source'].includes(key) && typeof nested === 'string' && queryNames.has(nested)) {
       return [nested];
     }
     if ((key === 'sources' || key === 'union') && Array.isArray(nested)) {
@@ -106,6 +157,13 @@ function declaredQueryReferences(value) {
 }
 
 describe('dashboard view query contracts', () => {
+  it('keeps Overview focused on the header and stations without a campaign list', () => {
+    const overview = dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'overview');
+    expect(viewsOf(overview).map((view) => view.id)).toEqual(['overview-header', 'overview-floor']);
+    expect(viewsOf(overview).flatMap(sourceNamesOf)).not.toContain('overview-campaign-links');
+    expect(dashboard.pages.some((/** @type {{ id?: string }} */ page) => page.id === 'campaign-insights')).toBe(true);
+  });
+
   it('declares experimental evidence pages without presenting observation counts as campaign completion', () => {
     const evolutionSection = dashboard.navigation.find(
       (/** @type {{ label?: string }} */ section) => section.label === 'Evolution'
@@ -116,27 +174,67 @@ describe('dashboard view query contracts', () => {
         .toMatchObject({ kind: 'custom', experimental: true });
     }
     const experiments = dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'experiments');
+    expect(experiments.acceptance).toContain('counts are not completion percentages');
     expect(viewsOf(experiments)).toMatchObject([
       { mark: 'chart', chart: 'horizontal-bar', data: { source: 'experiment-assignment-coverage' } },
+      { mark: 'table', data: { source: 'experiment-assignments' }, 'lazy-list': true, layout: 'full-view' },
       { mark: 'table', data: { source: 'experiments' }, 'lazy-list': true, layout: 'full-view' }
     ]);
-    expect(viewsOf(dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'evals'))[0])
-      .toMatchObject({ data: { source: 'eval-yes-no-status' } });
-    for (const id of ['evals', 'graders']) {
+    const assignments = viewsOf(experiments).find((view) => view.id === evaluationContract.experiments.view);
+    const assignmentEncoding = /** @type {{ columns: { field: string }[] }} */ (assignments?.encoding);
+    expect(assignmentEncoding.columns.map((column) => column.field))
+      .toEqual(evaluationContract.experiments.fields);
+    expect(viewsOf(dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'evals')).find((view) => view.id === evaluationContract.evals.view))
+      .toMatchObject({
+        data: { source: evaluationContract.evals.query },
+        encoding: { columns: expect.arrayContaining([{ field: 'run', type: 'nominal', title: 'Run', display: evaluationContract.evals.runDisplay }]) }
+      });
+    for (const id of /** @type {const} */ (['evals', 'graders'])) {
       const page = dashboard.pages.find((/** @type {{ id?: string }} */ candidate) => candidate.id === id);
-      expect(viewsOf(page)[0]).toMatchObject({
+      const contract = evaluationContract[id];
+      const ledger = viewsOf(page).find((view) => view.id === contract.view);
+      expect(ledger).toMatchObject({
         mark: 'table', 'lazy-list': true, layout: 'full-view',
         data: { 'order-by': [{ field: 'workflow', direction: 'asc' }, { field: 'observed-at', direction: 'desc' }] }
       });
-      expect(page.description).toContain('TODO:');
+      expect(page.description).not.toContain('TODO:');
+      expect(page.acceptance).toContain('not current verdicts');
+      expect(ledger).toMatchObject({ data: { source: contract.query } });
+      const encoding = /** @type {{ columns: { field: string }[] }} */ (ledger?.encoding);
+      expect(encoding.columns.map((column) => column.field)).toEqual(contract.fields);
     }
+    const scatter = evaluationContract.graders.scatter;
+    expect(viewsOf(dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'graders'))[0])
+      .toMatchObject({
+        id: scatter.view, mark: 'chart', chart: 'scatter', scatter: { cluster: false },
+        data: { source: scatter.query },
+        encoding: {
+          x: { field: scatter.x, type: 'temporal' }, y: { field: scatter.y, type: 'quantitative' },
+          color: { field: scatter.color }, href: { field: scatter.href }
+        }
+      });
   });
 
-  it('computes assignment coverage and explicit YES/NO grader verdicts from declared evidence sources', () => {
+  it('declares three percentage bars per eval above the evidence ledger', () => {
+    const distribution = evaluationContract.evals.distribution;
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'evals');
+    expect(viewsOf(page)[0]).toMatchObject({
+      id: distribution.view, mark: 'chart', chart: distribution.chart,
+      data: { source: distribution.query, limit: 99 },
+      encoding: {
+        x: { field: distribution.x },
+        y: { field: distribution.y, unit: 'percent' },
+        section: { field: distribution.section },
+        color: { field: distribution.x }
+      }
+    });
+  });
+
+  it('keeps all eval answers and run links distinct from auxiliary grader verdicts', () => {
     const results = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries,
-      sourceNames: ['experiment-assignment-coverage', 'grader-status-ledger', 'eval-yes-no-status'],
+      sourceNames: ['experiment-assignment-coverage', 'grader-status-ledger', evaluationContract.evals.query],
       sources: {
         ...databaseTables,
         'experiment-assignments': {
@@ -150,8 +248,10 @@ describe('dashboard view query contracts', () => {
         'eval-observations': {
           source: 'eval-observations', metadata,
           rows: [
-            { workflow: 'worker.md', eval: 'answer', 'eval-result': 'YES' },
-            { workflow: 'worker.md', eval: 'answer', 'eval-result': 'UNKNOWN' },
+            { workflow: 'worker.md', eval: 'answer', 'eval-result': 'YES', run: '1',
+              'evidence-link': 'https://github.com/octo/api/actions/runs/1' },
+            { workflow: 'worker.md', eval: 'answer', 'eval-result': 'UNKNOWN', run: '2',
+              'evidence-link': { href: 'https://github.com/octo/api/actions/runs/2', label: 'Run 2' } },
             { workflow: 'worker.md', eval: 'answer', 'eval-result': 'NO' }
           ]
         },
@@ -170,7 +270,12 @@ describe('dashboard view query contracts', () => {
       expect.objectContaining({ 'workflow-coordinate': 'githubnext/two:worker.md', experiment: 'prompt', assignments: 1 })
     ]));
     expect(results['grader-status-ledger'].rows.map((row) => row.verdict)).toEqual(['YES', 'NO', 'unknown']);
-    expect(results['eval-yes-no-status'].rows.map((row) => row['eval-result'])).toEqual(['YES', 'NO']);
+    expect(results[evaluationContract.evals.query].rows.map((row) => row['eval-result'])).toEqual(['YES', 'UNKNOWN', 'NO']);
+    expect(results[evaluationContract.evals.query].rows.map((row) => row['run-link'])).toEqual([
+      { href: 'https://github.com/octo/api/actions/runs/1', label: '1' },
+      { href: 'https://github.com/octo/api/actions/runs/2', label: '2' },
+      null
+    ]);
   });
 
   it('groups navigable experimental pages in one experimental section', () => {
@@ -180,7 +285,7 @@ describe('dashboard view query contracts', () => {
       label: 'Experimental',
       experimental: true,
       pages: [
-        'operational-value',
+        'model-routing',
         'skills',
         'steering',
         'simulators'
@@ -258,18 +363,11 @@ describe('dashboard view query contracts', () => {
             'dashboard-label': 'View Beta campaign dashboard'
           },
           aic: 2
-        },
-        {
-          'campaign-name': 'Empty',
-          'campaign-dashboard-link': {
-            'dashboard-href': '#page-campaign-insights?campaign=empty',
-            'dashboard-label': 'View Empty campaign dashboard'
-          },
-          aic: 0
         }
       ]);
       expect(results['cost-by-campaign'].rows.map((row) => row.aic))
         .toEqual(results['campaign-inventory'].rows
+          .filter((row) => Number(row.aic) > 0)
           .sort((a, b) => Number(b.aic) - Number(a.aic))
           .map((row) => row.aic));
   });
@@ -344,41 +442,70 @@ describe('dashboard view query contracts', () => {
     ]);
   });
 
-  it('renders experimental operational value as a chart followed by a full-view observations table', () => {
+  it('renders campaign-first operational value with separate evidence and quiet comparison distribution', () => {
     const page = dashboard.pages.find(
       (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value'
     );
-    const experimentalSection = dashboard.navigation.find(
-      (/** @type {Record<string, unknown>} */ section) => section.experimental === true
+    const dataSection = dashboard.navigation.find(
+      (/** @type {Record<string, unknown>} */ section) => section.label === 'Data'
     );
 
-    expect(/** @type {Record<string, unknown> | undefined} */ (experimentalSection)?.pages)
+    expect(/** @type {Record<string, unknown> | undefined} */ (dataSection)?.pages)
       .toContain('operational-value');
+    for (const pageId of ['operational-value', 'operational-value-evidence', 'operational-value-repository']) {
+      const valuePage = dashboard.pages.find(
+        (/** @type {Record<string, unknown>} */ candidate) => candidate.id === pageId
+      );
+      expect(valuePage).toBeDefined();
+      expect(valuePage?.experimental).not.toBe(true);
+    }
     expect(page).toMatchObject({
-      kind: 'built-in',
-      page: 'operational-value',
-      experimental: true
+      kind: 'custom',
+      'view-mode-control': false,
+      route: { tab: 'overview', tabs: [
+        { id: 'overview', page: 'operational-value' }
+      ] }
     });
     expect(viewsOf(page)[0]).toMatchObject({
-      id: 'operational-value-history',
-      data: { source: 'operational-values' },
-      mark: 'chart',
-      chart: 'line',
-      encoding: {
-        x: { field: 'observed-at', type: 'temporal' },
-        y: { field: 'operational-value', type: 'quantitative' },
-        color: { field: 'operational-value-definition', type: 'nominal' }
-      }
+      id: 'operational-value-summary',
+      data: { source: 'operational-value-overview-summary' },
+      mark: 'list'
     });
     expect(viewsOf(page)[1]).toMatchObject({
-      id: 'operational-value-observations',
-      title: 'Operational value observations',
+      id: 'operational-value-signals',
+      data: { source: 'operational-value-measured-repositories' },
+      mark: 'list',
+      list: { card: 'repository-outcome-signal' }
+    });
+    expect(viewsOf(page)[2]).toMatchObject({
+      id: 'operational-value-unmeasured',
+      disclosure: 'supplemental',
+      data: { source: 'operational-value-unmeasured-repositories' }
+    });
+    expect(viewsOf(page)).toHaveLength(3);
+    const evidence = dashboard.pages.find(
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-evidence'
+    );
+    expect(evidence).toMatchObject({ route: { 'navigation-page': 'operational-value' } });
+    expect(viewsOf(evidence)[0]).toMatchObject({
+      id: 'operational-value-coverage', disclosure: 'supplemental',
+      data: { source: 'operational-value-repository-coverage' }
+    });
+    expect(viewsOf(evidence)[1]).toMatchObject({
+      id: 'operational-value-latest',
       mark: 'table',
-      layout: 'full-view',
+      'column-summaries': false,
+      layout: 'full',
       controls: 'interactive',
       'lazy-list': true
     });
-    expect(/** @type {Record<string, unknown>} */ (page).definition).not.toHaveProperty('sections');
+    expect(viewsOf(evidence)[2]).toMatchObject({
+      id: 'operational-value-direction-chart',
+      disclosure: 'supplemental',
+      mark: 'chart'
+    });
+    expect(JSON.stringify(viewsOf(page))).not.toContain('"aggregate":"mean"');
+    expect(viewsOf(evidence).map(view => view.id)).not.toContain('operational-value-observations');
   });
 
   it('renders the failed-runs ledger as a bounded lazy table', () => {
@@ -500,17 +627,20 @@ describe('dashboard view query contracts', () => {
     for (const alias of absent.aliases) expect(missing[alias].rows).toEqual([]);
   });
 
-  it('keeps stable campaign route IDs with an Operational Value label across every entry path', () => {
+  it('keeps stable campaign route IDs with an Insights label across every entry path', () => {
+    const campaignPageIds = ['campaign-insights', 'campaign-problems', 'campaign-issues', 'campaign-memory'];
     const campaignPages = dashboard.pages.filter((/** @type {Record<string, unknown>} */ page) => (
-      /** @type {Record<string, unknown> | undefined} */ (page.route)?.['hash-query-parameter'] === 'campaign'
+      campaignPageIds.includes(/** @type {string} */ (page.id))
     ));
     const expectedTabs = [
-      { id: 'insights', label: 'Operational Value', icon: 'graph', page: 'campaign-insights' },
+      { id: 'insights', label: 'Insights', icon: 'graph', page: 'campaign-insights' },
       { id: 'problems', label: 'Failures', icon: 'alert', page: 'campaign-problems' },
       { id: 'issues', label: 'Reports', icon: 'issue-opened', page: 'campaign-issues' },
       { id: 'memory', label: 'Memory', icon: 'archive', page: 'campaign-memory' }
     ];
 
+    expect(campaignPages.map((/** @type {Record<string, unknown>} */ page) => page.id))
+      .toEqual(expect.arrayContaining(campaignPageIds));
     for (const page of campaignPages) {
       expect(page.route).toMatchObject({
         'title-format': 'title-case',
@@ -559,23 +689,15 @@ describe('dashboard view query contracts', () => {
       config: { body: 'insights' }
     });
 
-    expect(viewsOf(insights)[1]).toMatchObject({
-      id: 'campaign-operational-value-history',
-      data: {
-        sources: [
-          'campaign-operational-value-primary-series',
-          'campaign-operational-value-run-days',
-          'campaign-operational-value-evidence-state'
-        ],
-        arguments: [{ name: 'campaign', field: 'campaign' }]
-      },
-      mark: 'element',
-      element: 'measure-history',
-      config: { 'measure-source': 'operational-value' }
-    });
+    const outcomes = dashboard.pages.find((/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-campaign');
+    expect(outcomes).toBeUndefined();
+    expect(viewsOf(insights).map((view) => view.id)).not.toEqual(expect.arrayContaining([
+      'campaign-outcome-directions', 'campaign-outcome-repositories', 'campaign-operational-value-history'
+    ]));
 
-    expect(viewsOf(insights)[2]).toMatchObject({
+    expect(viewsOf(insights)[1]).toMatchObject({
       id: 'campaign-baseline-outcomes',
+      title: 'Workflow run results',
       disclosure: 'supplemental',
       data: { source: 'campaign-baseline-outcome-distribution', 'route-field': 'campaign' },
       mark: 'chart',
@@ -586,8 +708,9 @@ describe('dashboard view query contracts', () => {
       }
     });
 
-    expect(viewsOf(insights)[3]).toMatchObject({
+    expect(viewsOf(insights)[2]).toMatchObject({
       id: 'campaign-performance-baseline',
+      title: 'Execution reliability',
       data: {
         source: 'campaign-performance-baseline',
         'route-field': 'campaign'
@@ -596,16 +719,17 @@ describe('dashboard view query contracts', () => {
       controls: 'static',
       encoding: {
         columns: [
-          { field: 'concluded-runs', title: 'Concluded runs' },
-          { field: 'success-rate-display', title: 'Run success' },
+          { field: 'concluded-runs', title: 'Concluded attempts' },
+          { field: 'successful-runs', title: 'Successful attempts' },
+          { field: 'success-rate-display', title: 'Success rate' },
           { field: 'reliability-signal', title: 'Reliability signal' },
-          { field: 'produced-outputs', title: 'Produced outputs' },
+          { field: 'produced-outputs', title: 'Reported output items' },
           { field: 'production-signal', title: 'Production signal' },
-          { field: 'aic-per-successful-run', title: 'Average AIC / successful run', unit: 'aic-per-run' }
+          { field: 'aic-per-successful-run', title: 'Average AIC / costed successful attempt', unit: 'aic-per-run' }
         ]
       }
     });
-    expect(viewsOf(insights)[4]).toMatchObject({
+    expect(viewsOf(insights)[3]).toMatchObject({
       id: 'campaign-audit-event-table',
       disclosure: 'supplemental'
     });
@@ -621,39 +745,33 @@ describe('dashboard view query contracts', () => {
     });
   });
 
-  it('compiles each operational-value source independently with campaign scope', () => {
+  it('compiles repository summaries without native history or run-context dependencies', () => {
     const page = dashboard.pages.find(
-      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'campaign-insights'
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value'
     );
-    const sourceNames = [
-      'campaign-operational-value-primary-series',
-      'campaign-operational-value-run-days',
-      'campaign-operational-value-evidence-state'
-    ];
+    const sourceNames = ['operational-value-measured-repositories'];
     for (const sourceName of sourceNames) {
-      const payload = compileDashboardViewPayloadQueries(page, 'campaign-insights', {
-        viewId: 'campaign-operational-value-history',
+      const payload = compileDashboardViewPayloadQueries(page, 'operational-value', {
+        viewId: 'operational-value-signals',
         sourceNames: [sourceName],
-        routeParameters: { campaign: 'optimization' },
         queries
       });
 
       expect(payload.aliases).toHaveLength(1);
-      expect(payload.queries.at(-1)).toMatchObject({
-        name: payload.aliases[0],
-        filter: { predicates: [{ field: 'campaign', equals: 'optimization' }] }
-      });
+      expect(payload.queries.map(query => query.name)).not.toContain('operational-value-plot-series');
+      expect(payload.queries.at(-1)?.name).toBe(payload.aliases[0]);
+      expect(payload.queries.some(query => query.name === 'operational-value-campaign-run-health')).toBe(false);
     }
   });
 
   it('retains native-unit operational-value observations using only the selected horizon', () => {
     const page = dashboard.pages.find(
-      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'campaign-insights'
+      (/** @type {Record<string, unknown>} */ candidate) => candidate.id === 'operational-value-repository'
     );
-    const payload = compileDashboardViewPayloadQueries(page, 'campaign-insights', {
-      viewId: 'campaign-operational-value-history',
-      sourceNames: ['campaign-operational-value-primary-series'],
-      routeParameters: { campaign: 'sample' },
+    const payload = compileDashboardViewPayloadQueries(page, 'operational-value-repository', {
+      viewId: 'repository-outcome-history',
+      sourceNames: ['operational-value-plot-series'],
+      routeParameters: { campaign: 'sample', organization: 'octo', repository: 'api' },
       queryContext: {
         timeWindow: { start: '2026-01-02T00:00:00Z', end: '2026-01-05T00:00:00Z' }
       },
@@ -664,10 +782,10 @@ describe('dashboard view query contracts', () => {
         source: 'operational-values',
         metadata: { ...metadata, availability: 'available' },
         rows: [
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 1000, 'observed-at': '2026-01-01T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 10, 'observed-at': '2026-01-02T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 20, 'observed-at': '2026-01-03T00:00:00Z' },
-          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-definition': 'm', 'operational-value': 30, 'observed-at': '2026-01-04T00:00:00Z' }
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 1000, 'observed-at': '2026-01-01T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 10, 'observed-at': '2026-01-02T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 20, 'observed-at': '2026-01-03T00:00:00Z' },
+          { campaign: 'sample', organization: 'octo', repository: 'api', 'operational-value-role': 'primary', 'operational-value-definition': 'm', 'operational-value': 30, 'observed-at': '2026-01-04T00:00:00Z' }
         ]
       }
     });
@@ -699,7 +817,7 @@ describe('dashboard view query contracts', () => {
         rows: [
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'optimization-worker.md',
             run: '100',
             'run-attempt': 1,
@@ -711,7 +829,7 @@ describe('dashboard view query contracts', () => {
           },
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'optimization-worker.md',
             run: '101',
             'run-attempt': 1,
@@ -723,7 +841,7 @@ describe('dashboard view query contracts', () => {
           },
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'optimization-worker.md',
             run: '102',
             'run-attempt': 1,
@@ -734,7 +852,7 @@ describe('dashboard view query contracts', () => {
           },
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'optimization-worker.md',
             run: 'old',
             'run-attempt': 1,
@@ -745,7 +863,7 @@ describe('dashboard view query contracts', () => {
           },
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'other-worker.md',
             run: 'other',
             'run-attempt': 1,
@@ -762,7 +880,7 @@ describe('dashboard view query contracts', () => {
         rows: [
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'optimization-worker.md',
             campaign: 'optimization',
             'campaign-name': 'Optimization',
@@ -771,7 +889,7 @@ describe('dashboard view query contracts', () => {
           },
           {
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: 'other-worker.md',
             campaign: 'other',
             'campaign-name': 'Other',
@@ -822,10 +940,10 @@ describe('dashboard view query contracts', () => {
       }
     });
     expect(results['campaign-baseline-outcome-distribution'].rows).toEqual([
-      { campaign: 'optimization', outcome: 'Successful runs', runs: 2 },
-      { campaign: 'all-success', outcome: 'Successful runs', runs: 1 },
-      { campaign: 'optimization', outcome: 'Other concluded runs', runs: 1 },
-      { campaign: 'all-success', outcome: 'Other concluded runs', runs: 0 }
+      { campaign: 'optimization', outcome: 'Successful attempts', runs: 2 },
+      { campaign: 'all-success', outcome: 'Successful attempts', runs: 1 },
+      { campaign: 'optimization', outcome: 'Other concluded attempts', runs: 1 },
+      { campaign: 'all-success', outcome: 'Other concluded attempts', runs: 0 }
     ]);
   });
 
@@ -944,11 +1062,11 @@ describe('dashboard view query contracts', () => {
     const issueRows = [
       {
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/worker.md',
         run: '101',
         'run-attempt': 1,
-        'event-type': 'safe_output.created',
+        'event-type': 'safe_output.result',
         'event-timestamp': '2026-09-20T12:00:00Z',
         'github-entity-type': 'issue',
         'is-pull-request': false,
@@ -959,21 +1077,21 @@ describe('dashboard view query contracts', () => {
         'issue-status-observed-at': '2026-09-20T12:31:00Z',
         'safe-output-type': 'create_issue',
         'event-summary': 'Fix issue view',
-        'correlation-id': 'https://github.com/githubnext/gh-aw-cao/issues/13439'
+        'correlation-id': 'https://github.com/githubnext/gh-cao/issues/13439'
       },
       {
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/worker.md',
         run: '102',
         'run-attempt': 1,
-        'event-type': 'safe_output.created',
+        'event-type': 'safe_output.result',
         'event-timestamp': '2026-09-20T13:00:00Z',
         'github-entity-type': 'pull_request',
         'is-pull-request': true,
         'safe-output-type': 'create_pull_request',
         'event-summary': 'Ignore pull request',
-        'correlation-id': 'https://github.com/githubnext/gh-aw-cao/pull/13440'
+        'correlation-id': 'https://github.com/githubnext/gh-cao/pull/13440'
       }
     ];
     const results = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
@@ -987,13 +1105,13 @@ describe('dashboard view query contracts', () => {
           source: 'runs',
           rows: [{
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow: '.github/workflows/worker.md',
             run: '101',
             'run-attempt': 1,
             'run-link': {
               relation: 'run',
-              href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/101',
+              href: 'https://github.com/githubnext/gh-cao/actions/runs/101',
               label: 'Run 101'
             }
           }],
@@ -1006,16 +1124,16 @@ describe('dashboard view query contracts', () => {
     expect(results['issue-safe-outputs'].rows).toEqual([
       expect.objectContaining({
         'event-summary': 'Fix issue view',
-        'entity-url': 'https://github.com/githubnext/gh-aw-cao/issues/13439',
+        'entity-url': 'https://github.com/githubnext/gh-cao/issues/13439',
         'issue-status': 'Closed',
         'issue-closing-status': 'Completed',
         'issue-status-detail': 'Closed: Completed',
-        repository: 'gh-aw-cao'
+        repository: 'gh-cao'
       })
     ]);
     expect(results['issue-repository-totals'].metadata.availability).toBe('available');
     expect(results['issue-repository-totals'].rows).toEqual([
-      { 'repository-coordinate': 'githubnext/gh-aw-cao', issues: 1 }
+      { 'repository-coordinate': 'githubnext/gh-cao', issues: 1 }
     ]);
   });
 
@@ -1033,7 +1151,7 @@ describe('dashboard view query contracts', () => {
     expect(SERVER_SOURCE_VALUES).toContain('collection-health');
     expect(queries.find((/** @type {{ name: string }} */ query) => query.name === 'ingestion-health')?.from)
       .toBe('collection-health');
-    const sourceNames = ['ingestion-queue-sizes'];
+    const sourceNames = ['ingestion-queue-sizes', 'dashboard-ingestion-health'];
     const available = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries,
@@ -1042,7 +1160,7 @@ describe('dashboard view query contracts', () => {
         'collection-health': {
           source: 'collection-health',
           metadata: { ...metadata, availability: 'available' },
-          rows: [{ configured: true, 'queue-depth': 8, 'pending-tasks': 2, 'backfill-queued-run-tasks': 13 }]
+          rows: [{ configured: true, health: 'degraded', 'queue-depth': 8, 'pending-tasks': 2, 'backfill-queued-run-tasks': 13 }]
         }
       }
     }));
@@ -1051,6 +1169,7 @@ describe('dashboard view query contracts', () => {
       { queue: 'In flight', tasks: 2 },
       { queue: 'Backfill admitted (total)', tasks: 13 }
     ]);
+    expect(available['dashboard-ingestion-health'].rows).toEqual([{ configured: true, health: 'degraded' }]);
     const unconfigured = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries', queries, sourceNames,
       sources: {
@@ -1065,6 +1184,7 @@ describe('dashboard view query contracts', () => {
       operation: 'execute-dashboard-queries', queries, sourceNames, sources: {}
     }));
     expect(denied['ingestion-queue-sizes'].metadata.availability).toBe('unavailable');
+    expect(denied['dashboard-ingestion-health'].metadata.availability).toBe('unavailable');
   });
 
   it('registers GitHub quota usage as a server-owned query source', () => {
@@ -1093,24 +1213,54 @@ describe('dashboard view query contracts', () => {
     expect([...queryNames].filter((name) => !retained.has(name))).toEqual([]);
   });
 
-  it('materializes worker-resolvable view queries through the production worker handler', () => {
+  it('materializes worker-resolvable view queries through the production worker handler', async () => {
     expect([...dashboardQueryDefects(queries).entries()]).toEqual([]);
-    const requested = [...new Set(dashboard.pages.flatMap((/** @type {Record<string, unknown>} */ page) => viewsOf(page).flatMap(sourceNamesOf)))]
-      .filter((name) => queryNames.has(name));
-    const workerRequested = requested.filter((name) => !requiresServerSource(name));
+    const requested = [...new Set(dashboard.pages.flatMap((/** @type {Record<string, unknown>} */ page) => viewsOf(page).flatMap(sourceNamesOf)))];
+    const runtimeRequested = requested.filter((name) => isCliQueueQuery(queries, [name]));
+    const workerRequested = requested.filter((name) => !requiresServerSource(name) && !runtimeRequested.includes(name));
     expect(requested.filter((name) => requiresServerSource(name)).sort()).toEqual(['github-api-usage', 'ingestion-health', 'ingestion-queue-sizes']);
-    const results = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
-      operation: 'execute-dashboard-queries',
-      queries,
-      sources: databaseTables,
-      sourceNames: workerRequested
-    }));
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    let results;
+    try {
+      results = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (await processDataRequest({
+        operation: 'load-dashboard-query-sources',
+        queries,
+        sources: {
+          'configuration-policy': {
+            source: 'configuration-policy',
+            rows: [],
+            metadata: { availability: 'empty', completeness: 'complete', freshness: 'fresh' }
+          }
+        },
+        sourceNames: workerRequested
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
 
     expect(Object.keys(results).sort()).toEqual([...workerRequested].sort());
     for (const name of workerRequested) {
       expect(results[name]?.source).toBe(name);
       expect(results[name]?.rows).toEqual(expect.any(Array));
       expect(results[name]?.metadata.availability, name).not.toBe('unavailable');
+    }
+    configureCliQueue(true);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => Response.json(commandQueueFixture)));
+    try {
+      const runtime = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (await processDataRequest({
+        operation: 'query-canonical-dashboard',
+        sourceNames: runtimeRequested,
+        context: { queries, pages: dashboard.pages }
+      }));
+      expect(Object.keys(runtime).sort()).toEqual(runtimeRequested.sort());
+      for (const name of runtimeRequested) {
+        expect(runtime[name]?.source).toBe(name);
+        expect(runtime[name]?.rows.length).toBeGreaterThan(0);
+        expect(runtime[name]?.metadata.availability).toBe('available');
+      }
+    } finally {
+      configureCliQueue(false);
+      vi.unstubAllGlobals();
     }
   });
 });

@@ -2,7 +2,7 @@
 
 This Linux-only harness runs the CAO Azure Functions hosting boundary against
 Azurite and a real PostgreSQL container. It uses no Azure subscription, Azure login,
-Azure credentials, production secrets, or Coolify configuration. It does not
+Azure credentials, or production secrets. It does not
 emulate managed identity, Key Vault, deployed networking, Azure edge behavior,
 or managed PostgreSQL TLS; those remain real-Azure smoke-test concerns.
 
@@ -51,6 +51,12 @@ dynamic host ports to avoid collisions.
 Readiness polling verifies PostgreSQL readiness, an Azurite Blob endpoint response, and
 the CAO `/api/readiness` endpoint through Functions Core Tools. Timeouts print
 all available service logs and fail.
+
+Build, canonical database bootstrap, and fixture ingestion failures print the
+failed stage, exit status, and captured output before teardown. Their log files
+remain available alongside the service logs. Fixture ingestion verifies the
+checked-in `server/testdata/deployed-subset/payload-hashes.json` manifest;
+a mismatch fails startup rather than skipping or weakening integrity checks.
 
 ## Repository audit checklist
 

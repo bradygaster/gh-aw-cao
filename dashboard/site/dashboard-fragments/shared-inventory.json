@@ -4,14 +4,14 @@
       "name": "issue-safe-outputs",
       "subject": "List retained GitHub issue safe outputs.",
       "objective": "Inspect retained issue safe outputs and their observed closure state before deciding which items need follow-up.",
-      "acceptance": "Include only safe_output.created issue records, not pull requests; preserve issue and run links, timestamps, state, and status detail. Unknown or unobserved closure state must not be presented as closed.",
+      "acceptance": "Include only safe_output.result issue records, not pull requests; preserve issue and run links, timestamps, state, and status detail. Unknown or unobserved closure state must not be presented as closed.",
       "description": "Issue-only projection of retained safe-output items.",
       "from": "issues",
       "filter": {
         "predicates": [
           {
             "field": "event-type",
-            "equals": "safe_output.created"
+            "equals": "safe_output.result"
           },
           {
             "field": "is-pull-request",
@@ -336,13 +336,18 @@
           "as": "run-attempt-identity",
           "function": "concat",
           "args": [{ "field": "run" }, { "value": ":" }, { "field": "run-attempt" }]
+        },
+        {
+          "as": "positive-aic",
+          "function": "greater-than",
+          "args": [{ "field": "aic-total" }, { "value": 0 }]
         }
       ],
       "aggregate": {
         "by": ["organization", "repository", "workflow"],
         "values": [
           { "field": "run-attempt-identity", "as": "runs", "reducer": "distinct-count" },
-          { "field": "aic-total", "as": "aic", "reducer": "sum" }
+          { "field": "aic-total", "as": "aic", "reducer": "sum", "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] } }
         ]
       }
     },
@@ -979,25 +984,52 @@
       ]
     },
     {
-      "name": "repository-aic-totals",
-      "subject": "Summarize observed AI Credit usage by repository.",
-      "objective": "Provide repository-level retained AI Credit totals for comparing observed usage with run activity.",
-      "acceptance": "Sum recorded aic-total by organization and repository; an absent or partial run history does not support a claim of zero actual consumption.",
-      "description": "Observed AI Credit totals for each repository.",
+      "name": "repository-run-statistics",
+      "subject": "Reduce run counts, conclusions, and positive AI Credits before repository enrichment.",
+      "objective": "Share one row-local run aggregate between repository execution and cost summaries.",
+      "acceptance": "Keep organization/repository grain, distinct run IDs, existing failure and approval counts, and positive recorded AIC. Reduce before joins; missing evidence is not zero activity or free execution.",
       "from": "runs",
+      "compute": [
+        {
+          "as": "positive-aic",
+          "function": "greater-than",
+          "args": [{ "field": "aic-total" }, { "value": 0 }]
+        }
+      ],
       "aggregate": {
-        "by": [
-          "organization",
-          "repository"
-        ],
+        "by": ["organization", "repository"],
         "values": [
+          { "field": "run", "as": "runs", "reducer": "distinct-count" },
           {
-            "field": "aic-total",
-            "as": "aic",
-            "reducer": "sum"
+            "field": "run-conclusion", "as": "failed", "reducer": "count",
+            "filter": { "predicates": [{ "field": "run-conclusion", "in": ["failure", "startup-failure", "timed-out"] }] }
+          },
+          {
+            "field": "run-conclusion", "as": "action-required", "reducer": "count",
+            "filter": { "predicates": [{ "field": "run-conclusion", "equals": "action-required" }] }
+          },
+          {
+            "field": "run", "as": "aic-runs", "reducer": "count",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
+          },
+          {
+            "field": "aic-total", "as": "aic", "reducer": "sum",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
           }
         ]
       }
+    },
+    {
+      "name": "repository-aic-totals",
+      "subject": "Summarize observed AI Credit usage by repository.",
+      "objective": "Provide repository-level retained AI Credit totals for comparing observed usage with run activity.",
+      "acceptance": "Sum only positive recorded aic-total by organization and repository; exclude zero and missing costs rather than treating them as free execution.",
+      "description": "Observed AI Credit totals for each repository.",
+      "from": "repository-run-statistics",
+      "filter": { "predicates": [{ "field": "aic-runs", "gte": 1 }] },
+      "select": [
+        { "field": "organization" }, { "field": "repository" }, { "field": "aic" }
+      ]
     },
     {
       "name": "maintenance-repository-versions",
@@ -1115,10 +1147,18 @@
     {
       "name": "maintenance-repositories",
       "subject": "List each repository with recorded compiler versions and computed upgrade state.",
-      "objective": "Expose recorded compiler versions and computed upgrade state per repository so an operator can inspect update signals and gaps.",
-      "acceptance": "Return repository, recorded version lists, upgrade-required flag, and computed upgrade-state; mixed or absent version evidence requires inspection before any decision, and an upgrade label does not authorize a rollout or policy change.",
+      "objective": "Expose recorded compiler versions and computed upgrade state per repository, with its GitHub home URL for inspection.",
+      "acceptance": "Return repository, repository-url, version lists, upgrade-required, upgrade-state, and upgrade-action-visible. Show Upgrade for outdated or unknown evidence; hide it for known-current repositories. Visibility grants no rollout authority.",
       "from": "maintenance-repository-versions",
       "compute": [
+        {
+          "as": "repository-url",
+          "function": "concat",
+          "args": [
+            { "value": "https://github.com/" },
+            { "field": "repository-coordinate" }
+          ]
+        },
         {
           "as": "should-upgrade",
           "function": "equals-any",
@@ -1132,15 +1172,38 @@
           ]
         },
         {
-          "as": "upgrade-status-unavailable",
+          "as": "installed-version-unavailable",
           "function": "equals-any",
           "args": [
-            {
-              "field": "upgrade-state-unknown"
-            },
-            {
-              "value": 1
-            }
+            { "field": "gh-aw-version" },
+            { "value": "" },
+            { "value": "unknown" }
+          ]
+        },
+        {
+          "as": "compiler-versions-match",
+          "function": "equals-any",
+          "args": [
+            { "field": "gh-aw-version" },
+            { "field": "gh-aw-current-version" }
+          ]
+        },
+        {
+          "as": "known-current-versions",
+          "function": "if",
+          "args": [
+            { "field": "installed-version-unavailable" },
+            { "value": false },
+            { "field": "compiler-versions-match" }
+          ]
+        },
+        {
+          "as": "upgrade-status-unavailable",
+          "function": "if",
+          "args": [
+            { "field": "known-current-versions" },
+            { "value": false },
+            { "value": true }
           ]
         },
         {
@@ -1156,6 +1219,15 @@
             {
               "value": "Current"
             }
+          ]
+        },
+        {
+          "as": "upgrade-action-visible",
+          "function": "if",
+          "args": [
+            { "field": "should-upgrade" },
+            { "value": true },
+            { "field": "upgrade-status-unavailable" }
           ]
         },
         {
@@ -1180,6 +1252,9 @@
           "as": "repository"
         },
         {
+          "field": "repository-url"
+        },
+        {
           "field": "gh-aw-version"
         },
         {
@@ -1187,6 +1262,9 @@
         },
         {
           "field": "upgrade-required"
+        },
+        {
+          "field": "upgrade-action-visible"
         },
         {
           "field": "upgrade-state"

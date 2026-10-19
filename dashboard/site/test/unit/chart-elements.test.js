@@ -82,8 +82,8 @@ describe('chart element helpers', () => {
   });
 
   it('assigns stable palette colors to existing and new category identities', () => {
-    expect(chartSeriesClassName('githubnext/gh-aw-cao', 0))
-      .toBe(chartSeriesClassName('githubnext/gh-aw-cao', 9));
+    expect(chartSeriesClassName('githubnext/gh-cao', 0))
+      .toBe(chartSeriesClassName('githubnext/gh-cao', 9));
     expect(chartSeriesClassName('New Campaign', 1))
       .toBe(chartSeriesClassName(' new campaign ', 7));
     expect(chartSeriesClassName('Cafe\u0301', 0)).toBe('chart-series-2');
@@ -319,12 +319,35 @@ describe('chart element helpers', () => {
     expect([...chart.querySelectorAll('.horizontal-bar-chart-label')].map((label) => label.textContent))
       .toEqual(['Alpha repository', 'Beta repository']);
     expect(chart.querySelector('.horizontal-bar-chart-label a')?.getAttribute('href')).toBe('#page-alpha');
+    const tracks = chart.querySelectorAll('.horizontal-bar-chart-track');
+    expect(tracks[0].tagName).toBe('A');
+    expect(tracks[0].getAttribute('href')).toBe('#page-alpha');
+    expect(tracks[0].getAttribute('aria-label')).toContain('Alpha repository: 40');
+    expect(tracks[0].getAttribute('aria-hidden')).toBeNull();
+    expect(tracks[0].getAttribute('target')).toBeNull();
+    expect(tracks[1].tagName).toBe('SPAN');
+    expect(tracks[1].getAttribute('aria-hidden')).toBe('true');
     expect(chart.querySelectorAll('.bar-chart-bar')).toHaveLength(2);
     expect(chart.querySelector('.horizontal-bar-chart-bar')?.getAttribute('style')).toContain('--horizontal-bar-size: 100%');
     expect([...chart.querySelectorAll('.horizontal-bar-chart-value')].map((value) => value.textContent))
       .toEqual(['40', '20']);
     expect(chart.querySelector('.horizontal-bar-chart-value')?.getAttribute('aria-label'))
       .toContain('Alpha repository: 40');
+  });
+
+  it('distinguishes unavailable horizontal-bar observations from recorded zero costs', () => {
+    const points = [
+      { x: 'Missing telemetry', y: null, color: null },
+      { x: 'Recorded zero', y: 0, color: null },
+      { x: 'Recorded cost', y: 125, color: null }
+    ];
+    const chart = renderChartWidget('horizontal-bar', points, listChartSeries(points), null, 'AIC', {
+      name: 'aic', symbol: 'AIC', significant: 0.01, format: 'aicc'
+    });
+    expect([...chart.querySelectorAll('.horizontal-bar-chart-value')].map((value) => value.textContent))
+      .toEqual(['Unavailable', '$0.00', '$1.25']);
+    expect(chart.querySelector('.horizontal-bar-chart-value')?.getAttribute('aria-label'))
+      .toBe('Missing telemetry: Unavailable');
   });
 
   it('groups horizontal bars under section headings in first-appearance order', () => {
@@ -346,7 +369,7 @@ describe('chart element helpers', () => {
 
   it('formats linked horizontal bar categories without changing their destinations', () => {
     const points = [{
-      x: 'githubnext/gh-aw-cao:.github/workflows/optimization-agents-and-curator.md',
+      x: 'githubnext/gh-cao:.github/workflows/optimization-agents-and-curator.md',
       y: 40,
       color: null,
       link: { href: '#page-workflow-runtime?workflow=optimization', label: 'View workflow dashboard' }
@@ -366,7 +389,7 @@ describe('chart element helpers', () => {
     expect(chart.querySelector('.horizontal-bar-chart-label a')?.getAttribute('href'))
       .toBe('#page-workflow-runtime?workflow=optimization');
     expect(chart.querySelector('.horizontal-bar-chart-label-text')?.textContent)
-      .toBe('githubnext/gh-aw-cao (optimization-agents-and-curator.md)');
+      .toBe('githubnext/gh-cao (optimization-agents-and-curator.md)');
   });
 
   it('preserves complete horizontal bar labels with shared prefixes', () => {
@@ -512,14 +535,14 @@ describe('chart element helpers', () => {
       {
         x: '2026-08-28T08:00:00Z',
         y: Number.NaN,
-        category: 'doctor.md (githubnext/gh-aw-cao)',
+        category: 'doctor.md (githubnext/gh-cao)',
         color: 'success',
         source: { run: '1840' }
       },
       {
         x: '2026-08-28T08:00:00Z',
         y: Number.NaN,
-        category: 'doctor.md (githubnext/gh-aw-cao)',
+        category: 'doctor.md (githubnext/gh-cao)',
         color: 'failure',
         source: { run: '1841' }
       },
@@ -535,7 +558,7 @@ describe('chart element helpers', () => {
     const chart = renderChartWidget('swimlane', points, listChartSeries(points));
 
     expect([...chart.querySelectorAll('.swimlane-label')].map((label) => label.textContent)).toEqual([
-      'doctor.md (githubnext/gh-aw-cao)',
+      'doctor.md (githubnext/gh-cao)',
       'audit.md (githubnext/control-plane)'
     ]);
     expect(chart.querySelectorAll('.swimlane-run-mark')).toHaveLength(3);
@@ -545,7 +568,7 @@ describe('chart element helpers', () => {
     expect([...chart.querySelectorAll('[data-swimlane-count]')].map((mark) => mark.getAttribute('data-swimlane-count')))
       .toEqual(['1', '1', '1']);
     expect(chart.querySelector('.swimlane-mark-failure')?.getAttribute('aria-label'))
-      .toContain('Lane: doctor.md (githubnext/gh-aw-cao)');
+      .toContain('Lane: doctor.md (githubnext/gh-cao)');
   });
 
   it('renders 100,000 swimlane observations as bounded line intervals', () => {

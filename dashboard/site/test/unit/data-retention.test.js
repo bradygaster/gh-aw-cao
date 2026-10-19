@@ -5,6 +5,7 @@ import {
   capCanonicalBatchSize,
   estimateCanonicalBatchBytes,
   mergeRetainedRecords,
+  OPERATIONAL_VALUE_RETENTION_MS,
   RETENTION_WINDOW_DAYS
 } from '../../src/data/storage/retention.js';
 import { relationshipErrors } from '../../src/data/model/schema.js';
@@ -21,7 +22,7 @@ function batch(events) {
       source: 'fixture',
       sourceId: 'repository-1',
       observedAt: '2026-09-09T05:00:00Z',
-      data: { id: 'repository:1', owner: 'githubnext', name: 'gh-aw-cao' }
+      data: { id: 'repository:1', owner: 'githubnext', name: 'gh-cao' }
     },
     {
       kind: 'workflow',
@@ -38,7 +39,7 @@ function batch(events) {
       data: {
         githubRunId: 1,
         owner: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         repositoryId: 'repository:1',
         workflowId: 'workflow:1',
         startedAt: '2026-09-09T04:00:00Z'
@@ -51,16 +52,32 @@ function batch(events) {
       observedAt: event.timestamp,
       data: {
         id: event.eventId,
-        runId: event.runId ?? 'github:run:githubnext/gh-aw-cao:1',
+        runId: event.runId ?? 'github:run:githubnext/gh-cao:1',
         timestamp: event.timestamp,
         source: 'agent',
-        type: 'agent_turn'
+        type: 'user.message'
       }
     }))
   ]);
 }
 
 describe('canonical retention merge', () => {
+  it('retains compact browser outcomes for a year without retaining old run details', () => {
+    const day = 86_400_000;
+    const previous = batch([{ eventId: 'event:old', timestamp: new Date(NOW - 40 * day).toISOString() }]);
+    previous.operationalValues.push(...[40, 365, 366].map((age) => ({
+      id: `value:${age}`, repositoryId: 'repository:1', campaign: 'dependabot',
+      valueId: 'alerts', value: 0, timestamp: new Date(NOW - age * day).toISOString()
+    })));
+    const merged = mergeRetainedRecords(previous, normalize([]), {
+      now: NOW, retentionWindowMsByStore: BROWSER_RETENTION_WINDOWS_MS
+    });
+    expect(BROWSER_RETENTION_WINDOWS_MS.operationalValues).toBe(OPERATIONAL_VALUE_RETENTION_MS);
+    expect(merged.operationalValues.map(({ id }) => id).sort()).toEqual(['value:365', 'value:40']);
+    expect(merged.audits).toEqual([]);
+    expect(merged.repositories.map(({ id }) => id)).toEqual(['repository:1']);
+  });
+
   it('upserts a partial collection onto retained events', () => {
     const previous = batch([
       { eventId: 'event:1', timestamp: '2026-09-01T04:00:00Z' },
@@ -104,7 +121,7 @@ describe('canonical retention merge', () => {
       retentionWindowMsByStore: BROWSER_RETENTION_WINDOWS_MS
     });
 
-    expect(merged.runs.map((run) => run.id)).toEqual(['github:run:githubnext/gh-aw-cao:1']);
+    expect(merged.runs.map((run) => run.id)).toEqual(['github:run:githubnext/gh-cao:1']);
     expect(merged.audits).toEqual([]);
     expect(merged.workflows.map((workflow) => workflow.id)).toEqual(['workflow:1']);
     expect(merged.repositories.map((repository) => repository.id)).toEqual(['repository:1']);
@@ -233,7 +250,7 @@ describe('canonical retention merge', () => {
 
     expect(merged.repositories.map((repository) => repository.id)).toEqual(['repository:1']);
     expect(merged.workflows.map((workflow) => workflow.id)).toEqual(['workflow:1']);
-    expect(merged.runs.map((run) => run.id)).toEqual(['github:run:githubnext/gh-aw-cao:1']);
+    expect(merged.runs.map((run) => run.id)).toEqual(['github:run:githubnext/gh-cao:1']);
     expect(merged.audits.map((event) => event.id)).toEqual(['event:1']);
   });
 
@@ -242,7 +259,7 @@ describe('canonical retention merge', () => {
     previous.operationalValues.push({
       id: 'operational-value:dependabot',
       repositoryId: 'repository:1',
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       campaign: 'dependabot',
       valueId: 'dependabot-vulnerability-alerts',
       value: 3,

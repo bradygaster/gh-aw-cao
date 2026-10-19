@@ -18,9 +18,44 @@ const privateQueries = new Set([
   'campaign-problem-runtime-partitions'
 ]);
 
-// Only the changed declarations are restored; all shared dependencies execute
-// from the production document in both graphs.
+// Retain the retired runtime queries only in the pre-optimization baseline.
+// Shared dependencies still execute from the production document in both graphs.
+const retiredRuntimeQueries = [
+  {
+    name: 'campaign-runtime-problem-candidates',
+    from: 'campaign-runtime-health-groups',
+    compute: [
+      { as: 'has-current-failure', function: 'greater-than', args: [{ field: 'failure-count' }, { value: 0 }] },
+      { as: 'problem-kind', function: 'coalesce', args: [{ value: 'failure' }, { value: 'failure' }] }
+    ]
+  },
+  {
+    name: 'campaign-current-runtime-failures',
+    from: 'campaign-runtime-problem-candidates',
+    filter: { predicates: [{ field: 'has-current-failure', equals: true }] },
+    'order-by': [
+      { field: 'failure-count', direction: 'desc' },
+      { field: 'workflow-name', direction: 'asc' },
+      { field: 'runtime-repository', direction: 'asc' }
+    ]
+  },
+  {
+    name: 'campaign-runtime-problems',
+    from: 'campaign-current-runtime-failures',
+    union: ['campaign-unobserved-orchestrators'],
+    'order-by': [
+      { field: 'failure-count', direction: 'desc' },
+      { field: 'workflow-name', direction: 'asc' },
+      { field: 'runtime-repository', direction: 'asc' }
+    ]
+  }
+];
 const baselineQueries = queries
+  .flatMap((/** @type {{ name: string }} */ query) => {
+    if (query.name === 'workflow-run-observation-counts') return [...retiredRuntimeQueries.slice(0, 2), query];
+    if (query.name === 'dispatches') return [retiredRuntimeQueries[2], query];
+    return [query];
+  })
   .filter((/** @type {{ name: string }} */ query) => !privateQueries.has(query.name))
   .map((/** @type {import('../../src/data/queries/declarative.js').DashboardQuery & { subject: string, objective?: string, acceptance?: string }} */ query) => {
     if (query.name === 'campaign-problem-runs') {
@@ -121,6 +156,8 @@ function evidence() {
         'failure-message': `Retained failure ${run}`,
         'failure-step': 'agent',
         'failure-log': `Diagnostic ${run}`,
+        'terminal-outcome': index === 0 && attempt === 30 ? 'report_incomplete' : undefined,
+        'terminal-outcome-detail': index === 0 && attempt === 30 ? 'Required target evidence is unavailable.' : undefined,
         engine: 'copilot',
         'engine-version': '1.2.3',
         'gh-aw-version': 'v0.89.4',
@@ -135,7 +172,7 @@ function evidence() {
     event: 'incomplete-report',
     'event-timestamp': runs[30]['started-at'],
     'event-source': 'mcp',
-    'event-type': 'safe_output.created',
+    'event-type': 'safe_output.result',
     'safe-output-type': 'report_incomplete',
     'event-summary': 'Required target evidence is unavailable.',
     'observed-at': runs[30]['started-at']
@@ -163,14 +200,11 @@ beforeEach(async () => {
       operation: 'load-dashboard-query-sources',
       sources: evidence(),
       queries,
-      sourceNames: selected,
+      sourceNames: ['workflows', 'overview-runs', 'runs', 'audits', 'tools'],
       ingest: true
     })
   );
-  const queryNames = new Set(queries.map((/** @type {{ name: string }} */ query) => query.name));
-  canonical = Object.fromEntries(Object.keys(loaded)
-    .filter((name) => !queryNames.has(name))
-    .map((name) => [name, loaded[name]]));
+  canonical = loaded;
 });
 
 afterEach(() => {
@@ -286,9 +320,9 @@ describe('campaign problem query optimization', () => {
     /** @type {typeof canonical} */
     const sources = {
       ...canonical,
-      audits: {
-        ...canonical.audits,
-        metadata: { ...canonical.audits.metadata, completeness: 'partial', freshness: 'stale' }
+      runs: {
+        ...canonical.runs,
+        metadata: { ...canonical.runs.metadata, completeness: 'partial', freshness: 'stale' }
       }
     };
     const before = execute(baselineQueries, selected, sources);

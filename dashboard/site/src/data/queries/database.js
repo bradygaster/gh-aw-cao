@@ -9,20 +9,26 @@ import {
   readCollectionQueryKeys,
   readCollectionQueryKeyRecords,
   readCollections,
-  readTransactions
+  readTransactions,
+  scanCanonicalCollection
 } from '../storage/indexeddb.js';
 import { STORAGE_SHARD_STORE } from '../storage/shards.js';
 import {
   createDashboardQueryBudget,
+  DashboardQueryCancelledError,
   DASHBOARD_QUERY_LIMITS,
   dashboardQueryDefects,
   dashboardQueryIndex,
   executeDashboardQueries,
-  resolveDashboardQuerySources
+  queryInputNames,
+  resolveDashboardQuerySources,
+  unavailableResult
 } from './declarative.js';
-import { SYNTHETIC_SOURCE_FIELDS, TABLE_FIELDS } from '../../specification.js';
+import { SERVER_SOURCE_VALUES, SYNTHETIC_SOURCE_FIELDS } from '../../specification.js';
+import { isGitHubQuerySource } from '../github-query-sources.js';
 import { SIMULATION_DAYS, simulationDaysSource } from './simulation-days.js';
 import { createDebug } from '../../debug.js';
+import { incrementalAggregate } from './incremental-aggregate.js';
 
 const debugDatabase = createDebug('database');
 const monotonicNow = () => globalThis.performance?.now() ?? Date.now();
@@ -32,21 +38,8 @@ const DIRECT_EVIDENCE_SOURCES = new Set([
   'experiments', 'experiment-assignments', 'graders',
   'grader-observations', 'evals', 'eval-observations'
 ]);
-const DATABASE_TABLE_SOURCES = new Set([
-  'campaigns',
-  'repositories',
-  'workflows',
-  'runs',
-  ...RUN_RECORD_STORES,
-  'operational-values',
-  'marketplace-packages',
-  'experiments',
-  'experiment-assignments',
-  'graders',
-  'grader-observations',
-  'evals',
-  'eval-observations',
-  'transactions'
+const EXTERNAL_SOURCES = new Set([
+  ...SERVER_SOURCE_VALUES, 'configuration-policy', 'marketplace-registries'
 ]);
 /** @type {Record<string, Set<string>>} */
 const NATIVE_COUNT_FIELDS = {
@@ -90,33 +83,17 @@ function namedSources(sources) {
   ]));
 }
 
-/** @param {unknown} source */
-function hasRows(source) {
-  return Boolean(
-    source
-    && typeof source === 'object'
-    && !Array.isArray(source)
-    && Array.isArray(/** @type {{ rows?: unknown }} */ (source).rows)
-    && /** @type {{ rows: unknown[] }} */ (source).rows.length > 0
-  );
-}
-
-/** @param {unknown} source */
-function hasUsableRows(source) {
-  if (!hasRows(source)) return false;
-  return /** @type {{ metadata?: { availability?: unknown } }} */ (source).metadata?.availability !== 'unavailable';
-}
-
 /**
  * @param {string} queryName
  * @param {Record<string, import('../../presenter.js').LogicalSourceInput>} inputs
  * @param {Record<string, unknown>} sources
  * @param {string} metadataSource
+ * @param {import('./declarative.js').QueryBudget} [budget]
  */
-function executeDatabaseQuery(queryName, inputs, sources, metadataSource) {
+function executeDatabaseQuery(queryName, inputs, sources, metadataSource, budget) {
   const definition = databaseQueryIndex.get(queryName);
   if (!definition) throw new Error(`Missing database query: ${queryName}`);
-  const result = executeDatabaseProjection(definition, inputs);
+  const result = executeDatabaseProjection(definition, inputs, budget);
   const unavailable = result.metadata.availability === 'unavailable';
   return /** @type {import('../../presenter.js').LogicalSourceInput} */ ({
     ...result,
@@ -134,9 +111,10 @@ function executeDatabaseQuery(queryName, inputs, sources, metadataSource) {
  * only their primary input; joins and the execution budget remain shared.
  * @param {import('./declarative.js').DashboardQuery} definition
  * @param {Record<string, import('../../presenter.js').LogicalSourceInput>} inputs
+ * @param {import('./declarative.js').QueryBudget} [sharedBudget]
  * @returns {import('../../presenter.js').LogicalSourceInput}
  */
-function executeDatabaseProjection(definition, inputs) {
+function executeDatabaseProjection(definition, inputs, sharedBudget) {
   const input = inputs[definition.from];
   const batchSize = DASHBOARD_QUERY_LIMITS['max-output-rows'];
   const rowLocal = !definition.union?.length
@@ -148,9 +126,9 @@ function executeDatabaseProjection(definition, inputs) {
     && !definition['order-by']?.length
     && definition.limit === undefined;
   if (!rowLocal || !input || input.rows.length <= batchSize) {
-    return executeDashboardQueries([definition], inputs, [definition.name])[definition.name];
+    return executeDashboardQueries([definition], inputs, [definition.name], { budget: sharedBudget })[definition.name];
   }
-  const budget = createDashboardQueryBudget();
+  const budget = sharedBudget ?? createDashboardQueryBudget();
   /** @type {Record<string, unknown>[]} */
   const rows = [];
   /** @type {import('../../presenter.js').LogicalSourceInput | undefined} */
@@ -176,23 +154,21 @@ function executeDatabaseProjection(definition, inputs) {
  * @param {Record<string, unknown>[]} records
  * @param {Record<string, unknown>[]} runs
  * @param {Record<string, unknown>} sources
+ * @param {import('./declarative.js').QueryBudget} [budget]
  */
-function executeRunRecordsQuery(sourceName, records, runs, sources) {
-  return {
-    ...executeDatabaseQuery('run-records', {
-      $records: {
-        source: '$records',
-        rows: records,
-        metadata: queryMetadata(sources, sourceName, sourceName, true)
-      },
-      $runs: {
-        source: '$runs',
-        rows: runs,
-        metadata: queryMetadata(sources, 'runs', 'runs', true)
-      }
-    }, sources, sourceName),
-    source: sourceName
-  };
+function executeRecordQuery(sourceName, records, runs, sources, budget) {
+  return executeDatabaseQuery(sourceName, {
+    [`$${sourceName}`]: {
+      source: `$${sourceName}`,
+      rows: records,
+      metadata: queryMetadata(sources, sourceName, sourceName, true)
+    },
+    $runs: {
+      source: '$runs',
+      rows: runs,
+      metadata: queryMetadata(sources, 'runs', 'runs', true)
+    }
+  }, sources, sourceName, budget);
 }
 
 /**
@@ -212,12 +188,127 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
   budget.checkpoint();
   const index = dashboardQueryIndex(definitions);
   const defects = dashboardQueryDefects(definitions);
+  const countPlans = [...requested].flatMap((name) => {
+    const definition = index.get(name);
+    const plan = definition && !defects.has(name) ? nativeTableCountPlan(definition) : null;
+    return plan ? [{ name, ...plan }] : [];
+  });
+  const nativeCounts = new Set(countPlans.map(({ name }) => name));
   /** @type {Promise<Record<string, Record<string, unknown>[]>> | undefined} */
   let runRead;
   const readRuns = async () => {
     runRead ??= readCollections(indexedDB, ['runs']);
     return (await runRead).runs ?? [];
   };
+  /** @type {Map<unknown, Record<string, unknown>> | undefined} */
+  let runsById;
+  /** @type {Map<string, Promise<Record<string, Record<string, unknown>[]>>>} */
+  const joinedReads = new Map();
+  /** @type {Record<string, import('../../presenter.js').LogicalSourceInput>} */
+  const streamed = {};
+  /** @type {Map<string, import('../../presenter.js').LogicalSourceInput>} */
+  const aggregateCache = new Map();
+  for (const name of requested) {
+    if (nativeCounts.has(name)) continue;
+    const definition = index.get(name);
+    const plan = definition && !defects.has(name) ? streamingAggregatePlan(index, definition) : null;
+    if (!definition?.aggregate || !plan) continue;
+    const stageNames = new Map(plan.queries.map((query, position) => [query.name, position]));
+    const cacheKey = JSON.stringify([
+      plan.source,
+      plan.queries.map((query) => ({
+        ...query, name: undefined, from: stageNames.get(query.from) ?? query.from
+      })),
+      { ...definition, name: undefined, from: undefined }
+    ]);
+    const cached = aggregateCache.get(cacheKey);
+    if (cached) {
+      streamed[name] = {
+        ...cached, source: name,
+        metadata: { ...cached.metadata, 'source-id': `${name}-query`, 'query-name': name }
+      };
+      continue;
+    }
+    const reducer = incrementalAggregate(definition.aggregate, budget);
+    const needsRuns = !plan.direct || plan.projection.joins?.some((join) => join.source === '$runs');
+    if (needsRuns && !runsById) {
+      const runs = await readRuns();
+      budget.spend(runs.length);
+      runsById = new Map(runs.map((run) => [run.id, run]));
+    }
+    const runIndex = runsById;
+    /** @type {Record<string, import('../../presenter.js').LogicalSourceInput>} */
+    const joinedInputs = {};
+    for (const join of plan.direct ? (plan.projection.joins ?? []) : []) {
+      if (join.source === '$runs') continue;
+      const store = /** @type {typeof import('../storage/indexeddb.js').ENTITY_STORES[number]} */ (join.source.slice(1));
+      let read = joinedReads.get(store);
+      if (!read) {
+        read = readCollections(indexedDB, [store]);
+        joinedReads.set(store, read);
+      }
+      const rows = (await read)[store] ?? [];
+      budget.checkpoint();
+      joinedInputs[join.source] = {
+        source: join.source, rows,
+        metadata: queryMetadata(logicalSources, store, store, true)
+      };
+    }
+    let metadata = queryMetadata(logicalSources, plan.store, name, true);
+    let unavailable = false;
+    /** @param {Record<string, unknown>[]} records */
+    const consume = (records) => {
+      if (unavailable) return;
+      budget.spend(records.length);
+      const batchRuns = runIndex ? [...new Set(records.map((record) => record.runId))]
+        .flatMap((id) => {
+          const run = runIndex.get(id);
+          return run ? [run] : [];
+        }) : [];
+      const projected = plan.direct
+        ? executeDatabaseQuery(plan.source, {
+            ...joinedInputs,
+            [`$${plan.store}`]: {
+              source: `$${plan.store}`, rows: records,
+              metadata: queryMetadata(logicalSources, plan.store, plan.store, true)
+            },
+            ...(needsRuns ? { $runs: {
+              source: '$runs', rows: batchRuns,
+              metadata: queryMetadata(logicalSources, 'runs', 'runs', true)
+            } } : {})
+          }, logicalSources, plan.store, budget)
+        : executeDatabaseQuery(plan.source, {
+            [plan.projection.from]: executeRecordQuery(plan.store, records, batchRuns, logicalSources, budget)
+          }, logicalSources, plan.store, budget);
+      const input = executeDashboardQueries(plan.queries, {
+        [plan.source]: projected
+      }, [name], { budget })[name];
+      metadata = input.metadata;
+      if (metadata.availability === 'unavailable') { unavailable = true; return; }
+      reducer.append(input.rows);
+    };
+    const missing = [logicalSources[plan.store]].find((source) => (
+      source && typeof source === 'object'
+      && /** @type {import('../../presenter.js').LogicalSourceInput} */ (source).metadata?.availability === 'unavailable'
+    ));
+    if (missing) {
+      const input = /** @type {import('../../presenter.js').LogicalSourceInput} */ (missing);
+      streamed[name] = executeDashboardQueries([definition], { [definition.from]: input }, [name], { budget })[name];
+      continue;
+    }
+    try {
+      await scanCanonicalCollection(indexedDB, plan.store, consume, { checkpoint: () => budget.checkpoint() });
+    } catch (error) {
+      if (error instanceof DashboardQueryCancelledError) throw error;
+      streamed[name] = unavailableResult(definition, metadata, error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    const rows = unavailable ? [] : reducer.rows();
+    streamed[name] = executeDashboardQueries([{
+      ...definition, from: '$native-aggregate', filter: undefined, compute: undefined, aggregate: undefined
+    }], { '$native-aggregate': { source: '$native-aggregate', rows, metadata } }, [name], { budget })[name];
+    aggregateCache.set(cacheKey, streamed[name]);
+  }
   /** @type {Map<string, ReturnType<typeof readCollectionQueryKeys>>} */
   const keyReads = new Map();
   const keySelectionPlans = [...requested].flatMap((name) => {
@@ -250,7 +341,7 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
     for (let offset = 0; offset < keys.length; offset += batchSize) {
       budget.checkpoint();
       const batch = keys.slice(offset, offset + batchSize);
-      const projected = executeRunRecordsQuery(source, batch.map(({ row, key }) => ({
+      const projected = executeRecordQuery(plan.store, batch.map(({ row, key }) => ({
         ...row, id: key
       })), [], logicalSources);
       const keyed = {
@@ -258,7 +349,7 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
         rows: projected.rows.map((row, position) => ({ ...row, [plan.keyField]: batch[position].key }))
       };
       const inputs = plan.projection
-        ? executeDashboardQueries([plan.projection], { 'run-records': keyed }, [source], { budget })[source]
+        ? executeDashboardQueries([plan.projection], { [plan.projection.from]: keyed }, [source], { budget })[source]
         : keyed;
       const result = executeDashboardQueries(plan.keyQueries, { [source]: inputs }, [name], { budget })[name];
       if (result.metadata.availability === 'unavailable') return [name, result];
@@ -268,15 +359,16 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
       maxRows: DASHBOARD_QUERY_LIMITS['max-input-rows'], checkpoint: () => budget.checkpoint()
     });
     const runs = await readRuns();
-    const projected = executeRunRecordsQuery(source, records, runs, logicalSources);
+    const projected = executeRecordQuery(plan.store, records, runs, logicalSources);
     const actual = plan.projection
-      ? executeDatabaseQuery(source, { 'run-records': projected }, logicalSources, plan.store)
+      ? executeDatabaseQuery(source, { [plan.projection.from]: projected }, logicalSources, plan.store)
       : projected;
     return [name, executeRowLocalRecordGraph(plan.queries, {
       [source]: actual
     }, name, budget)];
   }));
   const recordPlans = [...requested].flatMap((name) => {
+    if (Object.hasOwn(streamed, name)) return [];
     const definition = index.get(name);
     const flattened = definition && !defects.has(name)
       ? flattenIndexedRecordQuery(index, definition)
@@ -309,7 +401,7 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
         { ...plan, maxGroups: DASHBOARD_QUERY_LIMITS['max-input-rows'], checkpoint: () => budget.spend(1) }
       );
       if (!groups) return null;
-      const projected = executeRunRecordsQuery(source, groups, runs, logicalSources);
+      const projected = executeRecordQuery(source, groups, runs, logicalSources);
       inputs[source] = {
         ...projected,
         rows: projected.rows.map((row, position) => ({ ...row, [weightField]: groups[position].count }))
@@ -344,7 +436,7 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
   });
   const recordSelections = await Promise.all(recordSelectionPlans.map(async ({ name, definition, predicates }) => {
     const runs = await readRuns();
-    const identities = executeRunRecordsQuery(definition.from, runs.map((run) => ({
+    const identities = executeRecordQuery(definition.from, runs.map((run) => ({
       id: run.id, runId: run.id
     })), runs, logicalSources);
     const selected = executeDashboardQueries([{
@@ -378,52 +470,10 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
       records.sort((left, right) => indexedDB.cmp(
         /** @type {IDBValidKey} */ (left.id), /** @type {IDBValidKey} */ (right.id)
       ));
-      inputs[source] = executeRunRecordsQuery(source, records, runs, logicalSources);
+      inputs[source] = executeRecordQuery(source, records, runs, logicalSources);
     }
     return [name, executeDashboardQueries([definition], inputs, [name], { budget })[name]];
   }));
-  const countPlans = [...requested].flatMap((name) => {
-    const definition = index.get(name);
-    if (!definition || defects.has(name)) return [];
-    if (definition.from === STORAGE_SHARD_STORE) return [];
-    const table = CANONICAL_DATABASE_SCHEMA[definition.from];
-    const values = definition.aggregate?.values;
-    const computedLiterals = Object.fromEntries((definition.compute ?? []).flatMap((computed) => (
-      computed.function === 'literal'
-        && Array.isArray(computed.args)
-        && computed.args.length === 1
-        && 'value' in computed.args[0]
-        ? [[computed.as, computed.args[0].value]]
-        : []
-    )));
-    const computedFields = Object.keys(computedLiterals);
-    const groupedFields = definition.aggregate?.by ?? [];
-    const nativeCountFields = NATIVE_COUNT_FIELDS[definition.from]
-      ?? new Set([table?.keyPath]);
-    if (!table
-        || (computedFields.length === 0 && typeof table.keyPath !== 'string')
-        || definition.union?.length
-        || definition.joins?.length
-        || definition.filter
-        || computedFields.length !== (definition.compute?.length ?? 0)
-        || groupedFields.length !== computedFields.length
-        || groupedFields.some((field) => !Object.hasOwn(computedLiterals, field))
-        || definition['temporal-series']
-        || definition.predict?.length || definition.window?.length || definition.facet
-        || definition.select?.length
-        || definition['order-by']?.length
-        || definition.limit !== undefined
-        || !Array.isArray(values)
-        || values.length === 0
-        || values.some((value) => (
-          value.reducer !== 'count'
-          || (computedFields.length === 0 && !nativeCountFields.has(value.field))
-          || value.filter
-        ))) {
-      return [];
-    }
-    return [{ name, source: definition.from, values, computedLiterals }];
-  });
   const filterPlans = [...requested].flatMap((name) => {
     const definition = index.get(name);
     const executable = definition && !defects.has(name)
@@ -489,14 +539,85 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
     ...Object.fromEntries(filtered),
     ...Object.fromEntries(recordAggregates.filter((entry) => entry !== null)),
     ...Object.fromEntries(recordSelections),
-    ...Object.fromEntries(keySelections.filter((entry) => entry !== null))
+    ...Object.fromEntries(keySelections.filter((entry) => entry !== null)),
+    ...streamed
   };
 }
 
-const RUN_RECORD_PROJECTION = databaseQueryIndex.get('run-records');
-const RECORD_PROJECTED_FIELDS = new Set((RUN_RECORD_PROJECTION?.select ?? []).map((field) => field.as ?? field.field));
+/** @param {import('./declarative.js').DashboardQuery} definition */
+function nativeTableCountPlan(definition) {
+  if (definition.from === STORAGE_SHARD_STORE) return null;
+  const table = CANONICAL_DATABASE_SCHEMA[definition.from];
+  const values = definition.aggregate?.values;
+  const computedLiterals = Object.fromEntries((definition.compute ?? []).flatMap((computed) => (
+    computed.function === 'literal' && computed.args.length === 1 && 'value' in computed.args[0]
+      ? [[computed.as, computed.args[0].value]] : []
+  )));
+  const computedFields = Object.keys(computedLiterals);
+  const groupedFields = definition.aggregate?.by ?? [];
+  const nativeCountFields = NATIVE_COUNT_FIELDS[definition.from] ?? new Set([table?.keyPath]);
+  if (!table || (computedFields.length === 0 && typeof table.keyPath !== 'string')
+      || definition.union?.length || definition.joins?.length || definition.filter
+      || computedFields.length !== (definition.compute?.length ?? 0)
+      || groupedFields.length !== computedFields.length
+      || groupedFields.some((field) => !Object.hasOwn(computedLiterals, field))
+      || definition['temporal-series'] || definition.predict?.length || definition.window?.length || definition.facet
+      || definition.select?.length || definition['order-by']?.length || definition.limit !== undefined
+      || !values?.length || values.some((value) => (
+        value.reducer !== 'count' || (computedFields.length === 0 && !nativeCountFields.has(value.field)) || value.filter
+      ))) return null;
+  return { source: definition.from, values, computedLiterals };
+}
+
+const RECORD_PROJECTIONS = [...RUN_RECORD_STORES].map((name) => databaseQueryIndex.get(name))
+  .filter((query) => query !== undefined);
+
+/**
+ * Prove a row-local path from one canonical record projection to an aggregate.
+ * Ordering, limiting, joins, and other non-local ancestors stay on the regular path.
+ * @param {Map<string, import('./declarative.js').DashboardQuery>} index
+ * @param {import('./declarative.js').DashboardQuery} definition
+ */
+function streamingAggregatePlan(index, definition) {
+  if (!definition.aggregate || definition.union?.length || definition.joins?.length
+      || definition['temporal-series'] || definition.predict?.length || definition.window?.length || definition.facet
+      || definition.aggregate.values.some((value) => !['count', 'distinct-count', 'sum'].includes(value.reducer))) return null;
+  /** @type {import('./declarative.js').DashboardQuery[]} */
+  const queries = [{ ...definition, aggregate: undefined, select: undefined, 'order-by': undefined, limit: undefined }];
+  const seen = new Set([definition.name]);
+  let source = definition.from;
+  while (index.has(source)) {
+    const parent = index.get(source);
+    if (!parent || seen.has(source) || parent.aggregate || parent.union?.length || parent.joins?.length
+        || parent['temporal-series'] || parent.predict?.length || parent.window?.length || parent.facet
+        || parent['order-by']?.length || parent.limit !== undefined) return null;
+    seen.add(source);
+    queries.unshift(parent);
+    source = parent.from;
+  }
+  if (RUN_RECORD_STORES.has(source)) return null;
+  const projection = databaseQueryIndex.get(source);
+  if (!projection) return null;
+  const direct = projection.from.startsWith('$') && Object.hasOwn(CANONICAL_DATABASE_SCHEMA, projection.from.slice(1));
+  if ((!RUN_RECORD_STORES.has(projection.from) && !direct) || projection.aggregate || projection.union?.length
+      || (projection.joins ?? []).some((join) => !direct || !join.source.startsWith('$')
+        || !Object.hasOwn(CANONICAL_DATABASE_SCHEMA, join.source.slice(1))
+        || join.type !== 'left' || join.on.length !== 1 || join.on[0].right !== 'id')
+      || projection['order-by']?.length || projection.limit !== undefined
+      || projection['temporal-series'] || projection.predict?.length || projection.window?.length || projection.facet) return null;
+  const stores = direct ? [projection.from.slice(1)] : RUN_RECORD_STORES.has(source) ? [source]
+    : (projection?.stores ?? []).filter((store) => RUN_RECORD_STORES.has(store));
+  if (stores.length !== 1) return null;
+  if (direct && projection.from !== `$${stores[0]}`) return null;
+  return { source, projection, direct, store: /** @type {typeof import('../storage/indexeddb.js').ENTITY_STORES[number]} */ (stores[0]), queries };
+}
+const RECORD_PROJECTED_FIELDS = new Set(RECORD_PROJECTIONS.flatMap((query) => (
+  (query.select ?? []).map((field) => field.as ?? field.field)
+)));
 const RECORD_RUN_FIELDS = new Set([
-  ...(RUN_RECORD_PROJECTION?.joins ?? []).flatMap((join) => join.fields.map((field) => field.as ?? field.field)),
+  ...RECORD_PROJECTIONS.flatMap((query) => (
+    (query.joins ?? []).flatMap((join) => join.fields.map((field) => field.as ?? field.field))
+  )),
   'run'
 ]);
 
@@ -554,21 +675,23 @@ function indexedRecordKeySelectionPlan(index, definition) {
   const stores = RUN_RECORD_STORES.has(source) ? [source]
     : (projection?.stores ?? []).filter((store) => RUN_RECORD_STORES.has(store));
   if (stores.length !== 1 || (projection && (
-    projection.from !== 'run-records' || projection.joins?.length || projection.aggregate
+    projection.from !== stores[0] || projection.joins?.length || projection.aggregate
     || projection.union?.length || projection['temporal-series'] || projection.predict?.length || projection.window?.length
   ))) return null;
   const store = /** @type {typeof import('../storage/indexeddb.js').ENTITY_STORES[number]} */ (stores[0]);
+  const recordProjection = databaseQueryIndex.get(store);
+  if (!recordProjection) return null;
   /** @type {Set<string>} */
   const rawFields = new Set([
-    ...(RUN_RECORD_PROJECTION?.select ?? []).map((field) => field.field),
-    ...(RUN_RECORD_PROJECTION?.compute ?? []).flatMap((computed) => computed.args.flatMap((arg) => (
+    ...(recordProjection.select ?? []).map((field) => field.field),
+    ...(recordProjection.compute ?? []).flatMap((computed) => computed.args.flatMap((arg) => (
       'field' in arg ? [arg.field] : []
     )))
   ]);
   /** @type {RecordFieldLineage} */
   const canonical = new Map([...rawFields].map((field) => [field, new Set([field])]));
   for (const field of RECORD_RUN_FIELDS) canonical.set(field, null);
-  const recordFields = selectedRecordLineage(canonical, RUN_RECORD_PROJECTION ?? { name: '', from: '' });
+  const recordFields = selectedRecordLineage(canonical, recordProjection);
   /** @type {Array<{ definition: import('./declarative.js').DashboardQuery, fields: RecordFieldLineage }>} */
   const stages = [];
   let fields = recordFields;
@@ -887,11 +1010,7 @@ function indexedRunAggregateOperators(definition) {
 
 /** @param {string} name */
 function queryStores(name) {
-  const definition = databaseQueryIndex.get(name);
-  const mapped = [...databaseQueryIndex.values()]
-    .map((candidate) => candidate['stores-by-source']?.[name])
-    .find(Array.isArray);
-  const configured = definition?.stores ?? mapped;
+  const configured = databaseQueryIndex.get(name)?.stores;
   return Array.isArray(configured)
     ? configured.filter((store) => typeof store === 'string')
     : [];
@@ -911,10 +1030,8 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
     throw new TypeError('Dashboard source names must be an array of strings.');
   }
   const requested = new Set(sourceNames);
-  const databaseRequested = [...requested].filter((name) => (
-    !Object.hasOwn(SYNTHETIC_SOURCE_FIELDS, name)
-    && (DATABASE_TABLE_SOURCES.has(name) || !hasUsableRows(logicalSources[name]))
-  ));
+  const databaseRequested = resolveDashboardQuerySources(databaseQueries, requested)
+    .filter((name) => databaseQueryIndex.has(name) && !Object.hasOwn(SYNTHETIC_SOURCE_FIELDS, name));
   const stores = [...new Set(databaseRequested.flatMap(queryStores))];
   const transactionRequested = stores.includes('transactions');
   const collectionStores = /** @type {Array<typeof import('../storage/indexeddb.js').ENTITY_STORES[number]>} */ (
@@ -931,99 +1048,48 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
   /** @type {Record<string, import('../../presenter.js').LogicalSourceInput>} */
   const result = {};
   /** @type {Map<string, import('../../presenter.js').LogicalSourceInput>} */
-  const recordProjections = new Map();
-  /** @param {string} store */
-  const projectRecords = (store) => {
-    let projection = recordProjections.get(store);
-    if (!projection) {
-      projection = executeRunRecordsQuery(store, collections[store] ?? [], collections.runs ?? [], sources);
-      if (requested.has(store)) recordProjections.set(store, projection);
-    }
-    return projection;
-  };
-  for (const name of requested) {
+  const resolved = new Map();
+  const visiting = new Set();
+  /** @param {string} name @returns {import('../../presenter.js').LogicalSourceInput} */
+  const resolveSource = (name) => {
+    const cached = resolved.get(name);
+    if (cached) return cached;
     if (name === SIMULATION_DAYS) {
-      result[name] = simulationDaysSource();
-      continue;
+      return simulationDaysSource();
     }
     const logical = /** @type {import('../../presenter.js').LogicalSourceInput | undefined} */ (sources[name]);
-    if (logical
-        && !DATABASE_TABLE_SOURCES.has(name)
-        && (!databaseQueryIndex.has(name) || hasUsableRows(logical))) {
-      result[name] = logical;
-      continue;
-    }
-    if (!databaseQueryIndex.has(name) && !RUN_RECORD_STORES.has(name)) {
-      result[name] = logical ?? {
+    const definition = databaseQueryIndex.get(name);
+    if (!definition) {
+      if (logical && (EXTERNAL_SOURCES.has(name) || isGitHubQuerySource(name))) return logical;
+      return {
         source: name,
         rows: [],
         metadata: {
-          ...queryMetadata(sources, name, name, Object.hasOwn(TABLE_FIELDS, name)),
-          availability: Object.hasOwn(TABLE_FIELDS, name) ? 'empty' : 'unavailable'
+          ...queryMetadata(sources, name, name, false),
+          error: `No canonical database query or runtime source is registered for "${name}".`
         }
       };
-      continue;
     }
-    if (RUN_RECORD_STORES.has(name)) {
-      result[name] = projectRecords(name);
-      continue;
-    }
-    if (name === 'mcp-calls' || name === 'findings' || name === 'firewall-observations') {
-      const store = name === 'mcp-calls' ? 'tools' : name === 'findings' ? 'audits' : 'domains';
-      const records = projectRecords(store);
-      result[name] = executeDatabaseQuery(name, {
-        'run-records': records
-      }, sources, store);
-      continue;
-    }
-    if (name === 'outcomes') {
-      const records = projectRecords('issues');
-      const workflowRows = executeDatabaseQuery('workflows', {
-        $workflows: {
-          source: '$workflows',
-          rows: collections.workflows ?? [],
-          metadata: queryMetadata(sources, 'workflows', 'workflows', true)
-        },
-        $repositories: {
-          source: '$repositories',
-          rows: collections.repositories ?? [],
-          metadata: queryMetadata(sources, 'repositories', 'repositories', true)
-        },
-        $campaigns: {
-          source: '$campaigns',
-          rows: collections.campaigns ?? [],
-          metadata: queryMetadata(sources, 'campaigns', 'campaigns', true)
-        }
-      }, sources, 'workflows');
-      result[name] = executeDatabaseQuery(name, {
-        'run-records': records,
-        workflows: workflowRows
-      }, sources, 'issues');
-      continue;
-    }
-    if (name === 'detection-observations' || name === 'safe-output-performance') {
-      const inputName = name === 'detection-observations' ? '$security-findings' : '$outcomes';
-      const logicalName = inputName.slice(1);
-      const input = /** @type {import('../../presenter.js').LogicalSourceInput | undefined} */ (sources[logicalName]);
-      result[name] = input
-        ? executeDatabaseQuery(name, { [inputName]: input }, sources, logicalName)
-        : {
-            source: name,
-            rows: [],
-            metadata: { ...queryMetadata(sources, name, name, true), availability: 'empty' }
-          };
-      continue;
-    }
-    const inputs = Object.fromEntries(queryStores(name).map((store) => [
-      `$${store}`,
-      {
-        source: `$${store}`,
-        rows: store === 'transactions' ? transactions : collections[store] ?? [],
-        metadata: queryMetadata(sources, store, store, true)
+    if (visiting.has(name)) throw new Error(`Cyclic canonical database query: ${name}`);
+    visiting.add(name);
+    const inputs = Object.fromEntries(queryInputNames(definition).map((input) => {
+      if (!input.startsWith('$')) return [input, resolveSource(input)];
+      const store = input.slice(1);
+      if (!Object.hasOwn(collections, store) && store !== 'transactions') {
+        throw new Error(`Canonical query "${name}" requires an undeclared store: ${store}`);
       }
-    ]));
-    result[name] = executeDatabaseQuery(name, inputs, sources, name);
-  }
+      return [input, {
+        source: input,
+        rows: store === 'transactions' ? transactions : collections[store],
+        metadata: queryMetadata(sources, store, store, true)
+      }];
+    }));
+    const projection = executeDatabaseQuery(name, inputs, sources, definition.from.replace(/^\$/, ''));
+    resolved.set(name, projection);
+    visiting.delete(name);
+    return projection;
+  };
+  for (const name of requested) result[name] = resolveSource(name);
   const totalMs = monotonicNow() - startedAt;
   const recordsRead = Object.values(collections).reduce((total, records) => total + records.length, 0)
     + transactions.length;
@@ -1061,13 +1127,14 @@ export async function loadDatabaseQuerySources(indexedDB, sources, options = {})
   );
   const nativeNames = new Set(Object.keys(native));
   const remaining = sourceNames.filter((name) => !nativeNames.has(name));
+  const declared = dashboardQueryIndex(queries);
   const required = resolveDashboardQuerySources(queries, remaining, nativeNames)
-    .filter((name) => !nativeNames.has(name));
+    .filter((name) => !nativeNames.has(name) && !declared.has(name));
   const database = await queryDatabaseSources(indexedDB, sources, required);
   return {
-    ...namedSources(sources),
-    ...database,
-    ...native,
+    ...Object.fromEntries(sourceNames.filter((name) => nativeNames.has(name) || !declared.has(name)).map((name) => [
+      name, native[name] ?? database[name]
+    ])),
     ...executeDashboardQueries(queries, { ...database, ...native }, remaining, { budget })
   };
 }

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
 )
 
 type focusedOperationalStore struct {
@@ -45,6 +45,8 @@ func focusedTestStore(store operational.Store) focusedOperationalStore {
 			}{s.RateLimits},
 			Health:           struct{ operational.HealthProbe }{s.Health},
 			IngestionMetrics: struct{ operational.IngestionMetrics }{s.IngestionMetrics},
+			CLICommands:      s.CLICommands,
+			Audit:            s.Audit,
 		},
 	}
 }

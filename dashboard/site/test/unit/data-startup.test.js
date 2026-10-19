@@ -22,6 +22,7 @@ vi.mock("../../src/dashboard-data-updates.js", () => updates);
 import { createBatchedSourceLoader, startDashboardData } from "../../src/data/startup.js";
 import { dashboardViewAliasName } from "../../src/data/queries/view-payload-compiler.js";
 import { browserFirstLoad } from "../../src/browser-first-load.js";
+import { dashboardDataStatus } from "../../src/dashboard-data-status.js";
 
 const cachedSources = {
   runs: { source: "runs", rows: [{ run: "cached" }] },
@@ -31,6 +32,10 @@ const cachedSources = {
 function options(overrides = {}) {
   let renderedPage = false;
   const browserWindow = new EventTarget();
+  Object.defineProperty(browserWindow, "navigator", {
+    value: { storage: { persisted: async () => true } },
+    configurable: true
+  });
   return {
     browserWindow: /** @type {Window} */ (/** @type {unknown} */ (browserWindow)),
     document,
@@ -166,10 +171,38 @@ describe("dashboard data startup", () => {
     ])).rejects.toThrow("circular");
   });
 
+  it("warns about data loss in private or best-effort storage and cleans up on disposal", async () => {
+    dataProcessor.loadDashboardSnapshotMetadata.mockResolvedValue(null);
+    const config = options();
+    Object.defineProperty(config.browserWindow, "navigator", {
+      value: { storage: { persisted: async () => false } }
+    });
+    const stop = await startDashboardData(config);
+    await vi.waitFor(() => expect(document.querySelector(".dashboard-notification-warning")?.textContent)
+      .toContain("data will be lost when the private session ends"));
+    stop();
+    await vi.waitFor(() => expect(document.querySelector(".dashboard-notification-warning")).toBeNull());
+  });
+
+  it("does not warn when browser storage is persistent", async () => {
+    dataProcessor.loadDashboardSnapshotMetadata.mockResolvedValue(null);
+    const config = options();
+    Object.defineProperty(config.browserWindow, "navigator", {
+      value: { storage: { persisted: async () => true } }
+    });
+    const stop = await startDashboardData(config);
+    await Promise.resolve();
+    expect(document.querySelector(".dashboard-notification-warning")).toBeNull();
+    stop();
+  });
+
   it("renders cached data and lets the UI settle before any download starts", async () => {
     await startDashboardData(options());
 
     expect(document.querySelector("dialog")).toBeNull();
+    expect(dashboardDataStatus.get()).toEqual({
+      phase: "cached", snapshot: { createdAt: "2026-09-28T12:00:00.000Z" }
+    });
     expect(dataProcessor.subscribeWorkerLoadingProgress).not.toHaveBeenCalled();
     expect(calls).toEqual([
       "render:cached",
@@ -178,6 +211,24 @@ describe("dashboard data startup", () => {
       "automatic",
       "refresh",
     ]);
+  });
+
+  it("resolves shell notice sources before the first render, independently of page preparation", async () => {
+    const notices = { freshness: { source: "freshness", rows: [{ "latest-data-at": 1 }] } };
+    dataProcessor.loadCanonicalDashboardPage.mockImplementation(async (names) => names.length ? notices : {});
+    const render = vi.fn();
+    const context = {
+      pages: [], queries: [{ name: "freshness", from: "runs" }],
+      callouts: [{
+        id: "old-data", title: "Old data", description: "Inspect ingestion.",
+        "visible-when": { source: "freshness", field: "latest-data-at", "older-than-hours": 24 }
+      }]
+    };
+    const stop = await startDashboardData(options({ dashboardContext: context, render }));
+    expect(dataProcessor.loadCanonicalDashboardPage).toHaveBeenCalledWith(["freshness"], context);
+    expect(render.mock.calls[0][0]).toBe(notices);
+    expect(render.mock.calls[0][1]).toBe("cached");
+    stop();
   });
 
   it("reports failed background updates once and clears the notice when the subscription recovers", async () => {
@@ -231,6 +282,7 @@ describe("dashboard data startup", () => {
     expect(calls).toContain("render:loading");
     expect(dataProcessor.loadDashboardSnapshotMetadata).toHaveBeenCalledTimes(2);
     expect(browserFirstLoad.get().status).toBe("inactive");
+    expect(dashboardDataStatus.get().phase).toBe("ready");
     expect(document.querySelector("dialog")).toBeNull();
   });
 
@@ -241,6 +293,7 @@ describe("dashboard data startup", () => {
     const stop = await startDashboardData(options());
     expect(document.querySelector("dialog")?.open).toBe(true);
     expect(browserFirstLoad.get().status).toBe("loading");
+    expect(dashboardDataStatus.get()).toEqual({ phase: "loading", snapshot: null });
     const progress = dataProcessor.subscribeWorkerLoadingProgress.mock.calls[0]?.[0];
     progress({ id: "ingestion", phase: "update", completed: 1, total: 4 });
     expect(browserFirstLoad.get()).toMatchObject({ completed: 1, total: 4 });
@@ -343,13 +396,16 @@ describe("dashboard data startup", () => {
     const startupOptions = options();
     const stop = await startDashboardData(startupOptions);
     await vi.waitFor(() => expect(browserFirstLoad.get().status).toBe("failed"));
+    expect(dashboardDataStatus.get()).toEqual({ phase: "stale", snapshot: null });
     expect(document.querySelector("dialog")?.textContent).toContain("could not finish");
     browserFirstLoad.set((current) => ({ ...current, dismissed: true }));
     dataProcessor.loadDashboardSnapshotMetadata.mockResolvedValue({ createdAt: "2026-09-28T12:00:00.000Z" });
     startupOptions.browserWindow.dispatchEvent(new Event("dashboard-refresh-request"));
     expect(browserFirstLoad.get().status).toBe("loading");
+    expect(dashboardDataStatus.get().phase).toBe("loading");
     expect(document.querySelector("dialog")?.open).toBe(false);
     await vi.waitFor(() => expect(browserFirstLoad.get().status).toBe("inactive"));
+    expect(dashboardDataStatus.get().phase).toBe("ready");
     stop();
     vi.restoreAllMocks();
   });
@@ -379,6 +435,19 @@ describe("dashboard data startup", () => {
     expect(document.querySelector("dialog")).toBeNull();
     expect(browserFirstLoad.get().status).toBe("inactive");
     expect(dataProcessor.subscribeWorkerLoadingProgress).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("publishes hosted refresh completion without requiring a local snapshot or a page rerender", async () => {
+    const marker = document.createElement("meta");
+    marker.name = "dashboard-data-backend";
+    marker.content = "server-http";
+    document.head.append(marker);
+    dataProcessor.loadDashboardSnapshotMetadata.mockResolvedValue(null);
+    dataProcessor.refreshCanonicalDashboardSources.mockResolvedValue({ changed: true });
+    const stop = await startDashboardData(options());
+    await vi.waitFor(() => expect(dashboardDataStatus.get()).toEqual({ phase: "ready", snapshot: null }));
+    expect(calls).not.toContain("render:ready");
     stop();
   });
 
@@ -458,18 +527,25 @@ describe("dashboard data startup", () => {
           signal: new AbortController().signal,
           onUpdate: () => {},
         });
+        void loadPageSources.subscribeBackgroundSources?.(["maintenance-campaign-updates"], {
+          signal: new AbortController().signal,
+          onUpdate: () => {},
+        });
       }),
     }));
 
     await vi.waitFor(() => expect(calls).toContain("subscribe:page:overview"));
-    expect(calls).not.toContain("subscribe:sources:maintenance-campaign-updates");
+    expect(calls.some((call) => call.startsWith("subscribe:sources:maintenance-campaign-updates:"))).toBe(false);
     expect(calls).not.toContain("refresh");
 
     settle();
     await startup;
 
     expect(calls.indexOf("subscribe:page:overview"))
-      .toBeLessThan(calls.indexOf("subscribe:sources:maintenance-campaign-updates"));
+      .toBeLessThan(calls.findIndex((call) => call.startsWith("subscribe:sources:maintenance-campaign-updates:")));
+    const backgroundSubscriptions = calls.filter((call) => call.startsWith("subscribe:sources:maintenance-campaign-updates:"));
+    expect(backgroundSubscriptions).toHaveLength(2);
+    expect(new Set(backgroundSubscriptions).size).toBe(2);
     expect(calls.indexOf("subscribe:page:overview")).toBeLessThan(calls.indexOf("refresh"));
   });
 

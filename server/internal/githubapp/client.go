@@ -22,8 +22,8 @@ import (
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/google/go-github/v66/github"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/logger"
 )
 
 var appLog = logger.New("cao:githubapp")
@@ -58,6 +58,8 @@ type Client struct {
 	appClient     *github.Client
 	mutex         sync.Mutex
 	installations map[int64]*installationEntry
+	identityMutex sync.Mutex
+	identity      *BotIdentity
 }
 
 type installationEntry struct {

@@ -1,6 +1,6 @@
 ---
 title: Central Agentic Ops Dashboard Data Architecture Specification
-description: Canonical data model, ingestion, IndexedDB persistence, consistency, recovery, and scale requirements for the gh-aw-cao dashboard.
+description: Canonical data model, ingestion, IndexedDB persistence, consistency, recovery, and scale requirements for the gh-cao dashboard.
 version: 1.8.3
 status: Working Draft
 editors:
@@ -11,7 +11,7 @@ editors:
 
 **Version:** 1.8.3
 **Status:** Working Draft
-**Repository:** `githubnext/gh-aw-cao`
+**Repository:** `githubnext/gh-cao`
 **Target implementation:** Dashboard data subsystem
 **Date:** 2026-10-11
 
@@ -19,6 +19,83 @@ Implementers changing canonical data, ingestion, storage, or query execution
 should read `docs/dashboard-data-model.md` first, then this specification and
 the production boundary under `dashboard/site/src/data/`. Computation changes
 must also follow `specs/computations.md`.
+
+### Model routing evidence
+
+Model routing analytics SHALL read metadata projected from `usage/aw_session.jsonl`
+into the canonical Audit collection, not native logs, cumulative run totals or
+agent-written routing summaries. Audit retains typed routing identifiers,
+classifier labels, request identities, sub-agent ownership, token classes,
+per-response AIC and collection receipts. It MUST NOT retain prompts, bodies,
+free-form errors/reasons, raw tool payloads or content-derived hashes.
+Canonical schema 32 and IndexedDB version 42 invalidate older browser projections;
+hosted PostgreSQL deployments require a fresh schema with the generated Audit
+columns, including the configured-model resolution columns added in schema 32.
+
+Dashboard Language queries SHALL resolve proxy-first routing state, choose one
+accounting source per phase, and attribute each response to one exclusive bucket.
+Engine request correlation requires a complete model/token quartet and ordered
+one-to-one matching; exact ownership takes precedence. Unknown AIC SHALL remain
+unknown, with known/unknown coverage beside recorded lower bounds. Complete-cost
+quantiles require collection receipts, known response AIC and accounted or
+provably local-zero requests. Classifier cost belongs to agent-phase totals;
+detection and evals remain separate. Sparse comparisons default to a minimum of
+ten complete runs and SHALL be described as observational, not causal.
+
+Headerless sessions SHALL be marked legacy. Unsupported format versions SHALL
+retain format coverage only, never interpret subsequent records as supported.
+Unidentified sessions and untimed evidence SHALL remain visible in coverage,
+but unidentified sessions SHALL NOT contribute to routing-state denominators.
+The format observation SHALL carry the earliest valid clock across all matching
+source records, including messages and tools, without copying their contents.
+Bounded time filters SHALL exclude wholly untimed sessions rather than substituting
+the GitHub run's creation or ingestion time.
+
+Configured-model resolution SHALL be read from the runner-written
+`model.resolution` events (unified session specification T-UAS-074, session
+format version 1) that gh-aw projects from `agent/model-resolution.json`, one per
+recorded role. Each event SHALL become one Audit record that retains only the
+event `engine` (`sourceEngine`), `role` (`resolutionRole`), `configured_model`
+(`resolutionConfiguredModel`), `resolved_model` (`resolutionResolvedModel`),
+`provider`, `status` and `cause` (`code`) with its source provenance and order.
+Every value SHALL be identifier-shaped; configured and resolved models SHALL be
+kept exactly as recorded, including provider prefixes such as
+`copilot/gpt-5-mini`, without served-model shortening. `status` SHALL be one of
+`resolved`, `exact` or `failed` and `cause` one of `model_unavailable` or
+`catalog_unavailable`; any other, unsafe or missing value SHALL remain unknown,
+never an empty string, zero, a fallback model or inferred success. A failed
+resolution keeps its resolved model unknown. Resolution records carry no
+timestamp; ordering SHALL use the recorded session clock and source order, never
+GitHub creation or ingestion time.
+
+The Model routing page SHALL admit `model.resolution` into
+`routing-session-observations` and apply the same latest-attempt selection and
+Routing scope filters before joining resolution events. Its Model resolution
+section SHALL report coverage over scoped runs (runs with resolution evidence,
+positively identified routed runs, routed runs without resolution and non-routed
+runs without resolution), status by event engine and role with distinct run and
+record counts, alias moves and history, and failures grouped by configured
+model and cause with links to the contributing runs. Roles are records, not
+runs: four roles from one run count as one run. A routed session is expected to
+have no configured-model resolution; absence SHALL NOT classify a run as routed,
+failed or successful, and legacy sessions without the event SHALL report no
+resolution evidence. Alias series SHALL be keyed by repository, workflow,
+engine, role, provider and configured model, so unrelated resolutions cannot
+manufacture a move. A move SHALL be highlighted only between adjacent runs with
+recorded session clocks; untimed runs are counted but cannot establish a
+transition. Alias moves are observations of resolution, not served-model
+evidence or a cause. The `routing-run` drill-down SHALL list each run's
+resolution roles with configured-to-resolved model, status, cause, engine and
+provider, showing unknown values rather than manufacturing rows.
+
+The Model routing page currently provides adoption, objective/classifier
+dimensions, label-to-pick counts, workflow stability, exclusive AIC/token
+attribution, complete-cost distributions and observational baselines, deviation
+shares, failure facts, agent-job Wilson intervals and a run drill-down. It does
+not yet implement candidate ranking, inventory/router change context, prioritized deviation causes, failure clustering, or the full
+safe-output/grader/delayed-outcome comparison surfaces of the upstream analytics
+specification. Absent producer fields and these unimplemented analyses MUST NOT
+be represented as zero or successful outcomes.
 
 ### Canvas query authoring boundary
 
@@ -179,6 +256,29 @@ publish a partial success. Aggregation, prediction, temporal expansion, sorting,
 unions, and limited queries MUST NOT be partitioned this way. This adapter
 batching MUST NOT raise or bypass the input and output limits of dashboard
 queries or truncate canonical evidence.
+
+Storage-native aggregate execution MAY scan a single canonical record store in
+bounded batches when the query planner proves that its canonical projection and
+all aggregate ancestors are row-local. The native plan MUST reuse the canonical
+projection and authored filters and computations; it MUST NOT select behavior by
+page, view, or query identity. Supported reducers are `count`, `distinct-count`,
+and `sum`, including their authored conditional filters. One accumulator MUST
+retain exact distinct identities across the entire scan and add numeric values in
+source order, rather than combine independently evaluated batch aggregates.
+Ancestors with aggregation, ordering, limits, joins, unions, windows, predictions,
+or temporal expansion, and unsupported reducers, MUST retain ordinary execution.
+
+Native scans MUST use bounded readonly storage batches, share the request's
+cancellation, deadline, and operation budget, and bound both intermediate groups
+and distinct identities per reducer by the query input-row limit. Final
+projection, ordering, limiting, and output-row enforcement MUST remain in the
+query engine. Equivalent aliases MAY reuse a result only within the same request;
+different predicates MUST NOT share it. Canonical run lookups SHOULD be reused
+without rebuilding the complete join index for every batch. A failed projection
+or reduction MUST NOT publish partial counts, and unavailable canonical stores
+MUST remain unavailable. This storage-native plan is distinct from partitioning
+an authored aggregate with the row-local adapter batching described above; it
+does not change the limits of ordinary Dashboard Language execution.
 
 The MCP tool inventory SHALL aggregate calls by tool and workflow before
 materializing its shared intermediate. Its final tool totals MUST preserve
@@ -437,10 +537,13 @@ MUST NOT be confused with the local SQLite projection.
 
 IndexedDB and the Activity SQLite database SHALL retain all available canonical
 Repository, Workflow, and Run summaries. IndexedDB SHALL retain detailed
-run-linked records for seven days and Operational Value records for 30 days;
+run-linked records for seven days and Operational Value records for 365 days;
 the Activity SQLite database SHALL retain run-linked detail for seven days by
-default, while retaining Run and Operational Value records for 30 days by
-default. Explicit historical retention windows MAY override these defaults.
+default, while retaining Run records for 30 days and Operational Value records
+for at least 365 days by default. Shortening run or detail retention MUST NOT
+shorten this compact observation history. Explicitly longer historical SQLite
+run windows SHALL also preserve the corresponding longer outcome history.
+Explicit per-store historical retention windows MAY override these defaults.
 Expiring run-owned records MUST NOT remove their retained Run or the Run's
 structural parents.
 
@@ -450,8 +553,8 @@ The implementation profile defined by this specification is:
 
 | Layer | Version | Physical structure |
 | --- | ---: | --- |
-| Canonical model | 28 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
-| Browser IndexedDB | 38 | Eighteen canonical entity stores, `transactions`, and disposable `storageShards` accounting |
+| Canonical model | 32 | Campaign, Repository, Workflow, Run, Domain, Tool, Skill, Friction, Audit, Issue, Operational Value, Marketplace Package, Experiment, Experiment Assignment, Grader, Grader Observation, Eval, and Eval Observation records |
+| Browser IndexedDB | 42 | Eighteen canonical entity stores, `transactions`, and disposable `storageShards` accounting |
 | Local SQLite projection | IndexedDB 38 | `__idb_databases`, `__idb_stores`, `__idb_indexes`, and `__idb_records` for the same logical stores, plus a `campaigns` table and six transactional relational evidence mirrors without duplicate record documents |
 | Go server Postgres sources | Canonical model 17 | Fresh TypeSpec-defined entity and input tables with query-required native columns, compact presence bits, entity-owned relational child values, and transactional diagnostics/revision state; no stored JSON documents or duplicate scalar row formats |
 | Static SQL export | 3 | Versioned JSON interchange produced from upstream SQL tables or views |
@@ -1293,8 +1396,8 @@ Example:
   githubId: 123456,
 
   owner: "githubnext",
-  name: "gh-aw-cao",
-  fullName: "githubnext/gh-aw-cao",
+  name: "gh-cao",
+  fullName: "githubnext/gh-cao",
 
   visibility: "public",
 
@@ -1354,7 +1457,7 @@ Example:
 
 ```js
 {
-  id: "github:run:githubnext/gh-aw-cao:123456789",
+  id: "github:run:githubnext/gh-cao:123456789",
 
   repositoryId: "...",
   targetRepositoryId: "...",
@@ -1521,6 +1624,14 @@ canonical definition keys also include the owning Workflow
 to avoid collisions when two workflows reuse an ID. A grader result links
 to an experiment variant only when its explicit experiment identity matches
 an assignment for the same Run.
+The Graders scatter view SHALL plot observation time against native value
+divided by the maximum observed value for the same canonical grader in the
+selected data. This denominator is not a theoretical score limit. Its
+Dashboard Language queries SHALL recompute existing ratios when new evidence
+changes the maximum. Missing values, zero or missing maxima, and invalid
+timestamps SHALL produce no plotted point; the native ledger SHALL retain
+those observations. Ratios SHALL NOT be clamped or inverted for lower-is-better
+graders, including when negative maxima produce ratios greater than one.
 An `experimentAssignments`, `graderObservations`, or `evalObservations` record
 MUST reference a definition (`experiments`, `graders`, or `evals` respectively)
 whose `workflowId` equals the `workflowId` of the Run named by the record's
@@ -1537,21 +1648,73 @@ The hosted dashboard ingester admits the same six canonical collections and
 projects those query definitions from the verified shards rather than trusting
 inventory or report-derived rows.
 
-Only explicit `run.experiments.assignments` and `run.graders.results` evidence
-can populate their respective entities; cumulative experiment counts alone do
-not establish an assignment. A supplied `run.evals[]` entry is accepted only with
+Unified session version-1 `experiment.assignment`, run-matching
+`experiment.state`, `grader.manifest`, `grader.result`, and `eval.result`
+observations are the preferred evidence. Manifests enrich observed grader
+definitions but do not invent results. Session evidence overrides cached run
+evidence independently for each category; it MUST NOT be added a second time
+from legacy audit projections. Run-scoped result identities and supplied
+attempts MUST match the producing run. State ledgers for other runs and
+cumulative counts MUST NOT establish assignments. Untimed evaluation evidence
+is retained using ingestion observation time without inventing a timed session
+event. Only allowlisted scalar metadata and numeric metrics survive projection;
+prompts, messages, error bodies and raw payloads MUST NOT be retained.
+
+In the absence of corresponding session evidence, explicit
+`run.experiments.assignments` and `run.graders.results` evidence can populate
+their respective entities. A supplied `run.evals[]` entry is accepted only with
 an explicit ID, `YES`/`NO`/`UNKNOWN` answer, valid optional timestamp and
-matching optional run identity. This explicit shape is supported by the legacy
-report contract, but no retained gh-aw fixture currently establishes its
-presence in collected audit data. `evals.jsonl` is read by a separate
-reporting path, not by the normalized Activity shard input. Until trustworthy
-eval evidence appears in that existing input, populating Eval observations
-from actual gh-aw audit remains blocked; the projection stays empty rather
-than introducing a second acquisition path. Tests of the explicit eval shape
-use synthetic inputs and do not establish that gh-aw emits it. Invalid eval
+matching optional run identity and attempt; all supplied identity aliases MUST
+agree. Collection MAY project an already-downloaded `evals.jsonl` into that
+existing run input after verifying its repository, run and attempt against
+`aw_info.json`, but MUST prefer session evals and MUST NOT introduce an extra
+GitHub acquisition path. Invalid eval
 candidates remain run-linked Audit observations without an inferred answer
 or score; valid entries also produce a run-linked Audit observation and their
 canonical Eval observation references that Audit's stable identity.
+Eval audit identities MUST survive browser, SQLite and hosted PostgreSQL
+projection and be exposed as `audit-id` by the eval-observations query.
+Grader values and units MUST remain distinct from YES/NO eval answers in
+dashboard views; a grader score or pass/fail status does not create an Eval.
+Direct artifact ingestion SHALL apply the same classification and identity
+checks to supplied `evals.jsonl` records when session eval evidence is absent.
+The Evals observation ledger SHALL display retained `YES`, `NO`, and `UNKNOWN`
+answers distinctly, preserving run evidence links and observation times rather
+than hiding unknown answers behind a binary-only filter.
+
+The unified session is also the preferred source for every supported telemetry
+family: agent lifecycle and diagnostics, MCP calls/RPC/configuration, firewall
+access and steering, model routing/inventory, skill activity/inventory/conflicts,
+usage, execution and detection results, daily guardrails, workflow metadata and
+job results, safe-output requests/results/errors, plugin installations, GitHub
+rate limits, dynamic workflow progress, and collection diagnostics.
+Only bounded, explicitly projected metadata is admitted. Prompts, message
+bodies, tool inputs/outputs, raw errors, objectives, private paths and unknown
+extension payloads remain upstream.
+
+Untimed telemetry MUST retain ingestion `observedAt` and source line provenance
+without inventing a native `timestamp`. Inventory entries MUST remain distinct
+without being counted as invocations. Native event `type` identifiers MUST be
+preserved verbatim from the AW unified session, including `mcp.tool_call`,
+`tool.execution_start`, `tool.execution_complete`, `mcp.rpc.request`,
+`mcp.rpc.response`, `firewall.http_access`, `skill.invoked`, `grader.result`,
+`eval.result`, and `safe_output.result`. Outcomes and firewall decisions MUST
+remain `status` and `decision` metadata, not synthesized type identifiers.
+MCP queries MUST select invocation evidence using native types and explicit MCP
+identity, rather than renaming all invocations to one CAO type. RPC request/response
+pairs MAY supply calls and outcomes when combined tool-call observations are
+absent, but MUST NOT double-count the two representations. Firewall method,
+response-byte and latency measurements MUST survive browser and hosted storage.
+Explicit firewall allow decisions MUST NOT become policy blocks merely because
+the upstream endpoint returned an HTTP error.
+
+Run accounting MUST prefer measured usage reports, then proxy usage, then root
+engine-result snapshots, independently per phase and measured dimension.
+Repeated request IDs are revisions, not additional usage. Cumulative AIC MUST
+NOT be added to per-request AIC, and engine usage snapshots or native estimated
+tokens MUST NOT be added to measured reports. Runtime metadata and actual
+safe-output results take precedence over cached copies; safe-output requests
+and errors MUST NOT establish created outcomes or issue status.
 
 Records MUST remain independently addressable and MUST NOT be stored as one
 ever-growing array inside the Run record. Issues and pull requests share the
@@ -1643,8 +1806,8 @@ Tool and Skill membership is determined by their separate collections; the
 unused `isSkill` flag SHALL NOT be persisted or projected.
 
 The current Tool collection and TypeSpec `tools` table are event-grain facts,
-not a configured-tool inventory or one row per invocation. A `tool.call` and
-its correlated result or error SHALL retain separate identities, timestamps,
+not a configured-tool inventory or one row per invocation. A `tool.execution_start` and
+its correlated `tool.execution_complete` SHALL retain separate identities, timestamps,
 status, and size evidence.
 
 A future physical normalization MAY factor repeated observed tool identity
@@ -1663,13 +1826,13 @@ Example:
 {
   id: "domain:01J...",
 
-  runId: "github:run:githubnext/gh-aw-cao:123456789",
+  runId: "github:run:githubnext/gh-cao:123456789",
 
   sequence: 17,
   timestamp: "...",
 
   source: "firewall",
-  type: "firewall.request.blocked",
+  type: "firewall.http_access",
 
   actor: {
     type: "system",
@@ -1690,49 +1853,88 @@ Example:
 
 ## 12.2 Canonical Record Types
 
-Initial run-owned record families SHOULD include:
+Run-owned session records SHALL use AW's version-1 unified-session identifiers,
+not a parallel CAO taxonomy. Representative native identifiers include:
 
 ```text
-message.user
-message.agent
-message.system
-
-tool.call
-tool.result
-tool.error
-
-mcp.call
-mcp.result
-mcp.error
-
-gateway.request
-gateway.response
-gateway.retry
-gateway.error
-
-firewall.request.allowed
-firewall.request.blocked
-firewall.policy.matched
-firewall.error
-
-safe-output.requested
-safe-output.validated
-safe-output.executed
-safe-output.rejected
-
-work-item.updated
-finding.detected
-finding.updated
-
-github-api.request
-github-api.response
-github-api.rate-limited
-github-api.error
-
-runtime.started
-runtime.completed
-runtime.error
+session.start
+user.message
+assistant.message
+assistant.reasoning
+tool.execution_start
+tool.execution_update
+tool.execution_complete
+mcp.tool_call
+mcp.rpc.request
+mcp.rpc.response
+mcp.guard.blocked
+mcp.difc.filtered
+mcp.configuration
+firewall.http_access
+firewall.token_usage
+firewall.steering
+skill.invoked
+skill.inventory
+usage.report
+experiment.state
+experiment.assignment
+grader.manifest
+grader.result
+eval.result
+safe_output.request
+safe_output.result
+safe_output.error
+github_api.rate_limit
+execution.result
+detection.result
+workflow.info
+workflow.job_result
+session.result
+session.error
 ```
+
+Typed experiment, grader, and eval evidence SHALL populate their respective
+definition and observation stores; retaining native identifiers does not move
+these entities into one generic event table. CAO-only derived findings MAY
+retain their own explicitly source-specific types.
+
+Ingestion SHALL mine experiment assignments from the agent's unified session
+(`aw_session.jsonl`) first, using `experiment.assignment` and run-matching
+`experiment.state` events, including explicitly empty assignment maps.
+Only when the unified session does not contain experiment assignments, ingestion SHALL
+also accept gh-aw's explicit current-run `assignments.json` artifact, including
+the compact `usage/experiment/` layout and prefixed artifact directories.
+Both Activity and hosted collectors SHALL request the `usage,experiment` artifact
+sets without widening repository scope or collection budgets.
+Collectors SHALL enumerate the selected repository's registered `.lock.yml`
+workflow paths and pass explicit repository-qualified targets to `gh aw logs`.
+Bare `--repo` discovery SHALL NOT substitute checkout-local workflow names for
+the selected repository's workflows. Failed discovery SHALL fail closed, and an
+empty remote workflow catalog SHALL NOT fall back to the collector's catalog.
+Collection SHALL verify repository, run ID and attempt against `aw_info.json`
+before retaining these assignments. Unified assignments, including an explicitly
+empty assignment map, take precedence. Identical assignment maps duplicated in
+compact usage and named experiment artifacts SHALL be ingested once regardless
+of JSON key order; conflicting or invalid copies SHALL be rejected. A standalone
+experiment artifact MAY use the sibling usage artifact's `aw_info.json` when its
+own and run-directory metadata are absent, subject to the same repository, run ID
+and attempt checks. Ambiguous usage metadata SHALL be rejected.
+Cumulative experiment state counts SHALL
+NOT be used to infer a run's assigned variant. The Experiments page SHALL expose
+retained assignment variants and run evidence links through canonical queries.
+
+Ingestion SHALL canonicalize historical CAO aliases at the shared record
+boundary, including normalized published shards. For example, `agent_tool_start`
+becomes `tool.execution_start`, `tool.call` becomes `mcp.tool_call`,
+`net_allowed` and `net_blocked` become `firewall.http_access`, and
+`audit.skill_activation` becomes `skill.invoked`. Split outcome/decision aliases
+SHALL retain their failure or decision facts as metadata. Historical aliases
+provide an AW-equivalent classification, not recovery of an unavailable original
+source event. Native input types SHALL never be rewritten. Record identity,
+correlation, timestamps and source references SHALL remain stable.
+Hosted PostgreSQL ingestion SHALL apply the same alignment before binding
+native columns. Its snapshot revision SHALL include the normalization version
+so unchanged published shards are re-ingested after this contract changes.
 
 ## 12.3 Correlation
 
@@ -1741,11 +1943,11 @@ Related records SHOULD use `correlationId`.
 Example:
 
 ```text
-tool.call      correlationId=abc
-gateway.request correlationId=abc
-firewall.request.allowed correlationId=abc
-gateway.response correlationId=abc
-tool.result    correlationId=abc
+tool.execution_start    correlationId=abc
+mcp.rpc.request         correlationId=abc
+firewall.http_access    correlationId=abc decision=allowed
+mcp.rpc.response        correlationId=abc
+tool.execution_complete correlationId=abc status=success
 ```
 
 ## 12.4 Ordering
@@ -1777,19 +1979,18 @@ MUST be used.
 A Run timeline MAY resemble:
 
 ```text
-001 runtime.started
-002 message.user
-003 message.agent
-004 tool.call
-005 gateway.request
-006 firewall.request.allowed
-007 gateway.response
-008 tool.result
-009 message.agent
-010 safe-output.requested
-011 safe-output.validated
-012 safe-output.executed
-013 runtime.completed
+001 session.start
+002 user.message
+003 assistant.message
+004 tool.execution_start
+005 mcp.rpc.request
+006 firewall.http_access decision=allowed
+007 mcp.rpc.response
+008 tool.execution_complete status=success
+009 assistant.message
+010 safe_output.request
+011 safe_output.result
+012 session.result
 ```
 
 The same records SHALL support different projections.
@@ -1797,26 +1998,26 @@ The same records SHALL support different projections.
 ### Conversation
 
 ```text
-message.user
-message.agent
-tool.call
-tool.result
+user.message
+assistant.message
+tool.execution_start
+tool.execution_complete
 ```
 
 ### Security
 
 ```text
-firewall.policy.matched
-firewall.request.blocked
-safe-output.rejected
+mcp.guard.blocked
+firewall.http_access decision=denied
+safe_output.error
 ```
 
 ### Network
 
 ```text
-gateway.request
-firewall.request.allowed
-gateway.response
+mcp.rpc.request
+firewall.http_access
+mcp.rpc.response
 ```
 
 ### Debugging
@@ -1902,7 +2103,7 @@ measure or substitute display names for canonical relationship IDs.
 
 ## 14.4 Cached gh-aw JSONL
 
-The normative mapping for cached schema-v2 and schema-v4 activity shard input is
+The normative mapping for cached schema-v2, schema-v4, and schema-v5 activity shard input is
 defined in [Cached gh-aw JSONL Mapping](dashboard-gh-aw-jsonl-mapping.md).
 
 ---
@@ -2248,7 +2449,7 @@ The canonical browser database SHALL use:
 
 ```js
 const DATABASE_NAME = "gh-aw-cao-dashboard-data";
-const DATABASE_VERSION = 38;
+const DATABASE_VERSION = 42;
 ```
 
 The name MAY be scoped by deployment path to prevent unrelated dashboard
@@ -2260,7 +2461,7 @@ rows.
 
 # 27. Object Stores
 
-IndexedDB version 38 SHALL define:
+IndexedDB version 42 SHALL define:
 
 ```text
 campaigns
@@ -2408,6 +2609,58 @@ treated as durable evidence.
 ---
 
 # 31. Query-only derived results
+
+## 31.1 Campaign outcome signals
+
+The Operational Value overview SHALL derive campaign signals from retained,
+repository-scoped primary Operational Value observations, not run conclusions.
+SQL and IndexedDB query execution SHALL use the same Dashboard Language queries.
+This presentation introduces no derived-result store or interactive acquisition.
+Canonical operational-value records and typed storage preserve optional period,
+coverage, missingness, cohort and evidence metadata; legacy records are not
+backfilled with invented proof. Retention remains unchanged.
+
+Movement SHALL compare complete, mature native measurements in the latest
+period and the immediately preceding equal-duration period within the same
+campaign, subject repository, measure, evaluator fingerprint, unit, direction,
+measurement kind and cadence. Interval periods SHALL abut without overlap;
+snapshot periods SHALL compare their declared cutoffs, not summed backlogs.
+Adoption and evaluation mode describe historical context, not a requirement
+that recent comparisons cross adoption. Exact period boundaries and coverage
+proof are required; legacy metadata SHALL NOT be inferred. Unknown versions,
+missing or stale periods, partial coverage, interim evidence and unsupported
+goal directions SHALL remain insufficient evidence. New unavailable assessments
+SHALL remain visible and SHALL NOT reveal an older result as the latest value.
+Latest selection SHALL precede campaign aggregation so historical report volume
+cannot inflate repository counts or hide a newer incomplete observation.
+
+A repository SHALL count once per campaign. It SHALL be insufficient when any
+latest retained primary measure lacks comparable movement; otherwise opposing
+measure directions SHALL be Mixed, followed by Worsening, Improving, or Unchanged.
+Campaign summaries SHALL expose all five counts and measured repository coverage,
+rank worsening and mixed evidence before gains, and retain campaigns with no
+measurements. Counts SHALL NOT imply complete enrolled-target coverage where an
+authoritative target denominator is absent. Observation dates SHALL stay visible;
+retained evidence SHALL NOT be represented as a fresh all-clear.
+
+The default headline SHALL expose native change and its actual reference
+period, separately from historical adoption association. Eligible cohort and
+denominator changes SHALL be exposed when retained. Zero change SHALL NOT imply
+target attainment or system health. No anomaly, sustained-drift or change-point
+claim is permitted without a separately versioned calibrated assessment.
+Measurement duration, cadence, display horizon and reference period SHALL remain
+distinct. Changing the display horizon SHALL NOT recompute a frozen evaluator
+with different semantics or create a growing lifetime average.
+
+Direction distribution charts SHALL count each latest assessed repository once
+under the same quality-gated period policy. They SHALL NOT fill missing
+evidence, average native values across measures, infer sustained improvement, or
+attribute movement causally to a campaign. Repository drill-downs SHALL preserve
+native measurement history, adoption and actual available baseline evidence.
+Campaign-wide run context SHALL be labeled as such, never as target-attributed
+execution. Missing inputs SHALL propagate unavailable states through the
+production query boundary. Active views SHALL requery on database changes within
+their abort-scoped subscription lifetime.
 
 Derived query results SHALL be computed from canonical records on demand.
 No derived-result generation, metadata pointer, or persistent projection
@@ -2751,6 +3004,22 @@ issues.forRun(runId);
 ```
 
 Dashboard code SHOULD NOT directly scatter IndexedDB transaction logic through views.
+
+The `domains`, `tools`, `skills`, `friction`, `audits`, and `issues` logical
+sources SHALL each be an explicit Dashboard Language query over its own
+canonical table, with declared joins for run context. Backends MUST NOT
+synthesize these queries from a shared event projection or implicitly union
+event families. Cross-family views MUST declare their unions in their queries.
+This contract applies equally to browser IndexedDB, local SQLite, and hosted
+PostgreSQL execution.
+
+Firewall observations SHALL select firewall request events directly from the
+canonical domain table and join only their run context. Request totals SHALL
+use native grouping and conditional sums, preserving zero counts and the
+one-request fallback for missing or null counts. Firewall queries MUST NOT
+scan unrelated tool, audit, skill, friction, or issue tables. Run terminal
+diagnoses SHALL use the recorded Run terminal outcome and detail, not fields
+borrowed from another event family's schema.
 
 Token-optimization pages SHALL query only the three database tables defined in
 Section 5.5.5 and their declarative derivatives. They MUST NOT scan Audit

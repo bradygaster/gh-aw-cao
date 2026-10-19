@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createDebug } from '../debug.mjs';
 import { adaptCachedGhAwJsonlStream } from '../../dashboard/site/src/data/adapters/gh-aw-logs.js';
-import { NORMALIZED_JSONL_INGESTION_VERSION } from '../../dashboard/site/src/data/ingest/coordinator.js';
+import { GH_AW_JSONL_INGESTION_VERSION, NORMALIZED_JSONL_INGESTION_VERSION } from '../../dashboard/site/src/data/ingest/coordinator.js';
 import { normalize } from '../../dashboard/site/src/data/normalize/index.js';
 import { CANONICAL_SCHEMA_VERSION, mergeEvidenceDefinition } from '../../dashboard/site/src/data/model/schema.js';
 import { mergeActivityStructuralRecord } from '../../dashboard/site/src/data/storage/retention.js';
@@ -14,7 +14,8 @@ import { NORMALIZED_COLLECTIONS } from '../cli-usage.mjs';
 import { consolidationBucket, normalizedPhaseBatch, relationshipSafeEvidenceBatch, STRUCTURAL_CONSOLIDATION_BUCKET } from '../normalized-phase.mjs';
 import { DEFAULT_NORMALIZED_JSONL_SHARD_BYTES, writeNormalizedShardBucket } from '../normalized-shards.mjs';
 import { AUDIT_CURATION_VERSION, auditCurationRunFacts, discardAudit } from '../../dashboard/site/src/data/model/audit-curation.js';
-import { jsonlLines, hashFileContents } from './files.mjs';
+import { jsonlLines, jsonlRecords, hashFileContents } from './files.mjs';
+import { DEFAULT_NORMALIZATION_CACHE_BYTES, pruneNormalizationCaches } from './cache.mjs';
 
 const debugHash = createDebug('hash-payloads');
 
@@ -86,8 +87,7 @@ async function consolidatePhasePayloads(
   const deduped = new Map(NORMALIZED_COLLECTIONS.map((collection) => [collection, new Map()]));
   let sourceRecords = 0;
   for (const cachePath of cachePaths) {
-    for await (const line of jsonlLines([cachePath])) {
-      const entry = JSON.parse(line);
+    for (const { value: entry } of jsonlRecords([cachePath])) {
       if (entry?.kind !== 'record') continue;
       const records = deduped.get(entry.collection);
       if (!records) continue;
@@ -179,8 +179,12 @@ export async function hashActivityPayloads({
   runsDirectory,
   recordsDirectory,
   inventoryPath,
-  maxBytes = DEFAULT_NORMALIZED_JSONL_SHARD_BYTES
+  maxBytes = DEFAULT_NORMALIZED_JSONL_SHARD_BYTES,
+  maxCacheBytes = DEFAULT_NORMALIZATION_CACHE_BYTES
 }) {
+  if (!Number.isSafeInteger(maxCacheBytes) || maxCacheBytes < 0) {
+    throw new RangeError('Normalization cache byte limit must be a non-negative integer');
+  }
   const hashFile = async (filePath) => {
     const digest = await hashFileContents(filePath);
     debugHash('hashed %s -> %s', filePath, digest);
@@ -207,7 +211,7 @@ export async function hashActivityPayloads({
     const inventorySource = inventoryPath ? await readFile(inventoryPath, 'utf8') : '{}';
     const workflowHints = workflowHintsFromInventory(JSON.parse(inventorySource));
     const normalizationContext = createHash('sha256')
-      .update(`${CANONICAL_SCHEMA_VERSION}\0${NORMALIZED_JSONL_INGESTION_VERSION}\0${AUDIT_CURATION_VERSION}\0${JSON.stringify(workflowHints)}`)
+      .update(`${CANONICAL_SCHEMA_VERSION}\0${GH_AW_JSONL_INGESTION_VERSION}\0${NORMALIZED_JSONL_INGESTION_VERSION}\0${AUDIT_CURATION_VERSION}\0${JSON.stringify(workflowHints)}`)
       .digest('hex')
       .slice(0, 16);
     const retainedPayloads = {
@@ -227,6 +231,15 @@ export async function hashActivityPayloads({
     if (normalizedDirectory) await mkdir(normalizedDirectory, { recursive: true });
     if (runsDirectory) await mkdir(cacheDirectories.runs, { recursive: true });
     if (recordsDirectory) await mkdir(cacheDirectories.records, { recursive: true });
+    const rawHashes = new Map();
+    const expectedCacheNames = new Set();
+    for (const name of shardNames) {
+      const rawHash = await hashFile(path.join(shardDirectory, name));
+      rawHashes.set(name, rawHash);
+      expectedCacheNames.add(`${path.parse(name).name}-${rawHash}-${normalizationContext}.jsonl`);
+    }
+    const disposableDirectories = Object.values(cacheDirectories).filter(Boolean);
+    await pruneNormalizationCaches(disposableDirectories, { retainedNames: expectedCacheNames, maxBytes: maxCacheBytes });
     for (const name of shardNames) {
       const shardPath = path.join(shardDirectory, name);
       if ((await stat(shardPath)).size === 0) {
@@ -234,7 +247,7 @@ export async function hashActivityPayloads({
         debugHash('dropped empty source shard %s', shardPath);
         continue;
       }
-      const rawHash = await hashFile(shardPath);
+      const rawHash = rawHashes.get(name);
       if (!runsDirectory && !recordsDirectory) {
         hashes[`${path.basename(shardDirectory)}/${name}`] = rawHash;
       }
@@ -343,6 +356,9 @@ export async function hashActivityPayloads({
         }
       }
     }
+    const cache = await pruneNormalizationCaches(disposableDirectories, { maxBytes: maxCacheBytes });
+    debugHash('normalization cache retainedBytes=%d removedBytes=%d maxBytes=%d',
+      cache.retainedBytes, cache.removedBytes, cache.maxBytes);
   }
   return hashes;
 }

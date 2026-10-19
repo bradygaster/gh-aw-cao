@@ -12,6 +12,7 @@ import { resolveBuiltInPages } from '../../src/dashboard-chunks.js';
 import { authoritativeDashboard as builtInDashboardDocument } from '../authoritative-dashboard.js';
 import { DashboardServerError } from '../../src/remote-data-backend.js';
 import { resetSourceStore } from '../../src/source-store.js';
+import { HORIZON_FILTER_STORAGE_KEY } from '../../src/components/filter-bar.js';
 
 const campaignDashboardDocuments = campaignDashboardSources.map((source) => JSON.parse(source));
 const authoritativeDashboardDocument = composeDashboardDocuments(
@@ -464,7 +465,7 @@ describe('dashboard DOM provenance', () => {
     expect(floor?.classList.contains('factory-floor')).toBe(true);
     expect(floor?.querySelector('.semantic-prompt-heading')).toBeNull();
     expect(floor?.querySelector('.semantic-prompt-action')).toBeNull();
-    expect(rendered.querySelector('[data-view-id="overview-campaigns"]')).not.toBeNull();
+    expect(rendered.querySelector('[data-view-id="overview-campaigns"]')).toBeNull();
     expect(loadPageSources).not.toHaveBeenCalledWith('maintenance', expect.anything());
     disposeDashboard(rendered);
   });
@@ -851,7 +852,7 @@ describe('dashboard DOM provenance', () => {
       const workflows = deliver('workflows', [{
         campaign: 'ambient-context', 'campaign-name': 'Ambient Context', 'workflow-role': 'orchestrator'
       }]);
-      await vi.waitFor(() => expect(rendered.querySelector('.campaign-tabs [aria-current="page"]')?.textContent).toBe('Operational Value'));
+      await vi.waitFor(() => expect(rendered.querySelector('.campaign-tabs [aria-current="page"]')?.textContent).toBe('Insights'));
       const shell = rendered.querySelector('[data-view-id="campaign-insights-navigation"]');
       expect(shell?.textContent).not.toContain('This view cannot be shown');
       requests.get('campaign-problem-tab-counts').reject(new Error('dashboard queries exceeded the max-duration-ms limit of 60000'));
@@ -1180,7 +1181,7 @@ describe('dashboard DOM provenance', () => {
     });
     const page = await activatePage(rendered, 'configuration');
 
-    expect(page?.querySelector('.configuration-view')).not.toBeNull();
+    await vi.waitFor(() => expect(page?.querySelector('.configuration-view')).not.toBeNull());
     expect(page?.textContent).toContain('The policy cannot be edited until it contains valid JSON.');
     expect(page?.textContent).not.toContain('Affected source: configuration-policy');
   });
@@ -1354,6 +1355,92 @@ describe('dashboard DOM provenance', () => {
     expect(rendered.hasAttribute('data-json-path')).toBe(false);
   });
 
+  it('keeps pie chart headings and authored descriptions in loading skeletons', async () => {
+    const rendered = renderDashboard({
+      document: {
+        languageVersion: '0.1.0',
+        dashboard: {
+          id: 'pending-chart-dashboard',
+          title: 'Costs',
+          pages: [{
+            id: 'cost',
+            kind: 'custom',
+            title: 'Cost',
+            views: [{
+              id: 'cost-by-campaign',
+              title: 'Cost by campaign',
+              description: 'Compare AI Credits consumed by each campaign.',
+              mark: 'chart',
+              chart: 'pie',
+              layout: 'full',
+              data: { source: 'usage' },
+              encoding: {
+                x: { field: 'campaign', type: 'nominal' },
+                y: { field: 'credits', type: 'quantitative' }
+              }
+            }]
+          }]
+        }
+      },
+      sources: {},
+      loading: true
+    });
+
+    await vi.waitFor(() => {
+      expect(rendered.querySelector('[data-view-id="cost-by-campaign"] .dashboard-view-skeleton')).not.toBeNull();
+    });
+    const view = rendered.querySelector('[data-view-id="cost-by-campaign"]');
+    expect(view?.classList.contains('chart-view-pie')).toBe(true);
+    expect(view?.querySelector(':scope > .chart-prompt-heading > :is(h2, h3, h4)')?.textContent)
+      .toBe('Cost by campaign');
+    expect(view?.querySelector(':scope > .view-description')?.textContent)
+      .toBe('Compare AI Credits consumed by each campaign.');
+    expect(view?.getAttribute('aria-busy')).toBe('true');
+    expect(view?.querySelector('.table-intent-button')).toBeNull();
+  });
+
+  it.each(['empty', 'unavailable'])('retains full-width pie chrome for %s evidence', async (availability) => {
+    const rendered = renderDashboard({
+      document: {
+        languageVersion: '0.1.0',
+        dashboard: {
+          id: 'pie-states', title: 'Costs',
+          pages: [{
+            id: 'cost', kind: 'custom', title: 'Cost',
+            views: [{
+              id: 'cost-chart', title: 'Cost by campaign',
+              description: 'Compare AI Credits consumed by each campaign.',
+              mark: 'chart', chart: 'pie', layout: 'full', data: { source: 'usage' },
+              encoding: {
+                x: { field: 'campaign', type: 'nominal' },
+                y: { field: 'credits', type: 'quantitative' }
+              }
+            }]
+          }]
+        }
+      },
+      sources: {
+        usage: {
+          source: 'usage', rows: [],
+          metadata: {
+            availability: availability === 'empty' ? 'empty' : 'unavailable',
+            'source-id': 'usage', 'source-kind': 'fixture', 'as-of': '', 'retrieved-at': '',
+            completeness: 'complete', freshness: 'fresh'
+          }
+        }
+      }
+    });
+    await vi.waitFor(() => {
+      const view = rendered.querySelector('[data-view-id="cost-chart"]');
+      expect(view?.classList.contains('chart-view-pie')).toBe(true);
+      expect(view?.querySelector(':scope > .chart-prompt-heading h2')?.textContent).toBe('Cost by campaign');
+      expect(view?.querySelector(':scope > .view-description')?.textContent)
+        .toBe('Compare AI Credits consumed by each campaign.');
+      expect(view?.querySelector(`:scope > .pie-chart-layout > [data-view-state="${availability}"]`))
+        .not.toBeNull();
+    });
+  });
+
   it('shows a view loading skeleton instead of unavailable source errors during initial load', async () => {
     const rendered = renderDashboard({
       document: {
@@ -1430,7 +1517,7 @@ describe('dashboard DOM provenance', () => {
       loadPageSources: async () => ({
         'repository-activity': {
           source: 'repository-activity',
-          rows: [{ repository: 'githubnext/gh-aw-cao' }],
+          rows: [{ repository: 'githubnext/gh-cao' }],
           metadata: {
             'source-id': 'repository-activity',
             'source-kind': 'fixture',
@@ -1446,7 +1533,7 @@ describe('dashboard DOM provenance', () => {
     document.body.append(rendered);
     await activatePage(rendered, 'repositories');
     await vi.waitFor(() => {
-      expect(rendered.querySelector('[data-page-id="repositories"] td[data-field="repository"]')?.textContent).toBe('githubnext/gh-aw-cao');
+      expect(rendered.querySelector('[data-page-id="repositories"] td[data-field="repository"]')?.textContent).toBe('githubnext/gh-cao');
     });
     expect(rendered.querySelector('[data-page-id="repositories"] .dashboard-view-skeleton')).toBeNull();
     rendered.remove();
@@ -1683,9 +1770,9 @@ describe('presenter built-in and custom pages', () => {
         runs: {
           source: 'runs',
           rows: [
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/daily.yml', run: '1001', 'run-conclusion': 'success', engine: 'copilot', 'engine-version': '0.87.6', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-aw-cao/actions/runs/1001', label: 'View run 1001' } },
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/review.yml', run: '1002', 'run-conclusion': 'failure', engine: 'copilot', 'engine-version': '0.87.9', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-aw-cao/actions/runs/1002', label: 'View run 1002' } },
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.yml', run: '1003', 'run-conclusion': 'success', engine: 'pi', 'engine-version': '1.2.0', 'requested-model': 'claude-sonnet-5', 'resolved-model': 'claude-sonnet-5', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-aw-cao/actions/runs/1003', label: 'View run 1003' } }
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.yml', run: '1001', 'run-conclusion': 'success', engine: 'copilot', 'engine-version': '0.87.6', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1001', label: 'View run 1001' } },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/review.yml', run: '1002', 'run-conclusion': 'failure', engine: 'copilot', 'engine-version': '0.87.9', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1002', label: 'View run 1002' } },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/audit.yml', run: '1003', 'run-conclusion': 'success', engine: 'pi', 'engine-version': '1.2.0', 'requested-model': 'claude-sonnet-5', 'resolved-model': 'claude-sonnet-5', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1003', label: 'View run 1003' } }
           ],
           metadata
         },
@@ -1738,7 +1825,7 @@ describe('presenter built-in and custom pages', () => {
     expect(page?.textContent).toContain('copilot');
     expect(page?.textContent).toContain('gpt-5.6-sol');
     expect(page?.textContent).toContain('claude-sonnet-5');
-    expect(page?.textContent).toContain('Telemetry is partial');
+    expect(page?.querySelector('[data-view-id="engines-models-token-insights"]')?.getAttribute('aria-description')).toContain('Telemetry is partial');
     expect(page?.textContent).not.toContain('Requested model');
     expect(page?.querySelector('.view-mode-control')).not.toBeNull();
     expect(page?.textContent).not.toContain('Agent event');
@@ -1765,8 +1852,8 @@ describe('presenter built-in and custom pages', () => {
       availability: /** @type {'available'} */ ('available')
     };
     const workflowLink = {
-      'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-aw-cao%3A.github%2Fworkflows%2Freview.md',
-      'dashboard-label': 'View githubnext/gh-aw-cao:.github/workflows/review.md workflow dashboard'
+      'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-cao%3A.github%2Fworkflows%2Freview.md',
+      'dashboard-label': 'View githubnext/gh-cao:.github/workflows/review.md workflow dashboard'
     };
     const rendered = renderDashboard({
       document: authoritativeDashboardDocument,
@@ -1779,7 +1866,7 @@ describe('presenter built-in and custom pages', () => {
         'skill-invocations-by-workflow': {
           source: 'skill-invocations-by-workflow',
           rows: [{
-            'workflow-coordinate': 'githubnext/gh-aw-cao:.github/workflows/review.md',
+            'workflow-coordinate': 'githubnext/gh-cao:.github/workflows/review.md',
             'workflow-link': workflowLink,
             invocations: 3
           }],
@@ -1790,7 +1877,7 @@ describe('presenter built-in and custom pages', () => {
           rows: [{
             skill: 'reactive-ui',
             workflow: '.github/workflows/review.md',
-            'repository-coordinate': 'githubnext/gh-aw-cao',
+            'repository-coordinate': 'githubnext/gh-cao',
             'workflow-link': workflowLink,
             invocations: 3
           }],
@@ -1850,22 +1937,14 @@ describe('presenter built-in and custom pages', () => {
         },
         'indexing-database-table-counts': {
           source: 'indexing-database-table-counts',
-          rows: [{ table: 'ingestion transactions', records: 1 }],
+          rows: [{ table: 'transactions', records: 1 }],
           metadata
         },
-        'indexing-daily-records': {
-          source: 'indexing-daily-records',
+        'indexing-ingestion-runs': {
+          source: 'indexing-ingestion-runs',
           rows: [
-            { day: '2026-09-01', records: 8 },
-            { day: '2026-09-02', records: 10 }
-          ],
-          metadata
-        },
-        'indexing-daily-workflow-runs': {
-          source: 'indexing-daily-workflow-runs',
-          rows: [
-            { day: '2026-09-01', 'workflow-runs': 6 },
-            { day: '2026-09-02', 'workflow-runs': 8 }
+            { 'shard-day': '2026-09-01', 'workflow-runs': 6, 'run-count-status': 'Reported run count' },
+            { 'shard-day': '2026-09-02', 'workflow-runs': 8, 'run-count-status': 'Reported run count' }
           ],
           metadata
         },
@@ -1920,8 +1999,11 @@ describe('presenter built-in and custom pages', () => {
       window.location.hash = '#page-indexing';
       await vi.waitFor(() => expect(rendered.querySelector('[data-page-id="indexing"]')?.hasAttribute('data-page-pending')).toBe(false));
       const page = rendered.querySelector('[data-page-id="indexing"]');
-      expect(page?.querySelectorAll('[data-view-id]')).toHaveLength(7);
-      expect(page?.querySelectorAll('[data-chart-widget="bar"]')).toHaveLength(2);
+      expect(page?.querySelectorAll('[data-view-id]')).toHaveLength(8);
+      expect(page?.querySelectorAll('[data-chart-widget="bar"]')).toHaveLength(0);
+      expect(page?.querySelector('[data-view-id="ingestion-storage"]')?.textContent).toContain('Storage engine unknown');
+      expect(page?.querySelector('[data-view-id="indexing-size"]')).toBeNull();
+      expect(page?.querySelectorAll('[data-chart-widget="scatter"] .scatter-chart-point')).toHaveLength(2);
       expect(page?.querySelectorAll('[data-view-id="github-api-usage"] [data-chart-widget="line"]')).toHaveLength(1);
       expect(page?.querySelector('[data-view-id="github-api-usage"]')?.textContent).toContain('collector/123/core');
       expect(page?.querySelectorAll('[data-chart-widget="horizontal-bar"]')).toHaveLength(2);
@@ -1988,8 +2070,8 @@ describe('presenter built-in and custom pages', () => {
         runs: {
           source: 'runs',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dependabot.yml', run: '1', 'aic-total': 12 },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dependabot.yml', run: '2', 'aic-total': 18 },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dependabot.yml', run: '1', 'aic-total': 12 },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dependabot.yml', run: '2', 'aic-total': 18 },
             { organization: 'github', repository: 'target-service', workflow: '.github/workflows/ci.yml', run: '3', 'aic-total': 5 }
           ],
           metadata: {
@@ -2005,8 +2087,8 @@ describe('presenter built-in and custom pages', () => {
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot.yml', 'workflow-name': 'Dependabot', 'workflow-role': 'orchestrator', 'workflow-active': 'true', 'rollout-mode': 'review' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot-update-planner.yml', 'workflow-name': 'Dependabot / Update Planner', 'workflow-role': 'worker', 'workflow-active': 'true', 'rollout-mode': 'review' },
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot.yml', 'workflow-name': 'Dependabot', 'workflow-role': 'orchestrator', 'workflow-active': 'true', 'rollout-mode': 'review' },
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot-update-planner.yml', 'workflow-name': 'Dependabot / Update Planner', 'workflow-role': 'worker', 'workflow-active': 'true', 'rollout-mode': 'review' },
             { organization: 'github', repository: 'target-service', workflow: '.github/workflows/ci.yml', 'workflow-name': 'CI', 'workflow-role': 'standalone', 'workflow-active': 'true', 'rollout-mode': 'live' }
           ],
           metadata: {
@@ -2022,8 +2104,8 @@ describe('presenter built-in and custom pages', () => {
         usage: {
           source: 'usage',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dependabot.yml', aic: 12 },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dependabot.yml', aic: 18 },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dependabot.yml', aic: 12 },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dependabot.yml', aic: 18 },
             { organization: 'github', repository: 'target-service', workflow: '.github/workflows/ci.yml', aic: 5 }
           ],
           metadata: {
@@ -2056,13 +2138,13 @@ describe('presenter built-in and custom pages', () => {
 
     const page = rendered.querySelector('[data-page-name="workflows"]');
     expect(globalThis.document.title).toBe('Workflows · Workflow Topology');
-    expect(page?.getAttribute('data-page-description')).toContain('does not assert that a dispatch occurred');
+    expect(page?.getAttribute('data-page-description')).toBe('Select a declared workflow for CAO operational review.');
     expect(page?.querySelector('.view-metadata-summary')).toBeNull();
     expect(rendered.querySelector('.horizon-summary [aria-label="Data status"]')).toBeNull();
     expect(rendered.querySelector('.filter-tuning-controls .horizon-details [aria-label="Data status"]')).toBeNull();
     expect(page?.querySelector('[data-chart-widget="horizontal-bar"]')).not.toBeNull();
     expect([...(page?.querySelectorAll('[data-view-id="workflows-by-aic-per-run"] .horizontal-bar-chart-label') ?? [])].map((value) => value.textContent))
-      .toEqual(['dependabot.yml (githubnext/gh-aw-cao)', 'ci.yml (github/target-service)']);
+      .toEqual(['dependabot.yml (githubnext/gh-cao)', 'ci.yml (github/target-service)']);
     expect([...(page?.querySelectorAll('[data-view-id="workflows-by-aic-per-run"] .horizontal-bar-chart-value') ?? [])].map((value) => value.textContent))
       .toEqual(['15', '5']);
     expect(page?.querySelector('[data-view-id="workflows-by-aic-per-run"] .horizontal-bar-chart-label a')?.getAttribute('href'))
@@ -2136,7 +2218,7 @@ describe('presenter built-in and custom pages', () => {
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot.yml', 'workflow-name': 'Dependabot', 'workflow-role': 'orchestrator', 'workflow-active': 'true', 'rollout-mode': 'live' },
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'dependabot', 'campaign-name': 'Dependabot', workflow: '.github/workflows/dependabot.yml', 'workflow-name': 'Dependabot', 'workflow-role': 'orchestrator', 'workflow-active': 'true', 'rollout-mode': 'live' },
             { organization: 'github', repository: 'target-service', workflow: '.github/workflows/ci.yml', 'workflow-name': 'CI', 'workflow-role': 'standalone', 'workflow-active': 'true', 'rollout-mode': 'unknown' }
           ],
           metadata: {
@@ -2250,7 +2332,7 @@ describe('presenter built-in and custom pages', () => {
     expect(rendered.querySelector('.refresh-button')).toBeNull();
     expect(rendered.querySelector('.account-menu')).toBeNull();
     expect(rendered.querySelector('.report-footer .refresh-button')).toBeNull();
-    expect(rendered.querySelector('.report-footer-status time')?.getAttribute('datetime')).toBeTruthy();
+    expect(rendered.querySelector('.report-footer-status')).toBeNull();
     expect(rendered.querySelector('.repository-link')).toBeNull();
   });
 
@@ -2487,11 +2569,11 @@ describe('presenter built-in and custom pages', () => {
 
     const page = await activatePage(rendered, 'overview');
     expect(page?.querySelector(':scope > .custom-view-grid')).not.toBeNull();
-    expect(page?.querySelectorAll(':scope > .custom-view-grid > .custom-view')).toHaveLength(3);
-    expect(page?.querySelectorAll('.factory-station')).toHaveLength(2);
-    expect(page?.querySelector('.factory-intro h2')?.textContent).toBe('Your campaigns are idle.');
-    expect(page?.querySelector('.factory-station')?.textContent).toContain('0/0 healthy campaigns');
-    expect(page?.querySelector('.link-button-list-empty')?.textContent).toBe('No campaigns are registered.');
+    expect(page?.querySelectorAll(':scope > .custom-view-grid > .custom-view')).toHaveLength(2);
+    expect(page?.querySelectorAll('.factory-station')).toHaveLength(4);
+    expect(page?.querySelector('.factory-intro h2')?.textContent).toBe('Your factory is idle.');
+    expect(page?.querySelector('.factory-station')?.textContent).toContain('1/1 healthy workflows');
+    expect(page?.querySelector('.link-button-list-view')).toBeNull();
     expect(page?.querySelector('.notifications-inbox')).toBeNull();
     expect(page?.querySelector('.factory-status')).toBeNull();
     expect(page?.querySelector('.factory-all-clear')).toBeNull();
@@ -2503,7 +2585,7 @@ describe('presenter built-in and custom pages', () => {
 
 
 
-  it('renders conditional site-wide callouts and remembers dismissal only in memory', () => {
+  it('renders conditional site-wide callouts and remembers dismissal only in memory', async () => {
     window.localStorage.clear();
     sessionStorage.clear();
     const document = {
@@ -2557,33 +2639,39 @@ describe('presenter built-in and custom pages', () => {
     };
 
     const rendered = renderDashboard({ document, sources });
-    expect(rendered.querySelectorAll('.site-callout')).toHaveLength(2);
-    expect(rendered.querySelector('[data-site-callout="rate-limit-message"]')?.textContent).toContain('Dashboard data is partial');
+    const notices = globalThis.document;
+    await vi.waitFor(() => expect(notices.querySelectorAll('.dashboard-notification:not(.dashboard-notification-exit)')).toHaveLength(2));
+    expect(notices.querySelector('[data-notification-id="site-callout:rate-limit-message"]')?.textContent).toContain('Dashboard data is partial');
     const detailsLink = /** @type {HTMLAnchorElement | null} */ (
-      rendered.querySelector('[data-site-callout="rate-limit-message"] .site-callout-link')
+      notices.querySelector('[data-notification-id="site-callout:rate-limit-message"] .dashboard-notification-link')
     );
     expect(detailsLink?.getAttribute('href')).toBe('#page-coverage');
     expect(detailsLink?.textContent).toBe('View coverage');
     const navigationLink = /** @type {HTMLAnchorElement | null} */ (
-      rendered.querySelector('[data-site-callout="operator-message"] .site-callout-link')
+      notices.querySelector('[data-notification-id="site-callout:operator-message"] .dashboard-notification-link')
     );
     expect(navigationLink?.getAttribute('href')).toBe('#page-usage');
-    expect(navigationLink?.textContent).toBe('View usage');
+    expect(navigationLink?.textContent).toBe('View Usage');
     const dismiss = /** @type {HTMLButtonElement | null} */ (
-      rendered.querySelector('[data-site-callout="operator-message"] .site-callout-dismiss')
+      notices.querySelector('[data-notification-id="site-callout:operator-message"] .dashboard-notification-dismiss')
     );
+    const storageBeforeDismiss = { ...window.localStorage };
+    const sessionBeforeDismiss = { ...sessionStorage };
     expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss Operator message');
     dismiss?.click();
-    expect(rendered.querySelector('[data-site-callout="operator-message"]')).toBeNull();
-    expect(window.localStorage).toHaveLength(0);
-    expect(sessionStorage).toHaveLength(0);
+    expect(notices.querySelector('[data-notification-id="site-callout:operator-message"]:not(.dashboard-notification-exit)')).toBeNull();
+    expect({ ...window.localStorage }).toEqual(storageBeforeDismiss);
+    expect({ ...sessionStorage }).toEqual(sessionBeforeDismiss);
 
     const rerendered = renderDashboard({ document, sources });
-    expect(rerendered.querySelector('[data-site-callout="operator-message"]')).toBeNull();
-    expect(rerendered.querySelector('[data-site-callout="rate-limit-message"]')).not.toBeNull();
+    disposeDashboard(rendered);
+    expect(notices.querySelector('[data-notification-id="site-callout:operator-message"]:not(.dashboard-notification-exit)')).toBeNull();
+    await vi.waitFor(() => expect(notices.querySelector('[data-notification-id="site-callout:rate-limit-message"]:not(.dashboard-notification-exit)')).not.toBeNull());
 
     const complete = renderDashboard({ document, sources: {} });
-    expect(complete.querySelector('[data-site-callout="rate-limit-message"]')).toBeNull();
+    disposeDashboard(rerendered);
+    await vi.waitFor(() => expect(notices.querySelector('[data-notification-id="site-callout:rate-limit-message"]:not(.dashboard-notification-exit)')).toBeNull());
+    disposeDashboard(complete);
   });
 
   it('collapses the sidebar to icons and restores the persisted display mode', () => {
@@ -2989,7 +3077,7 @@ describe('presenter built-in and custom pages', () => {
       sources: {
         repositories: {
           source: 'repositories',
-          rows: [{ 'repository-coordinate': 'githubnext/gh-aw-cao', organization: 'githubnext' }],
+          rows: [{ 'repository-coordinate': 'githubnext/gh-cao', organization: 'githubnext' }],
           metadata: {
             'source-id': 'repositories-fixture',
             'source-kind': 'fixture',
@@ -3007,7 +3095,7 @@ describe('presenter built-in and custom pages', () => {
     expect(rendered.querySelector('[data-page-id="repositories"]')?.getAttribute('data-view-mode')).toBe('table');
     expect(modeButtons.map((button) => button.textContent)).toEqual(['Cards', 'Table']);
     expect(modeButtons[1]?.getAttribute('aria-pressed')).toBe('true');
-    expect(rendered.querySelector('[data-mobile-card-list] .entity-card-list-card')?.textContent).toContain('githubnext/gh-aw-cao');
+    expect(rendered.querySelector('[data-mobile-card-list] .entity-card-list-card')?.textContent).toContain('githubnext/gh-cao');
   });
 
 
@@ -3061,7 +3149,7 @@ describe('presenter built-in and custom pages', () => {
     window.history.replaceState(null, '', '/#page-cost');
     let currentIndex = 1;
     const entries = [
-      { index: 0, url: 'https://github.com/githubnext/gh-aw-cao' },
+      { index: 0, url: 'https://github.com/githubnext/gh-cao' },
       { index: 1, url: window.location.href },
       { index: 2, url: `${window.location.origin}/#page-security` }
     ];
@@ -3230,11 +3318,54 @@ describe('presenter built-in and custom pages', () => {
     expect(rendered.querySelector('.dashboard-horizon')?.getAttribute('data-dashboard-evaluated-at')).toBe('2026-09-01T12:00:00.000Z');
     expect(rendered.querySelector('.horizon-toggle')?.getAttribute('aria-label')).toContain('2 days');
     expect(rendered.querySelector('.dashboard-horizon .horizon-details')?.textContent).toBe(
-      'Data is included from the start up to the exclusive end.StartAug 30, 2026, 12:30 PM UTCEndSep 1, 2026, 12:00 PM UTCDuration2 days'
+      'Coverage detailsData is included from the start up to the exclusive end.StartAug 30, 2026, 12:30 PM UTCEndSep 1, 2026, 12:00 PM UTCDuration2 days'
     );
     expect(rendered.querySelector('.dashboard-horizon .horizon-details time:first-of-type')?.getAttribute('datetime')).toBe('2026-08-30T12:30:00.000Z');
     expect(rendered.querySelectorAll('.dashboard-horizon .horizon-details time')[1]?.getAttribute('datetime')).toBe('2026-09-01T12:00:00.000Z');
     expect(rendered.querySelector('.horizon-tooltip-counts')).toBeNull();
+  });
+
+  it('keeps a persisted display horizon stable while source-free page queries bind', async () => {
+    const previous = window.localStorage.getItem(HORIZON_FILTER_STORAGE_KEY);
+    window.localStorage.setItem(HORIZON_FILTER_STORAGE_KEY, JSON.stringify({ range: '30d' }));
+    let clock = Date.parse('2026-10-15T08:00:00Z');
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock += 1000);
+    const loadPageSources = vi.fn(async (_pageId, _options) => {
+      if (loadPageSources.mock.calls.length > 4) window.localStorage.removeItem(HORIZON_FILTER_STORAGE_KEY);
+      return {};
+    });
+    const rendered = renderDashboardView({
+      document: {
+        languageVersion: '0.1.0',
+        dashboard: {
+          id: 'stable-horizon', title: 'Stable horizon',
+          defaults: { time: { range: '1w' } },
+          pages: [{
+            id: 'runs', kind: 'custom', title: 'Runs', 'filter-bar': true,
+            views: [{ id: 'runs-table', data: { source: 'runs' }, mark: 'table',
+              encoding: { columns: [{ field: 'run' }] } }]
+          }]
+        }
+      },
+      sources: {}, loadPageSources
+    });
+    document.body.append(rendered);
+    try {
+      await vi.waitFor(() => expect(loadPageSources).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(loadPageSources).toHaveBeenCalledTimes(2);
+      const window = loadPageSources.mock.calls.at(-1)?.[1].queryContext?.timeWindow;
+      expect(Date.parse(window.end) - Date.parse(window.start)).toBe(30 * 86_400_000);
+      expect(rendered.querySelector('.horizon-toggle')?.getAttribute('aria-label')).toContain('30 days');
+      expect([...rendered.querySelectorAll('.dashboard-horizon time')].map((time) => time.getAttribute('datetime')))
+        .toEqual([window.start, window.end]);
+    } finally {
+      disposeDashboard(rendered);
+      rendered.remove();
+      now.mockRestore();
+      if (previous === null) globalThis.window.localStorage.removeItem(HORIZON_FILTER_STORAGE_KEY);
+      else globalThis.window.localStorage.setItem(HORIZON_FILTER_STORAGE_KEY, previous);
+    }
   });
 
   it('renders the configured Horizon immediately and updates it when page sources load', async () => {
@@ -3426,18 +3557,18 @@ describe('presenter built-in and custom pages', () => {
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'github', repository: 'gh-aw-cao', campaign: 'daily-ops', 'campaign-name': 'Daily Ops', 'campaign-icon': 'workflow', workflow: '.github/workflows/daily.md', 'workflow-role': 'orchestrator', 'rollout-mode': 'review', 'max-ai-credits': 100, 'campaign-aic-allowance': 250, 'campaign-inventory-warnings': 2 },
-            { organization: 'github', repository: 'gh-aw-cao', campaign: 'daily-ops', 'campaign-name': 'Daily Ops', 'campaign-icon': 'workflow', workflow: '.github/workflows/daily-worker.md', 'workflow-role': 'worker', 'rollout-mode': 'review', 'max-ai-credits': 150, 'campaign-aic-allowance': 250, 'campaign-inventory-warnings': 2 },
-            { organization: 'github', repository: 'gh-aw-cao', campaign: 'empty-ops', 'campaign-name': 'Empty Ops', workflow: '.github/workflows/empty.md', 'workflow-role': 'orchestrator', 'rollout-mode': 'live', 'max-ai-credits': 80, 'inventory-ready': true }
+            { organization: 'github', repository: 'gh-cao', campaign: 'daily-ops', 'campaign-name': 'Daily Ops', 'campaign-icon': 'workflow', workflow: '.github/workflows/daily.md', 'workflow-role': 'orchestrator', 'rollout-mode': 'review', 'max-ai-credits': 100, 'campaign-aic-allowance': 250, 'campaign-inventory-warnings': 2 },
+            { organization: 'github', repository: 'gh-cao', campaign: 'daily-ops', 'campaign-name': 'Daily Ops', 'campaign-icon': 'workflow', workflow: '.github/workflows/daily-worker.md', 'workflow-role': 'worker', 'rollout-mode': 'review', 'max-ai-credits': 150, 'campaign-aic-allowance': 250, 'campaign-inventory-warnings': 2 },
+            { organization: 'github', repository: 'gh-cao', campaign: 'empty-ops', 'campaign-name': 'Empty Ops', workflow: '.github/workflows/empty.md', 'workflow-role': 'orchestrator', 'rollout-mode': 'live', 'max-ai-credits': 80, 'inventory-ready': true }
           ],
           metadata
         },
         runs: {
           source: 'runs',
           rows: [
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/daily.md', run: '1', 'started-at': '2026-08-28T10:00:00Z', 'run-conclusion': 'success', 'rollout-mode': 'review', 'aic-total': 10 },
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/daily-worker.md', run: '2', 'started-at': '2026-08-29T10:00:00Z', 'run-conclusion': 'failure', 'rollout-mode': 'live', 'aic-total': 30 },
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/unmanaged.md', run: '3', 'started-at': '2026-08-29T11:00:00Z', 'run-conclusion': 'cancelled', 'rollout-mode': 'review' }
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.md', run: '1', 'started-at': '2026-08-28T10:00:00Z', 'run-conclusion': 'success', 'rollout-mode': 'review', 'aic-total': 10 },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily-worker.md', run: '2', 'started-at': '2026-08-29T10:00:00Z', 'run-conclusion': 'failure', 'rollout-mode': 'live', 'aic-total': 30 },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/unmanaged.md', run: '3', 'started-at': '2026-08-29T11:00:00Z', 'run-conclusion': 'cancelled', 'rollout-mode': 'review' }
           ],
           metadata
         },
@@ -3596,7 +3727,7 @@ describe('presenter built-in and custom pages', () => {
           rows: [
             {
               organization: 'github',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               workflow: '.github/workflows/daily.yml',
               run: '1001',
               'run-status': 'completed',
@@ -3687,7 +3818,7 @@ describe('presenter built-in and custom pages', () => {
               'finding-severity': 'critical',
               'finding-status': 'open',
               organization: 'github',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               workflow: '.github/workflows/daily.yml',
               'observed-at': '2026-08-29T12:00:00Z',
               'issue-link': {
@@ -3763,7 +3894,7 @@ describe('presenter built-in and custom pages', () => {
                 data: {
                   source: 'findings',
                   scope: {
-                    repositories: ['gh-aw-cao']
+                    repositories: ['gh-cao']
                   },
                   time: {
                     start: '2026-08-29T00:00:00Z',
@@ -3855,8 +3986,8 @@ describe('presenter built-in and custom pages', () => {
         usage: {
           source: 'usage',
           rows: [
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/daily.yml', run: '1001', engine: 'actions', 'requested-model': 'gpt-4o', 'resolved-model': 'gpt-4.1', 'rollout-mode': 'live', aic: 2, 'observed-at': '2026-08-29T10:00:00Z' },
-            { organization: 'github', repository: 'gh-aw-cao', workflow: '.github/workflows/daily.yml', run: '1002', engine: 'actions', 'requested-model': 'gpt-4o', 'resolved-model': 'gpt-4.1', 'rollout-mode': 'review', aic: 3, 'observed-at': '2026-08-29T11:00:00Z' }
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.yml', run: '1001', engine: 'actions', 'requested-model': 'gpt-4o', 'resolved-model': 'gpt-4.1', 'rollout-mode': 'live', aic: 2, 'observed-at': '2026-08-29T10:00:00Z' },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.yml', run: '1002', engine: 'actions', 'requested-model': 'gpt-4o', 'resolved-model': 'gpt-4.1', 'rollout-mode': 'review', aic: 3, 'observed-at': '2026-08-29T11:00:00Z' }
           ],
           metadata: {
             'source-id': 'usage-fixture',
@@ -3874,7 +4005,7 @@ describe('presenter built-in and custom pages', () => {
             {
               code: 'finding-1',
               organization: 'github',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               'observed-at': '2026-08-29T12:00:00Z',
               'finding-summary': 'Unsafe dependency',
               'finding-severity': 'high',
@@ -3902,7 +4033,7 @@ describe('presenter built-in and custom pages', () => {
             {
               code: 'finding-3',
               organization: 'github',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               'observed-at': '2026-08-30T01:00:00Z',
               'finding-summary': 'Out of range finding',
               'finding-severity': 'low',
@@ -4040,7 +4171,7 @@ describe('presenter built-in and custom pages', () => {
           rows: [
             {
               organization: 'github',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               workflow: '.github/workflows/daily.yml',
               run: '1001',
               'run-status': 'completed',
@@ -4529,7 +4660,16 @@ describe('presenter built-in and custom pages', () => {
     }
   });
 
-  it('keeps route tabs visible while a sibling view loads', async () => {
+  it('keeps route tabs visible and uses a tab transition while a sibling view loads', async () => {
+    /** @type {Array<string | undefined>} */
+    const transitions = [];
+    Object.defineProperty(document, 'startViewTransition', {
+      configurable: true,
+      value: vi.fn((callback) => {
+        transitions.push(document.documentElement.dataset.navigationTransition);
+        callback();
+      })
+    });
     const root = document.createElement('div');
     root.innerHTML = `
       <a data-nav-page-id="first" href="#page-first?campaign=ambient-context">First</a>
@@ -4561,8 +4701,16 @@ describe('presenter built-in and custom pages', () => {
       expect(pendingTabs?.textContent?.replace(/\s/g, '')).toBe('OverviewWorkflowsRuns');
       expect(pendingTabs?.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe('Workflows');
       expect(root.querySelector('#page-second')?.getAttribute('aria-busy')).toBe('true');
+      expect(transitions).toEqual(['tab']);
+      window.history.replaceState(null, '', '/#page-first?campaign=ambient-context');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      expect(transitions.at(-1)).toBe('tab');
+      window.history.replaceState(null, '', '/#page-second?campaign=different');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      expect(transitions.at(-1)).toBe('page');
       disposeNavigation();
     } finally {
+      Reflect.deleteProperty(document, 'startViewTransition');
       root.remove();
       window.history.replaceState(null, '', '/');
     }

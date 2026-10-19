@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/githubapp"
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/githubapp"
+	"github.com/githubnext/gh-cao/server/internal/logger"
 )
 
 var runnerLog = logger.New("cao:collect:runner")
@@ -229,6 +229,14 @@ func (r Runner) Collect(ctx context.Context, task Task) error {
 	if err := r.downloadLogs(ctx, repository, workspace, token, reserve); err != nil {
 		return err
 	}
+	if err := r.execute(ctx, r.node(), []string{
+		filepath.Join(r.CatalogRoot, "activity", "session-evidence.mjs"),
+		filepath.Join(workspace, "logs"),
+		filepath.Join(r.Lake.ShardDirectory(), r.Lake.ShardPrefix(repository)),
+		repository,
+	}, nil); err != nil {
+		return err
+	}
 	if err := r.compact(ctx, repository); err != nil {
 		return err
 	}
@@ -239,12 +247,12 @@ func (r Runner) Collect(ctx context.Context, task Task) error {
 func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token string, reserve int) error {
 	shardPrefix := filepath.Join(r.Lake.ShardDirectory(), r.Lake.ShardPrefix(repository))
 	arguments := []string{
-		"aw", "logs", "--audit",
+		filepath.Join(r.CatalogRoot, "activity", "collect-workflow-logs.mjs"), r.gh(), "--audit",
 		"--repo", repository,
 		"--output", filepath.Join(workspace, "logs"),
 		"--summary-file", "",
 		"--cached-jsonl", shardPrefix + "*",
-		"--artifacts", "usage",
+		"--artifacts", "usage,experiment",
 		"--start-date", fmt.Sprintf("-%dd", r.windowDays()),
 		"--cache-before", fmt.Sprintf("-%dd", r.windowDays()),
 		"--count", strconv.Itoa(r.runLimit()),
@@ -253,7 +261,7 @@ func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token s
 		"--max-storage", strconv.Itoa(r.maxStorage()),
 		"--prune-older-runs",
 	}
-	return r.execute(ctx, r.gh(), arguments, []string{"GH_TOKEN=" + token})
+	return r.execute(ctx, r.node(), arguments, []string{"GH_TOKEN=" + token})
 }
 
 func (r Runner) compact(ctx context.Context, repository string) error {

@@ -19,7 +19,7 @@ const metadata = {
 
 describe('Audit dashboard view', () => {
   it('keeps the hosted operational value query graph in sync with the dashboard', () => {
-    const names = ['campaign-operational-value-primary-series'];
+    const names = ['operational-value-plot-series'];
     for (const name of names) {
       expect(hostedQueries.find((query) => query.name === name))
         .toEqual(dashboard.queries.find((/** @type {{ name: string }} */ query) => query.name === name));
@@ -32,7 +32,6 @@ describe('Audit dashboard view', () => {
 
     expect(insights.views.map((/** @type {{ id: string }} */ view) => view.id)).toEqual([
       'campaign-insights-navigation',
-      'campaign-operational-value-history',
       'campaign-baseline-outcomes',
       'campaign-performance-baseline',
       'campaign-audit-event-table'
@@ -69,7 +68,7 @@ describe('Audit dashboard view', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
-      sourceNames: ['campaign-operational-value-primary-series', 'campaign-operational-value-plot-inventory'],
+      sourceNames: ['operational-value-plot-series'],
       sources: {
         'operational-values': {
           source: 'operational-values',
@@ -79,34 +78,24 @@ describe('Audit dashboard view', () => {
       }
     }));
 
-    expect(result['campaign-operational-value-primary-series'].rows).toEqual([
+    expect(result['operational-value-plot-series'].rows).toEqual([
       expect.objectContaining({
         campaign: 'optimization',
-        'operational-value-role': 'primary',
-        'adoption-at': '2026-09-15T23:30:36Z',
         'operational-value-unit': 'aic-per-run',
         series: [expect.objectContaining({
           id: 'githubnext/gh-aw',
           points: [
-            expect.objectContaining({ x: '2026-09-22T20:56:21Z', y: 12.5, link: operationalValueObservations[0]['run-link'] }),
+            expect.objectContaining({ x: '2026-09-22T20:56:21Z', y: 12.5, link: operationalValueObservations[0]['run-link'],
+              metadata: expect.objectContaining({ 'adoption-at': '2026-09-15T23:30:36Z' }) }),
             expect.objectContaining({ x: '2026-09-24T20:56:21Z', y: 8.25, link: operationalValueObservations[1]['run-link'] })
-          ]
-        })]
-      }),
-      expect.objectContaining({
-        'operational-value-role': 'diagnostic',
-        series: [expect.objectContaining({
-          points: [
-            expect.objectContaining({ y: 1 }),
-            expect.objectContaining({ y: 0.5 })
           ]
         })]
       })
     ]);
     const rendered = renderMeasureHistory({
       title: 'Repository operational value',
-      pageId: 'campaign-insights',
-      sourceNames: ['campaign-operational-value-primary-series'],
+      pageId: 'operational-value-campaign',
+      sourceNames: ['operational-value-plot-series'],
       sources: result,
       elementConfig: { 'measure-source': 'operational-value' },
       contextDetails: [],
@@ -114,11 +103,10 @@ describe('Audit dashboard view', () => {
     });
     expect([...rendered.querySelectorAll('.temporal-plot-point-tooltip a')]
       .map((link) => link.getAttribute('href'))).toEqual([
-        'https://github.com/githubnext/gh-aw-cao/actions/runs/101',
-        'https://github.com/githubnext/gh-aw-cao/actions/runs/102'
+        'https://github.com/githubnext/gh-cao/actions/runs/101',
+        'https://github.com/githubnext/gh-cao/actions/runs/102'
       ]);
-    expect(rendered.querySelectorAll('.temporal-plot-point')).toHaveLength(4);
-    expect(result['campaign-operational-value-plot-inventory'].rows).toHaveLength(2);
+    expect(rendered.querySelectorAll('.temporal-plot-point')).toHaveLength(2);
   });
 
   it('keeps irregular observations partitioned and leaves missing native values unplotted', () => {
@@ -133,6 +121,7 @@ describe('Audit dashboard view', () => {
       ['zero-last', 'a', 'zero', 0, '2026-01-02T00:00:00Z']
     ].map(([id, repository, definition, value, at]) => ({
       id, campaign: 'sample', organization: 'githubnext', repository,
+      'operational-value-role': 'primary',
       'operational-value-definition': definition,
       'operational-value': value,
       'observed-at': at
@@ -140,10 +129,10 @@ describe('Audit dashboard view', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
-      sourceNames: ['campaign-operational-value-primary-series'],
+      sourceNames: ['operational-value-plot-series'],
       sources: { 'operational-values': { source: 'operational-values', rows: observations, metadata } }
     }));
-    const rows = result['campaign-operational-value-primary-series'].rows;
+    const rows = result['operational-value-plot-series'].rows;
     const points = rows.flatMap((row) => /** @type {Array<{ id: string, points: Array<{ x: string, y: number }> }>} */ (row.series)
       .flatMap((series) => series.points.map((point) => ({ ...point, color: series.id }))));
     expect(points.filter((point) => point.color === 'githubnext/a').map((point) => point.y)).toEqual([10, 20, 30, -2, 0]);
@@ -155,7 +144,7 @@ describe('Audit dashboard view', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
-      sourceNames: ['campaign-operational-value-primary-series'],
+      sourceNames: ['operational-value-plot-series'],
       sources: {
         'operational-values': {
           source: 'operational-values',
@@ -164,12 +153,12 @@ describe('Audit dashboard view', () => {
             { campaign: 'sample', organization: 'two', repository: 'service', 'operational-value-definition': 'm', 'operational-value': 100, 'observed-at': '2026-01-01T00:00:00Z' },
             { campaign: 'sample', organization: 'one', repository: 'service', 'operational-value-definition': 'm', 'operational-value': 20, 'observed-at': '2026-01-02T00:00:00Z' },
             { campaign: 'sample', organization: 'two', repository: 'service', 'operational-value-definition': 'm', 'operational-value': 110, 'observed-at': '2026-01-02T00:00:00Z' }
-          ],
+          ].map((row) => ({ ...row, 'operational-value-role': 'primary' })),
           metadata
         }
       }
     }));
-    const points = result['campaign-operational-value-primary-series'].rows.flatMap(
+    const points = result['operational-value-plot-series'].rows.flatMap(
       (row) => /** @type {Array<{ id: string, points: Array<{ y: number }> }>} */ (row.series)
         .flatMap((series) => series.points.map((point) => ({ ...point, color: series.id })))
     );
@@ -183,7 +172,7 @@ describe('Audit dashboard view', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
-      sourceNames: ['campaign-operational-value-evidence-state'],
+      sourceNames: ['operational-value-plot-series'],
       sources: {
         'operational-values': {
           source: 'operational-values',
@@ -207,30 +196,28 @@ describe('Audit dashboard view', () => {
             'operational-value': 0.25,
             'maturity-status': 'interim',
             'observed-at': '2026-09-24T00:00:00Z'
-          }],
+          }].map(row => ({
+            ...row, organization: 'org', repository: 'repo',
+            'operational-value-role': 'primary', 'operational-value-definition': 'measure',
+            'operational-value-name': 'Measure', 'operational-value-unit': 'count',
+            'operational-value-direction': 'decrease'
+          })),
           metadata
         }
       }
     }));
 
-    expect(result['campaign-operational-value-evidence-state'].rows).toEqual([
-      expect.objectContaining({
-        campaign: 'optimization',
-        'observation-count': 2,
-        'matured-observation-count': 0,
-        'evidence-state': 'interim-evidence'
-      }),
-      expect.objectContaining({
-        campaign: 'ambient-context',
-        'matured-observation-count': 1,
-        'evidence-state': 'observed-value'
-      }),
-      expect.objectContaining({
-        campaign: 'campaign-scout',
-        'matured-observation-count': 0,
-        'evidence-state': 'interim-evidence'
-      })
-    ]);
+    expect(result['operational-value-plot-series'].metadata.availability).toBe('available');
+    const points = result['operational-value-plot-series'].rows.flatMap(row =>
+      /** @type {Array<{points: Array<{metadata: Record<string, unknown>}>}>} */ (row.series)
+        .flatMap(series => series.points.map(point => ({
+          campaign: row.campaign, maturity: point.metadata['maturity-status']
+        }))));
+    expect(points).toEqual(expect.arrayContaining([
+      { campaign: 'optimization', maturity: 'interim' },
+      { campaign: 'ambient-context', maturity: 'matured' },
+      { campaign: 'campaign-scout', maturity: 'interim' }
+    ]));
   });
 
   it('projects only issue outcomes produced by campaign workers', () => {
@@ -242,17 +229,17 @@ describe('Audit dashboard view', () => {
         outcomes: {
           source: 'outcomes',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/orchestrator.md', 'safe-output': 'orchestrator-issue', 'outcome-category': 'issue' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-issue', 'outcome-category': 'issue' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-pr', 'outcome-category': 'pull-request' }
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'ambient-context', workflow: '.github/workflows/orchestrator.md', 'safe-output': 'orchestrator-issue', 'outcome-category': 'issue' },
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-issue', 'outcome-category': 'issue' },
+            { organization: 'githubnext', repository: 'gh-cao', campaign: 'ambient-context', workflow: '.github/workflows/worker.md', 'safe-output': 'worker-pr', 'outcome-category': 'pull-request' }
           ],
           metadata
         },
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/orchestrator.md', 'workflow-role': 'orchestrator' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/worker.md', 'workflow-role': 'worker' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/orchestrator.md', 'workflow-role': 'orchestrator' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/worker.md', 'workflow-role': 'worker' }
           ],
           metadata
         }
@@ -273,26 +260,26 @@ describe('Audit dashboard view', () => {
         audits: {
           source: 'audits',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', event: '1', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', event: '2', 'event-type': 'audit.recommendation', 'event-status': 'medium', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', event: '3', 'event-type': 'audit.finding', 'event-status': 'info', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/review.md', event: '4', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', event: '5', 'event-type': 'tool.call', 'event-status': 'high', 'event-summary': 'Repeated finding' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', event: '1', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', event: '2', 'event-type': 'audit.recommendation', 'event-status': 'medium', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', event: '3', 'event-type': 'audit.finding', 'event-status': 'info', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/review.md', event: '4', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', event: '5', 'event-type': 'mcp.tool_call', 'event-status': 'high', 'event-summary': 'Repeated finding' }
           ],
           metadata
         },
         tools: {
           source: 'tools',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', event: '6', 'event-type': 'audit.skill_activation', 'event-status': 'medium', 'event-summary': 'Skill activation' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', event: '6', 'event-type': 'skill.invoked', 'event-status': 'medium', 'event-summary': 'Skill activation' }
           ],
           metadata
         },
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/audit.md', campaign: 'audit-campaign' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/review.md', campaign: 'review-campaign' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/audit.md', campaign: 'audit-campaign' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/review.md', campaign: 'review-campaign' }
           ],
           metadata
         }
@@ -331,7 +318,7 @@ describe('Audit dashboard view', () => {
     ]);
   });
 
-  it('counts every rendered Insights plot through the shared plot inventory', () => {
+  it('excludes experimental operational-value plots from Insights counts', () => {
     const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
       operation: 'execute-dashboard-queries',
       queries: dashboard.queries,
@@ -340,12 +327,12 @@ describe('Audit dashboard view', () => {
         audits: {
           source: 'audits',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'combined.md', event: '1', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'combined.md', event: '2', 'event-type': 'audit.recommendation', 'event-status': 'medium', 'event-summary': 'Repeated finding' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'audit-only.md', event: '3', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Audit-only finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'combined.md', event: '1', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'combined.md', event: '2', 'event-type': 'audit.recommendation', 'event-status': 'medium', 'event-summary': 'Repeated finding' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'audit-only.md', event: '3', 'event-type': 'audit.finding', 'event-status': 'high', 'event-summary': 'Audit-only finding' },
             ...Array.from({ length: 20 }, (_, index) => [0, 1].map((duplicate) => ({
               organization: 'githubnext',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               workflow: 'noise.md',
               event: `noise-${index}-${duplicate}`,
               'event-type': 'audit.finding',
@@ -359,10 +346,10 @@ describe('Audit dashboard view', () => {
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'combined.md', campaign: 'combined' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'audit-only.md', campaign: 'audit-only' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'noise.md', campaign: 'noise' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'empty.md', campaign: 'empty' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'combined.md', campaign: 'combined' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'audit-only.md', campaign: 'audit-only' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'noise.md', campaign: 'noise' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'empty.md', campaign: 'empty' }
           ],
           metadata
         },
@@ -371,7 +358,7 @@ describe('Audit dashboard view', () => {
           rows: [{
             campaign: 'combined',
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             'operational-value': 0.5,
             'operational-value-definition': 'combined.value',
             'operational-value-role': 'primary',
@@ -380,7 +367,7 @@ describe('Audit dashboard view', () => {
           }, {
             campaign: 'combined',
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             'operational-value': 1,
             'operational-value-definition': 'combined.value',
             'operational-value-role': 'primary',
@@ -394,7 +381,7 @@ describe('Audit dashboard view', () => {
 
     expect(result['campaign-insight-tab-counts'].rows).toHaveLength(3);
     expect(result['campaign-insight-tab-counts'].rows).toEqual(expect.arrayContaining([
-      { campaign: 'combined', items: 2 },
+      { campaign: 'combined', items: 1 },
       { campaign: 'audit-only', items: 1 },
       { campaign: 'noise', items: 1 }
     ]));

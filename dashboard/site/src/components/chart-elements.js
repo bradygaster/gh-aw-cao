@@ -599,9 +599,10 @@ function renderInteractiveChartMark({ className, entryIndex, label, shape, toolt
  * @param {{ at: string, label: string } | null} [temporalMarker]
  * @param {import('./treemap-layout.js').TreemapOptions} [treemapOptions]
  * @param {ChartPlotDomain | null} [plotDomain]
+ * @param {{ cluster?: boolean }} [scatterOptions]
  * @returns {HTMLElement}
  */
-export function renderChartWidget(chartType, points, series, pieSummary = null, totalLabel = 'Total', unit = null, timeRange = null, referenceField = null, formatCategory = (label) => label, temporalMarker = null, treemapOptions = {}, plotDomain = null) {
+export function renderChartWidget(chartType, points, series, pieSummary = null, totalLabel = 'Total', unit = null, timeRange = null, referenceField = null, formatCategory = (label) => label, temporalMarker = null, treemapOptions = {}, plotDomain = null, scatterOptions = {}) {
   if (chartType === 'treemap') {
     return renderTreemapChart(points, totalLabel, unit, treemapOptions, chartSeriesClassName);
   }
@@ -786,6 +787,15 @@ export function renderChartWidget(chartType, points, series, pieSummary = null, 
         categoryContent.setAttribute('aria-label', `${point.link.label}: ${fullCategory}`);
         hasInteractiveLink = true;
       }
+      const bar = h('span', {
+        className: `bar-chart-bar horizontal-bar-chart-bar ${seriesClassNames.get(point.color ?? 'value') ?? 'chart-series-1'}`,
+        style: `--chart-entry-index: ${index}; --horizontal-bar-size: ${(barSize / maximum) * 100}%`,
+        'aria-hidden': 'true'
+      });
+      const track = point.link
+        ? renderSafeLink(bar, { ...point.link, label: `${label}: ${point.link.label}` })
+        : h('span', { 'aria-hidden': 'true' }, bar);
+      if (track instanceof HTMLElement) track.classList.add('horizontal-bar-chart-track');
       return h(
         'li',
         { className: 'horizontal-bar-chart-row' },
@@ -797,20 +807,13 @@ export function renderChartWidget(chartType, points, series, pieSummary = null, 
         },
         categoryContent
         ),
-        h(
-          'span',
-          { className: 'horizontal-bar-chart-track', 'aria-hidden': 'true' },
-          h('span', {
-            className: `bar-chart-bar horizontal-bar-chart-bar ${seriesClassNames.get(point.color ?? 'value') ?? 'chart-series-1'}`,
-            style: `--chart-entry-index: ${index}; --horizontal-bar-size: ${(barSize / maximum) * 100}%`
-          })
-        ),
+        track,
         h('span', {
           className: 'horizontal-bar-chart-value',
           tabIndex: 0,
           role: 'img',
           'aria-label': label
-        }, formatNumber(value, unit))
+        }, point.y == null ? 'Unavailable' : formatNumber(value, unit))
       );
     };
     const hasSections = points.some((point) => point.section);
@@ -1047,7 +1050,9 @@ export function renderChartWidget(chartType, points, series, pieSummary = null, 
           });
           const validCoordinates = coordinates.filter(({ valid }) => valid);
           const hasGaps = validCoordinates.length !== coordinates.length;
-          const renderedCoordinates = sampleLineCoordinates(validCoordinates, renderedPointLimit);
+          const renderedCoordinates = isScatterChart && scatterOptions.cluster === false
+            ? validCoordinates
+            : sampleLineCoordinates(validCoordinates, renderedPointLimit);
           const gapPrefix = [];
           let gaps = 0;
           for (const coordinate of coordinates) {

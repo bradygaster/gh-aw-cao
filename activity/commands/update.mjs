@@ -4,14 +4,23 @@ export function runUpdate({ arguments_, updateCaoCampaigns }) {
 
 export function parseUpdateArguments(ghAwOptions, UsageError) {
   const addValueFlags = new Set(['--dir', '-d', '--engine', '-e', '--stop-after', '--append', '--gh-aw-ref']);
-  const valueFlags = new Set([...addValueFlags, '--cool-down', '--repo', '-r', '--org', '--repos']);
+  const valueFlags = new Set([...addValueFlags, '--cool-down', '--repo', '-r', '--org', '--repos', '--pr-message']);
   const arguments_ = [];
   let ref;
+  let campaign;
   let positionalsOnly = false;
   for (let index = 0; index < ghAwOptions.length; index += 1) {
     const argument = ghAwOptions[index];
     if (!positionalsOnly && argument === '--') {
       positionalsOnly = true;
+      continue;
+    }
+    if (!positionalsOnly && (argument === '--campaign' || argument.startsWith('--campaign='))) {
+      if (campaign !== undefined) throw new UsageError('cao update accepts only one --campaign');
+      campaign = argument === '--campaign' ? ghAwOptions[++index] : argument.slice('--campaign='.length);
+      if (typeof campaign !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(campaign)) {
+        throw new UsageError('--campaign requires a safe campaign slug');
+      }
       continue;
     }
     if (!positionalsOnly && argument.startsWith('-')) {
@@ -45,6 +54,7 @@ export function parseUpdateArguments(ghAwOptions, UsageError) {
   }
   return {
     ref,
+    ...(campaign !== undefined ? { campaign } : {}),
     includePrereleases: arguments_.includes('--pre-releases'),
     updateOptions: arguments_.filter((option) => option !== '--pre-releases')
   };
@@ -56,7 +66,7 @@ export function resolveUpdateCommit(ref, execute, failureMessage, compareVersion
   if (ref === 'main' || ref === 'master') {
     const repository = execute('gh', [
       'api', '--hostname', 'github.com',
-      '/repos/githubnext/gh-aw-cao', '--jq', '.default_branch'
+      '/repos/githubnext/gh-cao', '--jq', '.default_branch'
     ], { encoding: 'utf8' });
     if (repository.error || repository.status !== 0) {
       throw new Error(`Unable to resolve CAO default branch: ${failureMessage(repository, 'gh api failed')}`);
@@ -68,7 +78,7 @@ export function resolveUpdateCommit(ref, execute, failureMessage, compareVersion
   } else if (ref === 'latest') {
     const releases = execute('gh', [
       'api', '--hostname', 'github.com',
-      '/repos/githubnext/gh-aw-cao/releases?per_page=100', '--paginate', '--jq',
+      '/repos/githubnext/gh-cao/releases?per_page=100', '--paginate', '--jq',
       '.[] | select(.draft == false and .prerelease == false) | .tag_name'
     ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
     if (releases.error || releases.status !== 0) {
@@ -83,7 +93,7 @@ export function resolveUpdateCommit(ref, execute, failureMessage, compareVersion
   }
   const result = execute('gh', [
     'api', '--hostname', 'github.com',
-    `/repos/githubnext/gh-aw-cao/commits/${encodeURIComponent(sourceRef)}`, '--jq', '.sha'
+    `/repos/githubnext/gh-cao/commits/${encodeURIComponent(sourceRef)}`, '--jq', '.sha'
   ], { encoding: 'utf8' });
   if (result.error || result.status !== 0) {
     throw new Error(`Unable to resolve CAO ref ${ref}: ${failureMessage(result, 'gh api failed')}`);

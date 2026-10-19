@@ -94,6 +94,7 @@ function resolveGithubEntityLink(row, field, fallbackLabel) {
  *   sourceName: string,
  *   rows: Array<Record<string, unknown>>,
  *   metadata: import('../presenter.js').SourceMetadata,
+ *   sourceTruncated?: boolean,
  *   contextDetails: string[],
  *   headingTag: 'h2'|'h3'|'h4',
  *   rowLimit?: number,
@@ -269,7 +270,16 @@ function renderListView(context) {
   const listActions = isPlainObject(view.list) ? [
     ...(typeof view.list.action === 'string' ? [view.list.action] : []),
     ...(Array.isArray(view.list.actions) ? view.list.actions : [])
-  ].map((id) => renderDeclaredCliAction(id)).filter(Boolean) : [];
+  ].map((id) => renderDeclaredCliAction(id, {}, id === view.list.action && Array.isArray(view.list['action-context']) ? {
+    rows,
+    fields: view.list['action-context'],
+    available: metadata.availability === 'available'
+      && ['complete', 'partial'].includes(metadata.completeness)
+      && !context.sourceTruncated && !context.continuation,
+    warning: metadata.completeness === 'partial'
+      ? 'Inventory evidence is partial. Only the repositories or campaigns listed in these commands will be targeted; unobserved targets are not included.'
+      : undefined
+  } : undefined)).filter(Boolean) : [];
   const listAction = listActions.length ? h('span', { className: 'document-list-actions' }, ...listActions) : null;
   const renderValue = createEntityAwareCellRenderer(
     ENTITY_LINK_FIELDS,
@@ -885,7 +895,7 @@ function renderTableView(context) {
   let renderedRowCount = bodyRows.length;
   const continuation = replayableContinuation(context.continuation);
 
-  const interactive = view.controls !== 'static';
+  const interactive = view.controls !== 'static' && view.controls !== 'filter-only';
   const staticEmptyMessage = typeof view['empty-message'] === 'string' ? view['empty-message'] : 'No rows available.';
   // A table can render zero rows either because the source truly has no data, or
   // because the dashboard-wide time-window filter is narrowing an otherwise
@@ -908,7 +918,8 @@ function renderTableView(context) {
         }
       }
     : undefined;
-  const tableRegion = renderTableRegion({
+  const cardTemplate = isPlainObject(view.encoding) && typeof view.encoding.card === 'string' ? view.encoding.card : undefined;
+  const tableRegion = cardTemplate ? null : renderTableRegion({
     tableClassName: 'custom-table',
     tableRole: tree ? 'treegrid' : undefined,
     regionClassName: interactive ? undefined : 'table-region-static',
@@ -975,12 +986,12 @@ function renderTableView(context) {
       : undefined,
     sortable: interactive
   });
-  const mobileCardList = view.layout === 'full-view' && view['lazy-list'] === true
+  const mobileCardList = cardTemplate || (view.layout === 'full-view' && view['lazy-list'] === true)
     ? renderMobileTableCardList({ ...context, continuation }, columns, tableRows, renderCellValue, effectiveRowLimit)
     : null;
   return renderPageSection(pageId, title, [
     ...renderViewSectionChrome(metadata, contextDetails).filter((node) => node instanceof HTMLElement),
-    tableRegion,
+    ...(tableRegion ? [tableRegion] : []),
     ...(mobileCardList ? [mobileCardList] : [])
   ], headingTag, view.description);
 }
@@ -1006,7 +1017,7 @@ function renderMobileTableCardList(context, columns, rows, renderValue, rowLimit
   const initialRows = availableRows.slice(0, pageSize);
   const columnFields = new Set(columns.map((column) => column.field));
   /** @type {{ icon: string, title: TableField, subtitle?: TableField, labels: TableField[], details: TableField[], 'detail-labels'?: string, metrics?: TableField[], drill?: Record<string, unknown> }} */
-  const definition = Object.values(cardTemplates)
+  const definition = (typeof view.encoding?.card === 'string' ? cardTemplates[view.encoding.card] : undefined) ?? Object.values(cardTemplates)
     .filter((template) => columnFields.has(template.title.field))
     .toSorted((left, right) => (
       [...right.labels, ...right.details].filter((field) => columnFields.has(field.field)).length
@@ -1067,7 +1078,7 @@ function renderMobileTableCardList(context, columns, rows, renderValue, rowLimit
   ...renderEntityCardItems(initialRows, { pageId, title, renderValue, toText, definition: visibleDefinition, drill }),
   ...(boundary ? [boundary] : []));
   const region = h('div', {
-    className: 'mobile-table-card-list',
+    className: `mobile-table-card-list${typeof view.encoding?.card === 'string' ? ' table-card-list' : ''}`,
     'data-mobile-card-list': '',
     role: 'region',
     'aria-label': `${title}: card list`
@@ -1435,7 +1446,9 @@ function renderChartView(context, facetPanel = false) {
       reference?.field ?? null,
       pieCategoryLabelFormatter(x),
       null,
-      chartType === 'treemap' && isPlainObject(view.treemap) ? view.treemap : {}
+      chartType === 'treemap' && isPlainObject(view.treemap) ? view.treemap : {},
+      null,
+      chartType === 'scatter' && isPlainObject(view.scatter) ? view.scatter : {}
     );
     const chartLegend = (color || yDefinitions.length > 1) && !['heatmap', 'pie', 'swimlane'].includes(chartType)
       ? renderChartLegend(chartSeries, chartType)
@@ -1457,7 +1470,7 @@ function renderChartView(context, facetPanel = false) {
     };
   };
 
-  const clustering = chartType === 'scatter' && points.length > MAX_RENDERED_SCATTER_POINTS
+  const clustering = chartType === 'scatter' && view.scatter?.cluster !== false && points.length > MAX_RENDERED_SCATTER_POINTS
     ? processScatterPoints(points.flatMap(({ key, x: pointX, y: pointY, color: pointColor, link }) => pointY == null ? [] : [{
         key,
         x: pointX,
@@ -1521,7 +1534,7 @@ function renderChartView(context, facetPanel = false) {
   } else if (view.layout === 'horizontal') {
     const children = Array.from(section.children);
     /** @param {Element} element */
-    const isCopy = (element) => element.matches('h3, h4, .view-description, .view-source, .view-metadata, .view-context, .view-description-tooltip');
+    const isCopy = (element) => element.matches('h3, h4, .view-description, .view-source, .view-metadata, .view-context');
     const firstVisualization = children.findIndex((element) => !isCopy(element));
     const copy = firstVisualization === -1 ? children : children.slice(0, firstVisualization);
     const visualization = firstVisualization === -1 ? [] : children.slice(firstVisualization);

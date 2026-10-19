@@ -1,7 +1,7 @@
 export const baseStyles = `:root {
   color-scheme: dark;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-  --font-mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  --font-sans: "Mona Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: "Mona Sans Mono", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   --canvas: #0d1117;
   --canvas-subtle: #151b23;
   --canvas-inset: #010409;
@@ -59,7 +59,7 @@ export const baseStyles = `:root {
     --focus: #0969da;
   }
 }
-:is(.dashboard-root, .first-load-overlay)[data-theme="dark"] {
+:is(.dashboard-root, .first-load-overlay, .dashboard-notifications)[data-theme="dark"] {
   color-scheme: dark;
   --canvas: #0d1117;
   --canvas-subtle: #151b23;
@@ -88,7 +88,7 @@ export const baseStyles = `:root {
   --focus: #58a6ff;
   --on-emphasis: #ffffff;
 }
-:is(.dashboard-root, .first-load-overlay)[data-theme="light"] {
+:is(.dashboard-root, .first-load-overlay, .dashboard-notifications)[data-theme="light"] {
   color-scheme: light;
   --canvas: #ffffff;
   --canvas-subtle: #f6f8fa;
@@ -127,6 +127,9 @@ a { color: var(--accent); text-decoration: none; text-underline-offset: 2px; tra
 a:hover { text-decoration: underline; text-decoration-thickness: 2px; }
 a:focus-visible, [tabindex]:focus-visible, button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 180ms; animation-timing-function: ease-out; }
+:root[data-navigation-transition="tab"] { view-transition-name: none; }
+:root[data-navigation-transition="tab"] .dashboard-page:not([hidden]) > :is(.custom-view-grid, .page-layout-grid, .dashboard-view-skeleton) { view-transition-name: dashboard-tab-content; }
+::view-transition-group(dashboard-tab-content), ::view-transition-old(dashboard-tab-content), ::view-transition-new(dashboard-tab-content) { animation-duration: 120ms; animation-timing-function: ease-out; }
 .skip-link { position: fixed; z-index: 10; top: -80px; left: 12px; padding: 7px 12px; border: 1px solid var(--focus); border-radius: 6px; background: var(--canvas); color: var(--accent); font-weight: 600; text-decoration: none; transition: top 120ms ease, color 120ms ease; }
 .skip-link:focus { top: 8px; }
 `;

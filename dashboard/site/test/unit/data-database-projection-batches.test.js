@@ -16,7 +16,7 @@ const metadata = {
   availability: 'available'
 };
 const run = {
-  id: 'run:1', owner: 'githubnext', repository: 'gh-aw-cao',
+  id: 'run:1', owner: 'githubnext', repository: 'gh-cao',
   workflowPath: '.github/workflows/activity.md', githubRunId: '1', attempt: 1
 };
 
@@ -24,7 +24,7 @@ const run = {
 function records(count, source) {
   return Array.from({ length: count }, (_, index) => ({
     id: `record:${index}`, runId: run.id, source,
-    type: 'tool.call', mcpTool: 'list_issues', mcpServer: 'github'
+    type: 'mcp.tool_call', mcpTool: 'list_issues', mcpServer: 'github'
   }));
 }
 

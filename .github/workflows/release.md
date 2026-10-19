@@ -2,7 +2,7 @@
 private: true
 emoji: "🚀"
 name: Release
-description: Prepare a version-tagged draft with verified runtime assets, publish an immutable prerelease, then add human-friendly highlights
+description: Prepare a version-tagged draft with verified runtime assets and versioned extension binaries, publish an immutable prerelease, then add human-friendly highlights
 intent: Help maintainers publish trustworthy releases whose descriptions clearly explain user-facing changes.
 
 on:
@@ -191,7 +191,7 @@ jobs:
             core.setOutput('release_tag', releaseTag);
             core.summary
               .addHeading(`Prepared ${releaseTag}`)
-              .addRaw('The workflow will attach the verified runtime and publish this draft as an immutable prerelease under the exact version tag before adding release highlights. A maintainer must then review the complete notes, remove the prerelease designation, and mark it as the latest release. Control repositories install or update this campaign only with gh aw add or gh aw update.')
+              .addRaw('The workflow will attach the verified runtime and versioned extension binaries, then publish this draft as an immutable prerelease under the exact version tag before adding release highlights. After this workflow succeeds, a maintainer must use the Promote prerelease to latest workflow for exact-source validation and independent environment approval. Control repositories install or update this campaign only with gh aw add or gh aw update.')
               .addEOL()
               .addLink('Review draft', release.html_url);
             await core.summary.write();
@@ -217,9 +217,54 @@ jobs:
           path: ${{ runner.temp }}/release-context/
           retention-days: 1
 
+  build-extension:
+    name: Build versioned extension binaries
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify release source
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "${REVISION}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "${REVISION}" ]]
+      - name: Setup Go
+        uses: actions/setup-go@v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check extension
+        run: make lint test
+      - name: Build extension release binaries
+        env:
+          RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+        run: bash scripts/build-release.sh "$RELEASE_TAG" "$RUNNER_TEMP/release-binaries"
+      - name: Verify embedded release version
+        env:
+          RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "$("$RUNNER_TEMP/release-binaries/gh-cao-linux-amd64" --version)" = "gh cao version ${RELEASE_TAG}"
+      - name: Upload extension release binaries
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-binaries/
+          if-no-files-found: error
+          retention-days: 1
+
   attach-runtime-assets:
-    name: Attach verified runtime assets
-    needs: prepare-release
+    name: Attach verified release assets
+    needs: [prepare-release, build-extension]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -229,6 +274,11 @@ jobs:
     outputs:
       runtime_archive: ${{ steps.attach.outputs.runtime_archive }}
     steps:
+      - name: Download extension release binaries
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-binaries-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-binaries
       - name: Attach verified runtime assets to draft release
         id: attach
         env:
@@ -278,6 +328,34 @@ jobs:
             --signer-digest "${REVISION}" \
             --deny-self-hosted-runners
 
+          binary_dir="${RUNNER_TEMP}/release-binaries"
+          binary_assets=(
+            gh-cao-darwin-amd64 gh-cao-darwin-arm64 gh-cao-linux-amd64 gh-cao-linux-arm64
+            gh-cao-windows-amd64.exe gh-cao-windows-arm64.exe checksums.txt
+          )
+          binary_paths=()
+          if [[ "$(find "${binary_dir}" -mindepth 1 -maxdepth 1 | wc -l)" -ne "${#binary_assets[@]}" ]]; then
+            echo "Extension release artifacts must contain exactly six binaries and checksums.txt." >&2
+            exit 1
+          fi
+          for asset in "${binary_assets[@]}"; do
+            if [[ ! -s "${binary_dir}/${asset}" || -L "${binary_dir}/${asset}" ]]; then
+              echo "Extension release asset is missing, empty, or a symbolic link: ${asset}" >&2
+              exit 1
+            fi
+            binary_paths+=("${binary_dir}/${asset}")
+          done
+          (
+            cd "${binary_dir}"
+            expected_checksums="$(printf '%s\n' "${binary_assets[@]:0:6}" | sort)"
+            actual_checksums="$(awk '{print $2}' checksums.txt | sort)"
+            if [[ "${actual_checksums}" != "${expected_checksums}" || "$(wc -l < checksums.txt)" -ne 6 ]]; then
+              echo "Extension checksums must name exactly the six release binaries." >&2
+              exit 1
+            fi
+            sha256sum --check --strict checksums.txt
+          )
+
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           jq -e \
             --arg tag "${RELEASE_TAG}" \
@@ -298,26 +376,32 @@ jobs:
           [[ "${type}" == commit && "${sha}" == "${REVISION}" ]]
 
           gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
-            "${archive}" "${checksum}"
+            "${archive}" "${checksum}" "${binary_paths[@]}"
 
           assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100")"
           jq -e \
             --arg archive "${runtime_name}.tgz" \
             --arg checksum "${runtime_name}.tgz.sha256" \
-            'length == 2
-              and (map(.name) | sort) == ([$archive, $checksum] | sort)
+            'length == 9
+              and (map(.name) | sort) == ([
+                $archive, $checksum, "gh-cao-darwin-amd64", "gh-cao-darwin-arm64",
+                "gh-cao-linux-amd64", "gh-cao-linux-arm64", "gh-cao-windows-amd64.exe",
+                "gh-cao-windows-arm64.exe", "checksums.txt"
+              ] | sort)
               and all(.[]; .state == "uploaded" and .size > 0)' \
             <<< "${assets}" >/dev/null
 
           echo "runtime_archive=${runtime_name}.tgz" >> "${GITHUB_OUTPUT}"
           {
-            echo "## Runtime assets attached"
+            echo "## Runtime and extension assets attached"
             echo
             echo "- Draft release: ${RELEASE_TAG}"
             echo "- Source revision: ${REVISION}"
             echo "- Runtime archive: ${runtime_name}.tgz"
+            echo "- Extension binaries: Linux, macOS, Windows (amd64 and arm64), version ${RELEASE_TAG}"
             echo
             echo "The workflow will now publish this draft as a prerelease before applying release highlights."
+            echo "After maintainer review and promotion to latest, install with gh extension install ${GITHUB_REPOSITORY}."
           } >> "${GITHUB_STEP_SUMMARY}"
 
   publish-release:
@@ -389,14 +473,18 @@ jobs:
               release_id: releaseId,
               per_page: 100,
             });
-            const expectedAssets = [expectedArchive, `${expectedArchive}.sha256`].sort();
+            const expectedAssets = [
+              expectedArchive, `${expectedArchive}.sha256`,
+              'gh-cao-darwin-amd64', 'gh-cao-darwin-arm64', 'gh-cao-linux-amd64', 'gh-cao-linux-arm64',
+              'gh-cao-windows-amd64.exe', 'gh-cao-windows-arm64.exe', 'checksums.txt',
+            ].sort();
             const actualAssets = assets.map(({ name }) => name).sort();
             if (
               assets.length !== expectedAssets.length ||
               actualAssets.some((name, index) => name !== expectedAssets[index]) ||
               assets.some(({ state, size }) => state !== 'uploaded' || size <= 0)
             ) {
-              throw new Error(`Release ${releaseId} does not contain the two verified runtime assets`);
+              throw new Error(`Release ${releaseId} does not contain the verified runtime and extension assets`);
             }
 
             await github.rest.repos.updateRelease({
@@ -447,7 +535,7 @@ jobs:
             core.setOutput('release_tag', releaseTag);
             core.summary
               .addHeading(`Published ${releaseTag} as a prerelease`)
-              .addRaw('The version tag and verified runtime assets are now immutable. The release highlights agent will update the notes next; after the workflow succeeds, review the release and promote it to latest.')
+              .addRaw('The version tag, verified runtime assets, and versioned extension binaries are now immutable. The release highlights agent will update the notes next; after the workflow succeeds, use the Promote prerelease to latest workflow for independently approved promotion.')
               .addEOL()
               .addLink('Review prerelease', published.html_url);
             await core.summary.write();
@@ -570,7 +658,7 @@ steps:
 
 Update the newly published immutable prerelease identified by `current_release.json` with a concise, human-friendly summary.
 
-The release preparation jobs have already created the tag, attached the verified runtime assets, and published the draft as an immutable prerelease under the verified version tag. Do not create, publish, promote, or otherwise change the release state. Your only write is the release-description update through the safe output. A maintainer will review the completed prerelease and promote it to the latest stable release.
+The release preparation jobs have already created the tag, attached the verified runtime assets and versioned extension binaries, and published the draft as an immutable prerelease under the verified version tag. Do not create, publish, promote, or otherwise change the release state. Your only write is the release-description update through the safe output. A maintainer will use the separate Promote prerelease to latest workflow, with exact-source validation and independent environment approval, for the stable release transition.
 
 ## Available evidence
 

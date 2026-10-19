@@ -26,11 +26,15 @@ structure:
   catalog_manifest: aw.yml
   operations: <operation>/aw.yml
   activity: activity/
+  go_extension_entrypoint: cmd/gh-cao/
+  go_extension_commands: internal/cli/
+  go_extension_github_helper: internal/ghcli/
+  go_extension_catalog: dashboard/catalog.go
+  local_go_query_engine: internal/dashboardquery/
   dashboard: dashboard/
   dashboard_data: dashboard/site/src/data/
   dashboard_go_server: server/
   dashboard_server_contract: server/spec/
-  dashboard_coolify_profile: server/coolify/
   dashboard_upstash_profile: server/internal/server/hosted.go
   dashboard_container: server/Dockerfile
   workflow_sources: .github/workflows/*.md
@@ -53,7 +57,7 @@ structure:
   runtime_distribution: .github/workflows/cao-runtime.yml
 
 architecture:
-  style: policy-governed central control plane with catalog campaigns and bounded workers
+  style: policy-governed central control plane with standalone workflows, catalog campaigns, and bounded workers
   roles:
     catalog: publishes versioned operation campaigns
     control_repository: owns rollout policy, credentials, installed workflows, and workflow runs
@@ -98,6 +102,9 @@ components:
   worker:
     path: .github/workflows/<operation>-<worker>.md
     responsibility: revalidate a dispatch or manual-debug envelope, analyze one target, and emit declared safe outputs
+  standalone_workflow:
+    path: .github/workflows/<workflow>.md
+    responsibility: import shared control with an exact workflow identity, admit directly against control-plane.workflows at the workflow SHA, and execute its mission on a deterministically bounded fleet without campaigns, worker inventory, or downstream dispatch
   activity:
     path: activity/
     responsibility: collect bounded evidence, ingest JSONL, create SQLite projections, and provide the cao CLI
@@ -106,7 +113,7 @@ components:
     responsibility: resolve exact repository scope, review intended authority, verify Pages source and public-visibility consent, connect credentials, and atomically save bare control-plane policy
   control_plane_quickstart:
     path: activity/quickstart.mjs
-    responsibility: explicitly create first success from a clean public, private, or internal default-branch checkout by selecting public github/gh-aw or one explicit public target, running ordinary Repo Assist with only maintenance in review, pausing its orchestrator after dispatch, committing and pushing bounded CAO paths, collecting data-bearing Activity, and waiting for public dashboard deployment
+    responsibility: guide first success through separate install, run, collect, and read-only dashboard stages; install commits bounded review-only policy and pauses Repo Assist, run and collect return without remote waits, dashboard verifies data-bearing publication and a successful Pages deployment job, and explicit --wait retains the end-to-end flow
   setup_prompts:
     path: activity/setup-prompt.mjs
     responsibility: dependency-free keyboard-driven terminal presentation and plain-terminal fallback without owning authority decisions
@@ -154,7 +161,16 @@ components:
     responsibility: rebuildable per-browser data projection
   postgres_entity_store:
     path: server/internal/postgresx/
-    responsibility: initialize a fresh TypeSpec-generated schema and transactionally replace and read fifteen query-minimal native entity tables, entity-owned relational child values, quality metadata, diagnostics, and revision state; preserve missing versus null with compact presence bits; compile and execute bounded Dashboard Language plans as SQL in a repeatable-read snapshot without persisted documents, duplicate scalar representations, or compatibility migrations
+    responsibility: bootstrap a fresh TypeSpec-generated schema and weekly partitions as owner; runtime opens validated provisioned state without DDL, with a fixed schema-qualified ANALYZE capability; daily owner maintenance preserves historical and four upcoming weeks; transactionally replace and read query-minimal native entity tables, entity-owned relational child values, quality metadata, diagnostics, and revision state; preserve missing versus null with compact presence bits; compile and execute bounded Dashboard Language plans as SQL in a repeatable-read snapshot without persisted documents, duplicate scalar representations, or compatibility migrations
+  canonical_storage_contract:
+    path: server/internal/dashboardstore/
+    responsibility: accept existing canonical storage readers without changing PostgreSQL SQL execution or ingestion
+  local_sqlite_entity_store:
+    path: server/internal/sqlitex/, server/internal/server/local_sqlite.go
+    responsibility: default local serve to a cached canonical snapshot with loopback bearer authentication and read-only request transactions; reuse existing caches offline and acquire missing files from DASHBOARD_DATA_URL or public CAO Pages, with --sqlite selecting another cache and --download-sqlite explicitly refreshing; accept any Pages/custom-domain site, dashboard directory or manifest URL, discover the root manifest then cao/ on HTTP 404, stream bounded data and verify SHA-256 plus canonical version before atomic replacement, preserving the previous file and failing startup on error; fail closed for invalid or unreadable existing caches and dangling symlinks without repair downloads; expose the ordinary HTTP, canonical API, diagnostics, revision subscriptions and optional MCP protocols with bounded volatile request services, unknown snapshot quality and no query result caching; never enable hosted OAuth, collection, ingestion, webhooks, hosted execution, or PostgreSQL fallback
+  local_go_query_engine:
+    path: internal/dashboardquery/
+    responsibility: share the bounded native Dashboard Language evaluator and canonical SQLite reader through a small independent Go module, without coupling the extension and server dependency graphs; local server snapshots explicitly admit 500000 input/intermediate rows and 50 million operations with 1 GiB working-source and 2 GiB / 2 million live retained-row budgets, release inputs after their final consumer, prune unused pure row-local computations and push live root fields into SQLite while preserving full-record byte checks, JSON types, missing fields, UTF-16 key ordering, complete requested raw sources and unknown shapes; cap readonly mmap at 1 GiB, execute remaining operators in Go, use a local-only default 300-unit/minute weighted query-admission bucket with explicit overrides preserved, and preserve 100000-row wire limits plus existing CLI/hosted defaults
   redis_operational_store:
     path: server/internal/redisx/
     responsibility: support operational caches, queues, and sessions, not dashboard entity storage or query execution
@@ -166,7 +182,10 @@ components:
     responsibility: implement bounded process-scoped volatile operational services shared by OAuth, HTTP admission, quota, collection, projection and backfill in one owning process, with restart-invalidated sessions and login state and explicit incomplete recovery
   postgres_operational_store:
     path: server/internal/operational/postgres/
-    responsibility: implement default durable deployment-scoped typed operational services in separate cao_operational tables, with namespace-row transactional serialization, database-time expiry, replica-consistent protected and cache budgets, atomic session revocation capacity, bounded maintenance, and read-only existing-state diagnostics; never store canonical entities or execute dashboard queries
+    responsibility: implement default durable deployment-scoped typed operational services in separate cao_operational tables, with namespace-row transactional serialization, database-time expiry, replica-consistent protected and cache budgets, atomic session revocation capacity, bounded maintenance, and read-only existing-state diagnostics; separate owner bootstrap, runtime audit SELECT/INSERT and namespace budget updates, SELECT-only evidence access, and owner-defined 400-day/512-row audit retention under a separately granted capability with pinned search path; runtime performs no DDL, namespace destruction, or audit retention; operator migration/grants/schedules are in server/POSTGRES.md; never store canonical entities or execute dashboard queries
+  sqlite_hosted_cli_store:
+    path: server/internal/operational/sqlite/
+    responsibility: provide local single-host hosted-CLI queues, token cleanup journal and audit history; explicit database bootstrap provisions state, runtime opens existing state without DDL or implicit audit retention, database retain-audit removes a bounded expired prefix, and audit deliver uses read-only deferred verification while audit verify appends its outcome; never replace canonical dashboard storage or claim PostgreSQL database-role isolation
   dashboard_query_result_cache:
     path: server/internal/redisx/query_cache.go and server/internal/server/query_cache.go
     responsibility: cache expensive compact HTTP and MCP query results by SHA-256 query identity for five minutes through the operational contract, with atomic expiry, Redis allocator or memory accounting limits and bounded eviction
@@ -179,9 +198,9 @@ components:
   dashboard_external_host:
     path: server/hosting/
     responsibility: expose the complete hosted CAO handler and cancellation-aware application startup to a separately owned HTTP listener without exporting Redis or authentication internals
-  dashboard_coolify_deployment:
-    path: server/coolify/
-    responsibility: let a repository-scoped Coolify GitHub App watch protected main, build a lean admission-only dashboard target plus private collector and backfill targets from the checked-out source commit, package a deterministic source-bound control-plane inventory with the minimal shared policy resolver, retain collection evidence in a persistent volume, and keep one external read-only activity artifact available only for snapshot-profile rollback
+  dashboard_container_build:
+    path: server/Dockerfile
+    responsibility: build host-neutral dashboard and collector targets from a source revision, package a deterministic source-bound control-plane inventory with the minimal shared policy resolver, and leave deployment promotion and rollback to the application host
   dashboard_observability:
     path: server/internal/telemetry/, server/internal/server/, dashboard/site/src/remote-data-backend.js
     responsibility: export vendor-neutral OTLP traces and metrics plus explicitly enabled DEBUG-selected logs, correlate bounded server errors and browser failures through matching W3C trace/span identifiers, and keep exporter credentials and internal failure details outside responses and logs
@@ -199,7 +218,7 @@ components:
     responsibility: expose canonical repositories, workflows, and runs without exposing Redis keys or representations
   dashboard_github_auth:
     path: server/internal/server/oauth.go
-    responsibility: authenticate hosted users through GitHub and enforce explicit organization or team authorization with server-side sessions
+    responsibility: authenticate hosted users through GitHub and enforce explicit organization or team authorization with server-side sessions; explicitly opted-in loopback TLS development authorizes one configured developer without organization scopes or membership reads
   dashboard_webhook_reconciliation:
     path: server/internal/server/operations.go
     responsibility: verify and deduplicate GitHub deliveries and reconcile the disposable projection from authoritative inputs
@@ -242,14 +261,60 @@ components:
   dashboard_ui:
     path: dashboard/site/
     responsibility: render bounded Dashboard Language query payloads
+  local_dashboard_server:
+    path: dashboard/local-server.mjs
+    responsibility: expose capability-protected declared CLI actions only in local admin or trusted canvas sessions, preserving trusted approval
+  local_cli_queue:
+    path: dashboard/cli-action-queue.mjs
+    responsibility: own durable single-owner FIFO operational SQLite commands independently of browser lifetimes, with bounded concurrency, deadlines, cancellation, ordered output, retry ancestry and terminal-only UTC weekly retention
+  cli_command_storage:
+    path: server/internal/operational/cli_commands.go
+    responsibility: define focused CLICommandQueues and CLICommandQueue services separate from collection tasks and execution authority, with restart durability, fenced ownership, explicit uncertainty recovery, settlement-protected slots, bounded output cursors and UTC weekly retention
+  postgres_cli_commands:
+    path: server/internal/operational/postgres/
+    responsibility: expose CLICommands through operational composition using namespace-isolated cao_operational_cli tables, database-time leases, monotonic fences, protected byte and entry budgets and bounded terminal-only maintenance; never enable hosted execution by themselves or replace the local SQLite executor
+  hosted_cli:
+    path: server/internal/hostedcli/
+    responsibility: experimental opt-in (--experimental --hosted-cli-actions) admission of catalog-declared actions by step-up administrators and an execute-cli drain that rechecks live write permission, Go-plans only gh or gh-aw entrypoints, and runs commands through ContainerLifecycle with a private workspace and single-use repository-scoped GitHub App token; production Docker requires network-none, a private read-only Unix proxy socket, an immutable exact-host policy, and a reviewed SHA-256-verified architecture-matched relay; validate every DNS address before numeric HTTPS dialing, allow private GHES only by exact host/IP, deny metadata/loopback/link-local, and cancel bounded proxy lifetime without releasing uncertain claims; no shared host-network changes; SQLite Docker with no egress settings retains bridge compatibility, and SQLite may select Apple container or Windows Sandbox; reject/revoke over-broad grants
+  security_audit:
+    path: server/internal/audit/
+    responsibility: credential-free audit events for admin denials, hosted CLI admission and execution, and token lifecycle in hash-chained append-only cao_operational_audit_events (or loopback-only development SQLite); queue results, settlement and recovery atomically append evidence, with state-guarded replay and retained uncertain claims; CAS token journals replace encrypted ownership with non-expiring credential-free receipts independently of audit availability, then atomically append evidence and delete receipts without repeating external effects; capacity backpressures issuance, remote revoke-before-receipt persistence remains explicitly uncertain; complete forwarding consumes committed rows, while logger-produced events also use JSON mirrors and OTLP; hashed_token identifies credentials; audit verify checks external anchors and audit export writes JSON Lines
+  cli_executor:
+    path: dashboard/cli-actions.mjs
+    responsibility: execute the existing validated CLI mechanism with bounded output and process-tree termination
+  cli_quota_bridge:
+    path: server/cmd/cao-cli-quota/
+    responsibility: reuse GitHub quota tracking for the local queue against authoritative execution-credential observations, failing closed when evidence is unavailable
   cao_cli:
     path: activity/cao.mjs, activity/cli/, activity/commands/
     responsibility: preserve executable and public exports in cao.mjs, separate dispatch and implementation concerns in cli/, provide one handler per command in commands/, and query Activity SQLite projections and execute extensible computation commands for local tooling and agents; implementation modules depend on shared helpers, not the entry point
+  go_extension_entrypoint:
+    path: cmd/gh-cao/
+    responsibility: own process lifecycle and version for the native gh cao extension in the independent root Go module
+  go_extension_commands:
+    path: internal/cli/
+    responsibility: implement every operator command in Go, including onboarding/authentication, bounded campaign materialization, review-safe enrollment and policy management, downloads, read-only SQLite and Dashboard Language queries, advisory computations, MCP, and diagnostics using github.com/github/gh-aw/pkg/logger
+  go_extension_github_helper:
+    path: internal/ghcli/
+    responsibility: execute context-aware GitHub CLI calls and a bounded local version check using github.com/cli/go-gh/v2, the same helper used by gh-aw
+  go_extension_catalog:
+    path: dashboard/catalog.go
+    responsibility: embed the authoritative dashboard JSON, fragments, canonical query projections and MCP contract for standalone native command execution
 
 dependencies:
+  - go_extension_entrypoint -> go_extension_commands
+  - go_extension_commands -> go_extension_github_helper
+  - go_extension_commands -> go_extension_catalog
+  - go_extension_commands -> local_go_query_engine
+  - dashboard_https_server -> canonical_storage_contract
+  - local_sqlite_entity_store -> canonical_storage_contract
+  - local_sqlite_entity_store -> local_go_query_engine
   - catalog -> control_repository
   - control_repository -> policy_resolution
   - policy_resolution -> orchestrator
+  - policy_resolution -> standalone_workflow
+  - standalone_workflow -> review_repository
+  - standalone_workflow -> target_repository
   - orchestrator -> worker
   - worker -> review_repository
   - worker -> target_repository
@@ -262,6 +327,11 @@ dependencies:
   - dashboard_publisher -> browser_data_worker
   - browser_data_worker -> indexeddb_projection
   - browser_data_worker -> dashboard_language_queries
+  - browser_data_worker -> local_dashboard_server
+  - local_dashboard_server -> local_cli_queue
+  - local_cli_queue -> cli_executor
+  - local_cli_queue -> cli_quota_bridge
+  - cli_quota_bridge -> github_quota_service
   - dashboard_publisher -> dashboard_https_server
   - dashboard_https_server -> postgres_entity_store
   - postgres_entity_store -> dashboard_https_server
@@ -275,7 +345,7 @@ dependencies:
   - dashboard_https_server -> dashboard_canonical_api
   - dashboard_https_server -> dashboard_http_contract
   - dashboard_external_host -> dashboard_https_server
-  - dashboard_coolify_deployment -> dashboard_https_server
+  - dashboard_container_build -> dashboard_https_server
   - dashboard_server_package -> dashboard_server_package_publisher
   - dashboard_server_package_publisher -> dashboard_https_server
   - dashboard_upstash_deployment -> dashboard_https_server
@@ -368,9 +438,21 @@ boundaries:
       - postgres_entity_store
 
 invariants:
+  - "Hosted CLI actions MUST stay disabled unless serve-hosted receives both --experimental and --hosted-cli-actions; admission MUST require administrator step-up and requester repository permission; shared PostgreSQL queue state, a fenced single-executor lease, durable claims, deadlines, and blocked crash recovery MUST prevent automatic redispatch of uncertain commands across replicas. The Go planner MUST reject repository shell scripts and arbitrary commands; execute only gh/gh-aw in the digest-pinned gh-aw container with no server secret mounts, except the explicit SQLite-only Windows Sandbox profile with a SHA-256-pinned Windows tools archive. Docker remains the production default; Apple container uses the same pinned Linux image. Native providers MUST preserve durable identity before creation, original-runtime recovery and independently confirmed VM termination; Windows Sandbox ownership MUST span local executor namespaces, MUST NOT reuse or stop unrelated sandboxes, and MUST reject other HCS-managed VMs and require host-compute VM absence before settlement until an exact VM identity mapping is verified. See specs/server-hosted-cli.md."
+  - "Every hosted administrator operation MUST require a fresh (CAO_ADMIN_REAUTH_MAX_AGE), assured (explicit 2FA or attested SSO) interactive OAuth authentication; refresh MUST NOT extend it."
+  - "The root Go extension module MUST remain independent of server/go.mod; Go checks scope cmd/, internal/ and the root dashboard embedding package, excluding npm dependency sources and the server. Every gh cao operator command MUST run natively in Go without invoking Node.js, npm or JavaScript modules; CAO_RUNTIME_ROOT is not an extension input. Embed the authoritative dashboard JSON, fragments, canonical source projections and MCP contract rather than maintaining a second catalog. Explicit dashboard fragments MUST remain inside their source directory. SQLite query access MUST be read-only without migrations or repair; JavaScript parity oracles are test-only and empty-PATH standalone binary tests enforce runtime independence. Campaign installation delegates ownership/generation to gh aw add with unchanged options, materializes only the installed full resolvedCommit SHA or local Git-tracked files, rejects escaping paths/links, checks staged declarations before replacement, refreshes intelligence metadata, pins generated auto-upgrade Actions, and merges workers without widening scope, modes, enablement or ceilings. Missing policy initializes only the exact control repository; initialization refuses replacement, preview maps to review, and declarations are checked before workflow enablement/disablement. Onboarding, authentication, enrollment, validation, updates, queries and advisory computations MUST preserve authority boundaries, result contracts and cancellation. Execution never changes cwd or grants authority. Help, version and catalog discovery work offline. Doctor performs bounded read-only GitHub CLI, gh-aw, authentication and local policy/compiler-pin checks, emits text/JSON with nonzero status on failure/skip, never reports raw authentication output/errors, and never grants authority, replaces full validation or repairs snapshots. Actions and Node-only tools MUST invoke node activity/cao.mjs explicitly, including SQLite doctor and setup-auth hosted-cli; no shell launcher is installed. Root upgrades MUST remove only content-verified retired launchers, preserve consumer files, links and directories, and verify but never install retired launcher entries from older archives. Internal Node modules remain available for Actions and parity tests. Dashboard CAO actions and marketplace copy commands use the native gh cao hierarchy. The installer verifies the exact platform asset SHA-256 entry and embedded release version before atomically replacing the GitHub CLI data-directory binary, honors XDG_DATA_HOME and Windows LOCALAPPDATA, and refuses linked/source installs. Explicit stable-format catalog tags select that extension release; other refs select the latest published version-tagged extension, including prereleases but excluding drafts, independently of runtime revision. Before changing tools or CAO files, require a complete six-platform asset set and checksums; accept gh-cao-OS-ARCH or legacy OS-ARCH names, prefer the former when both sets are complete, and never mix naming sets or retry another asset after verification failure. Initialization, setup and quickstart invoke gh cao."
+  - "User-facing commands MUST live in the Go extension; Actions execution support MUST live in the JavaScript runtime under activity/ and dashboard/. Agentic workflow execution and agent evidence preparation MUST NOT build, install, or invoke the native extension; Copilot setup stages dashboard evidence with node activity/cao.mjs download. Dedicated extension build, release, and operator-installer compatibility tests remain separate from agent runtime. Control-plane validation MUST have one JavaScript implementation invoked as node activity/cao.mjs validate --json at the installed revision using the production policy resolver, without a Go or shell-wrapper command, extension build/download, or consumer npm metadata. Native policy guards remain required for operator construction and mutation. Runtime tests MUST preserve report and exit-code contracts. The JSON report MUST remain under RUNNER_TEMP, outside the checkout."
+  - "For newly initialized policy only, the installer MUST align an older verified extension's former githubnext/gh-aw-cao schema URI with the installed catalog's canonical schema URI. Reject unknown mismatches and never rewrite authority fields or existing policy."
+  - "Extension releases MUST build Linux, macOS, and Windows amd64/arm64 binaries at the exact release SHA in a read-only job with Go caching disabled, embed the stable release tag in main.version, verify its output, and seal SHA-256 checksums. Source-free attachment MUST verify the complete checksum manifest; publication MUST require exactly those six binaries, checksums.txt, the attested runtime archive, and its checksum before immutable prerelease publication."
+  - "Local CLI commands MUST use one server-owned operational SQLite queue and the existing executor, never browser IndexedDB or the disposable dashboard projection. Browser detachment MUST NOT cancel approved work; active work MUST NOT expire."
+  - "Unclean CLI queue recovery MUST pause starts while subprocess termination is unverified. Interrupted entries MUST fail without automatic retry; only explicit local operator acknowledgement after reconciliation may resume queued work."
+  - "CLI queue admission MUST preserve declared-action validation, trusted approval and credential-scoped authoritative GitHub quota checks. Published dashboards MUST initialize no queue, issue no queue requests and gain no execution authority."
+  - "Quickstart installation does not explicitly dispatch Activity, but normal Activity push/schedule triggers remain active and may publish a baseline independently. Dashboard readiness requires an actual successful Pages deployment job; successful workflows with skipped deployments are insufficient."
   - "CAO controls whether and where operations run; gh-aw controls how admitted workflows run."
   - "No authority input can widen another."
-  - "Review mode is the default; live mode requires explicit campaign, worker, scope, and target authority."
+  - "Review mode is the default; live mode requires explicit standalone workflow or campaign/worker policy, scope, and target authority."
+  - "Standalone workflows MUST declare their exact slug under control-plane.workflows and import role standalone without a campaign or worker identity. Admission MUST match the compiled workflow reference, use exact-workflow-SHA policy and API-capacity checks, and fail closed. Precompute MUST reuse bounded inventory, deterministic cells/batches, repository and percentage caps, exclude archived/disabled targets, and publish only the admitted deterministic subset with per-target mode/output routing. Missing inventory evidence MUST fail closed. Standalone execution MUST NOT discover extra targets, dispatch work, fabricate campaign records or dispatcher envelopes, or expand gh-aw credentials or safe-output capabilities."
+  - "Bare setup MUST reject declared standalone workflows before changing policy or authentication, just as it rejects installed operational campaigns."
   - "Debug is request-only for one human workflow_dispatch worker with current control-repository write access; preserve exact-SHA policy, scope, enablement, and limits, require matching target/output repositories, reject dispatcher-envelope inputs, and record the actor with empty dispatcher correlation. Shared control MUST force gh-aw safe-output staging and suppress automatic activation/failure issues. Debug MUST NOT grant live authority, enter persistent policy, or be selected by an orchestrator. GitHub cannot attest local CLI origin; repository-memory staging remains gh-aw-owned."
   - "Credentials remain GitHub Actions secrets and are resolved only inside a run."
   - "Missing policy, authority, credentials, access, or required evidence MUST fail closed."
@@ -381,6 +463,7 @@ invariants:
   - "Activity evidence MUST NOT determine rollout, outcomes, or operational value."
   - "JSONL snapshots are authoritative; caches, SQLite, and IndexedDB are disposable projections."
   - "Postgres is the exclusive hosted dashboard entity and query store: it holds native typed entity and inventory tables, quality metadata, diagnostics, and revision state; replacement is transactional and does not create generations or persistent derived projections."
+  - "Local serve MUST default to SQLite, reuse existing caches offline and acquire verified deployed data only when missing; --sqlite selects another cache and --download-sqlite explicitly refreshes. Explicit --postgres-url, --source or --redis-url selects PostgreSQL; database service environment variables alone MUST NOT override the local SQLite default. SQLite MUST remain loopback-only and bearer-authenticated and open canonical snapshots read-only without bootstrap, migration, repair or ingestion; invalid or unreadable existing caches and dangling symlinks MUST fail closed without automatic repair downloads. It MUST NOT change hosted PostgreSQL execution, ingest behavior or defaults, become a fallback from a failed PostgreSQL connection, enable hosted capabilities, or cache stale query results. In-place commits MUST notify revision subscribers; quality stays unknown without stronger evidence."
   - "The hosted query plan executor MUST bind values and namespace and enforce pre-filter input and resource bounds; all hosted row operations execute in SQL without Go evaluator fallback."
   - "TypeSpec owns the fresh Postgres physical schema; entities MUST NOT be duplicated in generic source storage or persisted as JSON/JSONB/serialized documents. Startup MUST NOT migrate or import old database layouts."
   - "Dashboard ingestion MUST load every run-information shard before record shards; every domain, tool, audit, and issue MUST identify its owning run."
@@ -394,14 +477,15 @@ invariants:
   - "Hosted query-result cache identities MUST include definitions, parameters, pagination, schema and current authorization class, not ingestion revisions; entries retain their original evidence revision and evaluation time for a fixed five-minute lifetime without ingestion invalidation or renewal on data egress, and atomic expiry and oldest-first eviction MUST bound result/index memory and entry count; the Redis adapter MUST NOT change global Redis eviction policy."
   - "All Redis server profiles MUST apply a configurable Redis cache-pressure budget (default 200,000,000 bytes, capped at 80% of provider-reported maxmemory). Scripted memory introspection gates atomic admission and outgoing-allocation reservations; unsupported providers MUST explicitly disable disposable-cache admission and serving while retaining protected storage. Provider-compatible startup/30-second maintenance MUST use one namespace cursor pass, fresh final pressure evidence, and only current-namespace disposable-cache reclamation. Preserve sessions, queues, quota state, revocation retries and other namespaces; report unattainable protected-state pressure; never change Redis configuration or imply a cluster-wide, process-RSS or persistence-disk cap."
   - "Operational consumers MUST receive narrow typed service contracts, never raw commands, physical keys, scripts, concrete adapter assertions, or backend-name branches. Capability snapshots describe per-feature process/deployment scope and volatile/restart persistence; atomicity, CAS, ownership and isolation are mandatory. Composition MUST reject missing or typed-nil enabled services and stop owned work before closing storage."
-  - "PostgreSQL is the default operational adapter for selector-free reviewed hosts and local serve; Coolify explicitly selects PostgreSQL without Redis credentials. Explicit Redis configuration remains supported and credentials alone MUST NOT override reviewed selection. Memory MUST require OAuth, HTTPS, explicit single-process and volatile-state acknowledgements, and one instance shared by HTTP, quota, workers, projector and backfill; it MUST reject platform listeners, admission-only topology, separate worker/backfill processes and multiple replicas. PostgreSQL operational storage MUST remain independent of canonical entities, generated schema and query execution; there is no automatic migration, failover or dual write."
+  - "PostgreSQL is the default operational adapter for selector-free reviewed hosts and local serve. Explicit Redis configuration remains supported and credentials alone MUST NOT override reviewed selection. Memory MUST require OAuth, HTTPS, explicit single-process and volatile-state acknowledgements, and one instance shared by HTTP, quota, workers, projector and backfill; it MUST reject platform listeners, admission-only topology, separate worker/backfill processes and multiple replicas. PostgreSQL operational storage MUST remain independent of canonical entities, generated schema and query execution; there is no automatic migration, failover or dual write."
   - "The PostgreSQL operational adapter MUST serialize atomic transitions and accounting per namespace, use database-time expiry, require identical replica capacity settings, reserve atomic session revocation capacity, bound disposable caches separately from protected state, release transactions between cancellation-aware queue polling, and run application-owned bounded expiry maintenance. Doctor MUST inspect existing state without initializing it."
   - "Memory budgets MUST bound protected accounting bytes/entries separately from disposable caches without claiming RSS equivalence. Cache pressure MUST NOT evict accepted work; active limiter buckets MUST NOT be evicted to reset limits, and session admission MUST preserve capacity for atomic revocation staging."
   - "Memory restart MUST invalidate CAO sessions and pending login state but does not expire or revoke GitHub tokens; pending revocations and acknowledged unfinished work may be lost by explicit acceptance. Complete fresh GitHub scope enumeration MUST gate admission/workers and serialize with withdrawals; partial scope MUST NOT justify erasure or ignored out-of-scope responses. Recovery reuses retained evidence and existing projection/backfill, requires fresh quota observations, and reports incomplete history/capacity rather than successful truncation. The protected rebuild action reruns backfill even with a populated lake."
   - "The local Redis profile MUST bind to loopback, use HTTP by default for localhost debugging, enable HTTPS only with operator-supplied certificate files, and MUST NOT expose Redis endpoints or credentials to browser code."
   - "The hosted Redis profile MUST use GitHub OAuth with explicit user, organization, or team authorization, explicit rebuild administrators, server-side secrets and sessions, and an explicit account-selection flow for switching GitHub identities."
-  - "Hosted Redis MUST use TLS by default when selected; private plaintext Redis is allowed only through an explicit opt-in and only for a private IP or single-label service hostname. The Azure deployment profile selects PostgreSQL operational storage and requires TLS for non-loopback PostgreSQL connections."
+  - "Hosted Redis MUST use TLS by default when selected; private plaintext Redis is allowed only through an explicit opt-in and only for a private IP or single-label service hostname. The Azure deployment profile selects PostgreSQL operational storage and requires TLS for non-loopback PostgreSQL connections; any explicitly selected Azure Redis backend MUST also require TLS."
   - "The Azure baseline provisions private PostgreSQL without Redis and shares one Log Analytics workspace and one workspace-backed Application Insights component. Private manual ingestion MUST use explicit adopter snapshots or an explicit empty dataset, never an implicit catalog-owned download. Instance policy, credentials, and target enrollment remain adopter-owned."
+  - "CAO_GITHUB_LOCAL_USER development OAuth MUST authorize exactly one configured login with a valid numeric GitHub ID, request classic read:user without read:org, and preserve GitHub App offline_access. It MUST require process-owned loopback TLS, one matching allowed host, exact callback authority/path and loopback peers; reject proxy trust, external/platform hosting, CORS and mixed user/org/team/SSO policy; bind sessions to the mode and developer; preserve admin allowlisting, recent OAuth assurance, CSRF, explicit classic repo consent and live target writer checks. Operators MUST NOT expose the development listener through tunnels or proxies."
   - "A hosted non-loopback listener MUST terminate TLS or explicitly trust only private proxy CIDRs; forwarded headers are authoritative only from a direct peer in those CIDRs, with an exact allowed host and HTTPS protocol."
   - "An externally owned host MUST use an explicit generic OAuth target with listener external, preserve the entire CAO security handler, require direct HTTPS or a trusted private proxy boundary, and fail closed before service startup and after cancellation."
   - "Generic OAuth host target policy MUST NOT disable HTTPS; local platform simulation is an explicit separate profile."
@@ -409,7 +493,7 @@ invariants:
   - "cao.json MUST remain the only rollout policy; cao.<deployment>.json profiles MAY extend only control-plane.web.host and MUST reject traversal, cycles, duplicate keys, and any authority or campaign override."
   - "The CAO server package MUST require stable release identities in exact vX.Y.Z form on protected main history; admit manual branch dispatch only for original and rerun actors with maintain or admin permission when the executing workflow is current protected main and the requested source branch is at its current head; keep manual dispatch identities separate from main and release identities; run lint, test, and image build/scanning as separate jobs; test exact sources; gate Dockerfile and workflow security with Hadolint, actionlint, and zizmor; preserve raw static-check outputs in a short-lived artifact even on failure; independently gate high/critical CVEs with Trivy and Grype; check container hardening with Dockle; generate an SPDX SBOM with Syft; keep lint, test, build, and scanner execution outside the package-write security domain; pass only a checksummed candidate and exact metadata to the protected-main reusable publisher; revalidate caller, source, checksum, metadata, and OCI labels before publication; publish only immutable commit or exact stable release identities; attest provenance and SBOM for the exact OCI digest; expose the multi-role server for downstream Docker Compose command selection; emit privacy-safe core.info milestones for JavaScript control checks; and never publish mutable channel tags."
   - "Package and delivery step summaries MUST use non-nested details sections and disclose only check scope, policy, and outcome; they MUST NOT reproduce vulnerability records, SBOM contents, image inventory, credentials, endpoints, payloads, registry responses, or adapter responses."
-  - "Coolify production delivery MUST use a repository-scoped Coolify GitHub App and automatic deployments from protected main; build server/Dockerfile through server/coolify/compose.yml from the selected source commit; embed SOURCE_COMMIT; bake the base and Coolify policy profiles into the image; package a deterministic control-plane inventory from that exact source plus only the shared runtime policy resolver; run the public dashboard in admission-only mode without the collection private key; run unexposed collector and idempotent backfill roles with a checksum-verified policy-pinned gh-aw toolchain and shared persistent evidence volume; resolve reviewed deployment policy, overlay exact operational enrollment, and use a short-lived control-repository installation token for live inventory enrichment; fail the first canonical ingestion without valid campaign inventory and retain only a previously valid inventory on later transient refresh failure; leave CAO_SOURCE_DIRECTORY unset in the collection profile; retain one authoritative activity artifact as an external read-only recovery volume for snapshot-profile rollback; require no GitHub deployment workflow, Coolify API token, public Coolify API endpoint, runner tailnet access, registry credentials, or mutable registry tag; and treat package-workflow scans, hardening checks, SBOMs, and attestations as guarantees for published packages rather than admission evidence for the source-built production image."
+  - "Host-neutral source builds MUST use server/Dockerfile with explicit version and revision build arguments, package a deterministic source-bound control-plane inventory and only the shared runtime policy resolver, and leave deployment promotion and rollback to the application host. Separate collection deployments MUST keep the collection private key out of admission-only public replicas, run unexposed collector and idempotent backfill roles with a checksum-verified policy-pinned gh-aw toolchain and shared persistent evidence volume, resolve reviewed policy over exact operational enrollment, and use short-lived control-repository installation authority for inventory enrichment. First ingestion MUST fail without valid campaign inventory; later transient refresh failure may retain only a previously valid inventory. Collection leaves CAO_SOURCE_DIRECTORY unset and retains a verified external read-only artifact for snapshot rollback. Package scans, hardening checks, SBOMs, and attestations apply to published packages, not locally source-built images."
   - "Hosted server telemetry MUST use standard OTEL runtime configuration; exporter endpoints and headers MUST remain deployment secrets and MUST NOT enter policy, browser state, or logs. When tracing is active, API error bodies, response headers, browser request IDs, and bounded server error logs MUST carry matching W3C trace identifiers without exposing internal exceptions, query payloads, source rows, or storage credentials."
   - "Observability backends are diagnostic infrastructure only and MUST NOT become dashboard data stores, policy authorities, rollout authorities, or sources of operational evidence."
   - "Hosted logout and account switching MUST remove active session authority before remote token revocation; failed GitHub revocations MUST retain encrypted credentials in the selected operational pending-revocation queue for bounded maintenance retries through credential expiry; Redis and PostgreSQL retries survive restart, while the explicitly acknowledged memory exception is process-lifetime only."
@@ -445,13 +529,13 @@ invariants:
   - "The trusted CAO materializer MUST replace bounded campaign-owned destinations with executable resources at the same top-level paths used by their catalog sources; .github/aw MUST remain exclusively gh-aw-owned and MUST NOT become a parallel CAO runtime tree."
   - "CAO runtime materialization MUST use a full immutable resolvedCommit SHA, MUST fail closed for tag-only or missing provenance, and MUST preserve exact focused Activity or Dashboard package ownership when root materialization runs."
   - "Activity and Dashboard artifacts MUST use producer-side npm pack with lifecycle scripts disabled and runtime/package.json files selection, bundle compatible libraries with esbuild and license notices, retain filesystem-relative CLI, worker and build paths, and exclude development resources; packing MUST NOT publish, install dependencies or replace consumer-owned root package metadata."
-  - "Quickstart MUST recompile installed workflow sources with --schedule-seed githubnext/gh-aw-cao before committing, matching deterministic lock validation. Validation MUST report a manually paused orchestrator with active workers as a pause note rather than recommending scheduled re-enablement."
+  - "Quickstart MUST recompile installed workflow sources with --schedule-seed githubnext/gh-cao before committing, matching deterministic lock validation. Validation MUST report a manually paused orchestrator with active workers as a pause note rather than recommending scheduled re-enablement."
   - "Normal root, Activity and Dashboard materialization MUST consume an exact-SHA prebuilt archive from stable release assets or successful unexpired Actions artifacts, wait at most five minutes for an already queued or running exact-SHA build, verify catalog and signer identity plus source and signer SHA through GitHub signed provenance on GitHub-hosted runners before extraction, then validate the inventory, checksums, ownership and required resources before any replacement; failed, missing, expired, timed-out or unverifiable artifacts MUST fail without latest-release or source/npm fallback."
-  - "The runtime pipeline MUST build/test with read-only permission on main pushes and attest in a source-free job. The Release workflow MUST create a draft stable tag at an exact main SHA, wait for that SHA's successful cao-runtime.yml push run, verify its checksum and GitHub-hosted signed provenance, attach exactly the runtime archive and checksum to the draft, and fail closed without publication for missing, failed, mismatched, self-hosted, incomplete, or unverifiable evidence. A maintainer publishes only the reviewed, successful draft; immutable release tags and assets MUST NOT be mutated or overwritten after publication. Main artifacts have 90-day retention. Normal installation requires Node.js and authenticated GitHub CLI artifact and attestation access, not npm; explicit developer source materialization may use npm, and dashboard builds retain production dependency installation."
+  - "The runtime pipeline MUST build/test with read-only permission on main pushes and attest in a source-free job. The Release workflow MUST create a draft stable tag at an exact main SHA, wait for that SHA's successful cao-runtime.yml push run, verify its checksum and GitHub-hosted signed provenance, attach the runtime archive and checksum together with versioned extension assets to the draft, and fail closed without publication for missing, failed, mismatched, self-hosted, incomplete, or unverifiable evidence. Publication creates an immutable prerelease before the highlights agent updates notes; a maintainer reviews and promotes it to stable. Immutable release tags and assets MUST NOT be mutated or overwritten after publication. Main artifacts have 90-day retention. Normal installation requires Node.js and authenticated GitHub CLI artifact and attestation access, not npm; explicit developer source materialization may use npm, and dashboard builds retain production dependency installation."
   - "The setup prompt adapter MUST use Node terminal primitives without third-party UI dependencies; producer and explicit developer source packing MUST preserve it as portable source without consumer node_modules."
-  - "Onboarding MUST check tools, Node.js 24+, sign-in and checkout-root readiness before installation; private repository creation requires explicit --create-repo OWNER/NAME and MUST NOT overwrite existing clone directories. After those checks and before repository creation or file installation, implicit --quickstart MUST resolve and pin the latest stable CAO vX.Y.Z release, install or refresh owned CAO resources at that release, fail without mutation or main fallback when release resolution is unavailable or non-stable, and preserve any explicit @main, tag, SHA, or local source; bare installation and setup retain their existing unversioned source behavior. Bare installation prints the setup next step without a handoff prompt; streamed children use null stdin except explicitly requested --setup and interactive --quickstart on the controlling terminal. ACCESSIBLE, NO_COLOR, and terminals without styling support disable animated presentation. Without a terminal or when CI is set, installation with --setup MUST apply only the exact public-repository workflow-token profile with plain output; explicit --quickstart MAY instead use a clean current default-branch checkout with plain progress. Incompatible prerequisites MUST still fail."
+  - "Onboarding MUST check tools, Node.js 24+, sign-in and checkout-root readiness before installation; private repository creation requires explicit --create-repo OWNER/NAME and MUST NOT overwrite existing clone directories. After those checks and before repository creation or file installation, implicit --quickstart MUST resolve and pin the latest published CAO vX.Y.Z release, including prereleases but excluding drafts, install or refresh owned CAO resources at that release, fail without mutation or main fallback when release resolution is unavailable or invalid, and preserve any explicit @main, tag, SHA, or local source; bare installation and setup retain their existing unversioned source behavior. Bare installation prints the setup next step without a handoff prompt; streamed children use null stdin except explicitly requested --setup and interactive --quickstart on the controlling terminal. ACCESSIBLE, NO_COLOR, and terminals without styling support disable animated presentation. Without a terminal or when CI is set, installation with --setup MUST apply only the exact public-repository workflow-token profile with plain output; explicit --quickstart MAY instead use a clean current default-branch checkout with plain progress. Incompatible prerequisites MUST still fail."
   - "Setup presentation MUST remain separate from authority decisions, show Repositories, Connections and Review/apply with default-No confirmation, verify Pages source without changing visibility, require separate default-No public-dashboard consent before credentials, and save policy atomically only after both succeed. Declining/cancelling public consent removes only a newly created site where possible; existing sites remain with restriction/unpublication guidance. Failures MUST disclose partial external changes. Setup MUST NOT install campaigns, dispatch, commit or push; --json retains structured stdout. Non-interactive setup, including CI, MUST require a public control repository with empty campaigns and absent or exact self-only scope, verify public Actions-backed Pages, select repository workflow-token authentication, set self-only Activity scope, preserve unrelated policy fields, and write policy last; private/internal repositories or incompatible policy MUST fail before external mutation."
-  - "Explicit quickstart MUST work interactively or headlessly from a clean public/private/internal control checkout on its default branch, preserve existing commits, use the installer's stable release or an explicit selected source, disclose public Pages and ordinary Repo Assist budgets, and default outside a checkout to private USERNAME/cao when its remote name and local clone path are available. On collision select a fresh UTC cao-YYYYMMDD-HHMMSS name, checking remote and local availability and numeric suffixes through -10 if needed; stop without mutation on lookup/timestamp-generation failure or candidate exhaustion, print the fallback coordinate before creation, and never reuse/overwrite existing repositories or paths. In-place connection checks only remote-name availability. Other names or owners require exact --create-repo OWNER/NAME; explicit names MUST NOT be silently changed. Select public github/gh-aw or validate explicit public --target OWNER/REPO; never create/copy/modify/substitute a target. Install repo-assist at the same catalog revision without reimporting root. Use normal dispatch inputs and only existing maintenance at review, explicitly disabling other workers. No onboarding-only worker, snapshot helper, execution profile, or readiness assessment. Preserve normal checkout/base SHA, duplicate checks, implementation, focused validation and review bundles. Produce one optional validated proposal or honest no-op; unavailable evidence is incomplete. No tests/CI/instruction/adoption gate; admission depends on policy/access. Ordinary budgets are 250 orchestration + 600 maintenance + 400 output checking by default; output checking is configurable, so disclose the 1,250-credit default total without claiming measured/expected consumption or a 100-credit cap. Immediately after requesting the run, including dispatch failure, pause the orchestrator with gh workflow disable to prevent six-hour reruns; disabling does not cancel requested work. Surface pause failures; explicit re-enablement also resumes schedule. Preserve terminal/plain progress without Node experimental-runtime diagnostics, require public Actions-backed Pages, refuse pre-staged/unrelated changes, commit/push only .github, activity, dashboard, repo-assist, cao.sh, .gitattributes and .vscode/settings.json, dispatch at most one maintenance worker, require data-bearing Activity plus successful dashboard deployment, and preserve blocked/incomplete/failed/no-op outcomes. Ordinary install/setup MUST NOT inherit these effects. Runtime success is not proof of a proposal, applied change or operational value."
+  - "Explicit quickstart MUST work interactively or headlessly from a clean public/private/internal control checkout on its default branch, preserve existing commits, use the installer's stable release or an explicit selected catalog source, and disclose public Pages and ordinary Repo Assist budgets. Never suggest or infer owners, control-repository names, targets, or generated fallback coordinates. Outside a connected checkout require --create-repo OWNER/NAME or manual interactive owner/name entry without defaults; blank input selects nothing. Reject occupied coordinates/clone paths and lookup failures without mutation, renaming, reuse, or overwrite. In-place connection checks remote-name availability without rejecting its working directory. Installation and --wait require explicit public --target OWNER/REPO before mutation; later stages reuse the sole committed policy target. Never create/copy/modify/substitute a target. Install repo-assist at the same catalog revision without reimporting root. Use normal dispatch inputs and only existing maintenance at review, explicitly disabling other workers. No onboarding-only worker, snapshot helper, execution profile, or readiness assessment. Preserve normal checkout/base SHA, duplicate checks, implementation, focused validation and review bundles. Produce one optional validated proposal or honest no-op; unavailable evidence is incomplete. No tests/CI/instruction/adoption gate; admission depends on policy/access. Ordinary budgets are 250 orchestration + 600 maintenance + 400 output checking by default; output checking is configurable, so disclose the 1,250-credit default total without claiming measured/expected consumption or a 100-credit cap. Default install commits bounded configuration, pauses Repo Assist, and returns without dispatching or waiting. Separate --step run revalidates installed policy without widening scope, enables one dispatch, and pauses the orchestrator immediately afterward including on dispatch failure; disabling does not cancel requested work. --step collect dispatches Activity after the operator inspects the outcome; run and collect return Actions links without remote waits and repeating them requests new work. Read-only --step dashboard verifies data-bearing Activity plus a subsequent successful deployment, returning pending without polling otherwise; it is safe to repeat. No local checkpoint grants authority. Explicit --wait retains end-to-end installation and remote waits immediately after bare installation, not resume/status behavior. Surface pause failures; explicit re-enablement also resumes schedule. Preserve terminal/plain progress without Node experimental-runtime diagnostics, require public Actions-backed Pages, refuse pre-staged/unrelated changes, commit/push only .github, activity, dashboard, repo-assist, .gitattributes and .vscode/settings.json plus the retired launcher deletion only when present, dispatch at most one maintenance worker per requested run, and preserve blocked/incomplete/failed/no-op outcomes. Ordinary install/setup MUST NOT inherit these effects. Runtime success is not proof of a proposal, applied change or operational value."
   - "control-plane.activity.repositories MUST be a nonempty exact subset of globally allowed repositories; Activity authentication uses it as the declared evidence-collection scope when present and otherwise preserves fail-closed global-scope behavior. It MUST NOT grant campaign rollout authority or credential reach."
   - "The Agent Plugin is distributed separately; the installer MUST add the repository-root aw.yml package, which MUST explicitly compose only Activity, dashboard, validation, five shared control-plane resources, seven portable control-repository skills including the Agentic Workflows router, one Agentic Workflows agent and gh-aw project settings. The portable router MUST load the current canonical upstream Agentic Workflows skill from main instead of copying its routing table, fail explicitly when that guidance cannot be loaded, and constrain version-sensitive behavior through the control repository's policy-pinned gh aw CLI; the custom agent MUST delegate to the installed router rather than maintain a second routing table. CAO skills MUST delegate parsing, mutation, compilation, querying and verification to deterministic gh aw, cao and repository validation commands. The nonempty agents declaration MUST list only .github/agents/agentic-workflows.md so agent auto-discovery cannot install repository-only agents. Because gh-aw v0.91.5 auto-scans root skills/ after resolving explicit declarations, that directory MUST contain only the seven declared portable control-repository skills. The installer MUST NOT install plugin manifests, Copilot extensions, bundled specifications or repository-only dashboard authoring skills, and MUST preserve pre-existing plugin resources outside owned runtime destinations. Additional package manifests MUST live only in campaign or component directories."
   - "Operational campaign manifests MUST contain only campaign-owned workflows and catalog resources and MUST NOT import the root catalog package; cao add is the supported lifecycle boundary after control-plane installation and MUST materialize the selected canonical campaign runtime without reinstalling control-plane or Agent Plugin resources."
@@ -468,6 +552,11 @@ invariants:
   - "Marketplace UI access MUST cross the existing data-worker query boundary and package actions MUST be copy-only canonical CAO add commands; the dashboard MUST NOT install packages."
 
 flows:
+  standalone_execution:
+    - control_repository
+    - policy_resolution
+    - standalone_workflow
+    - review_repository
   first_success_quickstart:
     - control_plane_quickstart
     - control_repository
@@ -523,9 +612,9 @@ flows:
     - dashboard_canonical_api
     - dashboard_language_queries
     - dashboard_ui
-  activity_dashboard_coolify:
+  activity_dashboard_collection:
     - dashboard_publisher
-    - dashboard_coolify_deployment
+    - dashboard_container_build
     - policy_resolution
     - dashboard_collection_credentials
     - dashboard_server_collection
@@ -542,9 +631,6 @@ flows:
     - redis_operational_store
     - dashboard_language_queries
     - dashboard_ui
-  coolify_source_delivery:
-    - dashboard_coolify_deployment
-    - dashboard_https_server
   activity_cli:
     - gh_aw_logs
     - activity_jsonl_shards
@@ -570,19 +656,25 @@ generation:
     path: CODEBASE.yml
     source: ARCHITECTURE.md
     compilation_skill: .github/skills/codebase-model/SKILL.md
-  coolify_static_control_plane_inventory:
+  dashboard_static_control_plane_inventory:
     source: aw.yml, campaign aw.yml files, .github/workflows workflow sources, compiled lock files, campaign records, intelligence declarations, and cao.json
     output: collector image /app/catalog/control-plane-inventory.json
     command: REPORT_ROOT=/workspace REPORT_INVENTORY=/tmp/control-plane-inventory.json REPORT_INVENTORY_STATIC=true node activity/inventory.mjs
   dashboard_server_package:
     path: .github/workflows/cao-package.yml
-    output: ghcr.io/githubnext/gh-aw-cao/cao-server
+    output: ghcr.io/githubnext/gh-cao/cao-server
   control_runtime_package:
     source: runtime/package.json
     builder: scripts/build-cao-runtime.mjs
     workflow: .github/workflows/cao-runtime.yml
     output: cao-runtime-<resolvedCommit>.tgz
     command: npm run runtime:pack -- DESTINATION REVISION
+  go_extension_release:
+    source: cmd/gh-cao/, internal/, go.mod, go.sum
+    builder: scripts/build-release.sh
+    workflow: .github/workflows/release.md
+    output: dist/gh-cao/gh-cao-{darwin,linux,windows}-{amd64,arm64}[.exe] and checksums.txt
+    command: make release VERSION=vX.Y.Z
   dashboard_postgres_schema:
     source: server/spec/storage.tsp
     emitter: server/spec/postgres-emitter.mjs
@@ -612,6 +704,8 @@ commands:
     working_directory: .
     entries:
       full_validation: npm run check
+      go_extension_build: make build
+      go_extension_check: make check
       control_typecheck: npm run typecheck:cao
       tests: npm test
       unit_tests: npm run test:unit
@@ -622,7 +716,7 @@ commands:
       load_tests: npm run test:load
       svg_check: npm run check:svg
       workflow_compile: npm run compile
-      manual_workflow_compile: gh aw compile --schedule-seed githubnext/gh-aw-cao
+      manual_workflow_compile: gh aw compile --schedule-seed githubnext/gh-cao
       workflow_compile_locks: npm run compile:locks
       docs_build: npm run docs:build
       dashboard_local: "npm run dashboard:local -- --repo OWNER/REPOSITORY"
@@ -630,7 +724,7 @@ commands:
       dashboard_server_tests: npm run dashboard:server:test
       dashboard_server_e2e: npm run test:e2e:dashboard-server
       runtime_health: cao computation runtime-health [--campaign SLUG]
-      quickstart: ./cao.sh quickstart [--target OWNER/REPO] [--campaign PACKAGE] [--json]
+      quickstart: gh cao quickstart [--step install|run|collect|dashboard | --wait] [--target OWNER/REPO] [--campaign PACKAGE] [--json]
   dashboard_site:
     working_directory: dashboard/site/
     entries:
@@ -646,10 +740,12 @@ commands:
       tests: go test ./...
       redis_up: docker compose up -d
       redis_down: docker compose down
-      coolify_contract_tests: node --test ../tests/unit/coolify-deployment-contract.test.mjs
-      coolify_image_build: docker build -f Dockerfile ..
+      container_contract_tests: node --test ../tests/unit/dashboard-container-contract.test.mjs
+      container_image_build: docker build -f Dockerfile ..
 
 validation:
+  go_extension_command_refs:
+    - commands.repository_root.entries.go_extension_check
   default_command_refs:
     - commands.repository_root.entries.full_validation
   dashboard_site_command_refs:

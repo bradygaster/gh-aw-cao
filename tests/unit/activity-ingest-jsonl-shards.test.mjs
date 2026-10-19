@@ -131,14 +131,14 @@ async function queryTransactions(databasePath) {
   return JSON.parse(stdout).filter((transaction) => transaction.kind !== 'audit-curation');
 }
 
-test('schema-v4 shards ingest and publish normalized payloads without CLI help output', async () => {
+test('schema-v5 shards ingest and publish normalized payloads without CLI help output', async () => {
   const { root, shardDirectory, databasePath } = await fixture();
   try {
     const input = path.join(shardDirectory, 'gh-aw-logs-1000000000-aaaa.jsonl');
     const original = await readFile(input, 'utf8');
     const content = original.trim().split('\n').map((line) => {
       const envelope = JSON.parse(line);
-      envelope.schema_version = 4;
+      envelope.schema_version = 5;
       return JSON.stringify(envelope);
     }).join('\n') + '\n';
     await writeFile(input, content);
@@ -160,7 +160,7 @@ test('schema-v4 shards ingest and publish normalized payloads without CLI help o
     assert.ok(Object.keys(hashes).some((name) => name.startsWith('gh-aw-logs-runs/')));
     assert.doesNotMatch(stderr, /Usage:/);
 
-    await writeFile(input, '{"schema_version":5,"kind":"run","run":{}}\n');
+    await writeFile(input, '{"schema_version":6,"kind":"run","run":{}}\n');
     await assert.rejects(
       execFileAsync(process.execPath, [
         path.resolve('activity/cao.mjs'), 'ingest-jsonl',
@@ -169,7 +169,7 @@ test('schema-v4 shards ingest and publish normalized payloads without CLI help o
       (error) => {
         assert.equal(error.code, 1);
         assert.equal(error.stdout, '');
-        assert.match(error.stderr, /Unsupported gh-aw JSONL schema version at line 1: 5/);
+        assert.match(error.stderr, /Unsupported gh-aw JSONL schema version at line 1: 6/);
         assert.doesNotMatch(error.stderr, /Usage:/);
         return true;
       },
@@ -259,16 +259,16 @@ test('ingest-jsonl --input ingests a single JSONL file', async () => {
 
 test('compact-jsonl deduplicates exact run records without reordering distinct observations', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'activity-compact-jsonl-'));
-  const prefix = 'githubnext-gh-aw-cao-logs-';
+  const prefix = 'githubnext-gh-cao-logs-';
   const firstPath = path.join(root, `${prefix}1000-aaaa.jsonl`);
   const secondPath = path.join(root, `${prefix}2000-bbbb.jsonl`);
   const unrelatedPath = path.join(root, 'github-gh-aw-logs-1000-cccc.jsonl');
   const overlappingPrefix = `${prefix}123-logs-`;
   const overlappingPrefixPath = path.join(root, `${overlappingPrefix}1000-dddd.jsonl`);
-  const first = '{"schema_version":2,"kind":"run","run":{"run_id":1,"repository":"githubnext/gh-aw-cao","workflow_path":".github/workflows/first.lock.yml"}}';
-  const second = '{"schema_version":2,"kind":"run","run":{"run_id":2,"repository":"githubnext/gh-aw-cao","workflow_path":".github/workflows/second.lock.yml"}}';
-  const firstUpdated = '{"schema_version":2,"kind":"run","run":{"run_id":1,"repository":"githubnext/gh-aw-cao","workflow_path":".github/workflows/first.lock.yml","status":"completed"}}';
-  const third = '{"schema_version":2,"kind":"run","run":{"run_id":3,"repository":"githubnext/gh-aw-cao-logs-123","workflow_path":".github/workflows/third.lock.yml"}}';
+  const first = '{"schema_version":2,"kind":"run","run":{"run_id":1,"repository":"githubnext/gh-cao","workflow_path":".github/workflows/first.lock.yml"}}';
+  const second = '{"schema_version":2,"kind":"run","run":{"run_id":2,"repository":"githubnext/gh-cao","workflow_path":".github/workflows/second.lock.yml"}}';
+  const firstUpdated = '{"schema_version":2,"kind":"run","run":{"run_id":1,"repository":"githubnext/gh-cao","workflow_path":".github/workflows/first.lock.yml","status":"completed"}}';
+  const third = '{"schema_version":2,"kind":"run","run":{"run_id":3,"repository":"githubnext/gh-cao-logs-123","workflow_path":".github/workflows/third.lock.yml"}}';
   const unrelated = '{"schema_version":2,"kind":"run","run":{"run_id":4,"repository":"github/gh-aw","workflow_path":".github/workflows/fourth.lock.yml"}}';
   await writeFile(firstPath, `${first}\n${second}\n`);
   await writeFile(secondPath, `${first}\n${firstUpdated}\n${third}\n`);
@@ -281,9 +281,9 @@ test('compact-jsonl deduplicates exact run records without reordering distinct o
     '--input-dir',
     root,
     '--group',
-    `githubnext/gh-aw-cao=${prefix}`,
+    `githubnext/gh-cao=${prefix}`,
     '--group',
-    `githubnext/gh-aw-cao-logs-123=${overlappingPrefix}`,
+    `githubnext/gh-cao-logs-123=${overlappingPrefix}`,
   ]);
   const result = JSON.parse(stdout);
   const compacted = result.groups.find((group) => group.prefix === prefix);
@@ -307,14 +307,14 @@ test('compact-jsonl deduplicates exact run records without reordering distinct o
 
 test('compact-jsonl bounds retained shards without reordering observations', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'activity-compact-jsonl-bounded-'));
-  const prefix = 'githubnext-gh-aw-cao-logs-';
+  const prefix = 'githubnext-gh-cao-logs-';
   const records = Array.from({ length: 6 }, (_, index) =>
     JSON.stringify({
       schema_version: 2,
       kind: 'run',
       run: {
         run_id: index + 1,
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_path: `.github/workflows/workflow-${index + 1}.lock.yml`,
       },
     })
@@ -329,7 +329,7 @@ test('compact-jsonl bounds retained shards without reordering observations', asy
     '--input-dir',
     root,
     '--group',
-    `githubnext/gh-aw-cao=${prefix}`,
+    `githubnext/gh-cao=${prefix}`,
     '--max-bytes',
     String(maxBytes),
   ]);
@@ -349,12 +349,12 @@ test('compact-jsonl bounds retained shards without reordering observations', asy
 
 test('compact-jsonl retains only agentic workflow runs and their associated records', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'activity-compact-jsonl-agentic-'));
-  const prefix = 'githubnext-gh-aw-cao-logs-';
+  const prefix = 'githubnext-gh-cao-logs-';
   const records = [
     {
       schema_version: 2,
       kind: 'workflow_runs',
-      request: { repository: 'githubnext/gh-aw-cao' },
+      request: { repository: 'githubnext/gh-cao' },
       payload: [
         { databaseId: 1, workflowName: 'Agentic' },
         { databaseId: 2, workflowName: 'CI' },
@@ -365,7 +365,7 @@ test('compact-jsonl retains only agentic workflow runs and their associated reco
       kind: 'run',
       run: {
         run_id: 1,
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_path: '.github/workflows/agentic.lock.yml',
       },
     },
@@ -379,7 +379,7 @@ test('compact-jsonl retains only agentic workflow runs and their associated reco
       kind: 'run',
       run: {
         run_id: 2,
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_path: '.github/workflows/ci.yml',
       },
     },
@@ -400,7 +400,7 @@ test('compact-jsonl retains only agentic workflow runs and their associated reco
     '--input-dir',
     root,
     '--group',
-    `githubnext/gh-aw-cao=${prefix}`,
+    `githubnext/gh-cao=${prefix}`,
   ]);
   const [group] = JSON.parse(stdout).groups;
   const retained = (await readFile(group.output, 'utf8')).trim().split('\n').map(JSON.parse);

@@ -11,6 +11,7 @@ import {
   DEPLOYED_REFRESH_TIMEOUT_MS,
   DEPLOYED_STORAGE_QUOTA_BYTES,
   deployedDashboardUrl,
+  deployedStorageContext,
   populatedDashboardPages,
   scrollRenderedViewsIntoView,
   shouldIgnoreRequestFailure,
@@ -20,7 +21,7 @@ import { authoritativeDashboard } from "../helpers/authoritative-dashboard.mjs";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("deployed dashboard test has enough time for sequential refresh checks", () => {
-  assert.equal(DEPLOYED_REFRESH_TIMEOUT_MS, 300_000);
+  assert.equal(DEPLOYED_REFRESH_TIMEOUT_MS, 600_000);
   assert.equal(config.timeout, 3 * DEPLOYED_REFRESH_TIMEOUT_MS);
   const deployedTest = readFileSync(resolve(repositoryRoot, "tests/e2e/dashboard-deployed-refresh.spec.mjs"), "utf8");
   assert.equal((deployedTest.match(/timeout: DEPLOYED_REFRESH_TIMEOUT_MS/g) ?? []).length, 2);
@@ -39,11 +40,62 @@ test("deployed dashboard quota is bounded and scoped to the tested origin", asyn
     },
   }) };
   assert.equal(await configureDeployedStorageQuota(page, "http://127.0.0.1:1234/cao/"), session);
-  assert.equal(DEPLOYED_STORAGE_QUOTA_BYTES, 2 * 1024 ** 3);
+  assert.equal(DEPLOYED_STORAGE_QUOTA_BYTES, 4 * 1024 ** 3);
   assert.deepEqual(calls, [{
     method: "Storage.overrideQuotaForOrigin",
     parameters: { origin: "http://127.0.0.1:1234", quotaSize: DEPLOYED_STORAGE_QUOTA_BYTES },
   }]);
+});
+
+test("deployed storage uses a fresh disk-backed profile and preserves browser options", async () => {
+  const calls = [];
+  const context = { async close() { calls.push("close"); } };
+  await deployedStorageContext({
+    playwright: {
+      chromium: {
+        async launchPersistentContext(directory, options) {
+          assert.equal(directory, "");
+          assert.deepEqual(options, {
+            headless: true,
+            channel: undefined,
+            executablePath: "/usr/bin/chromium",
+            args: ["--disable-dev-shm-usage"],
+            viewport: { width: 1280, height: 720 },
+          });
+          calls.push("launch");
+          return context;
+        },
+      },
+    },
+    browserName: "chromium",
+    headless: true,
+    launchOptions: {
+      executablePath: "/usr/bin/chromium",
+      args: ["--disable-dev-shm-usage"],
+    },
+    contextOptions: { viewport: { width: 1280, height: 720 } },
+  }, async (actual) => {
+    assert.equal(actual, context);
+    calls.push("use");
+  });
+  assert.deepEqual(calls, ["launch", "use", "close"]);
+});
+
+test("deployed storage closes its profile when the test fails", async () => {
+  let closed = false;
+  const context = { async close() { closed = true; } };
+  await assert.rejects(deployedStorageContext({
+    playwright: { chromium: { async launchPersistentContext() { return context; } } },
+    browserName: "chromium",
+  }, async () => { throw new Error("benchmark failed"); }), /benchmark failed/);
+  assert.equal(closed, true);
+});
+
+test("deployed data suites opt out of the memory-sized incognito storage pool", () => {
+  for (const filename of ["dashboard-deployed-refresh.spec.mjs", "dashboard-query-performance.spec.mjs"]) {
+    const source = readFileSync(resolve(repositoryRoot, "tests/e2e", filename), "utf8");
+    assert.match(source, /baseTest\.extend\(\{ context: deployedStorageContext \}\)/);
+  }
 });
 
 test("deployed dashboard quota configuration fails visibly and releases the session", async () => {

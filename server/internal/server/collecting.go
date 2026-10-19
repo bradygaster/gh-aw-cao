@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/githubapp"
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/githubapp"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
 )
 
 // defaultQueueMaxLength bounds admitted outstanding work. Completed entries
@@ -551,7 +551,7 @@ func (a *App) Collector() *Collector {
 // reports that collection is not configured rather than failing.
 func (a *App) collectionStatus(response http.ResponseWriter, request *http.Request) {
 	if !a.adminAuthorized(request) {
-		writeError(response, http.StatusForbidden, "administrative authorization is required")
+		a.writeAdminDenied(response, request, "administrative authorization is required")
 		return
 	}
 	collector, ok := a.reconciler.(*Collector)

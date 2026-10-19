@@ -36,6 +36,54 @@ publishes an explicit empty snapshot. Broader repository or owner-wide scopes
 require explicit `app` or `pat` authentication; missing credentials in those
 modes fail closed rather than falling back to the workflow token.
 
+For a bounded manual smoke run, dispatch `cao-activity.yml` with `fast=true`.
+It keeps the same resolved repository scope, credentials, 30-day raw retention,
+and cache byte budgets, but requests at most 10 runs per repository, limits
+downloads to 100 MB and the timeout to 5 (instead of 1200 MB and 15), and collects
+detailed evidence for only the newest day. It preserves retained operational-value
+history without computing new measurements. Scheduled runs and dispatches without
+this input retain normal collection behavior. Fast mode still performs inventory,
+visibility checks, ingestion, normalization, snapshot verification, and cache
+publication; it is not a full-history refresh.
+
+The independent `force-recycle=true` dispatch input adds a maintenance pass over
+restored raw shards before collection and before index fragment download. It uses
+the normal 30-day/byte limits and clears only disposable normalization `.payloads`
+caches, which are rebuilt on demand. It does not erase retained run evidence or
+change collection authority. For example:
+
+```sh
+gh workflow run cao-activity.yml --ref BRANCH -f fast=true -f force-recycle=true
+```
+
+For maintenance without any repository collection, use `recycle-only=true`:
+
+```sh
+gh workflow run cao-activity.yml --ref BRANCH -f recycle-only=true
+```
+
+This takes precedence over `fast` and `force-recycle`. It requires an existing
+compatible snapshot whose repository scope matches the current resolved policy;
+a cache miss, unavailable policy, or scope change fails closed. It skips the
+authentication plan, collector jobs, fragment download, issue enrichment,
+operational-value collection, and repository-memory fetches. No GitHub API
+evidence requests or failure-issue writes are made. Checkout and Actions cache/artifact transport still
+use GitHub services.
+
+Maintenance expires and bounds raw evidence, clears disposable normalization
+payloads, and rebuilds the SQLite database and both normalized phases from the
+retained raw shards rather than keeping rows for evicted runs. Cached inventory
+and repository memory keep their original observation timestamps; missing legacy
+memory is represented by an empty manifest, not a fresh collection. The workflow
+then validates the database, recomputes payload hashes, and verifies the complete
+snapshot before saving a new cache. Invalid or unsupported raw evidence prevents
+publication. An empty retained run set is represented explicitly. Branch
+dispatches save branch-scoped Actions caches; they do not replace main's cache.
+Recycle-only runs on non-default branches therefore use a branch-specific
+concurrency group instead of competing with production's pending run slot.
+Normal/fast collection and maintenance on the default branch retain the shared,
+serialized Activity concurrency group.
+
 Each `gh aw logs` invocation uses `--cached-jsonl` with a repository-specific
 trailing wildcard shard prefix instead of a single growing file. The wildcard shard
 directory itself is part of the shared activity cache, so `gh aw logs`
@@ -45,10 +93,94 @@ repository's retained files into bounded shards, retaining only runs whose
 workflow path ends in `.lock.yml` and their associated records. This excludes
 non-agentic Actions workflows while preserving observation precedence and
 dependent-record association. The bounded files limit peak browser parsing
-memory. Failed collections leave the prior files untouched. Shards containing only
-out-of-range dated records are pruned by `gh aw logs --cache-before`. The
+memory. Failed collections never replace the published cache. Shards containing only
+out-of-range dated records are pruned by `gh aw logs --cache-before`. CAO also
+runs `cao recycle-cache` before compaction, between repository downloads, and
+before index normalization. It expires completed runs older than 30 days across
+mixed-date shards and removes their safe outputs and token-efficiency evidence
+as a group. Newer observations refresh a run's expiry; active runs and runs
+without usable timestamps are not age-expired. Under byte pressure, whole run
+groups are evicted oldest first (undated runs last), with explicit expired and
+evicted counts in the command output. Operational-value history has its own
+365-day retention and is not evicted to satisfy the run-cache budget. Unknown
+records are preserved; if these protected records alone exceed the byte limit,
+maintenance fails before changing any shards rather than silently dropping them.
+Each rewritten shard is streamed to a temporary file and atomically replaced;
+fully expired shards are deleted. The
 ingestion step passes the shard directory to `cao ingest-jsonl --input-dir`,
 which tracks each compacted shard by content hash.
+
+CAO's Node.js shard readers use the MIT-licensed streaming JSONL helpers from
+`github/gh-aw`, vendored without changes under `activity/vendor/gh-aw/` so installed
+runtimes need no network access or additional packages. `source.json` records the
+immutable upstream revision and file hashes; `node scripts/vendor-gh-aw-jsonl.mjs`
+refreshes these files from the revision pinned in that script. The shared
+`activity/jsonl.mjs` reader lazily parses bounded file chunks, skips blank lines,
+and fails on malformed or truncated records with a file/line diagnostic that
+omits record contents. Compaction, recycling, normalized-payload consolidation,
+issue-status enrichment, session enrichment, and run-log reads share this reader.
+Raw-line callers retain whitespace and record text without allocating a full
+file's line array. Browser ingestion remains independent of Node.js filesystem
+helpers.
+
+Activity and hosted collection prefer gh-aw's version-1 unified
+`usage/aw_session.jsonl` timeline (published by gh-aw v0.92.0). After download,
+`activity/session-evidence.mjs` associates each session with the execution
+repository, run ID, and attempt from `aw_info.json`, then stores only a safe
+metadata projection in the cached Run's `cao_unified_session` field. This
+projection survives compaction, SQLite ingestion, and normalized publication;
+raw prompts, messages, tool arguments, results, and error bodies are not retained.
+Schema-v5 cached logs are accepted alongside legacy v2/v4 shards.
+
+The canonical adapter prefers the unified timeline for agent, MCP, firewall,
+and skill events, without adding duplicate legacy events for those categories.
+Experiment assignments, grader measurements and manifests, and binary eval
+answers also come from the unified session first. `experiment.state` contributes
+only the producing run's explicit assignments, never cumulative counts;
+`grader.result` and `eval.result` populate separate canonical evidence tables.
+Untimed evaluation records remain evidence without invented session timeline
+events. Missing session evidence falls back by category to the enriched run;
+evals can additionally be projected from an already-downloaded `evals.jsonl`,
+after repository, run, and attempt verification using `aw_info.json`. No extra
+GitHub download is introduced. Only allowlisted metadata is retained, never
+evaluation prompts, error bodies, or native payload copies.
+Direct artifact ingestion uses the same canonical eval classifier for a supplied
+`evals.jsonl` when session evals are absent, preserving run/attempt validation and
+audit references. The Evals ledger displays explicit `YES`, `NO`, and `UNKNOWN`
+answers; unknown evidence is neither dropped nor interpreted as a failed eval.
+The same session projection mines firewall decisions, methods, response bytes
+and latency; MCP calls, outcomes, RPC metadata and configuration; skills and
+model inventories; usage, routing and runtime metadata; execution, detection,
+guardrails, job results, safe-output results, plugin installations, rate limits,
+dynamic workflows and collection diagnostics. Metadata is allowlisted, and
+untimed records retain observation time without an invented native timestamp.
+Usage reports are preferred per phase and measurement over proxy copies and
+engine snapshots; repeated request IDs replace prior measurements, and
+cumulative AIC is never summed as per-request usage. Native MCP calls use the
+canonical call type consumed by dashboard queries; RPC-only sessions recover
+call/outcome pairs without counting both representations.
+Session runtime and safe-output evidence take precedence over cached copies.
+Derived audit findings and metadata not supplied by the session still come
+from the enriched run. Runs without a published session retain the
+existing cached-audit parser; `cao ingest --logs` likewise retains its raw
+agent/gateway/firewall parsers when `aw_session.jsonl` is absent. During Activity
+collection, invalid, unsupported, ambiguous, or incorrectly identified optional
+sessions are skipped with a warning containing only the run ID. Their cached
+records remain unchanged and other runs continue enrichment; filesystem and
+shard errors still fail collection. Direct `cao ingest --logs` session parsing
+remains strict. Untimed session observations are not assigned invented event
+timestamps.
+
+The raw cache defaults to **1 GiB** across all repositories in a job, not per
+shard. Set the repository variable `CAO_ACTIVITY_MAX_RAW_CACHE_BYTES` to override
+it in both Activity and dashboard preparation, or use
+`cao recycle-cache --input-dir DIRECTORY --retention-days 30 --max-bytes BYTES`
+locally. The collector also accepts `REPORT_MAX_CACHE_BYTES`.
+These limits deliberately make the cache a bounded working set, not an archive:
+byte pressure may shorten the available run history below 30 days.
+Indexing treats successful owner fragments as the complete retained snapshot,
+removes superseded restored shards, and moves incoming files instead of keeping
+a second full fragment copy. Empty owner snapshots remain explicitly empty.
 
 After compaction, `cao issue-status` reads the canonical Issue records from the
 refreshed local SQLite projection, batches issue lookups by repository through
@@ -198,6 +330,17 @@ including their metadata header. This is separate from the 4 MiB raw-source
 compaction limit. A single canonical record larger than the budget is preserved
 intact in its own shard; evidence is never truncated to fit. Override the
 published size with `cao hash-payloads --max-bytes BYTES`.
+The separate disposable normalization caches under each phase's `.payloads/`
+directory share a **256 MiB** retained-byte budget. Override it with repository
+variable `CAO_ACTIVITY_MAX_NORMALIZED_CACHE_BYTES`, or
+`cao hash-payloads --max-cache-bytes BYTES` (`0` disables reuse).
+Obsolete source-hash/context payloads and interrupted temporary files are removed
+before replacement normalization; oldest reusable payloads are evicted to meet
+the budget after consolidation. Eviction never changes published shards or their
+hashes, and missing cache entries are regenerated on demand.
+The raw and reusable-cache limits do not cap the SQLite projection, published
+evidence, or temporary active normalization output; allow runner headroom for
+those files and one temporary rewritten source shard.
 Observation precedence is resolved before sorting, so reordered source records
 with unchanged winning values retain their content hashes. Structural records
 sort before dated records, and each filename includes its day, part index, and
@@ -220,6 +363,26 @@ cao discover-workflows \
   --output /tmp/inventory-sources.json \
   --repo OWNER/REPOSITORY
 ```
+
+Add `--offline` to use only checked-in workflow metadata and explicitly scoped
+repositories without calling GitHub. Offline sources are marked partial, and
+workflow activation remains unknown rather than inferred from local files.
+Activity uses this mode when its API capacity check reaches the reserved quota.
+Credential selection and the repository visibility boundary still fail closed.
+
+When collection reaches its reserved quota or receives a confirmed primary or
+secondary GitHub API rate-limit error, Activity stops further repository downloads
+but compacts and indexes the retained shards and completed partial downloads.
+The collector records status `75`, emits a warning and a partial-collection job
+summary, and marks affected repositories in the inventory's coverage metadata.
+The workflow accepts only this limited-capacity status for partial publication;
+authentication, permission, malformed-data, and other collection failures remain
+hard failures. It skips issue-status enrichment and new operational-value API work
+while retaining previously collected operational-value evidence. A later run can
+resume from the published cache after API capacity recovers.
+Manual runs on non-default branches use a branch-specific concurrency group,
+so preview collections cannot displace pending production collections. They
+retain the same credential scope and quota reserve.
 
 The split improves time to first useful Run query rather than reducing the
 total transfer required for a complete refresh. Run results exposed between

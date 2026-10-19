@@ -36,7 +36,9 @@ export function renderBoundMeasureHistory(context) {
     sourceNames: context.sourceNames,
     routeParameters: context.routeParameters,
     queryContext: context.queryContext
-  }, { bindingScope: selectedRoute });
+  }, { bindingScope: selectedRoute
+    ? JSON.stringify(Object.entries(context.routeParameters ?? {}).sort(([left], [right]) => left.localeCompare(right)))
+    : undefined });
   const scope = createFactoryScope();
   const root = h('div', { className: 'measure-history-bound' });
   render(root, () => {
@@ -58,7 +60,7 @@ export function renderBoundMeasureHistory(context) {
  * @typedef {{
  *   id: string,
  *   label: string,
- *   points: Array<{ x: string, y: number, key: string, link?: Record<string, unknown> }>
+ *   points: Array<{ x: string, y: number, key: string, link?: Record<string, unknown>, metadata?: Record<string, unknown> }>
  * }} OperationalValueSeries
  */
 
@@ -107,27 +109,53 @@ function renderOperationalValueHistory(context, rows) {
     debugMeasureHistory({ event: 'observation-count-unavailable' });
   }
   const panels = rows.map((row) => {
-    const label = String(row['operational-value-name'] || row['metric-name'] || row.metric);
+    const perObservation = row['plot-evidence-mode'] === 'per-observation';
+    const label = String(row['plot-title'] || row['operational-value-name'] || row['metric-name'] || row.metric);
+    const panelState = typeof row['maturity-status'] === 'string'
+      ? row['maturity-status'] === 'matured' ? 'observed-value' : 'interim-evidence'
+      : perObservation ? 'observations' : state;
+    const panelOutcomes = Array.isArray(row['run-days'])
+      ? /** @type {import('./temporal-metric-plot.js').OutcomeContext[]} */ (row['run-days'])
+      : campaignOutcomes;
     const series = /** @type {OperationalValueSeries[]} */ (Array.isArray(row.series) ? row.series : []);
     const metrics = series.map((entry) => ({
       ...entry,
       unit: String(row['operational-value-unit'] || 'value'),
       direction: /** @type {'increase'|'decrease'|'maintain'|'target'} */ (row['operational-value-direction']),
-      points: entry.points.map((point) => ({ ...point, link: findLink(point, 'link') }))
+      points: entry.points.map((point) => ({
+        ...point, link: findLink(point, 'link'),
+        ...(point.metadata ? {
+          description: String(point.metadata['plot-point-description'] || ''),
+          continuityKey: typeof point.metadata['plot-context-key'] === 'string' ? point.metadata['plot-context-key'] : null,
+          maxGapDays: typeof point.metadata['plot-max-gap-days'] === 'number' ? point.metadata['plot-max-gap-days'] : 0,
+          provisional: point.metadata['plot-provisional'] !== false
+        } : {})
+      }))
     }));
     return h('div', {
       className: 'insights-plot-panel insights-temporal-plot-panel',
       'data-operational-value-metric': String(row.metric),
-      'data-operational-value-state': state
+      'data-operational-value-state': panelState
     },
     renderTemporalMetricPlot({
         title: label,
         mode: row['evaluation-mode'] === 'attainment-only' ? 'attainment-only' : 'baseline-comparable',
         adoptionAt: String(row['adoption-at'] || ''),
+        timeDomain: {
+          start: typeof row['plot-window-start-ms'] === 'number' ? row['plot-window-start-ms'] : undefined,
+          end: typeof row['plot-window-end-ms'] === 'number' ? row['plot-window-end-ms'] : undefined
+        },
         metrics,
-        outcomes: campaignOutcomes,
-        provisional: state !== 'observed-value',
-        connectPoints: false
+        outcomes: panelOutcomes,
+        provisional: !perObservation && panelState !== 'observed-value',
+        connectPoints: perObservation || Number(row['plot-max-gap-days']) > 0,
+        maxGapDays: Number(row['plot-max-gap-days']),
+        continuityNote: perObservation
+          ? 'Lines stop at changes in measurement context, missing provenance, or gaps longer than the recorded cadence.'
+          : Number(row['plot-cadence-days']) > 0
+          ? 'Lines connect observations within the recorded cadence. Longer gaps remain disconnected; lines do not imply continuous measurement or verified impact.'
+          : 'Cadence was not retained. Lines only link observations at most 24 hours apart within the same retained context. This display rule does not establish measurement cadence, contract comparability or verified impact.',
+        comparisonNote: String(row['plot-comparison-note'] || 'Observed history only: a validated trend assessment is not supplied for this panel.')
       }),
     series.length > 1
       ? renderChartLegend(series.map((series, index) => ({
@@ -138,16 +166,19 @@ function renderOperationalValueHistory(context, rows) {
   });
 
   return h('section', { className: 'measure-history measure-history-operational-value', 'aria-label': context.title },
-    h('div', { className: 'insights-section-heading' },
-      h('div', null,
-        h('div', { className: 'insights-measure-heading' },
-          h('h2', null, 'Operational value')),
-        h('p', null, state === 'unavailable'
+    ...panels,
+    h('details', { className: 'temporal-plot-evidence-details' },
+      h('summary', null, 'How to read these plots'),
+      h('p', null, 'Points show recorded measurements. Gaps are missing evidence, not zero. Point details retain measurement provenance; lines stop where comparability is unknown.'),
+      h('p', null, !evidenceStateSource
+        ? 'Amber panels are provisional. Open Evidence details for measurement and comparison limits.'
+        : state === 'unavailable'
           ? 'Operational-value maturity evidence is unavailable. Observations are provisional.'
           : state === 'interim-evidence'
             ? `${Number.isFinite(observationCount) ? `${formatNumber(observationCount)} interim` : 'Interim'} observations in each measure’s native units. Amber points are not mature evidence.`
-            : 'Repository-level observations in each measure’s native units; campaign rollups are omitted so anomalies remain visible. Points are not connected across missing observations.'))),
-    ...panels);
+            : 'Repository-level observations in each measure’s native units; campaign rollups are omitted so anomalies remain visible. Lines connect comparable observations within the declared cadence, not across missing periods.'),
+      campaignOutcomeSource ? h('p', { className: 'insights-run-context-note' },
+        'Campaign run health: green/red bars show campaign-wide control-plane execution, not runs attributed to this target repository. Run success does not verify outcome improvement. Missing run days are not zero.') : null));
 }
 
 /**
@@ -250,8 +281,7 @@ function attachPointSelection(chart, points, readout) {
   const scope = createFactoryScope();
   scope.bind(chart);
 
-  // The smallest DOM update needed from selection state: toggle each mark's
-  // pressed/selected attributes and resync the shared readout text.
+  // Selection state owns the pressed/selected attributes of each mark.
   effect(() => {
     const selected = selectedMark.get();
     for (const candidate of marks) {
@@ -260,18 +290,20 @@ function attachPointSelection(chart, points, readout) {
       if (pressed) candidate.setAttribute('data-selected', 'true');
       else candidate.removeAttribute('data-selected');
     }
+    debugMeasureHistory({ event: 'point-selection', selected: Boolean(selected && pointsByMark.get(selected)) });
+  }, { signal: scope.signal });
+
+  // The readout is a pure function of selection state; render() morphs it in place.
+  render(readout, () => {
+    const selected = selectedMark.get();
     const point = selected ? pointsByMark.get(selected) : undefined;
-    debugMeasureHistory({ event: 'point-selection', selected: Boolean(point) });
-    if (!point) {
-      readout.replaceChildren(SELECT_POINT_MESSAGE);
-      return;
-    }
+    if (!point) return SELECT_POINT_MESSAGE;
     const seriesLabel = String(selected?.getAttribute('data-chart-point-series') || '');
-    readout.replaceChildren(
+    return [
       h('strong', null, formatNumber(point.y)),
       h('span', null, formatInstant(point.x)),
       ...(seriesLabel ? [h('span', null, seriesLabel)] : [])
-    );
+    ];
   }, { signal: scope.signal });
 
   /** @param {Element} mark */

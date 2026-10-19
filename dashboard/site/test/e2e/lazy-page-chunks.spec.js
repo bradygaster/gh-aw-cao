@@ -38,13 +38,13 @@ const inventory = {
     metadata: { 'as-of': '2026-09-15T10:00:00Z', 'retrieved-at': '2026-09-15T10:00:00Z', completeness: 'complete', freshness: 'fresh', availability: 'available' },
   },
   repositories: {
-    rows: [{ id: 'repository:githubnext/gh-aw-cao', organization: 'githubnext', repository: 'gh-aw-cao' }],
+    rows: [{ id: 'repository:githubnext/gh-cao', organization: 'githubnext', repository: 'gh-cao' }],
     metadata: { 'as-of': '2026-09-15T10:00:00Z', 'retrieved-at': '2026-09-15T10:00:00Z', completeness: 'complete', freshness: 'fresh', availability: 'available' },
   },
   workflows: {
     rows: [{
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: '.github/workflows/dashboard.md',
       'workflow-name': 'Dashboard',
       role: 'orchestrator',
@@ -57,18 +57,18 @@ const inventory = {
   },
   'marketplace-packages': {
     rows: [{
-      id: `official:githubnext/gh-aw-cao/dependabot@${'a'.repeat(40)}`,
+      id: `official:githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
       'registry-id': 'official',
       'registry-name': 'Official CAO catalog',
       'registry-precedence': 0,
       name: 'Dependabot',
       description: 'Dependabot automation',
       publisher: 'githubnext',
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       'repository-link': {
         relation: 'repository',
-        href: 'https://github.com/githubnext/gh-aw-cao',
-        label: 'Open githubnext/gh-aw-cao on GitHub',
+        href: 'https://github.com/githubnext/gh-cao',
+        label: 'Open githubnext/gh-cao on GitHub',
       },
       path: 'dependabot',
       ref: 'main',
@@ -79,17 +79,17 @@ const inventory = {
       contents: ['aw.yml'],
       readme: '# Dependabot\n\nKeeps dependency updates moving.\n',
       'readme-path': 'dependabot/README.md',
-      source: `githubnext/gh-aw-cao/dependabot@${'a'.repeat(40)}`,
-      'add-command': `./cao.sh add githubnext/gh-aw-cao/dependabot@${'a'.repeat(40)}`,
+      source: `githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
+      'add-command': `gh cao campaigns add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
     }, ...['aw-optimization', 'cao-evolution'].map((path, index) => ({
-      id: `official:githubnext/gh-aw-cao/${path}@${'b'.repeat(40)}`,
+      id: `official:githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
       'registry-id': 'official',
       'registry-name': 'Official CAO catalog',
       'registry-precedence': 0,
       name: index === 0 ? 'AW Optimization' : 'CAO Evolution',
       description: `${path} automation`,
       publisher: 'githubnext',
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       path,
       ref: 'main',
       'resolved-commit': 'b'.repeat(40),
@@ -99,18 +99,18 @@ const inventory = {
       contents: ['aw.yml'],
       readme: `# ${path}\n`,
       'readme-path': `${path}/README.md`,
-      source: `githubnext/gh-aw-cao/${path}@${'b'.repeat(40)}`,
-      'add-command': `./cao.sh add githubnext/gh-aw-cao/${path}@${'b'.repeat(40)}`,
+      source: `githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
+      'add-command': `gh cao campaigns add githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
       'observed-at': '2026-09-15T10:00:00Z',
     })), {
-      id: `official:githubnext/gh-aw-cao/aw-optimization@${'c'.repeat(40)}`,
+      id: `official:githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
       'registry-id': 'official',
       'registry-name': 'Official CAO catalog',
       'registry-precedence': 0,
       name: 'AW Optimization',
       description: 'Earlier package revision',
       publisher: 'githubnext',
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       path: 'aw-optimization',
       ref: 'main',
       'resolved-commit': 'c'.repeat(40),
@@ -120,8 +120,8 @@ const inventory = {
       contents: ['aw.yml'],
       readme: '# aw-optimization\n',
       'readme-path': 'aw-optimization/README.md',
-      source: `githubnext/gh-aw-cao/aw-optimization@${'c'.repeat(40)}`,
-      'add-command': `./cao.sh add githubnext/gh-aw-cao/aw-optimization@${'c'.repeat(40)}`,
+      source: `githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
+      'add-command': `gh cao campaigns add githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
       'observed-at': '2026-09-14T10:00:00Z',
     }],
     metadata: { 'as-of': '2026-09-15T10:00:00Z', 'retrieved-at': '2026-09-15T10:00:00Z', completeness: 'complete', freshness: 'fresh', availability: 'available' },
@@ -149,7 +149,7 @@ const logs = `${JSON.stringify({
     run_id: 1001,
     run_attempt: 1,
     organization: 'githubnext',
-    repository: 'gh-aw-cao',
+    repository: 'gh-cao',
     workflow_name: 'Dashboard',
     workflow_path: '.github/workflows/dashboard.md',
     display_title: 'Dashboard run',
@@ -262,15 +262,26 @@ test('core dashboard stays small and page chunks load on demand with in-memory c
       value: await response.json(),
     };
   });
-  expect(core.textLength).toBeLessThan(76000);
+  // Query definitions stay in page chunks; core keeps each page stub's source index so sources can
+  // load before the chunk arrives. Model-resolution views (#18626) add 386 characters of source names.
+  expect(core.textLength).toBeLessThan(76500);
+  expect(core.value.dashboard.pages.some((/** @type {Record<string, unknown>} */ entry) =>
+    ['intent', 'subject', 'objective', 'acceptance'].some((field) => field in entry))).toBe(false);
   expect(core.value.dashboard.pages.some((/** @type {{ views?: unknown[] }} */ entry) => Array.isArray(entry.views))).toBe(false);
   expect(core.value.dashboard.pages.some((/** @type {{ definition?: { views?: unknown[] } }} */ entry) => Array.isArray(entry.definition?.views))).toBe(false);
 
   await expect(page.getByRole('heading', { name: 'Repositories', exact: true, level: 1 })).toBeVisible();
   await expect.poll(() => pageText(page, 'repositories')).toMatch(/Top repositories with issues/);
+  const analysis = page.locator('[data-view-id="repositories-runs"] .table-intent-button');
+  await expect(analysis).toBeVisible();
+  await analysis.click();
+  const preview = page.locator('[data-view-id="repositories-runs"] .table-intent-preview');
+  await expect(preview).toContainText('Page intent:\nDetermine which repository most needs CAO operational investigation.');
+  await expect(preview).toContainText('https://github.com/githubnext/gh-cao/blob/main/skills/analyze-cao/SKILL.md');
+  await page.getByRole('button', { name: 'Close prompt preview' }).click();
   await page.getByRole('button', { name: 'Table' }).click();
   await expect.poll(() => pageText(page, 'repositories')).toMatch(
-    /Ingestion %|No repositories discovered\.|gh-aw-cao|Loading Repositories/
+    /Ingestion %|No repositories discovered\.|gh-cao|Loading Repositories/
   );
   await expect.poll(() => chunkRequests.filter((id) => id === 'repositories').length).toBe(1);
 
@@ -308,7 +319,7 @@ test('built inventory tables resolve partial-source queries through the producti
   });
   await page.goto(`${origin}/?debug-eager-ingest=1#page-campaigns`);
   await page.waitForFunction(() => Reflect.get(window, '__dashboardImportComplete') === true);
-  for (const [pageId, identity] of [['campaigns', 'Dependabot'], ['repositories', 'gh-aw-cao']]) {
+  for (const [pageId, identity] of [['campaigns', 'Dependabot'], ['repositories', 'gh-cao']]) {
     await navigateToPage(page, pageId);
     await page.getByRole('button', { name: 'Table', exact: true }).click();
     const active = page.locator(`[data-page-id="${pageId}"]`);
@@ -323,16 +334,16 @@ test('built dashboard preserves supported campaign icons outside its inline core
     contentType: 'application/json',
     body: JSON.stringify({
       ...inventory,
-      campaigns: { ...inventory.campaigns, rows: inventory.campaigns.rows.map((row) => ({
-        ...row, 'campaign-icon': 'feed-trophy'
+      'marketplace-packages': { ...inventory['marketplace-packages'], rows: inventory['marketplace-packages'].rows.map((row) => ({
+        ...row, icon: 'feed-trophy'
       })) }
     })
   }));
   const spriteLoaded = page.waitForResponse((response) => response.url() === `${origin}/src/octicons.svg`);
-  await page.goto(`${origin}/#page-overview`);
+  await page.goto(`${origin}/#page-marketplace-package?package-source=${encodeURIComponent(inventory['marketplace-packages'].rows[0].source)}`);
   await spriteLoaded;
   const icon = page.locator('.link-button-list-item .octicon-feed-trophy');
-  await expect(icon).toHaveAttribute('data-icon-state', 'available');
+  await expect(icon).toBeVisible();
   await expect(icon.locator('path')).not.toHaveCount(0);
   await expect(icon.locator('use')).toHaveCount(0);
 });
@@ -343,12 +354,73 @@ test('async Factory Overview elements receive their chunked query definitions', 
 
   const overview = page.locator('[data-page-id="overview"]');
   await expect(overview).not.toContainText('No custom views available.');
-  await expect(overview.locator(':scope > .custom-view-grid > .custom-view')).toHaveCount(3);
-  await expect(overview.getByRole('heading', { name: 'Your campaigns are humming.' })).toBeVisible();
+  await expect(overview.locator(':scope > .custom-view-grid > .custom-view')).toHaveCount(2);
+  await expect(overview.getByRole('heading', { name: 'Your factory is humming.' })).toBeVisible();
   await expect(overview.locator('.factory-station').nth(0)).toContainText('1');
   await expect(overview.locator('.factory-station').nth(1)).toContainText('1');
   await expect(overview).not.toContainText('Unavailable');
   await expect.poll(() => chunkRequests.filter((id) => id === 'overview').length).toBe(1);
+  await expect(overview.getByText('Weekly rhythm', { exact: true })).toBeVisible();
+  await expect(overview.locator('.dashboard-ingestion-status')).toHaveCount(0);
+  await expect(page.locator('.report-footer-status')).toHaveCount(0);
+  const status = page.getByRole('button', { name: 'Dashboard data is stale', exact: true });
+  await expect(status).toHaveCount(1);
+  await expect(status.locator('.octicon-alert')).toBeVisible();
+  await expect(overview.locator('.factory-station').first()).toContainText('Factory health');
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await expect(overview.locator('.factory-station').first()).toBeVisible();
+    if (viewport.width < 768) await page.getByRole('button', { name: 'Select view', exact: true }).click();
+    await expect(status).toBeVisible();
+    await status.hover();
+    await expect(page.locator('#dashboard-current-status-tooltip')).toContainText('The latest workflow evidence is from');
+    const path = test.info().outputPath(`factory-overview-${viewport.width}.png`);
+    await page.screenshot({ path, fullPage: true });
+    await test.info().attach(`factory-overview-${viewport.width}`, {
+      path,
+      contentType: 'image/png'
+    });
+    if (viewport.width < 768) await page.getByRole('button', { name: 'Select view', exact: true }).click();
+  }
+});
+
+test('fresh upstream evidence shows green on desktop and mobile', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-15T12:00:00Z'));
+  await page.goto(`${origin}/#page-overview`);
+  const status = page.getByRole('button', { name: 'Dashboard data is current', exact: true });
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    if (viewport.width < 768) await page.getByRole('button', { name: 'Select view', exact: true }).click();
+    await expect(status).toBeVisible();
+    await expect(status.locator('.octicon-check-circle-fill')).toBeVisible();
+    await expect(page.locator('.dashboard-current-status')).toHaveAttribute('data-tone', 'success');
+    await status.hover();
+    await expect(page.locator('#dashboard-current-status-tooltip')).toContainText('Workflow evidence is current as of');
+  }
+});
+
+test('dashboard status preserves refresh failure and recovery without the Overview duplicate', async ({ page }) => {
+  await page.goto(`${origin}/#page-overview`);
+  const status = page.getByRole('button', { name: 'Dashboard data is stale', exact: true });
+  await expect(status).toBeVisible();
+  await expect(page.locator('.dashboard-ingestion-status')).toHaveCount(0);
+  await page.route(`${origin}/payload-hashes.json`, (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: '{"error":"Temporarily unavailable"}'
+  }));
+  await page.evaluate(() => window.dispatchEvent(new Event('dashboard-refresh-request')));
+  const refreshNotice = page.locator('[data-notification-id="dashboard:refresh-error"]');
+  await expect(refreshNotice).toContainText('last complete snapshot');
+  await expect(refreshNotice).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Dashboard refresh failed', exact: true }).locator('.octicon-stop')).toBeVisible();
+  await expect(page.locator('.dashboard-current-status')).toHaveAttribute('data-tone', 'danger');
+  await expect(page.locator('.dashboard-ingestion-status')).toHaveCount(0);
+  await page.unroute(`${origin}/payload-hashes.json`);
+  await page.evaluate(() => window.dispatchEvent(new Event('dashboard-refresh-request')));
+  await expect(status).toBeVisible();
+  await expect(status.locator('.octicon-alert')).toBeVisible();
+  await expect(page).toHaveURL(`${origin}/#page-overview`);
 });
 
 test('marketplace page renders canonical package cards after ingestion', async ({ page }) => {
@@ -410,18 +482,29 @@ test('marketplace page renders canonical package cards after ingestion', async (
   await dashboardRoot.evaluate((root) => root.setAttribute('data-theme', 'light'));
   await add.click();
   await expect(page.locator('.cli-action-dialog .cli-action-command')).toHaveText(
-    `bash ./cao.sh add githubnext/gh-aw-cao/dependabot@${'a'.repeat(40)}`
+    `gh cao campaigns add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`
   );
-  await page.locator('.cli-action-dialog .cli-action-cancel').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(detail.locator('.dashboard-markdown')).toContainText('Keeps dependency updates moving.');
   const about = detail.locator('.link-button-list-view');
   await expect(about.getByRole('heading', { name: 'About' })).toBeVisible();
-  const repositoryLink = about.getByRole('link', { name: 'Open githubnext/gh-aw-cao on GitHub' });
-  await expect(repositoryLink).toHaveAttribute('href', 'https://github.com/githubnext/gh-aw-cao');
+  const repositoryLink = about.getByRole('link', { name: 'Open githubnext/gh-cao on GitHub' });
+  await expect(repositoryLink).toHaveAttribute('href', 'https://github.com/githubnext/gh-cao');
   await expect(about.locator('.link-button-list')).toHaveCSS('border-width', '0px');
   const readmeBox = await detail.locator('.dashboard-markdown').boundingBox();
   const aboutBox = await about.boundingBox();
   expect(aboutBox?.x ?? 0).toBeGreaterThan((readmeBox?.x ?? 0) + (readmeBox?.width ?? 0));
+});
+
+test('outcome sections settle into empty states when no outcome is selected', async ({ page }) => {
+  await page.goto(`${origin}/#page-outcome-detail`);
+  const outcome = page.locator('[data-page-id="outcome-detail"]');
+  await expect(outcome).toBeVisible();
+  for (const id of ['outcome-discussion', 'outcome-metadata']) {
+    const section = outcome.locator(`[data-view-id="${id}"]`);
+    await expect(section.locator('[data-view-state="empty"]')).toBeVisible();
+    await expect(section.locator('[aria-busy="true"]')).toHaveCount(0);
+  }
 });
 
 test('package detail failure offers recovery without rendering unrelated sections', async ({ page }) => {

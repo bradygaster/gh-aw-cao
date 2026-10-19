@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { tidy } from '../../src/data-operations.js';
-import { executeDashboardQueries } from '../../src/data/queries/declarative.js';
+import { DASHBOARD_QUERY_LIMITS, executeDashboardQueries } from '../../src/data/queries/declarative.js';
 import { renderCustomViewStateDetails } from '../../src/components/view-chrome.js';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
 import {
@@ -18,6 +18,35 @@ const metadata = {
   completeness: 'complete',
   freshness: 'fresh'
 };
+
+it('preserves the firewall aggregate failure diagnostic through the scoped view dependency chain', () => {
+  const dashboard = authoritativeDashboard.dashboard;
+  const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'firewall');
+  const payload = compileDashboardViewPayloadQueries(page, 'firewall', {
+    queries: dashboard.queries,
+    views: dashboard.views,
+    viewId: 'security-firewall-most-blocked-domains',
+    sourceNames: ['firewall-most-blocked-domains']
+  });
+  const alias = payload.aliases[0];
+  const result = executeDashboardQueries(payload.queries, {
+    'firewall-observations': {
+      source: 'firewall-observations',
+      rows: Array.from({ length: DASHBOARD_QUERY_LIMITS['max-input-rows'] + 1 }, () => ({
+        domain: 'api.github.com', run: '1', decision: 'denied', 'request-count': 1
+      })),
+      metadata
+    }
+  }, payload.aliases)[alias];
+
+  expect(result.rows).toEqual([]);
+  expect(result.metadata.availability).toBe('unavailable');
+  expect(result.metadata['query-diagnostic']).toContain('"firewall-observations" exceeds the max-input-rows limit');
+  expect(result.metadata['query-error']).toEqual({
+    code: 'input-unavailable',
+    source: `${alias}:dependency:firewall-domain-totals`
+  });
+});
 
 it('traces an unavailable MCP view alias through its scoped query graph to the missing source', () => {
   const dashboard = authoritativeDashboard.dashboard;
@@ -320,18 +349,18 @@ it('binds every named drill argument to a worker query predicate and fails close
     }]
   };
   const bound = compileDashboardViewPayloadQueries(page, 'issue-events', {
-    routeParameters: { repository: 'gh-aw-cao', 'issue-id': '42' }
+    routeParameters: { repository: 'gh-cao', 'issue-id': '42' }
   });
   const missing = compileDashboardViewPayloadQueries(page, 'issue-events', {
-    routeParameters: { repository: 'gh-aw-cao' }
+    routeParameters: { repository: 'gh-cao' }
   });
 
   expect(/** @type {any} */ (bound.queries[0]).filter.predicates).toEqual([
-    { field: 'repository', equals: 'gh-aw-cao' },
+    { field: 'repository', equals: 'gh-cao' },
     { field: 'correlation-id', equals: '42' }
   ]);
   expect(/** @type {any} */ (missing.queries[0]).filter.predicates).toEqual([
-    { field: 'repository', equals: 'gh-aw-cao' },
+    { field: 'repository', equals: 'gh-cao' },
     { field: 'correlation-id', equals: '' }
   ]);
 });

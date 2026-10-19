@@ -15,11 +15,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresconn"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/sqlbuilder"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresconn"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/sqlbuilder"
 )
 
 var storeLog = logger.New("cao:postgresx:store")
@@ -77,6 +77,20 @@ func NewWithNamespace(ctx context.Context, dsn, namespace string) (*Store, error
 }
 
 func NewConfig(ctx context.Context, config *pgx.ConnConfig, namespaces ...string) (*Store, error) {
+	return openConfig(ctx, config, true, namespaces...)
+}
+
+// OpenWithNamespace opens pre-provisioned canonical storage without DDL or a
+// partition-maintenance goroutine. Production roles must use this path.
+func OpenWithNamespace(ctx context.Context, dsn, namespace string) (*Store, error) {
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, errors.New("invalid postgres connection configuration")
+	}
+	return openConfig(ctx, config, false, namespace)
+}
+
+func openConfig(ctx context.Context, config *pgx.ConnConfig, provision bool, namespaces ...string) (*Store, error) {
 	if config == nil {
 		return nil, errors.New("postgres connection configuration is required")
 	}
@@ -101,9 +115,19 @@ func NewConfig(ctx context.Context, config *pgx.ConnConfig, namespaces ...string
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	if err := initialize(ctx, db); err != nil {
+	check := checkProvisionedContract
+	if provision {
+		check = initialize
+	}
+	if err := check(ctx, db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("postgres connection or fresh schema initialization failed: %w", err)
+		return nil, fmt.Errorf("postgres storage contract check failed: %w", err)
+	}
+	if provision {
+		if err := initializeStatistics(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("provision native statistics capability: %w", err)
+		}
 	}
 	retention, err := configuredRetentionDays()
 	if err != nil {
@@ -116,6 +140,13 @@ func NewConfig(ctx context.Context, config *pgx.ConnConfig, namespaces ...string
 		return nil, err
 	}
 	store := &Store{db: db, config: config.Copy(), namespace: namespace, linkedRetentionDays: linkedRetention}
+	if !provision {
+		if err := store.checkProvisionedPartitions(ctx, time.Now(), retention, linkedRetention); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		return store, nil
+	}
 	if err := store.RunPartitionMaintenance(ctx, time.Now(), retention, linkedRetention); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize run partitions: %w", err)
@@ -215,6 +246,9 @@ func (s *Store) DeleteNamespace(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `DELETE FROM cao_state WHERE namespace = $1`, s.namespace); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM cao_github_resources WHERE namespace = $1`, s.namespace); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -291,6 +325,11 @@ func (s *Store) WithReadTransaction(ctx context.Context, fn func(context.Context
 	}
 	// JIT compilation of wide dashboard plans can consume the entire read budget.
 	if _, err := tx.ExecContext(ctx, "SET LOCAL jit = off"); err != nil {
+		return err
+	}
+	// PostgreSQL 16 can estimate window-filtered CTEs as one row and choose
+	// quadratic rescans. Compiled joins are equijoins; prefer hash/merge plans.
+	if _, err := tx.ExecContext(ctx, "SET LOCAL enable_nestloop = off"); err != nil {
 		return err
 	}
 	if err := fn(ctx, &readTransaction{store: s, tx: tx}); err != nil {

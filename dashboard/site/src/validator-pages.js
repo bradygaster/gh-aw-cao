@@ -162,6 +162,18 @@ export function validatePage(page, pageNode, path, pageIds, errors) {
   }
 
   validateOptionalStringField(page.title, `${path}.title`, errors);
+  if (page.requires !== undefined) {
+    const requiresPath = `${path}.requires`;
+    if (!isPlainObject(page.requires)) {
+      errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'page requires must be a mapping.', requiresPath));
+    } else {
+      validateObjectKeys(getValueNodeByKey(pageNode, 'requires'), ['capability'], requiresPath, errors);
+      if (page.requires.capability !== 'cli-queue' && page.requires.capability !== 'admin') {
+        errors.push(createError(ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
+          'page requires capability must be cli-queue or admin.', `${requiresPath}.capability`));
+      }
+    }
+  }
   validateOptionalStringField(page['navigation-label'], `${path}.navigation-label`, errors);
   validateNavigationIndicator(
     page['navigation-indicator'],
@@ -170,6 +182,20 @@ export function validatePage(page, pageNode, path, pageIds, errors) {
     errors
   );
   validateOptionalStringField(page.description, `${path}.description`, errors);
+  for (const field of ['intent', 'subject', 'objective', 'acceptance']) {
+    if (page[field] !== undefined) {
+      validateStringField(page[field], `${path}.${field}`, true, errors);
+      if (typeof page[field] === 'string' && !page[field].trim()) {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+          `${field} must not be whitespace only.`, `${path}.${field}`));
+      }
+    }
+  }
+  if (typeof page.intent === 'string' && [...page.intent].length > 8000) {
+    errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+      'Page intent must be at most 8000 characters.', `${path}.intent`));
+  }
+  validateSemanticMetadataLength(page, path, errors);
   if (page['class-name'] !== undefined) {
     validateRequiredIdentifier(page['class-name'], `${path}.class-name`, 'page class name', errors);
   }
@@ -870,10 +896,10 @@ function validateCustomPage(page, pageNode, path, errors) {
       ));
     } else {
       validateObjectKeys(getValueNodeByKey(pageNode, 'route'), PAGE_ROUTE_KEYS, routePath, errors);
-      if (page.route['hash-query-parameter'] === undefined && page.route['navigation-page'] === undefined && page.route.tabs === undefined) {
+      if (page.route['hash-query-parameter'] === undefined && page.route['navigation-page'] === undefined && page.route.tabs === undefined && page.route.breadcrumbs === undefined) {
         errors.push(createError(
           ERROR_CODES.missingOrInvalidRequiredField,
-          'route must declare hash-query-parameter, navigation-page, or tabs.',
+          'route must declare hash-query-parameter, navigation-page, tabs, or breadcrumbs.',
           routePath
         ));
       }
@@ -892,6 +918,43 @@ function validateCustomPage(page, pageNode, path, errors) {
           'route navigation page',
           errors
         );
+      }
+      if (page.route.breadcrumbs !== undefined) {
+        const breadcrumbs = page.route.breadcrumbs;
+        if (!Array.isArray(breadcrumbs) || breadcrumbs.length === 0 || breadcrumbs.length > MAX_PAGE_ROUTE_TABS) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+            `route breadcrumbs must be a sequence of 1 to ${MAX_PAGE_ROUTE_TABS} entries.`, `${routePath}.breadcrumbs`));
+        } else {
+          const breadcrumbPages = new Set();
+          for (const [index, breadcrumb] of breadcrumbs.entries()) {
+            const breadcrumbPath = `${routePath}.breadcrumbs[${index}]`;
+            if (!isPlainObject(breadcrumb)) {
+              errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'route breadcrumb must be a mapping.', breadcrumbPath));
+              continue;
+            }
+            for (const key of Object.keys(breadcrumb)) {
+              if (!['page', 'parameters'].includes(key)) {
+                errors.push(createError(ERROR_CODES.unknownOrDuplicateKey, `Unknown route breadcrumb key "${key}".`, `${breadcrumbPath}.${key}`));
+              }
+            }
+            validateRequiredIdentifier(breadcrumb.page, `${breadcrumbPath}.page`, 'breadcrumb page', errors);
+            if (breadcrumbPages.has(breadcrumb.page)) {
+              errors.push(createError(ERROR_CODES.unknownOrDuplicateKey, 'route breadcrumb pages must be unique.', `${breadcrumbPath}.page`));
+            }
+            breadcrumbPages.add(breadcrumb.page);
+            if (breadcrumb.parameters !== undefined) {
+              if (!Array.isArray(breadcrumb.parameters) || breadcrumb.parameters.length === 0
+                || breadcrumb.parameters.length > MAX_PAGE_ROUTE_TABS || new Set(breadcrumb.parameters).size !== breadcrumb.parameters.length) {
+                errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+                  'breadcrumb parameters must be a non-empty sequence of unique route parameter names.', `${breadcrumbPath}.parameters`));
+              } else {
+                for (const [parameterIndex, parameter] of breadcrumb.parameters.entries()) {
+                  validateRequiredIdentifier(parameter, `${breadcrumbPath}.parameters[${parameterIndex}]`, 'breadcrumb parameter', errors);
+                }
+              }
+            }
+          }
+        }
       }
       if (page.route['availability-view'] !== undefined) {
         if (page.route['navigation-page'] === undefined) {

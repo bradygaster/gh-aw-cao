@@ -1,28 +1,56 @@
 import { h } from '../dom.js';
 import { octicon } from '../octicons.js';
-import { renderCliActionCommand } from '../cli-action-template.js';
+import { cliActionTemplateFields, renderCliActionCommand } from '../cli-action-template.js';
 import { createCopyControl, createModalDialog, renderCloseButton, renderLiveRegion } from './ui-primitives.js';
 import { createDebug } from '../debug.js';
 import { createFactoryScope } from './factory-elements.js';
 import { effect, state } from '../reactive.js';
 import { assertActionLevel, normalizeAction, actionPresentation } from '../action-model.js';
 import { createDialogSelector } from './dialog-selector.js';
+import { enqueueCliCommand, attachCliCommand, cliQueueAvailable, subscribeCanonicalDashboardView } from '../data-processor.js';
+import { publishNotification } from '../notification-service.js';
 
+const cliCommandSummaryContext = { pages: [] };
 const debugCliActions = createDebug('cli-actions');
 
-const endpoint = './__cli_action';
-/** @type {Array<{ id: string, level?: import('../action-model.js').ActionLevel, verb?: string, label: string, description?: string, icon: string, command: string, placement?: 'toolbar'|'settings'|'view'|'row', 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>} */
+/** @type {Array<{ id: string, level?: import('../action-model.js').ActionLevel, verb?: string, label: string, description?: string, icon: string, command: string, 'preview-command'?: string, placement?: 'toolbar'|'settings'|'view'|'row', 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>} */
 let declaredCliActions = [];
 let declaredCliActionsCanExecute = true;
 /** @type {Record<string, string>} */
 let declaredCliActionTemplateValues = {};
+/** @type {Record<string, string>} */
+let declaredCliActionContext = {};
 
-/** @param {typeof declaredCliActions} actions @param {{ canExecute?: boolean, templateValues?: Record<string, string> }} [options] */
+/** @param {typeof declaredCliActions} actions @param {{ canExecute?: boolean, templateValues?: Record<string, string>, context?: Record<string, string> }} [options] */
 export function setDeclaredCliActions(actions, options = {}) {
   declaredCliActions = Array.isArray(actions)
     ? actions.map((action) => ({ ...normalizeAction(action, { id: action.id, type: 'cli' }), ...action })) : [];
   declaredCliActionsCanExecute = options.canExecute !== false;
   declaredCliActionTemplateValues = options.templateValues ?? {};
+  declaredCliActionContext = options.context ?? {};
+}
+
+/**
+ * Resolve an interaction element's explicit action reference using the same host declarations.
+ * @param {string} id
+ * @param {Record<string, string>} values
+ * @param {Record<string, boolean>} [args]
+ */
+export function declaredCliActionCommand(id, values, args = {}) {
+  const action = declaredCliActions.find((candidate) => candidate.id === id);
+  if (!action || action['copy-only'] === true) throw new Error('CLI action is unavailable.');
+  return commandPreview(action, args, values, declaredCliActionContext);
+}
+
+/**
+ * @param {string} id
+ * @param {Record<string, string>} values
+ * @param {{ arguments?: Record<string, boolean>, input?: string, signal: AbortSignal, onOutput: (event: { stream: 'stdout'|'stderr', data: string }) => void }} options
+ */
+export function executeDeclaredCliAction(id, values, options) {
+  if (!declaredCliActionsCanExecute || !cliQueueAvailable()) throw new Error('Authorized local CLI actions are unavailable.');
+  declaredCliActionCommand(id, values, options.arguments);
+  return executeAction(id, options.arguments ?? {}, values, options.onOutput, options.input, options.signal);
 }
 
 /** @returns {string | undefined} */
@@ -37,52 +65,21 @@ export function declaredAgentTaskActionId() {
  * @param {Record<string, string>} templateValues
  * @param {(event: { stream: 'stdout'|'stderr', data: string }) => void} onOutput
  * @param {string | undefined} [input]
+ * @param {AbortSignal} [signal]
  */
-async function executeAction(id, argumentsValue, templateValues, onOutput, input) {
+async function executeAction(id, argumentsValue, templateValues, onOutput, input, signal) {
   /** @type {Record<string, unknown>} */
-  const payload = { id, arguments: argumentsValue };
+  const payload = { id, arguments: argumentsValue, idempotencyKey: crypto.randomUUID() };
   if (Object.keys(templateValues).length > 0) payload.values = templateValues;
   if (input !== undefined) payload.input = input;
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const result = await response.json().catch(() => null);
-    throw new Error(result?.error || `Action failed with HTTP ${response.status}.`);
+  const command = await enqueueCliCommand(payload, signal);
+  const complete = await attachCliCommand(command.id, (event) => onOutput(
+    /** @type {{ stream: 'stdout'|'stderr', data: string }} */ (event)
+  ), signal);
+  if (complete.command?.status === 'canceled') {
+    return { ...complete.result, error: 'Cancelled. Completed changes are not undone.' };
   }
-
-  if (!response.body) throw new Error('Action output stream is unavailable.');
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  /** @type {{ ok: boolean, error?: string, stdout?: string, stderr?: string } | undefined} */
-  let result;
-  /** @param {string} line */
-  const consume = (line) => {
-    if (!line) return;
-    const event = JSON.parse(line);
-    if (event.type === 'output') {
-      onOutput(event);
-    } else if (event.type === 'complete') {
-      result = event.result;
-    } else if (event.type === 'error') {
-      throw new Error(event.error || 'Action failed.');
-    }
-  };
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) consume(line);
-    if (done) break;
-  }
-  consume(buffer);
-  if (!result) throw new Error('Action ended without a completion result.');
-  return result;
+  return complete.result;
 }
 
 /** @param {{ stdout?: string, stderr?: string }} result */
@@ -102,7 +99,7 @@ function resultText(result) {
 export function createPromptCliActionControl(actionId, getPrompt, options = {}) {
   assertActionLevel(options.level ?? 'propose', 'prompt');
   const action = declaredCliActions.find((candidate) => candidate.id === actionId);
-  if (!declaredCliActionsCanExecute || !action || action['copy-only'] === true) return null;
+  if (!declaredCliActionsCanExecute || !cliQueueAvailable() || !action || action['copy-only'] === true) return null;
   const scope = createFactoryScope();
   const status = /** @type {HTMLOutputElement} */ (renderLiveRegion('output', 'table-intent-copy-status'));
   const output = h('pre', { className: 'cli-action-output', hidden: true });
@@ -127,7 +124,7 @@ export function createPromptCliActionControl(actionId, getPrompt, options = {}) 
         const result = await executeAction(action.id, {}, {}, ({ data }) => {
           outputText.set((current) => current + data);
           output.scrollTop = output.scrollHeight;
-        }, getPrompt());
+        }, getPrompt(), scope.signal);
         statusText.set(result.ok ? 'Agent task started.' : (result.error || 'Could not start agent task.'));
         if (!outputText.get()) outputText.set(resultText(result));
       } catch (error) {
@@ -136,7 +133,7 @@ export function createPromptCliActionControl(actionId, getPrompt, options = {}) 
         busy.set(false);
       }
     }
-  }, options.level === 'operate' ? `Confirm ${options.label ?? 'operation'}` : 'Start agent task'));
+  }, options.level === 'operate' ? options.label ?? action.label : 'Start agent task'));
   effect(() => {
     button.disabled = busy.get();
     status.textContent = statusText.get();
@@ -161,10 +158,11 @@ export function createPromptCliActionControl(actionId, getPrompt, options = {}) 
  * @param {{ command: string, arguments?: Array<{ id: string, flag: string }> }} action
  * @param {Record<string, boolean>} values
  * @param {Record<string, string>} templateValues
+ * @param {Record<string, string>} context
  */
-function commandPreview(action, values, templateValues) {
+function commandPreview(action, values, templateValues, context) {
   const command = [
-    renderCliActionCommand(action.command, templateValues),
+    renderCliActionCommand(action.command, templateValues, context),
     ...(action.arguments ?? []).filter((argument) => values[argument.id]).map((argument) => argument.flag)
   ].join(' ');
   const userAgentData = typeof navigator === 'undefined'
@@ -182,20 +180,27 @@ function commandPreview(action, values, templateValues) {
 }
 
 /**
- * @param {{ id: string, label: string, description?: string, icon: string, command: string, 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }} action
- * @param {{ presentation?: 'menu'|'settings'|'row', templateValues?: Record<string, string>, canExecute?: boolean, showRowLabel?: boolean }} [options]
+ * @param {{ id: string, label: string, description?: string, icon: string, command: string, 'preview-command'?: string, 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }} action
+ * @param {{ presentation?: 'menu'|'settings'|'row', templateValues?: Record<string, string>, context?: Record<string, string>, canExecute?: boolean, showRowLabel?: boolean, batch?: { targets: Array<Record<string, string>>, error?: string, warning?: string } }} [options]
  */
 function renderCliActionControl(action, options = {}) {
   const presentation = actionPresentation(normalizeAction(action, { id: action.id, type: 'cli' }));
   const settingsPresentation = options.presentation === 'settings';
   const rowPresentation = options.presentation === 'row';
-  const canExecute = options.canExecute !== false && action['copy-only'] !== true;
-  const confirmationLabel = action.selector ? presentation.label
-    : presentation.confirmation ? `Confirm ${presentation.label}` : `Run ${presentation.label}`;
+  const canExecute = options.canExecute !== false && cliQueueAvailable() && action['copy-only'] !== true;
+  const confirmationLabel = presentation.label;
   const templateValues = { ...options.templateValues };
-  const preview = () => action.selector && !templateValues[action.selector.mapping.target]
+  const context = options.context ?? declaredCliActionContext;
+  const fields = cliActionTemplateFields(action.command);
+  const missingContext = cliActionTemplateFields(action.command, { includeContext: true })
+    .find((field) => !fields.includes(field) && !context[field]);
+  const commandError = options.batch?.error ?? (missingContext
+    ? `CAO command context "${missingContext}" is unavailable. Configure the public CAO URL and control repository.`
+    : undefined);
+  const templateTargets = options.batch?.targets ?? [templateValues];
+  const preview = () => commandError ?? (action.selector && !templateValues[action.selector.mapping.target]
     ? 'Select a repository to review the command.'
-    : commandPreview(action, argumentValues, templateValues);
+    : templateTargets.map((values) => commandPreview(action, argumentValues, values, context)).join('\n'));
   const argumentValues = Object.fromEntries(
     (action.arguments ?? []).map((argument) => [argument.id, argument.default === true])
   );
@@ -203,11 +208,6 @@ function renderCliActionControl(action, options = {}) {
   let trigger;
   /** @type {HTMLElement} */
   let command;
-  // `commandPreviewText` is the command node's entire visible state; the
-  // effect below is the only place that writes it onto the owned `command`
-  // node, replacing the three scattered `command.textContent` writes
-  // previously made from the checkbox listener, `resetArguments`, and the
-  // dialog-open handler.
   const commandPreviewText = state(preview());
   const inputs = (action.arguments ?? []).map((argument) => {
     const input = /** @type {HTMLInputElement} */ (h('input', {
@@ -248,7 +248,6 @@ function renderCliActionControl(action, options = {}) {
     onFallbackClose: () => trigger.focus()
   });
   const close = () => {
-    if (busy.get()) return;
     selector?.cancel();
     closeModal();
   };
@@ -262,32 +261,22 @@ function renderCliActionControl(action, options = {}) {
     trackState: true
   });
   const status = copyControl?.status ?? /** @type {HTMLOutputElement} */ (renderLiveRegion('output', 'cli-action-status'));
-  const output = h('pre', { className: 'cli-action-output', hidden: true });
-
-  // `busy`, `statusText`, `outputVisible`, `outputText`, and `confirmLabel` are
-  // the dialog's entire executable-run state; the effect below is the only
-  // place that writes them onto the owned `status`/`output`/`confirm` nodes.
   const scope = createFactoryScope();
   const busy = state(false);
   const statusText = state('');
-  const outputVisible = state(false);
-  const outputText = state('');
-  const confirmLabel = state(confirmationLabel);
-  const selectionReady = state(!action.selector);
+  const enqueued = state(false);
+  const selectionReady = state(!action.selector && !commandError);
   const selector = action.selector ? createDialogSelector(action.id, action.selector, {
     signal: scope.signal,
     select: (value) => {
       const target = action.selector?.mapping.target;
       if (!target) return;
       statusText.set('');
-      outputVisible.set(false);
-      outputText.set('');
-      confirmLabel.set(confirmationLabel);
       if (value === null) delete templateValues[target];
       else templateValues[target] = value;
       try {
         commandPreviewText.set(preview());
-        selectionReady.set(value !== null);
+        selectionReady.set(value !== null && !commandError);
       } catch (error) {
         delete templateValues[target];
         selectionReady.set(false);
@@ -297,32 +286,68 @@ function renderCliActionControl(action, options = {}) {
     }
   }) : null;
 
+  const enqueueBatch = async () => {
+    if (busy.get() || commandError) return;
+    busy.set(true);
+    try {
+      const results = await Promise.allSettled(templateTargets.map((values) => enqueueCliCommand({
+        id: action.id,
+        arguments: { ...argumentValues },
+        values,
+        idempotencyKey: crypto.randomUUID()
+      }, scope.signal)));
+      if (scope.signal.aborted) return;
+      const admitted = results.filter((result) => result.status === 'fulfilled').length;
+      const failed = results.length - admitted;
+      publishNotification({
+        message: failed
+          ? `${action.label}: ${admitted} commands queued; ${failed} could not be queued.`
+          : `${action.label}: ${admitted} commands queued.`,
+        href: '#page-commands',
+        tone: failed ? 'error' : 'success'
+      });
+      if (admitted) {
+        enqueued.set(true);
+        close();
+        window.location.hash = 'page-commands';
+      }
+    } finally {
+      busy.set(false);
+    }
+  };
   const cancel = /** @type {HTMLButtonElement} */ (h('button', {
     type: 'button',
-    className: 'cli-action-cancel',
+    className: 'cli-action-cancel cli-action-detach',
     onClick: close
   }, 'Cancel'));
   const confirm = copyControl?.button ?? /** @type {HTMLButtonElement} */ (h('button', {
       type: 'button',
       className: 'cli-action-confirm',
       onClick: async () => {
-        if (busy.get() || !selectionReady.get()) return;
+        if (busy.get() || enqueued.get() || !selectionReady.get()) return;
+        if (options.batch) {
+          await enqueueBatch();
+          return;
+        }
         busy.set(true);
-        statusText.set('Running…');
-        outputText.set('');
-        outputVisible.set(true);
+        statusText.set('Queuing command…');
         debugCliActions({ event: 'execute-started', actionId: action.id });
         try {
-          const result = await executeAction(action.id, argumentValues, templateValues, ({ data }) => {
-            outputText.set((current) => current + data);
-            output.scrollTop = output.scrollHeight;
-          });
-          statusText.set(result.ok ? 'Completed' : (result.error || 'Action failed'));
-          if (!outputText.get()) outputText.set(resultText(result));
-          confirmLabel.set(`${confirmationLabel} again`);
-          debugCliActions({ event: 'execute-completed', actionId: action.id, ok: result.ok });
+          const command = await enqueueCliCommand({
+            id: action.id,
+            arguments: { ...argumentValues },
+            ...(Object.keys(templateValues).length ? { values: { ...templateValues } } : {}),
+            idempotencyKey: crypto.randomUUID()
+          }, scope.signal);
+          if (scope.signal.aborted) return;
+          enqueued.set(true);
+          debugCliActions({ event: 'execute-queued', actionId: action.id });
+          close();
+          window.location.hash = `page-command?command=${encodeURIComponent(command.id)}`;
         } catch (error) {
-          statusText.set(error instanceof Error ? error.message : 'Action failed.');
+          if (scope.signal.aborted) return;
+          const message = error instanceof Error ? error.message : 'Could not queue command.';
+          statusText.set(message);
           debugCliActions({
             event: 'execute-failed',
             actionId: action.id,
@@ -333,15 +358,15 @@ function renderCliActionControl(action, options = {}) {
         }
       }
     }, 'Run action'));
+  if (commandError) confirm.disabled = true;
   if (canExecute) {
     effect(() => {
-      confirm.disabled = busy.get() || !selectionReady.get();
+      confirm.disabled = busy.get() || enqueued.get() || !selectionReady.get();
       cancel.disabled = busy.get();
+      for (const { input } of inputs) input.disabled = busy.get();
       selector?.setDisabled(busy.get());
       status.textContent = statusText.get();
-      output.hidden = !outputVisible.get();
-      output.textContent = outputText.get();
-      confirm.textContent = confirmLabel.get();
+      confirm.textContent = confirmationLabel;
     }, { signal: scope.signal });
   }
   trigger = /** @type {HTMLButtonElement} */ (h(
@@ -355,12 +380,15 @@ function renderCliActionControl(action, options = {}) {
         : 'cli-action-trigger',
       title: action.label,
       'aria-label': action.label,
-      onClick: () => {
+      onClick: async () => {
+        if (options.batch && canExecute && inputs.length === 0) {
+          await enqueueBatch();
+          return;
+        }
         copyControl?.reset();
         if (canExecute) {
           statusText.set('');
-          outputVisible.set(false);
-          confirmLabel.set(confirmationLabel);
+          enqueued.set(false);
         }
         resetArguments();
         selector?.reset();
@@ -376,9 +404,30 @@ function renderCliActionControl(action, options = {}) {
       !rowPresentation && action.description ? h('small', null, action.description) : null
     )
   ));
+  if (options.batch && canExecute) {
+    effect(() => {
+      trigger.disabled = busy.get() || Boolean(options.batch?.error);
+      if (busy.get()) trigger.setAttribute('aria-busy', 'true');
+      else trigger.removeAttribute('aria-busy');
+      trigger.title = options.batch?.error ?? action.label;
+    }, { signal: scope.signal });
+  }
   command = h('code', { className: 'cli-action-command' }, commandPreviewText.get());
+  const compactCommand = options.batch && action['preview-command'] && !commandError
+    ? h('code', { className: 'cli-action-preview-command' })
+    : null;
+  const commandDetails = compactCommand ? h('details', { className: 'cli-action-command-details' },
+    h('summary', null, `Show all ${templateTargets.length} full commands`),
+    command
+  ) : null;
   effect(() => {
     command.textContent = commandPreviewText.get();
+    if (compactCommand) {
+      compactCommand.textContent = commandPreview(
+        { ...action, command: action['preview-command'] ?? action.command },
+        argumentValues, templateTargets[0], context
+      );
+    }
   }, { signal: scope.signal });
   dialog.append(
     h(
@@ -395,6 +444,7 @@ function renderCliActionControl(action, options = {}) {
       'div',
       { className: 'cli-action-dialog-body' },
       action.description ? h('p', null, action.description) : null,
+      options.batch?.warning ? h('p', { className: 'view-metadata', role: 'note' }, options.batch.warning) : null,
       selector?.root,
       inputs.length > 0
         ? h('fieldset', { className: 'cli-action-arguments' },
@@ -403,21 +453,27 @@ function renderCliActionControl(action, options = {}) {
         : null,
       action.selector ? null : h('p', null, canExecute
         ? presentation.confirmation
-          ? `Confirm the exact effect of ${presentation.label} on the selected target. This command will execute once after approval. Actions that use gh aw may install the pinned extension first.`
+          ? [
+            `Confirm the exact effect of ${presentation.label} on the selected targets. Each listed command will execute once after approval. Actions that use `,
+            h('code', null, 'gh aw'),
+            ' may install the pinned extension first.'
+          ]
           : 'This command is declared as read-only investigation. Review its exact target and command before running.'
-        : 'Copy this command and run it in your terminal.'),
-      command,
-      canExecute ? output : null
+        : compactCommand ? 'Copy all commands and run them in your terminal.' : 'Copy this command and run it in your terminal.'),
+      compactCommand ? h('p', null, `Preview for the first of ${templateTargets.length} targets:`) : null,
+      compactCommand,
+      commandDetails ?? command
     ),
     h('footer', { className: 'cli-action-dialog-footer' }, status, cancel, confirm)
   );
   dialog.addEventListener('close', () => {
     selector?.cancel();
+    commandDetails?.removeAttribute('open');
     trigger.focus();
   });
   dialog.addEventListener('cancel', (event) => {
-    if (busy.get()) event.preventDefault();
-    else selector?.cancel();
+    event.preventDefault();
+    close();
   });
   scope.bind(trigger);
   return { trigger, dialog };
@@ -451,13 +507,37 @@ export function renderRowCliAction(actionId, templateValues, options = {}) {
  * Render one declared CLI action with its authored label and description.
  * @param {string} actionId
  * @param {Record<string, string>} [templateValues]
+ * @param {{ rows: Array<Record<string, unknown>>, fields: string[], available: boolean, warning?: string }} [binding]
  */
-export function renderDeclaredCliAction(actionId, templateValues = {}) {
+export function renderDeclaredCliAction(actionId, templateValues = {}, binding) {
   const action = declaredCliActions.find((candidate) => candidate.id === actionId);
   if (!action || action.selector && !declaredCliActionsCanExecute) return null;
+  /** @type {{ targets: Array<Record<string, string>>, error?: string, warning?: string } | undefined} */
+  let batch;
+  if (binding) {
+    batch = { targets: [], warning: binding.warning };
+    try {
+      if (!binding.available || binding.rows.length === 0) {
+        throw new Error('The complete target list is unavailable. No commands can be approved.');
+      }
+      for (const row of binding.rows) {
+        const values = Object.fromEntries(binding.fields.map((field) => {
+          const value = row[field];
+          if (typeof value !== 'string') throw new Error(`CLI action context "${field}" is missing or invalid.`);
+          return [field, value];
+        }));
+        renderCliActionCommand(action.command, values, declaredCliActionContext);
+        batch.targets.push(values);
+      }
+    } catch (error) {
+      batch.error = error instanceof Error ? error.message : 'The command target list is invalid.';
+      batch.targets = [];
+    }
+  }
   const rendered = renderCliActionControl(action, {
     templateValues: { ...declaredCliActionTemplateValues, ...templateValues },
-    canExecute: declaredCliActionsCanExecute
+    canExecute: declaredCliActionsCanExecute,
+    batch
   });
   return h('span', { className: 'declared-cli-action' }, rendered.trigger, rendered.dialog);
 }
@@ -465,8 +545,8 @@ export function renderDeclaredCliAction(actionId, templateValues = {}) {
 /**
  * Render dashboard-declared CLI actions. Every invocation requires a fresh,
  * explicit confirmation; approval is never persisted or inferred.
- * @param {Array<{ id: string, label: string, description?: string, icon: string, command: string, 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }> | undefined} actions
- * @param {{ presentation?: 'menu'|'settings', templateValues?: Record<string, string>, canExecute?: boolean }} [options]
+ * @param {Array<{ id: string, label: string, description?: string, icon: string, command: string, 'preview-command'?: string, 'copy-only'?: boolean, selector?: import('../dialog-selector.js').DialogSelector, arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }> | undefined} actions
+ * @param {{ presentation?: 'menu'|'settings', templateValues?: Record<string, string>, context?: Record<string, string>, canExecute?: boolean }} [options]
  * @returns {HTMLElement | null}
  */
 export function renderCliActions(actions, options = {}) {
@@ -538,19 +618,33 @@ export function renderSettingsCliActions() {
  * View and row actions are rendered by their declaring views.
  * @param {HTMLElement} dashboard
  * @param {typeof declaredCliActions} actions
- * @param {{ repository?: string, canExecute?: boolean }} [options]
+ * @param {{ repository?: string, context?: Record<string, string>, canExecute?: boolean }} [options]
  */
 export function attachCliActions(dashboard, actions, options = {}) {
   const canExecute = options.canExecute !== false;
   /** @type {Record<string, string>} */
   const templateValues = {};
   if (typeof options.repository === 'string') templateValues.repository = options.repository;
-  setDeclaredCliActions(actions, { canExecute, templateValues });
+  setDeclaredCliActions(actions, { canExecute, templateValues, context: options.context });
   const toolbarActions = renderCliActions(
     actions.filter((action) => (action.placement ?? 'toolbar') === 'toolbar'),
     { templateValues, canExecute }
   );
   if (toolbarActions) dashboard.querySelector('.report-actions')?.prepend(toolbarActions);
+  if (canExecute && cliQueueAvailable() && !dashboard.querySelector('.cli-commands-navigation')) {
+    const scope = createFactoryScope();
+    const navigation = h('a', {
+      href: '#page-commands', className: 'cli-actions-toggle cli-commands-navigation',
+      'aria-label': 'Commands running', title: 'Commands running', hidden: true,
+      dataset: { mobileNavPageId: 'commands' }
+    }, octicon('terminal'));
+    dashboard.querySelector('.report-actions')?.prepend(navigation);
+    scope.bind(navigation);
+    subscribeCanonicalDashboardView('cli-commands-navigation', ['cli-command-summary'], cliCommandSummaryContext, (sources) => {
+      const running = sources['cli-command-summary']?.rows[0]?.running;
+      navigation.hidden = !(typeof running === 'number' && running > 0);
+    }, undefined, { signal: scope.signal });
+  }
 
   const settingsActions = renderSettingsCliActions();
   const existingSettingsActions = dashboard.querySelector('.configuration-view > .cli-actions-settings');

@@ -49,7 +49,7 @@ beforeAll(async () => {
     observedAt,
     runLink: {
       relation: 'run',
-      href: `https://github.com/githubnext/gh-aw-cao/actions/runs/${attempt === 3 ? '99' : contract.run.run}/attempts/${attempt === 3 ? 1 : attempt}`
+      href: `https://github.com/githubnext/gh-cao/actions/runs/${attempt === 3 ? '99' : contract.run.run}/attempts/${attempt === 3 ? 1 : attempt}`
     }
   }));
   /** @type {Record<string, unknown>[]} */
@@ -57,7 +57,7 @@ beforeAll(async () => {
     id: `bulk-tool-${index}`,
     runId: runs[2].id,
     source: 'mcp',
-    type: 'tool.call',
+    type: 'mcp.tool_call',
     mcpServer: 'bulk',
     mcpTool: 'large-tool',
     status: 'success',
@@ -68,7 +68,7 @@ beforeAll(async () => {
     id: `selected-tool-${index}`,
     runId: runs[index % 2].id,
     source: 'mcp',
-    type: 'tool.call',
+    type: 'mcp.tool_call',
     mcpServer: 'github',
     mcpTool: 'issue_read',
     status: index % 5 === 0 ? 'failure' : 'success',
@@ -83,7 +83,7 @@ beforeAll(async () => {
     { id: 'null-server', mcpServer: null, mcpTool: 'missing-server' },
     { id: 'missing-tool', mcpServer: 'missing-tool' }
   ].map((tool) => ({
-    ...tool, runId: runs[0].id, source: 'mcp', type: 'tool.call', status: 'success', timestamp: observedAt, observedAt
+    ...tool, runId: runs[0].id, source: 'mcp', type: 'mcp.tool_call', status: 'success', timestamp: observedAt, observedAt
   })));
   const audits = Array.from({ length: largeScope }, (_, index) => ({
     id: `bulk-audit-${index}`,

@@ -17,13 +17,13 @@ const pageDefinitions = [
 ];
 const inventory = {
   repositories: {
-    rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }],
+    rows: [{ organization: 'githubnext', repository: 'gh-cao' }],
     metadata: { 'as-of': asOf }
   },
   workflows: {
     rows: [{
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: '.github/workflows/dashboard.md',
       'workflow-name': 'Dashboard'
     }],
@@ -42,6 +42,10 @@ async function expectRunsLoadOnScroll(page, expectedTotal) {
   const loadBoundary = view.locator('[data-table-more]');
   await expect(rows).toHaveCount(25);
   await expect(view.locator('.table-filter-result')).toHaveText(`Showing 25 of ${expectedTotal} results`);
+  const storageNotice = page.locator('[data-notification-id="dashboard:browser-storage"]');
+  if (await storageNotice.isVisible()) {
+    await storageNotice.getByRole('button', { name: /^Dismiss / }).click();
+  }
   await scroll.hover();
   await page.mouse.wheel(0, 10_000);
   await scroll.evaluate((element) => {
@@ -153,7 +157,7 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false, c
             run_id: 1000 + (run - 1) * runsPerShard + index + 1,
             run_attempt: 1,
             organization: 'githubnext',
-            repository: 'gh-aw-cao',
+            repository: 'gh-cao',
             workflow_name: 'Dashboard',
             workflow_path: '.github/workflows/dashboard.md',
             display_title: `Ingested run ${run}-${index + 1}`,
@@ -202,9 +206,8 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false, c
   await expect(importScreen.locator('header')).toBeInViewport({ ratio: 1 });
   await expect(importScreen.getByRole('button', { name: 'Explore data' })).toHaveCount(1);
   await expect(importScreen.locator('.first-load-server-option')).not.toBeVisible();
-  await expect(importScreen).toContainText(upgrade
-    ? 'This update can take several minutes'
-    : 'The first import can take several minutes');
+  await expect(importScreen.locator('.first-load-storage-warning')).toHaveCount(0);
+  await expect(page.locator('[data-notification-id="dashboard:browser-storage"]')).toContainText('private session ends');
   const importHistory = importScreen.locator('.first-load-ingestion-details');
   await expect(importHistory).toBeVisible();
   await importHistory.locator('summary').click();
@@ -263,6 +266,15 @@ async function exerciseFirstImport({ context, page }, mobile, upgrade = false, c
   await expect(page.getByRole('button', { name: 'Show import progress' })).toHaveCount(0);
   await expect.poll(() => completedShards).toBe(shardCount - 1);
   await expect.poll(() => storedRunCount(page)).toBe((shardCount - 1) * runsPerShard);
+  const preparation = await page.evaluate(async (url) => {
+    const { preparationDiagnostics } = await import(url);
+    return preparationDiagnostics();
+  }, `${origin}/src/browser-first-load.js`);
+  expect(preparation.storage.persisted).not.toBe(true);
+  expect(preparation.log.some((/** @type {{ details: { message?: string } }} */ entry) =>
+    entry.details.message?.startsWith('Shard 1/12 committed'))).toBe(true);
+  expect(preparation.log.some((/** @type {{ details: { message?: string } }} */ entry) =>
+    entry.details.message?.startsWith('Shard 11/12 committed'))).toBe(true);
   await expect(page.locator('#agent-factory-heading')).toHaveText('Your dashboard is taking shape.');
   await expect(page.locator('.factory-intro .factory-rhythm')).not.toBeVisible();
   await page.locator('.dashboard-notification-toggle').click();

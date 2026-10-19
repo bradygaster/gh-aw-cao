@@ -129,6 +129,8 @@ function evidence(scale = 1) {
       'run-status': 'completed',
       'run-conclusion': attempt % 2 ? 'failure' : 'success',
       'failure-kind': attempt % 2 ? 'driver_exit' : '',
+      'terminal-outcome': attempt % 2 ? 'report_incomplete' : undefined,
+      'terminal-outcome-detail': attempt % 2 ? 'Retained diagnostic evidence' : undefined,
       'aic-total': (index + 1) * 0.25,
       event: attempt % 2 ? 'schedule' : 'workflow_dispatch',
       'target-repository': attempt % 4 ? 'example/target' : 'example/unregistered',
@@ -149,7 +151,7 @@ function evidence(scale = 1) {
         'event-source': 'fixture',
         'safe-output-url': name === 'issues'
           ? `https://github.com/example/${run.repository}/issues/${index * 4 + record + 1}` : '',
-        'event-type': name === 'audits' && index % 2 ? 'safe_output.created' : 'tool.call',
+        'event-type': name === 'audits' && index % 2 ? 'safe_output.result' : 'mcp.tool_call',
         'safe-output-type': name === 'audits' && index % 2 ? 'report_incomplete' : '',
         'event-summary': 'Retained diagnostic evidence',
         'event-timestamp': run['started-at']
@@ -358,13 +360,13 @@ describe('campaign inventory query optimization', () => {
 
   it('preserves duplicate incomplete-outcome join failures instead of counting unvalidated dispatches', async () => {
     const sources = await canonicalSources();
-    const diagnosis = sources.audits.rows.find((row) => row['safe-output-type'] === 'report_incomplete');
+    const diagnosis = sources.runs.rows.find((row) => row['terminal-outcome'] === 'report_incomplete');
     if (!diagnosis) throw new Error('The canonical fixture must contain an incomplete outcome.');
     const results = parity({
       ...sources,
-      audits: {
-        ...sources.audits,
-        rows: [...sources.audits.rows, { ...diagnosis, event: 'duplicate-incomplete-outcome' }]
+      runs: {
+        ...sources.runs,
+        rows: [...sources.runs.rows, { ...diagnosis, id: 'duplicate-incomplete-outcome', 'aic-total': 0 }]
       }
     });
     for (const row of results['campaign-inventory'].rows) expect(row.dispatches).toBe(0);
@@ -378,9 +380,9 @@ describe('campaign inventory query optimization', () => {
     const beforeAnalysis = analyzeDashboardComplexity({ dashboard: { queries: baseline } });
     const afterAnalysis = analyzeDashboardComplexity({ dashboard: { queries } });
     const expected = {
-      'campaign-inventory': [83, 251, 66, 95],
-      'campaign-workflows': [51, 155, 38, 76],
-      'campaign-workflow-totals': [50, 149, 36, 70]
+      'campaign-inventory': [88, 257, 68, 95],
+      'campaign-workflows': [56, 161, 40, 76],
+      'campaign-workflow-totals': [55, 155, 38, 70]
     };
     for (const name of names) {
       const before = beforeAnalysis.inventory.find((query) => query.name === name);

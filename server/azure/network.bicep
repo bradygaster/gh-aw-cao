@@ -6,6 +6,14 @@ param postgresAdministratorLogin string
 param postgresAdministratorPassword string
 param postgresSkuName string = 'Standard_B2s'
 param postgresSkuTier string = 'Burstable'
+@description('Optional existing network security group to keep attached to every subnet. Empty leaves subnets without an NSG.')
+param subnetNetworkSecurityGroupId string = ''
+
+var subnetNetworkSecurityGroup = empty(subnetNetworkSecurityGroupId) ? {} : {
+  networkSecurityGroup: {
+    id: subnetNetworkSecurityGroupId
+  }
+}
 
 resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: '${namePrefix}-vnet'
@@ -17,7 +25,7 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
     subnets: [
       {
         name: 'functions'
-        properties: {
+        properties: union(subnetNetworkSecurityGroup, {
           addressPrefix: '10.42.0.0/24'
           delegations: [
             {
@@ -27,11 +35,11 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
               }
             }
           ]
-        }
+        })
       }
       {
         name: 'postgres'
-        properties: {
+        properties: union(subnetNetworkSecurityGroup, {
           addressPrefix: '10.42.1.0/24'
           delegations: [
             {
@@ -41,13 +49,13 @@ resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
               }
             }
           ]
-        }
+        })
       }
       {
         name: 'containers'
-        properties: {
+        properties: union(subnetNetworkSecurityGroup, {
           addressPrefix: '10.42.2.0/23'
-        }
+        })
       }
     ]
   }

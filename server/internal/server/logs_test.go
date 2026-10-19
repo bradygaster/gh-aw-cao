@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
 )
 
 type logCounterClient struct {
@@ -59,7 +59,7 @@ func TestServerLogsAuthorization(t *testing.T) {
 	}{
 		{"no session", context.Background(), http.StatusForbidden},
 		{"non admin", context.WithValue(context.Background(), oauthSessionContextKey{}, oauthSession{Login: "viewer"}), http.StatusForbidden},
-		{"admin", context.WithValue(context.Background(), oauthSessionContextKey{}, oauthSession{Login: "operator"}), http.StatusOK},
+		{"admin", context.WithValue(context.Background(), oauthSessionContextKey{}, assuredSession("operator")), http.StatusOK},
 		{"actions", context.WithValue(context.Background(), githubActionsActorContextKey{}, "workflow"), http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {

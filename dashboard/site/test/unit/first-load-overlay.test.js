@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserFirstLoad, showBrowserFirstLoad } from '../../src/browser-first-load.js';
+import { browserFirstLoad, showBrowserFirstLoad, recordPreparationEvent, recordPreparationStorage, resetPreparationDiagnostics } from '../../src/browser-first-load.js';
 import { mountFirstLoadOverlay } from '../../src/components/first-load-overlay.js';
 import { renderFactoryHeader } from '../../src/components/factory-header.js';
 import { scopedStorageKey } from '../../src/storage-scope.js';
@@ -10,6 +10,7 @@ let owner = new AbortController();
 beforeEach(() => {
   owner = new AbortController();
   document.body.replaceChildren();
+  resetPreparationDiagnostics();
   browserFirstLoad.set({ status: 'loading', dismissed: false });
 });
 
@@ -150,7 +151,7 @@ describe('browser first-load presentation', () => {
     expect(serverOption?.textContent).toContain('deploy a CAO backend server');
     expect(serverOption?.textContent).toContain('avoid this browser import');
     expect([...serverOption?.querySelectorAll('a') ?? []].map((link) => [link.textContent, link.href])).toEqual([
-      ['deployment options', 'https://githubnext.github.io/gh-aw-cao/deployment/']
+      ['deployment options', 'https://githubnext.github.io/gh-cao/deployment/']
     ]);
     for (const link of serverOption?.querySelectorAll('a') ?? []) {
       expect(link.target).toBe('_blank');
@@ -211,8 +212,12 @@ describe('browser first-load presentation', () => {
     expect(dialog?.querySelector('h2')?.textContent).toContain('dashboard update could not finish');
   });
 
-  it('explains a missing snapshot and copies bounded preparation diagnostics', async () => {
+  it('explains a missing snapshot and copies the full preparation log and storage diagnostics', async () => {
     browserFirstLoad.set({ status: 'loading', dismissed: false, reason: 'missing-snapshot', stage: 'files', completed: 2, total: 5 });
+    recordPreparationStorage({ persisted: false, quota: 1000, usage: 100 });
+    for (let index = 0; index < 216; index += 1) {
+      recordPreparationEvent('ingestion', { message: `Shard ${index + 1} committed.` });
+    }
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
@@ -223,7 +228,8 @@ describe('browser first-load presentation', () => {
     expect(copy?.textContent).toContain('Copy preparation details');
     copy?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce());
-    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({
+    const diagnostics = JSON.parse(writeText.mock.calls[0][0]);
+    expect(diagnostics).toMatchObject({
       event: 'dashboard-browser-database-repopulation',
       reason: 'missing-snapshot',
       status: 'loading',
@@ -231,8 +237,14 @@ describe('browser first-load presentation', () => {
       completed: 2,
       total: 5,
       schemaVersionBefore: null,
-      schemaVersionAfter: null
+      schemaVersionAfter: null,
+      storage: { persisted: false, quota: 1000, usage: 100 },
+      ingestion: null
     });
+    expect(diagnostics.log).toHaveLength(217);
+    expect(diagnostics.log[1]).toMatchObject({ event: 'ingestion', details: { message: 'Shard 1 committed.' } });
+    expect(diagnostics.log.at(-1)).toMatchObject({ event: 'ingestion', details: { message: 'Shard 216 committed.' } });
+    expect(diagnostics.log.every((/** @type {{ timestamp: string }} */ entry) => Number.isFinite(Date.parse(entry.timestamp)))).toBe(true);
     await vi.waitFor(() => expect(dialog?.querySelector('.first-load-copy-status')?.textContent).toBe('Preparation details copied.'));
     browserFirstLoad.set({ status: 'failed', dismissed: false, reason: 'upgrade', oldVersion: 36, newVersion: 37 });
     expect(dialog?.querySelector('.first-load-reason')?.textContent).toContain('newer browser database format');
@@ -248,6 +260,17 @@ describe('browser first-load presentation', () => {
     mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
     /** @type {HTMLButtonElement | null} */ (document.querySelector('.first-load-details-link'))?.click();
     await vi.waitFor(() => expect(document.querySelector('.first-load-copy-status')?.textContent).toBe('Could not copy preparation details.'));
+  });
+
+  it('keeps import duration honest without duplicating the managed storage notice', () => {
+    mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
+    recordPreparationStorage({ persisted: false, quota: null, usage: null });
+    const dialog = document.querySelector('dialog');
+    expect(dialog?.querySelector('.first-load-storage-warning')).toBeNull();
+    expect(dialog?.querySelector('.first-load-duration')?.textContent).toContain('download the data again');
+    recordPreparationStorage({ persisted: true, quota: 1000, usage: 100 });
+    expect(dialog?.textContent).not.toContain('data will be lost when the private session ends');
+    expect(dialog?.querySelector('.first-load-duration')?.textContent).toContain('Future visits reuse cached data');
   });
 
   it('supports Escape dismissal, honest failure output and retry', () => {
@@ -287,7 +310,7 @@ describe('browser first-load presentation', () => {
 
   it('suppresses idle and rhythm throughout the initial import, including after dismissal and failure', () => {
     const sources = {
-      status: { rows: () => [{ heading: 'Your campaigns are idle.' }], pending: () => false, unavailable: () => false },
+      status: { rows: () => [{ heading: 'Your factory is idle.' }], pending: () => false, unavailable: () => false },
       rhythm: { rows: () => [], pending: () => false, unavailable: () => false }
     };
     const header = renderFactoryHeader(sources, owner, { presentation: 'status', rhythm: 'rhythm' }, true);
@@ -301,14 +324,14 @@ describe('browser first-load presentation', () => {
     browserFirstLoad.set({ status: 'failed', dismissed: true });
     expect(header.querySelector('h2')?.textContent).toBe('Your dashboard import is incomplete.');
     expect(header.querySelector('h2')?.hasAttribute('aria-busy')).toBe(false);
-    expect(header.querySelector('p')?.textContent).toBe('Campaign status is not available yet.');
+    expect(header.querySelector('p')?.textContent).toBe('Factory status is not available yet.');
     browserFirstLoad.set({ status: 'inactive', dismissed: false });
-    expect(header.querySelector('h2')?.textContent).toBe('Your campaigns are idle.');
+    expect(header.querySelector('h2')?.textContent).toBe('Your factory is idle.');
     expect(header.querySelector('.factory-rhythm')?.hasAttribute('hidden')).toBe(false);
     expect(header.querySelectorAll('button')).toHaveLength(0);
     owner.abort();
     browserFirstLoad.set({ status: 'loading', dismissed: false });
-    expect(header.querySelector('h2')?.textContent).toBe('Your campaigns are idle.');
+    expect(header.querySelector('h2')?.textContent).toBe('Your factory is idle.');
   });
 
   it('does not apply the first-load presentation without declarative opt-in', () => {

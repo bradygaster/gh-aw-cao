@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/query"
 )
 
 func TestMCPBindsSimulatorOperandsInDependencies(t *testing.T) {
@@ -152,8 +152,9 @@ func TestMCPDecodesParameterizedComputeOperand(t *testing.T) {
 
 func TestMCPExecutesGeneratedSimulatorQuery(t *testing.T) {
 	app := newMCPTestApp(t, true)
-	app.database = integrationDatabase(t)
-	seedDatabase(t, app.database, map[string]model.Source{})
+	database := integrationDatabase(t)
+	app.database = database
+	seedDatabase(t, database, map[string]model.Source{})
 	catalog, err := readJSONFile[agentCatalog](testAgentCatalog)
 	if err != nil {
 		t.Fatal(err)

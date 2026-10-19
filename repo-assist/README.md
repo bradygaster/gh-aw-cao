@@ -23,11 +23,10 @@ The CAO quickstart uses **Repo Assist**, not a separate repository assessment.
 It enables only the existing maintenance worker, in review mode, for one exact
 public target. Issue triage, issue fix, and PR upkeep remain disabled.
 There is no special worker, snapshot helper, or reduced assessment profile.
-With no `--target`, quickstart uses the actively maintained public
-[`github/gh-aw`](https://github.com/github/gh-aw) repository and the normal
-worker checkout. Use `--target OWNER/REPOSITORY` for your own public repository.
-No demo repository is created, and the example's existing automations are not
-prerequisites for your repository.
+Quickstart installation requires `--target OWNER/REPOSITORY` to select your
+existing public target explicitly; no owner or repository is suggested.
+The normal worker checkout is used. No demo repository is created, and existing
+automations are not prerequisites for your repository.
 
 Maintenance proposes **one small validated patch** in a control-repository
 review issue and downloadable review bundle, or records a **no-op** if nothing
@@ -42,8 +41,16 @@ default, configurable in gh-aw). The default total is **1,250 AI credits**,
 not expected consumption or a measured token count. Normal validation and
 review-bundle behavior are unchanged.
 
-Quickstart pauses the orchestrator through `gh workflow disable` immediately
-after requesting its first run. The requested run can finish, but the six-hour
+Quickstart installs and commits the control plane, then stops with the
+orchestrator paused. Continue with `gh cao quickstart --step run` when ready
+to request one review; inspect its outcome in Actions, then use
+`gh cao quickstart --step collect` and `gh cao quickstart --step dashboard`.
+These separate stages do not wait for remote completion. See the
+[Repo Assist walkthrough](../docs/repo-assist-quickstart.md) for component explanations
+and checkpoints.
+
+The run stage pauses the orchestrator through `gh workflow disable` immediately
+after requesting its run. The requested run can finish, but the six-hour
 schedule will not keep spending credits. Re-enable it explicitly for further
 manual runs or scheduled operation:
 
@@ -66,16 +73,16 @@ Copilot assignment uses the `assign-to-agent` safe output and requires Copilot c
 
 The first run demonstrates Maintenance only. Explore the broader campaign
 through these real, historical review-mode reports from our
-[`githubnext/gh-aw-cao` control repository](https://github.com/githubnext/gh-aw-cao).
+[`githubnext/gh-cao` control repository](https://github.com/githubnext/gh-cao).
 They are not canned demo data or a promise that every run finds work.
 Reading these reports does not start a workflow or spend AI credits.
 
 | Capability | Observed report and outcome |
 | --- | --- |
-| Issue triage | [#17740](https://github.com/githubnext/gh-aw-cao/issues/17740) diagnoses a runtime import failure in `githubnext/gh-aw-cao`, explains the evidence, and gives a maintainer action and acceptance checks. [Originating run](https://github.com/githubnext/gh-aw-cao/actions/runs/38399472881). |
-| Issue fix | [#17851](https://github.com/githubnext/gh-aw-cao/issues/17851) proposes a patch for false dashboard integration-test failures in `githubnext/gh-aw-cao`, with 12 focused tests reported passing and full-suite baseline failures disclosed. [Originating run](https://github.com/githubnext/gh-aw-cao/actions/runs/38493105790). |
-| Maintenance | [#17378](https://github.com/githubnext/gh-aw-cao/issues/17378) proposes a lockfile-sync correction in `githubnext/gh-aw-cao`, with before/after `npm ci --dry-run` evidence and an infrastructure limitation on full installation disclosed. [Originating run](https://github.com/githubnext/gh-aw-cao/actions/runs/38119485916). |
-| PR upkeep | [#14060](https://github.com/githubnext/gh-aw-cao/issues/14060) reviews a blocker on `github/gh-aw#56568` and identifies a maintainer design decision rather than inventing a repair. No new patch was made, and the [originating run failed](https://github.com/githubnext/gh-aw-cao/actions/runs/36227760220); this is not a successful repair example. |
+| Issue triage | [#17740](https://github.com/githubnext/gh-cao/issues/17740) diagnoses a runtime import failure in `githubnext/gh-cao`, explains the evidence, and gives a maintainer action and acceptance checks. [Originating run](https://github.com/githubnext/gh-cao/actions/runs/38399472881). |
+| Issue fix | [#17851](https://github.com/githubnext/gh-cao/issues/17851) proposes a patch for false dashboard integration-test failures in `githubnext/gh-cao`, with 12 focused tests reported passing and full-suite baseline failures disclosed. [Originating run](https://github.com/githubnext/gh-cao/actions/runs/38493105790). |
+| Maintenance | [#17378](https://github.com/githubnext/gh-cao/issues/17378) proposes a lockfile-sync correction in `githubnext/gh-cao`, with before/after `npm ci --dry-run` evidence and an infrastructure limitation on full installation disclosed. [Originating run](https://github.com/githubnext/gh-cao/actions/runs/38119485916). |
+| PR upkeep | [#14060](https://github.com/githubnext/gh-cao/issues/14060) reviews a blocker on `github/gh-aw#56568` and identifies a maintainer design decision rather than inventing a repair. No new patch was made, and the [originating run failed](https://github.com/githubnext/gh-cao/actions/runs/36227760220); this is not a successful repair example. |
 
 These outcomes were checked on 2026-10-14. They show analysis and proposed work,
 not proof that a patch was applied, accepted, or merged. Historical reports may
@@ -92,7 +99,7 @@ separately reviewed choices. Keeping the repository unchanged is valid.
 Install from a reviewed catalog release into a Central Agentic Ops control repository:
 
 ```bash
-gh aw add githubnext/gh-aw-cao/repo-assist
+gh aw add githubnext/gh-cao/repo-assist
 ```
 
 Configure the campaign in `.github/workflows/cao.json`:

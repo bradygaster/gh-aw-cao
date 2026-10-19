@@ -41,6 +41,13 @@ const path = require("node:path");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.GH_ARGS_PATH, JSON.stringify(args) + "\\n");
 if (args[0] === "api") {
+  if (args[1] !== "rate_limit") {
+    process.stdout.write(JSON.stringify([{ workflows: [
+      { path: ".github/workflows/remote-experiment.lock.yml" },
+      { path: ".github/workflows/ci.yml" },
+    ] }]));
+    process.exit(0);
+  }
   process.stdout.write(JSON.stringify({ resources: {
     core: { limit: 5000, remaining: 5000, reset: 1791406800 },
   } }));
@@ -59,7 +66,7 @@ fs.appendFileSync(process.env.PRECOLLECTION_PATH, JSON.stringify({ repository, c
 const shardPath = shardPattern.replace(/\\*$/, "") + "fixture.jsonl";
 fs.mkdirSync(path.dirname(shardPath), { recursive: true });
 fs.writeFileSync(shardPath, JSON.stringify({ schema_version: 2, kind: "run", run: {
-   database_id: repository === "githubnext/gh-aw-cao" ? 42 : 43,
+   database_id: repository === "githubnext/gh-cao" ? 42 : 43,
    repository,
    workflow_path:".github/workflows/sample.lock.yml",
    status:"completed"
@@ -68,13 +75,13 @@ process.stderr.write("Fetched 1 run\\n");
 `);
   await chmod(ghPath, 0o755);
   await writeFile(item.controlSettingsPath, JSON.stringify({
-    allowed_repositories: ["github/gh-aw", "githubnext/gh-aw-cao"]
+    allowed_repositories: ["github/gh-aw", "githubnext/gh-cao"]
   }));
   try {
     const env = {
       ...process.env,
       PATH: `${item.bin}:${process.env.PATH}`,
-      GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+      GITHUB_REPOSITORY: "githubnext/gh-cao",
       REPORT_ROOT: item.root,
       REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
       REPORT_GH_AW_LOGS_SEED_SHARDS: seedPath,
@@ -98,22 +105,29 @@ process.stderr.write("Fetched 1 run\\n");
     await writeFile(path.join(seedPath, "github-gh-aw-logs-2000-second.jsonl"), `${duplicate}\n`);
     const collection = await execFileAsync("bash", [path.resolve("activity/collect-logs.sh")], { env });
     assert.match(collection.stdout, /Activity log collection: 2 repositories; window=30d/);
+    assert.match(collection.stdout, /download timeout=10m/);
     assert.match(collection.stdout, /github\/gh-aw restored 2 matching cache shards/);
-    assert.match(collection.stdout, /githubnext\/gh-aw-cao download exited 0 after \d+s/);
+    assert.match(collection.stdout, /githubnext\/gh-cao download exited 0 after \d+s/);
     assert.match(collection.stdout, /Activity log collection: completed with exit code 0/);
     const { stdout } = await execFileAsync(process.execPath, [path.resolve("activity/logs.mjs")], { env });
     const invocations = (await readFile(item.argumentsPath, "utf8")).trim().split("\n").map(JSON.parse);
-    assert.deepEqual(invocations.filter((args) => args[0] === "api"), [
+    assert.deepEqual(invocations.filter((args) => args[0] === "api" && args[1] === "rate_limit"), [
       ["api", "rate_limit"], ["api", "rate_limit"],
+    ]);
+    assert.deepEqual(invocations.filter((args) => args[0] === "api" && args[1] !== "rate_limit"), [
+      ["api", "repos/github/gh-aw/actions/workflows?per_page=100", "--paginate", "--slurp"],
+      ["api", "repos/githubnext/gh-cao/actions/workflows?per_page=100", "--paginate", "--slurp"],
     ]);
     const logInvocations = invocations.filter((args) => args[0] === "aw");
     assert.equal(logInvocations.length, 2);
     const args = logInvocations[0];
     assert.deepEqual(args.slice(0, 3), ["aw", "logs", "--audit"]);
+    assert.equal(args.at(-1), "github/gh-aw/.github/workflows/remote-experiment.lock.yml");
+    assert.equal(args.some((arg) => arg.endsWith("/ci.yml")), false);
     assert.equal(args.includes("--json"), false);
     assert.deepEqual(args.slice(args.indexOf("--artifacts"), args.indexOf("--artifacts") + 2), [
       "--artifacts",
-      "usage",
+      "usage,experiment",
     ]);
     assert.equal(args.filter((value) => value === "--prune-older-runs").length, 1);
     const shardPrefix = path.join(item.root, "cache", "gh-aw-logs-shards", "github-gh-aw-logs-");
@@ -124,21 +138,22 @@ process.stderr.write("Fetched 1 run\\n");
     assert.equal(args.filter((value) => value === "logs").length, 1);
     assert.deepEqual(args.slice(args.indexOf("--count"), args.indexOf("--count") + 2), ["--count", "10"]);
     assert.deepEqual(args.slice(args.indexOf("--timeout"), args.indexOf("--timeout") + 2), ["--timeout", "10"]);
+    assert.equal(args.filter((value) => value === "--timeout").length, 1);
     assert.deepEqual(logInvocations.map((invocation) => invocation[invocation.indexOf("--repo") + 1]), [
       "github/gh-aw",
-      "githubnext/gh-aw-cao",
+      "githubnext/gh-cao",
     ]);
     assert.deepEqual(
       (await readFile(item.precollectionPath, "utf8")).trim().split("\n").map(JSON.parse),
       [
         { repository: "github/gh-aw", cachedRecords: 1 },
-        { repository: "githubnext/gh-aw-cao", cachedRecords: 0 },
+        { repository: "githubnext/gh-cao", cachedRecords: 0 },
       ],
     );
     const runs = await readGhAwLogShards(item.logsPath);
     assert.deepEqual(runs.map((run) => run.repository), [
       "github/gh-aw",
-      "githubnext/gh-aw-cao",
+      "githubnext/gh-cao",
     ]);
     const state = JSON.parse(await readFile(item.statePath, "utf8"));
     assert.equal(state.available, true);
@@ -165,6 +180,10 @@ if (args[0] === "api" && args[1] === "rate_limit") {
   } }));
   process.exit(0);
 }
+if (args[0] === "api") {
+  process.stdout.write(JSON.stringify([{ workflows: [{ path: ".github/workflows/sample.lock.yml" }] }]));
+  process.exit(0);
+}
 const output = args[args.indexOf("--output") + 1];
 fs.mkdirSync(output, { recursive: true });
 fs.writeFileSync(path.join(output, "drain3_weights.json"), "{}\\n");
@@ -172,7 +191,7 @@ process.exit(0);
 `);
   await chmod(ghPath, 0o755);
   await writeFile(item.controlSettingsPath, JSON.stringify({
-    allowed_repositories: ["githubnext/gh-aw-cao"],
+    allowed_repositories: ["githubnext/gh-cao"],
   }));
   const drain3WeightsPath = path.join(item.root, "runner-temp", "cao-activity", "drain3_weights.json");
   try {
@@ -180,7 +199,7 @@ process.exit(0);
       env: {
         ...process.env,
         PATH: `${item.bin}:${process.env.PATH}`,
-        GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+        GITHUB_REPOSITORY: "githubnext/gh-cao",
         REPORT_ROOT: item.root,
         REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
         REPORT_GH_AW_LOGS_STATE: item.statePath,
@@ -219,7 +238,7 @@ process.exit(99);
     env: {
       ...process.env,
       PATH: `${item.bin}:${process.env.PATH}`,
-      GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+      GITHUB_REPOSITORY: "githubnext/gh-cao",
       REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
       REPORT_GH_AW_LOGS_EXIT_CODE: exitCodePath,
       REPORT_AIC_CACHE: item.outputPath,
@@ -228,9 +247,10 @@ process.exit(99);
     },
   });
   assert.match(result.stderr, /capacity insufficient: 4000\/5000.*reset at/);
-  assert.match(result.stderr, /API capacity check failed before githubnext\/gh-aw-cao/);
-  assert.match(result.stdout, /Activity log collection: completed with exit code 1/);
-  assert.equal(await readFile(exitCodePath, "utf8"), "1\n");
+  assert.match(result.stderr, /API capacity check failed before githubnext\/gh-cao/);
+  assert.match(result.stdout, /Activity log collection: completed with exit code 75/);
+  assert.match(result.stdout, /Activity collection is partial/);
+  assert.equal(await readFile(exitCodePath, "utf8"), "75\n");
   await assert.rejects(readFile(item.argumentsPath, "utf8"), { code: "ENOENT" });
 });
 
@@ -270,6 +290,10 @@ if (args[0] === "api" && args[1] === "rate_limit") {
   } }));
   process.exit(0);
 }
+if (args[0] === "api") {
+  process.stdout.write(JSON.stringify([{ workflows: [{ path: ".github/workflows/sample.lock.yml" }] }]));
+  process.exit(0);
+}
 const repository = args[args.indexOf("--repo") + 1];
 const shard = args[args.indexOf("--cached-jsonl") + 1].replace(/\\*$/, "") + "fixture.jsonl";
 fs.mkdirSync(path.dirname(shard), { recursive: true });
@@ -288,7 +312,7 @@ fs.writeFileSync(shard, JSON.stringify({ schema_version: 2, kind: "run", run: {
     env: {
       ...process.env,
       PATH: `${item.bin}:${process.env.PATH}`,
-      GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+      GITHUB_REPOSITORY: "githubnext/gh-cao",
       REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
       REPORT_GH_AW_LOGS_SEED_SHARDS: seedPath,
       REPORT_GH_AW_LOGS_EXIT_CODE: path.join(item.root, "collection-exit-code"),
@@ -304,7 +328,7 @@ fs.writeFileSync(shard, JSON.stringify({ schema_version: 2, kind: "run", run: {
   const repositories = await execFileAsync(process.execPath, [
     "activity/cao.mjs", "query", "--database", collectionDatabase, "--collection", "repositories",
   ]);
-  assert.deepEqual(JSON.parse(repositories.stdout).map(({ owner, name }) => `${owner}/${name}`), ["githubnext/gh-aw-cao"]);
+  assert.deepEqual(JSON.parse(repositories.stdout).map(({ owner, name }) => `${owner}/${name}`), ["githubnext/gh-cao"]);
   assert.equal(hash(await readFile(restoredDatabase)), restoredHash);
 });
 
@@ -322,7 +346,7 @@ test("activity logs preserves cached runs and records collection failure", async
       env: {
         ...process.env,
         PATH: `${item.bin}:${process.env.PATH}`,
-        GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+        GITHUB_REPOSITORY: "githubnext/gh-cao",
         REPORT_ROOT: item.root,
         REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
         REPORT_GH_AW_LOGS_STATE: item.statePath,
@@ -330,6 +354,32 @@ test("activity logs preserves cached runs and records collection failure", async
         REPORT_AIC_CACHE: item.outputPath,
         GITHUB_OUTPUT: item.githubOutput,
       },
+    });
+
+    test("activity logs reports rate-limited snapshots as available but incomplete", async (t) => {
+      const item = await fixture();
+      t.after(() => rm(item.root, { recursive: true, force: true }));
+      await mkdir(item.logsPath, { recursive: true });
+      await writeFile(path.join(item.logsPath, "fixture.jsonl"), '{"schema_version":2,"kind":"run","run":{"database_id":7}}\n');
+      await writeFile(item.statePath, '{"observedAt":"2026-09-06T20:00:00Z","available":true}\n');
+      const exitCodePath = path.join(item.root, "cache", "gh-aw-logs-exit-code");
+      await writeFile(exitCodePath, "75\n");
+      const result = await execFileAsync(process.execPath, [path.resolve("activity/logs.mjs")], {
+        env: {
+          ...process.env, GITHUB_REPOSITORY: "githubnext/gh-cao",
+          REPORT_ROOT: item.root, REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
+          REPORT_GH_AW_LOGS_STATE: item.statePath, REPORT_GH_AW_LOGS_EXIT_CODE: exitCodePath,
+          GITHUB_OUTPUT: item.githubOutput,
+        },
+      });
+      const state = JSON.parse(await readFile(item.statePath, "utf8"));
+      assert.equal(state.available, true);
+      assert.equal(state.complete, false);
+      assert.equal(state.runCount, 1);
+      assert.equal(state.snapshotObservedAt, "2026-09-06T20:00:00Z");
+      assert.match(state.error, /partial evidence/);
+      assert.match(result.stdout, /partial collected snapshot/);
+      assert.equal(await readFile(item.githubOutput, "utf8"), "collection-outcome=partial\n");
     });
 
     assert.equal((await readGhAwLogShards(item.logsPath))[0].database_id, 7);
@@ -361,7 +411,7 @@ process.exit(99);
       env: {
         ...process.env,
         PATH: `${item.bin}:${process.env.PATH}`,
-        GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+        GITHUB_REPOSITORY: "githubnext/gh-cao",
         REPORT_ROOT: item.root,
         REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
         REPORT_GH_AW_LOGS_STATE: item.statePath,
@@ -395,7 +445,7 @@ test("activity logs records a failure when workflow discovery is unavailable", a
     await execFileAsync(process.execPath, [path.resolve("activity/logs.mjs")], {
       env: {
         ...process.env,
-        GITHUB_REPOSITORY: "githubnext/gh-aw-cao",
+        GITHUB_REPOSITORY: "githubnext/gh-cao",
         REPORT_ROOT: item.root,
         REPORT_GH_AW_LOGS_SHARDS: item.logsPath,
         REPORT_GH_AW_LOGS_STATE: item.statePath,

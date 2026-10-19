@@ -5,8 +5,8 @@ import { Icon } from "@astrojs/starlight/components";
 const path = Astro.url.pathname;
 const { hasSidebar } = Astro.locals.starlightRoute;
 const links = [
-  { label: "Campaigns", href: "/gh-aw-cao/catalog/" },
-  { label: "Blog", href: "/gh-aw-cao/blog/" },
+  { label: "Docs", href: "/gh-cao/architecture-at-a-glance/" },
+  { label: "Blog", href: "/gh-cao/blog/" },
 ];
 ---
 
@@ -37,6 +37,33 @@ const links = [
   )
 }
 <Default><slot /></Default>
+
+<script>
+  const enhanceSkipLink = () => {
+    const target = document.getElementById("_top");
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+
+    const focusTarget = () => {
+      if (window.location.hash !== "#_top") return;
+      requestAnimationFrame(() => {
+        target.focus({ preventScroll: true });
+      });
+    };
+
+    document.querySelectorAll<HTMLAnchorElement>('a.sl-skip-link[href="#_top"]').forEach((link) => {
+      if (link.dataset.skipLinkReady === "true") return;
+      link.dataset.skipLinkReady = "true";
+      link.addEventListener("click", focusTarget);
+    });
+
+    focusTarget();
+  };
+
+  enhanceSkipLink();
+  document.addEventListener("astro:page-load", enhanceSkipLink);
+  window.addEventListener("hashchange", enhanceSkipLink);
+</script>
 
 <style>
   .cao-primary-nav {
@@ -137,9 +164,7 @@ const links = [
     .cao-primary-nav {
       display: none;
     }
-  }
 
-  @media (max-width: 49.999rem) {
     .cao-mobile-nav {
       display: block;
     }

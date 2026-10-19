@@ -118,7 +118,7 @@ test('mobile shell keeps Overview navigation in the hamburger menu', async ({ pa
 
 
 
-test('Ingestion shows CAO Activity status, size trend, and retained transactions', async ({ page }) => {
+test('Ingestion shows shard activity dates and retained transactions', async ({ page }) => {
   const documentModel = authoritativeDashboard;
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.setContent(`
@@ -162,19 +162,11 @@ test('Ingestion shows CAO Activity status, size trend, and retained transactions
       }));
       const sources = {
         transactions: { source: 'transactions', rows, metadata },
-        'indexing-daily-records': {
-          source: 'indexing-daily-records',
+        'indexing-ingestion-runs': {
+          source: 'indexing-ingestion-runs',
           rows: [
-            { day: '2026-09-11', records: 7050 },
-            { day: '2026-09-12', records: 7950 }
-          ],
-          metadata
-        },
-        'indexing-daily-workflow-runs': {
-          source: 'indexing-daily-workflow-runs',
-          rows: [
-            { day: '2026-09-11', 'workflow-runs': 6050 },
-            { day: '2026-09-12', 'workflow-runs': 6950 }
+            { 'shard-day': '2026-09-11', 'workflow-runs': 6050, 'run-count-status': 'Reported run count' },
+            { 'shard-day': '2026-09-12', 'workflow-runs': 6950, 'run-count-status': 'Reported run count' }
           ],
           metadata
         },
@@ -192,8 +184,6 @@ test('Ingestion shows CAO Activity status, size trend, and retained transactions
           rows: [{ document: { version: 1 }, raw: '{"version":1}', diagnostics: [] }],
           metadata
         },
-        'database-campaign-count': { source: 'database-campaign-count', rows: [{ campaigns: 2 }], metadata },
-        'overview-healthy-campaign-count': { source: 'overview-healthy-campaign-count', rows: [{ 'healthy-campaigns': 1 }], metadata },
         'overview-repository-coverage': { source: 'overview-repository-coverage', rows: [{ 'repository-coverage': 0.5, 'reached-repositories': 3, 'registered-repositories-total': 6 }], metadata },
         'database-repository-count': { source: 'database-repository-count', rows: [{ repositories: 3 }], metadata },
         'database-workflow-count': { source: 'database-workflow-count', rows: [{ workflows: 5 }], metadata },
@@ -216,10 +206,11 @@ test('Ingestion shows CAO Activity status, size trend, and retained transactions
   const root = page.locator('.dashboard-root');
   const transactionsPage = page.locator('[data-page-id="indexing"]');
   const view = transactionsPage.locator('[data-view-id="transaction-entries"]');
-  await expect(transactionsPage.locator('[data-view-id]')).toHaveCount(4);
+  await expect(transactionsPage.locator('[data-view-id]')).toHaveCount(5);
   await expect(transactionsPage.getByRole('heading', { name: 'Local database' })).toHaveCount(0);
   await transactionsPage.locator('[data-view-id="indexing-workflow-runs"]').scrollIntoViewIfNeeded();
-  await expect(transactionsPage.locator('[data-chart-widget="bar"]')).toHaveCount(2);
+  await expect(transactionsPage.locator('[data-chart-widget="bar"]')).toHaveCount(0);
+  await expect(transactionsPage.locator('[data-chart-widget="scatter"] .scatter-chart-point')).toHaveCount(2);
   await expect(transactionsPage.locator('[data-chart-widget="horizontal-bar"]')).toHaveCount(1);
   await expect(transactionsPage.locator('[data-view-id="ingestion-queue-sizes"]')).toHaveCount(0);
   await transactionsPage.getByRole('button', { name: 'Cards' }).click();
@@ -272,8 +263,8 @@ test('Runs renders a last-week stacked area graph above its responsive table and
               'run-status': 'completed',
               'run-conclusion': 'failure',
               organization: 'githubnext',
-              repository: 'gh-aw-cao',
-              'repository-coordinate': 'githubnext/gh-aw-cao',
+              repository: 'gh-cao',
+              'repository-coordinate': 'githubnext/gh-cao',
               workflow: '.github/workflows/aw-doctor.md',
               'rollout-mode': 'review',
               engine: 'copilot',
@@ -281,17 +272,17 @@ test('Runs renders a last-week stacked area graph above its responsive table and
               'requested-model': 'gpt-5',
               'resolved-model': 'gpt-5',
               'started-at': '2026-09-10T12:00:00Z',
-              'repository-link': { relation: 'repository', href: 'https://github.com/githubnext/gh-aw-cao', label: 'Open githubnext/gh-aw-cao' },
-              'workflow-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-aw-cao/blob/main/.github/workflows/aw-doctor.md', label: 'Open .github/workflows/aw-doctor.md' },
-              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/2', label: 'Run 2' }
+              'repository-link': { relation: 'repository', href: 'https://github.com/githubnext/gh-cao', label: 'Open githubnext/gh-cao' },
+              'workflow-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-cao/blob/main/.github/workflows/aw-doctor.md', label: 'Open .github/workflows/aw-doctor.md' },
+              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/2', label: 'Run 2' }
             },
             {
               run: '1',
               'run-status': 'completed',
               'run-conclusion': 'success',
               organization: 'githubnext',
-              repository: 'gh-aw-cao',
-              'repository-coordinate': 'githubnext/gh-aw-cao',
+              repository: 'gh-cao',
+              'repository-coordinate': 'githubnext/gh-cao',
               workflow: '.github/workflows/aw-doctor.md',
               'rollout-mode': 'review',
               engine: 'copilot',
@@ -299,9 +290,9 @@ test('Runs renders a last-week stacked area graph above its responsive table and
               'requested-model': 'gpt-5',
               'resolved-model': 'gpt-5',
               'started-at': '2026-09-10T11:00:00Z',
-              'repository-link': { relation: 'repository', href: 'https://github.com/githubnext/gh-aw-cao', label: 'Open githubnext/gh-aw-cao' },
-              'workflow-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-aw-cao/blob/main/.github/workflows/aw-doctor.md', label: 'Open .github/workflows/aw-doctor.md' },
-              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/1', label: 'Run 1' }
+              'repository-link': { relation: 'repository', href: 'https://github.com/githubnext/gh-cao', label: 'Open githubnext/gh-cao' },
+              'workflow-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-cao/blob/main/.github/workflows/aw-doctor.md', label: 'Open .github/workflows/aw-doctor.md' },
+              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/1', label: 'Run 1' }
             }
           ]
         }
@@ -313,7 +304,7 @@ test('Runs renders a last-week stacked area graph above its responsive table and
           run: String(run),
           'run-link': {
             relation: 'run',
-            href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/' + run,
+            href: 'https://github.com/githubnext/gh-cao/actions/runs/' + run,
             label: 'Run ' + run
           }
         });
@@ -597,7 +588,7 @@ test('Runs renders the worker-projected table', async ({ page }) => {
               'run-status': 'completed',
               'run-conclusion': 'failure',
               organization: 'githubnext',
-              repository: 'gh-aw-cao',
+              repository: 'gh-cao',
               workflow: '.github/workflows/aw-doctor.md',
               'rollout-mode': 'review',
               engine: 'copilot',
@@ -605,7 +596,7 @@ test('Runs renders the worker-projected table', async ({ page }) => {
               'requested-model': 'gpt-5',
               'resolved-model': 'gpt-5',
               'started-at': '2026-09-10T12:00:00Z',
-              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/2', label: 'Run 2' }
+              'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/2', label: 'Run 2' }
             }
           ]
         }
@@ -662,7 +653,7 @@ test('Issues switches between its top-repository chart, table, and cards', async
         run: id,
         'run-attempt': 1,
         event: id,
-        'event-type': 'safe_output.created',
+        'event-type': 'safe_output.result',
         'event-summary': summary,
         'event-timestamp': observedAt,
         'safe-output-type': 'create_issue',
@@ -834,8 +825,6 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
           rows: [{ document: { version: 1 }, raw: '', diagnostics: [] }],
           metadata
         },
-        'database-campaign-count': { source: 'database-campaign-count', rows: [{ campaigns: 2 }], metadata },
-        'overview-healthy-campaign-count': { source: 'overview-healthy-campaign-count', rows: [{ 'healthy-campaigns': 1 }], metadata },
         'overview-repository-coverage': { source: 'overview-repository-coverage', rows: [{ 'repository-coverage': 0.5, 'reached-repositories': 3, 'registered-repositories-total': 6 }], metadata },
         'database-repository-count': { source: 'database-repository-count', rows: [{ repositories: 3 }], metadata },
         'database-workflow-count': { source: 'database-workflow-count', rows: [{ workflows: 5 }], metadata },
@@ -1102,7 +1091,8 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
   await expect(cleanNavigation).toHaveText(['Overview']);
   await expect(data.locator('summary')).toHaveText('Data');
   await data.locator('summary').click();
-  await expect(data.getByRole('link')).toHaveText(['Campaigns', 'Repositories', 'Workflows', 'Runs', 'Issues', 'Cost', 'Friction', 'Models & Agents', 'Firewall', 'MCPs', 'Memory']);
+  await expect(data.getByRole('link')).toHaveText(['Campaigns', 'Repositories', 'Workflows', 'Runs', 'Issues', 'Cost', 'Operational Value', 'Friction', 'Models & Agents', 'Firewall', 'MCPs', 'Memory']);
+  await expect(data.getByRole('link', { name: 'Operational Value', exact: true })).toHaveCount(1);
   await expect(data.getByRole('link', { name: 'Friction', exact: true })).toHaveCount(1);
   await expect(evolutionSection.locator('summary')).toHaveText('Evolution');
   await evolutionSection.locator('summary').click();
@@ -1153,7 +1143,7 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
   await expect(experimentalSection).not.toHaveAttribute('open', '');
   await experimentalSection.locator('summary').click();
   await expect(experimentalSection.getByRole('link')).toHaveText([
-    'Operational Value',
+    'Model routing',
     'Skills',
     'Steering',
     'Simulators'
@@ -1196,11 +1186,11 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
   await cleanNavigation.filter({ hasText: 'Overview' }).click();
   const overviewPage = page.locator('[data-page-id="overview"]');
   await expect(overviewPage.locator(':scope > .custom-view-grid')).toBeVisible();
-  await expect(overviewPage.getByRole('heading', { name: 'Your campaigns are humming.' })).toBeVisible();
+  await expect(overviewPage.getByRole('heading', { name: 'Your factory is humming.' })).toBeVisible();
   await expect(overviewPage.locator('.factory-running')).toHaveCount(0);
-  await expect(overviewPage.locator('.factory-station')).toHaveCount(2);
-  await expect(overviewPage.locator('.factory-station strong')).toHaveText(['100%', '0%']);
-  await expect(overviewPage.locator('.factory-station small')).toHaveText(['2/2 healthy campaigns', '0/1 repositories reached']);
+  await expect(overviewPage.locator('.factory-station')).toHaveCount(4);
+  await expect(overviewPage.locator('.factory-station strong')).toHaveText(['100%', '0%', '17', 'Unavailable']);
+  await expect(overviewPage.locator('.factory-station small')).toHaveText(['3/3 healthy workflows', '0/1 repositories reached', 'Retained safe outputs', '']);
   await expect(overviewPage.locator('.factory-output')).toHaveCount(0);
   await expect(overviewPage.locator('.factory-status')).toHaveCount(0);
   await expect(overviewPage.locator('.notifications-inbox')).toHaveCount(0);
@@ -1259,13 +1249,16 @@ test('clean navigation preserves the Overview decision hierarchy across desktop 
   await page.evaluate(() => { window.location.hash = '#page-overview'; });
   await expect(overviewPage).toBeVisible();
   await expect(overviewPage.locator(':scope > .custom-view-grid')).toBeVisible();
-  await expect(overviewPage.locator('.factory-station')).toHaveCount(2);
+  await expect(overviewPage.locator('.factory-station')).toHaveCount(4);
   await page.locator('.mobile-nav-menu > summary').click();
   await expect(page.locator('.mobile-nav-section-label')).toHaveText(['Data', 'Evolution', 'Experimental', 'Maintenance']);
+  const valueLink = page.locator('[data-mobile-nav-page-id="operational-value"]');
+  await expect(valueLink).toHaveAttribute('aria-label', 'Operational Value');
+  await expect(valueLink.locator('xpath=preceding-sibling::span[contains(@class, "mobile-nav-section-label")][1]')).toHaveText('Data');
   await expect(page.locator('[data-mobile-nav-page-id="operations"]')).toHaveCount(0);
   await page.locator('.mobile-nav-menu > summary').click();
   await expect(overviewPage.locator('.factory-intro')).toBeInViewport();
-  await expect(overviewPage.locator('.custom-view')).toHaveCount(3);
+  await expect(overviewPage.locator('.custom-view')).toHaveCount(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await expect(overviewPage.locator('.table-scroll')).toHaveCount(0);
 

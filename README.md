@@ -9,78 +9,51 @@
 > [!TIP]
 > **Agent debugging router:** When a CAO deployment, credential, Agentic Workflow, Activity collection, or dashboard build fails, load and follow [the `debug-cao` skill](skills/debug-cao/SKILL.md). Preserve the failing workflow commit and exact component versions before changing or rerunning the deployment.
 
-Run trusted agentic operations across your repository fleet from one central control plane.
+Monitor GitHub Agentic Workflow runs, costs, and outcomes from one control
+repository. Add trusted agentic operations when you are ready.
 
-Reach a first data-bearing dashboard with:
+## Get started: monitor one repository
+
+From a clean control-repository checkout on its default branch:
 
 ```bash
-curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/install.sh |
-  bash -s -- --quickstart
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash
 ```
 
-At a repository root, the installer uses that clean default-branch checkout,
-including headlessly. Outside a checkout, it creates the private control
-repository `USERNAME/cao`. If that repository or local clone path already exists,
-it chooses a fresh name such as `USERNAME/cao-20261014-111151` using UTC,
-leaving the existing repository and files untouched.
-With no catalog source, quickstart resolves and pins
-the latest stable CAO `vX.Y.Z` release; it does not fall back to `main` if
-release discovery fails. Pass an explicit source such as
-`githubnext/gh-aw-cao@main`, a tag, a commit SHA, or a local checkout to override
-that selection. Unless `--target OWNER/REPO` selects another existing public
-repository, quickstart targets
-[`github/gh-aw`](https://github.com/github/gh-aw) using Repo Assist's normal checkout.
-Repo Assist proposes one small, validated maintenance improvement in review
-mode, or honestly records a no-op if nothing suitable fits.
-It works even when the target has no Agentic Workflows or Actions history.
-Quickstart runs the existing maintenance worker, not a special assessment.
-A control review issue and downloadable patch bundle let you decide whether
-to apply the improvement.
-The review issue is the first useful result; Activity
-collection and the public GitHub Pages dashboard follow. This one run can use
-up to 1,250 AI credits under default limits (250 orchestration + 600 maintenance
-+ 400 output checking; configured output-check limits may differ), not a
-measured token budget or expected consumption.
-**None of these proposals is a requirement for using CAO.** There are no
-readiness grades, required templates, or practice checklists; keeping the
-repository unchanged is a valid result. Only maintenance is enabled; quickstart
-pauses the orchestrator after dispatch so recurring runs need explicit re-enablement.
-CAO never modifies the target.
-Elapsed progress distinguishes the short local installation phases from the
-longer Repo Assist, Activity, and dashboard jobs running on GitHub Actions.
-Use `--create-repo OWNER/CONTROL_REPOSITORY` to choose another control
-repository explicitly.
+Connect one repository and configure authentication:
 
-Want to see the rest of Repo Assist before running more workers? Browse
-[real triage, issue-fix, maintenance, and PR-upkeep reports](repo-assist/README.md#see-repo-assist-in-action)
-from our own control plane. This separate showcase adds no workflows or AI
-spend to your first run; it distinguishes proposals and blockers from applied
-changes. No demo repository is created.
+```bash
+gh cao setup
+```
 
-The installer checks tools, sign-in, and checkout readiness before writing CAO
-files, adds gh-aw and the core runtime, and preserves an existing policy.
-Without `--quickstart`, installation remains non-greedy: bare installation
-stops with `Next: ./cao.sh setup`, and `--setup` opens
-**Repositories → Connections → Review and apply** directly. Guided setup uses
-default-No confirmation and never installs a campaign, dispatches a workflow,
-commits, or pushes. Install the Agent Plugin separately when you want the
-portable CAO skills.
+Check the installation, review, and publish your configuration:
 
-Without an interactive terminal, or when `CI` is set, `--setup` and
-`./cao.sh setup` apply one fail-closed agent profile only: the current control
-repository must be public, existing scope must already be exact to that
-repository, and campaigns must be empty. Setup configures public Actions-backed
-Pages, selects the repository `GITHUB_TOKEN` (`workflow-token`), and records
-Activity scope for only that repository. Private/internal repositories or
-broader existing policy require interactive setup. Headless guided-setup
-repository creation still requires `--create-repo OWNER/NAME`; quickstart may
-create only the signed-in user's `cao` control repository or its timestamped
-fallback.
-Missing prerequisites (including an installed gh-aw that is too old) fail
-instead of reporting success. Explicit `--quickstart` is the bounded headless
-first-success path and performs the documented control-repository and workflow
-effects without prompting.
+```bash
+gh cao doctor
+git status --short
+git diff -- .github
+git add .github activity dashboard
+git commit -m "Set up CAO monitoring"
+git push
+```
+
+On upgrades, also review and stage the retired shell launcher's deletion if Git
+reports it. Only known shipped launchers are removed; consumer-owned scripts are preserved.
+
+In Actions, check **CAO validation**, then wait for **CAO Activity** and **CAO Dashboard**,
+including its Pages deployment, then open **Settings → Pages**.
+**No campaign is installed or run.** A repository without Agentic Workflow
+history starts with an empty dashboard; you do not need to generate activity.
+
+The [getting-started guide](docs/setup-quickstarts.md) covers prerequisites,
+creating a separate control repository, authentication, dashboard visibility,
+and your first look at the data. Prefer a private control repository for
+non-public evidence; a private repository does not guarantee a private dashboard.
+
+**Optional, later:** browse the [campaign catalog](https://githubnext.github.io/gh-cao/catalog/)
+or try the separate [Repo Assist review walkthrough](docs/repo-assist-quickstart.md).
+You can also read [real Repo Assist reports](repo-assist/README.md#see-repo-assist-in-action)
+without starting a workflow or spending AI credits.
 
 Control repositories receive only the curated production runtime, not dashboard
 tests, screenshots, contributor tooling, or plugin files. The CLI and runtime
@@ -106,19 +79,56 @@ Central Agentic Ops extends
 reusable campaigns and a central control plane for explicit repository fleets.
 It does not replace repository permissions, branch protections, or human review.
 
-See the [open issues](https://github.com/githubnext/gh-aw-cao/issues) for current
+See the [open issues](https://github.com/githubnext/gh-cao/issues) for current
 work and planned improvements.
+
+### GitHub CLI extension
+
+The installer downloads and verifies the compiled `gh cao` Go extension for
+setup, authentication, campaigns, diagnostics, and read-only evidence analysis.
+No local Go build is needed:
+
+```bash
+gh cao --help
+gh cao --version
+```
+
+The installer registers the binary as `gh cao`, independently of the catalog
+repository name. Rerun the installer to refresh it. For local development,
+`make build` produces `./gh-cao`.
+
+Use `gh cao setup` for guided configuration or
+`gh cao setup auth github-app|enterprise-app|token` for authentication only.
+Every extension command executes natively in Go, including onboarding,
+authentication, repository enrollment, validation, downloads, Dashboard Language
+queries, computations, and MCP. No Node.js installation or JavaScript runtime
+checkout is needed. The binary embeds the reviewed dashboard definitions and
+reads canonical SQLite snapshots directly; use `--dashboard FILE` to select
+an explicit dashboard document. Run policy mutations from the control repository root.
+Help, version, and catalog discovery work offline.
+
+Activity and Dashboard Actions invoke `node activity/cao.mjs <command>` directly;
+operator commands use `gh cao`. There is no shell launcher.
+SQLite snapshot repair and hosted-CLI App setup remain Node-only.
+Releases include version-stamped
+binaries named `gh-cao-OS-ARCH` (`.exe` on Windows) for Linux, macOS, and Windows
+(amd64 and arm64), plus SHA-256 checksums.
+The installer selects the latest published `vX.Y.Z` release, including prereleases
+but excluding drafts, and also verifies older releases' legacy `OS-ARCH` assets.
+See [the command reference](docs/cao-cli.md#github-cli-extension) for the migration
+boundary and [extension development](CONTRIBUTING.md#go-extension-development)
+for local installation, project layout, and checks.
 
 ## Documentation
 
-Ready to explore? [See the docs](https://githubnext.github.io/gh-aw-cao/).
+Ready to explore? [See the docs](https://githubnext.github.io/gh-cao/).
 
 For coding agents, use
-[`llms.txt`](https://githubnext.github.io/gh-aw-cao/llms.txt) for navigation and
+[`llms.txt`](https://githubnext.github.io/gh-cao/llms.txt) for navigation and
 high-value routes,
-[`llms-small.txt`](https://githubnext.github.io/gh-aw-cao/llms-small.txt) for
+[`llms-small.txt`](https://githubnext.github.io/gh-cao/llms-small.txt) for
 compact context, or
-[`llms-full.txt`](https://githubnext.github.io/gh-aw-cao/llms-full.txt) for the
+[`llms-full.txt`](https://githubnext.github.io/gh-cao/llms-full.txt) for the
 broad documentation corpus.
 
 ## Agent plugin and Requirements
@@ -157,18 +167,27 @@ backend. Select either backend explicitly with
 `dataBackend: "sqlite"` or `"indexeddb"`. SQLite initialization failures stop
 startup rather than silently falling back to IndexedDB.
 
+Canvas startup also reads compiler metadata from the default-branch lock files
+of workflows already present in the downloaded inventory, through its
+read-only GitHub API service. Reads are cached per credential and limited to
+128 distinct files with eight concurrent requests. The API returns only file
+identity and the parsed compiler version, never workflow contents or credentials.
+Unavailable or stale reads retain snapshot versions without fabricating fresh
+installed-version evidence. Upgrade is hidden only when recorded versions are known current;
+missing installed-version or release evidence keeps the action available.
+
 `--data-backend postgres` selects the existing Go/PostgreSQL server, with
 PostgreSQL operational storage by default; `--operational-store` may select
 Redis or memory instead. This mode requires the reviewed host policy, built
 site, database, and OAuth/HTTPS configuration described in
 [the server guide](server/README.md), and does not support canvas preview mode.
 
-Every native CLI action requires a fresh trusted host confirmation of its exact
-command, working directory, and standard input, independently of the dashboard's
-preview dialog. Hosts without interactive elicitation cannot execute canvas
-actions; run the reviewed command in a terminal instead. Installing the complete
-plugin bundle is required; the extension folder alone is not a standalone
-package.
+CLI actions are approved in the canvas's command-review dialog; there is no
+second host confirmation prompt or interactive-elicitation requirement.
+The server still validates each declared action and its resolved command, binds
+execution to the preview's working directory, and executes without a shell.
+Installing the complete plugin bundle is required; the extension folder alone
+is not a standalone package.
 
 For extension changes, run `npm run typecheck:copilot` and the focused
 `tests/unit/dashboard-extension.test.mjs` and
@@ -192,9 +211,9 @@ The dashboard workflow remains manual and does not enable Pages automatically.
 ## Agent analysis
 
 Central Agentic Ops can give an agent its dashboard data without a browser or
-shell. Install CAO, run `cao download`, and then either query the snapshot from
-a shell with `cao pages`, `cao queries`, and `cao query QUERY_ID`, or start the
-read-only MCP server with `cao mcp` and let an agent call `cao_catalog` and
+shell. Install CAO, run `gh cao download`, and then either query the snapshot from
+a shell with `gh cao pages`, `gh cao queries`, and `gh cao query QUERY_ID`, or start the
+read-only MCP server with `gh cao mcp` and let an agent call `cao_catalog` and
 `cao_query`. See [Agent analysis](docs/agent-analysis.md) for the GitHub Actions
 bootstrap.
 

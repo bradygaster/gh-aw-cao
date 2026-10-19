@@ -26,6 +26,7 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .table-cli-action-button { width: auto; min-height: 44px; padding: 8px; text-align: left; }
   .table-cli-action-control { max-width: 100%; }
   .cli-action-dialog-footer, .table-intent-dialog-footer { flex-wrap: wrap; }
+  .cli-action-running .cli-action-dialog-footer { padding-block: 8px; }
   .cli-action-cancel, .cli-action-confirm, .table-intent-copy-button { min-height: 44px; }
   .cli-action-dialog-body { overflow: auto; }
   .card-filter-bar { padding: 6px 12px; }
@@ -72,7 +73,6 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   :root[data-navigation-direction="forward"]::view-transition-new(root) { z-index: 2; animation-name: dashboard-view-slide-in-right; animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
   :root[data-navigation-direction="backward"]::view-transition-old(root) { z-index: 2; animation-name: dashboard-view-slide-out-right; animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
   :root[data-navigation-direction="backward"]::view-transition-new(root) { z-index: 1; animation-name: dashboard-view-slide-in-left; animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
-  .source-refresh-error { align-items: flex-start; flex-direction: column; }
   .timeline-chart-axis span:not(:first-child):not(:last-child):nth-child(even) { display: none; }
   .horizontal-bar-chart-row { grid-template-columns: minmax(0, 1fr) minmax(56px, 32%) auto; gap: 6px; }
   .horizontal-bar-chart-label { direction: ltr; text-align: left; }
@@ -111,8 +111,11 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .mobile-brand-name { max-width: 100%; display: block; overflow: hidden; color: var(--muted); font-size: .75rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-page-header .overview-header { width: 100%; min-width: 0; flex: none; }
   .mobile-page-header .breadcrumb-context { display: none; }
+  .mobile-page-header .breadcrumb-context:has([data-route-breadcrumb] ~ [data-route-breadcrumb]) { display: flex; max-width: 100%; gap: 0 8px; }
+  .mobile-page-header .breadcrumb-context > [data-route-breadcrumb] { display: inline-flex; align-items: center; min-height: 44px; white-space: normal; }
   /* Desktop reserves hidden descriptions as a stable spacer; collapse it in the compact mobile title bar without adding another display override. */
   .mobile-page-header .overview-header .lede { height: 0; min-height: 0; margin: 0; overflow: hidden; line-height: 0; visibility: hidden; }
+  .dashboard-root:has(.command-terminal) .mobile-page-header .overview-header .lede { height: auto; min-height: 1.25rem; margin-top: 3px; line-height: 1.25rem; visibility: visible; }
   .mobile-page-header .overview-header .title-area { display: flex; align-items: center; gap: 4px; min-width: 0; }
   .mobile-page-header .overview-header h1 { margin: 0; overflow: hidden; color: var(--fg); font-size: 1rem; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-view-mode-toggle:not([hidden]) { width: 44px; height: 44px; display: grid; flex: 0 0 44px; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--canvas-subtle); color: var(--fg); cursor: pointer; }
@@ -122,6 +125,7 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .mobile-nav-menu-actions .report-actions > .filter-bar { width: 100%; margin: 0; }
   .mobile-nav-menu-actions .dashboard-horizon { width: 100%; max-width: 100%; padding-right: 0; border-right: 0; }
   .mobile-nav-menu-actions .horizon-summary { width: 100%; position: static; }
+  .mobile-nav-menu-actions .dashboard-horizon.filter-bar-expanded > .filter-tuning-controls { position: static; width: 100%; max-height: none; overflow: visible; padding: 8px; box-shadow: none; }
   .mobile-nav-menu-actions .horizon-tooltip { top: calc(100% + 4px); right: 0; left: auto; }
   .mobile-nav-menu-actions .account-menu { width: 100%; }
   .mobile-nav-menu-actions :is(.horizon-toggle, .repository-link, .account-menu-avatar) { width: 100%; height: auto; min-height: 32px; display: flex; flex: none; align-items: center; justify-content: flex-start; place-items: unset; gap: 10px; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); font-weight: 500; text-align: left; }
@@ -156,12 +160,11 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .mobile-nav-section-label { margin: 8px 8px 2px; color: var(--muted); font-size: .6875rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
   .mobile-nav-section-label:first-child { margin-top: 2px; }
   .app-main > .top-nav { display: none; }
-  .site-callouts { padding-inline: var(--dashboard-page-padding-inline); }
   .breadcrumb-context > :is([data-breadcrumb-root], [data-breadcrumb-dashboard]) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .report-actions { width: 100%; position: relative; margin-left: 0; }
   .report-actions .tooltip-help { position: static; }
   .report-actions .tooltip-content { width: min(320px, 100%); right: auto; left: 0; }
-  .report-footer-status { display: none; }
+  .report-footer { justify-content: flex-start; }
   .report-footer-versions { justify-content: flex-start; }
   /* Keep full-width wrapping for the desktop header only; the same header moves into .mobile-page-header where it must stay content-sized. */
   .app-main .overview-header { flex-basis: 100%; }
@@ -178,10 +181,11 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .horizon-details-values { justify-content: flex-start; flex-wrap: wrap; }
   .filter-bar-expanded .time-window-control { display: grid; flex: 1 1 100%; grid-template-columns: minmax(0, 1fr); min-width: 0; }
   .time-window-control label { min-height: 44px; }
-  .mode-filter-control { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mode-filter-control { display: flex; flex-wrap: wrap; }
   .time-window-control :is(select, input) { width: 100%; }
   .mode-filter-control input { width: auto; }
-  .time-window-control > button { min-height: 44px; }
+  .time-window-custom { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .time-window-custom > button { min-height: 44px; }
   .app-main { height: auto; overflow: visible; }
   .app-main:has(.dashboard-overview-page:not([hidden])) { min-height: 100vh; min-height: 100dvh; }
   .dashboard-full-view .app-main { height: 100%; min-height: 0; overflow: hidden; }
@@ -411,6 +415,10 @@ export const responsiveStyles = `@media (min-width: 701px) and (max-width: 900px
   .notification-actions { grid-column: 4; grid-row: 1; }
   .workflow-run-health > .chart-legend, .value-chart > dl { grid-template-columns: 1fr; }
   .pie-chart-layout { grid-template-columns: 1fr; }
+  /* Reserve the same width-based plotting area while loading; long legends still expand it. */
+  .chart-view-pie > .pie-chart-layout:not([data-chart-table-hidden])::before { content: ""; grid-column: 1; grid-row: 1 / span 2; width: 100%; aspect-ratio: 1; pointer-events: none; }
+  .chart-view-pie > .pie-chart-layout > .chart-legend-pie { grid-column: 1; grid-row: 2; }
+  .custom-view.chart-view-pie > .dashboard-view-skeleton { height: auto; min-height: 280px; aspect-ratio: 1; }
   .pie-chart-layout .chart-widget { min-height: 140px; }
   .pie-chart-layout .chart-widget svg { max-width: 140px; }
   .document-list-card { grid-template-columns: auto minmax(0, 1fr); }
