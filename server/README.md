@@ -323,6 +323,14 @@ row evaluator: unsupported definitions and unregistered sources fail closed.
 Generated TypeSpec identifiers are used, values and namespace are
 parameterized, missing values remain distinct from explicit null, and SQL
 resource checks enforce operation, output, retained-row, and memory budgets.
+Full-plan cardinality and byte accounting share one materialized SQL execution
+with join-key uniqueness checks, so validation does not rerun the upstream
+dependency graph for every join. These checks cover all rows before returning
+the requested result page. Read transactions prefer hash/merge joins by disabling
+nested-loop plans locally: PostgreSQL 16 can estimate window-filtered intermediate
+relations as one row and otherwise rescan thousands of derived rows per match.
+This planner preference, like disabled JIT, is reset on commit or rollback and
+does not change query semantics or resource budgets.
 Explicitly registered operational sources are provided at the server boundary
 and participate as bounded SQL input relations.
 
