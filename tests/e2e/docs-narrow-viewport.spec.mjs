@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const paths = [
   "./",
+  "architecture-at-a-glance/",
   "setup-quickstarts/",
   "repo-assist-quickstart/",
   "setup-one-organization/",
@@ -88,6 +89,90 @@ test("getting started leads from monitoring to a separate optional campaign guid
   await content.getByRole("link", { name: "Repo Assist walkthrough", exact: true }).click();
   await expect(page).toHaveURL(/\/repo-assist-quickstart\/$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Try a Repo Assist review");
+});
+
+test("CAO introduction presents operating capabilities and leads to setup", async ({ page }, testInfo) => {
+  expect((await page.goto("architecture-at-a-glance/"))?.ok()).toBe(true);
+  const content = page.locator(".sl-markdown-content");
+  await expect(content).toContainText("GitHub Agentic Workflows (AWs) are AI-powered workflows");
+  await expect(content).toContainText("understand and operate this work across repositories");
+  await expect(content).toContainText("A successful run is not automatically a successful outcome.");
+  await expect(content.locator("table tbody tr")).toHaveCount(3);
+  await expect(content.locator("details")).toHaveCount(0);
+  await expect(content.locator("table")).toContainText("Observe activity");
+  await expect(content.locator("table")).toContainText("Evaluate results");
+  await expect(content.locator("table")).toContainText("Scale and roll out shared work");
+  await expect(content.locator("table")).toContainText("target repositories stay unchanged until live output is explicitly authorized");
+  await expect(content).toContainText("Campaigns are one opinionated way to package, scale, and roll out shared work, not the only operating pattern.");
+  await expect(content).toContainText("apply to participating campaigns, not automatically to every observed workflow.");
+  await expect(content).not.toContainText(/\boptional\b/i);
+  await expect(content.getByRole("heading", { name: /campaign/i })).toHaveCount(0);
+  const campaignLink = content.getByRole("link", { name: "browse campaigns", exact: true });
+  await expect(campaignLink).toHaveAttribute("href", "/gh-aw-cao/catalog/");
+  await expect(campaignLink).toHaveCount(1);
+  await expect(content.getByRole("link", { name: "workflow operating patterns and ownership", exact: true }))
+    .toHaveAttribute("href", "/gh-aw-cao/deployment-and-governance/");
+  const image = content.getByAltText(/^CAO Repositories chart view/);
+  await image.scrollIntoViewIfNeeded();
+  await expect(image).toBeVisible();
+  await expect.poll(() => image.evaluate((element) => element.complete && element.naturalWidth > 0)).toBe(true);
+  await expect(content.locator("figure figcaption li")).toHaveCount(3);
+  await expect(content.locator("figure figcaption")).toContainText("Ranked bars compare distinct retained runs");
+  await expect(content.locator("figure figcaption")).toContainText("output counts alone do not prove successful outcomes");
+  await expect(content.getByRole("link", { name: "Explore the public Repositories view", exact: true }))
+    .toHaveAttribute("href", "https://githubnext.github.io/gh-aw-cao/cao/#page-repositories");
+  const diagram = content.locator(".mermaid svg");
+  await expect(diagram).toBeVisible();
+  await expect(diagram).toContainText("Existing AWs");
+  await expect(diagram).toContainText("CAO Activity");
+  await expect(diagram).toContainText("Shared dashboard");
+  await expect(diagram).not.toContainText(/campaign/i);
+
+  const setupLinks = content.getByRole("link", { name: "Set up CAO and monitor your workflows", exact: true });
+  await expect(setupLinks).toHaveCount(2);
+  expect(await setupLinks.last().evaluate((element) =>
+    Boolean(element.compareDocumentPosition(document.querySelector('main a[href="/gh-aw-cao/catalog/"]')) & Node.DOCUMENT_POSITION_FOLLOWING),
+  )).toBe(true);
+  await expect(setupLinks.first()).toHaveAttribute("href", "/gh-aw-cao/setup-quickstarts/");
+  expect(await setupLinks.first().evaluate((element) =>
+    Boolean(element.compareDocumentPosition(document.querySelector("main h2")) & Node.DOCUMENT_POSITION_FOLLOWING),
+  )).toBe(true);
+  const next = page.locator(".pagination-links a[rel=next]");
+  await expect(next).toContainText("Set up CAO and monitor your workflows");
+  await expect(next).toHaveAttribute("href", "/gh-aw-cao/setup-quickstarts/");
+
+  for (const [name, viewport] of [
+    ["desktop", { width: 1280, height: 900 }],
+    ["mobile", { width: 390, height: 844 }],
+    ["narrow-mobile", { width: 320, height: 844 }],
+  ]) {
+    await page.setViewportSize(viewport);
+    expect(await page.locator("html").evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    const imageBounds = await image.boundingBox();
+    const markers = content.locator(".cao-intro-marker");
+    await expect(markers).toHaveCount(3);
+    for (const marker of await markers.all()) {
+      const bounds = await marker.boundingBox();
+      expect(bounds.x).toBeGreaterThanOrEqual(imageBounds.x);
+      expect(bounds.y).toBeGreaterThanOrEqual(imageBounds.y);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(imageBounds.x + imageBounds.width);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(imageBounds.y + imageBounds.height);
+    }
+    for (const label of await diagram.locator(".nodeLabel p, .edgeLabel p").all()) {
+      expect((await label.boundingBox()).height).toBeGreaterThanOrEqual(12);
+    }
+    const screenshot = testInfo.outputPath(`cao-introduction-${name}.png`);
+    await page.screenshot({ path: screenshot, fullPage: true });
+    await testInfo.attach(`CAO introduction (${name})`, { path: screenshot, contentType: "image/png" });
+  }
+
+  for (const link of await content.locator('a[href^="/gh-aw-cao/"]').all()) {
+    const response = await page.request.get(await link.getAttribute("href"));
+    expect(response.ok(), response.url()).toBe(true);
+  }
+  await next.click();
+  await expect(page).toHaveURL(/\/setup-quickstarts\/$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Set Up CAO");
 });
 
 test("legacy getting-started route redirects to interactive setup", async ({ page }) => {
