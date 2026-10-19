@@ -368,12 +368,28 @@ dashboard data authority, policy, or rollout authority.
 
 #### Local canonical snapshot serving
 
-The Go server may explicitly select `serve --sqlite PATH` to serve an existing
-canonical SQLite projection through the ordinary HTTP query, canonical API,
-diagnostics, revision subscriptions, and optional read-only MCP boundary.
+The local Go `serve` command defaults to a cached canonical SQLite projection
+through the ordinary HTTP query, canonical API, diagnostics, revision
+subscriptions, and optional read-only MCP boundary.
+It reuses `.cao/gh-aw-logs.sqlite` in the checkout without network access, or
+downloads deployed data on demand when the cache is missing. `--sqlite PATH`
+selects another cache with the same behavior. An explicit `--postgres-url`,
+`--source`, or `--redis-url` selects the PostgreSQL profile; database service
+environment variables alone do not override the SQLite default.
 `server/internal/sqlitex/` implements the existing canonical storage reader
 contract behind `server/internal/dashboardstore/`; PostgreSQL's SQL executor,
 ingestion, and hosted defaults remain unchanged.
+
+Automatic acquisition uses `DASHBOARD_DATA_URL` or the public CAO Pages snapshot.
+`serve --download-sqlite[=URL]` explicitly refreshes even an existing cache before
+opening it. Any Pages site or custom-domain directory, dashboard directory, or
+direct manifest URL may supply the snapshot; directory
+discovery checks its root and then `cao/` on HTTP 404. Bounded streaming,
+manifest SHA-256 verification, and canonical-version validation precede atomic
+replacement; failed acquisition preserves the old file and fails startup.
+This acquisition path does not ingest shards or relax read-only serving.
+Invalid or unreadable existing caches and dangling symlinks fail closed rather
+than triggering automatic repair downloads.
 
 This profile is loopback-only and bearer-authenticated, with no PostgreSQL or
 Redis service requirement. It opens the existing versioned snapshot read-only,
@@ -384,8 +400,21 @@ by the root extension and server; neither module acquires the other's dependency
 graph. Request services use bounded volatile memory without OAuth, collection,
 webhook, or hosted execution capabilities. Query result caching is disabled;
 in-place commits change the revision and notify active subscriptions. Snapshot
-quality remains unknown without stronger evidence. This explicit local mode
+quality remains unknown without stronger evidence. This default local mode
 does not introduce a hosted SQLite backend or a fallback from PostgreSQL.
+Its fixed local evaluator profile admits 500,000 input/intermediate rows and
+50 million operations with 1 GiB working-source and 2 GiB / 2 million live
+retained-row budgets; final-consumer release discards completed DAG inputs.
+Backward field liveness narrows row-local projections and removes unused pure
+computations. SQLite executes root field selection natively while retaining full
+stored-record byte checks, JSON types, missing-value semantics and IndexedDB
+UTF-16 key ordering; unknown shapes and requested raw sources remain complete.
+Read-only memory mapping is capped at 1 GiB. Remaining local operators execute
+in the shared Go evaluator, not a claimed SQLite SQL-plan compiler.
+Wire output remains bounded to 100,000 rows. The shared engine's default CLI
+limits and hosted PostgreSQL limits remain unchanged. This local-only profile
+defaults to a 300-unit/minute weighted query-admission bucket while preserving
+explicit embedding overrides and all other request policies.
 
 #### Hosted storage boundary
 
