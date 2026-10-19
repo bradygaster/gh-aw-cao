@@ -8,6 +8,10 @@ param postgresSkuName string = 'Standard_B2s'
 param postgresSkuTier string = 'Burstable'
 @description('Optional existing network security group to keep attached to every subnet. Empty leaves subnets without an NSG.')
 param subnetNetworkSecurityGroupId string = ''
+@minLength(1)
+@maxLength(63)
+@description('PostgreSQL database that holds the canonical and operational stores. Changing it creates a new, empty database; the previous database is not deleted.')
+param postgresDatabaseName string = 'cao'
 
 var subnetNetworkSecurityGroup = empty(subnetNetworkSecurityGroupId) ? {} : {
   networkSecurityGroup: {
@@ -111,7 +115,7 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
 
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
   parent: postgres
-  name: 'cao'
+  name: postgresDatabaseName
   properties: {
     charset: 'UTF8'
     collation: 'en_US.utf8'

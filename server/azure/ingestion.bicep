@@ -6,6 +6,8 @@ param keyVaultName string
 param ingestionImage string
 @minValue(7)
 param postgresRunRetentionDays int = 45
+@description('Key Vault secret that stores the PostgreSQL URL.')
+param postgresUrlSecretName string = 'cao-postgres-url'
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: environmentName
@@ -56,7 +58,7 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
       secrets: [
         {
           name: 'cao-postgres-url'
-          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/cao-postgres-url'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/${postgresUrlSecretName}'
           identity: identity.id
         }
       ]

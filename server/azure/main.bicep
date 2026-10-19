@@ -70,6 +70,16 @@ param postgresSkuTier string = 'Burstable'
 @description('Optional existing network security group kept attached to every private subnet. Supply it when an approved NSG is already attached so redeployment does not detach it.')
 param subnetNetworkSecurityGroupId string = ''
 
+@minLength(1)
+@maxLength(63)
+@description('PostgreSQL database that holds the canonical and operational stores. The default matches existing deployments. A new name creates a new, empty database; the previous database is retained, not deleted.')
+param postgresDatabaseName string = 'cao'
+
+@minLength(1)
+@maxLength(127)
+@description('Key Vault secret that stores the PostgreSQL URL for every database-owning role. Use lowercase letters, digits, and hyphens. The default matches existing deployments; use a new name with a new database so the previous URL remains available for rollback.')
+param postgresUrlSecretName string = 'cao-postgres-url'
+
 @description('Repository of an explicitly built snapshot or empty ingestion image in this deployment registry.')
 param ingestionImageRepository string = 'cao-ingest'
 
@@ -191,6 +201,7 @@ module network 'network.bicep' = {
     postgresSkuName: postgresSkuName
     postgresSkuTier: postgresSkuTier
     subnetNetworkSecurityGroupId: subnetNetworkSecurityGroupId
+    postgresDatabaseName: postgresDatabaseName
   }
 }
 
@@ -313,7 +324,7 @@ resource previousSessionSecretValue 'Microsoft.KeyVault/vaults/secrets@2023-07-0
 
 resource postgresConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
-  name: 'cao-postgres-url'
+  name: postgresUrlSecretName
   properties: {
     value: 'postgresql://${uriComponent(postgresAdministratorLogin)}:${uriComponent(postgresAdministratorPassword)}@${network.outputs.postgresHostName}:5432/${network.outputs.databaseName}?sslmode=verify-full'
     contentType: 'CAO dashboard PostgreSQL connection URL'
@@ -469,7 +480,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
         {
           name: 'CAO_POSTGRES_URL'
-          value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/cao-postgres-url)'
+          value: '@Microsoft.KeyVault(SecretUri=${keyVault.properties.vaultUri}secrets/${postgresUrlSecretName})'
         }
         {
           name: 'CAO_POSTGRES_RUN_RETENTION_DAYS'
@@ -573,6 +584,7 @@ module collection 'collector.bicep' = if (collectionEnabled) {
     postgresRunRetentionDays: postgresRunRetentionDays
     keyVaultUri: keyVault.properties.vaultUri
     keyVaultName: keyVault.name
+    postgresUrlSecretName: postgresUrlSecretName
     operationalNamespace: 'azure-dashboard-operational'
     operationalCacheMaxBytes: operationalCacheMaxBytes
     operationalCacheMaxValueBytes: operationalCacheMaxValueBytes
@@ -601,6 +613,7 @@ module ingestion 'ingestion.bicep' = {
     keyVaultName: keyVault.name
     ingestionImage: '${registry.properties.loginServer}/${ingestionImageRepository}:${ingestionImageTag}'
     postgresRunRetentionDays: postgresRunRetentionDays
+    postgresUrlSecretName: postgresUrlSecretName
   }
   dependsOn: [postgresConnectionStringValue]
 }

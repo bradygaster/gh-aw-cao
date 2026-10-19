@@ -379,6 +379,31 @@ receipt and verified recovery evidence, review a minimal settings/image delta,
 and do not start the ingestion job or replay a bootstrap deployment for an
 image-only update.
 
+### Moving to a new database
+
+Use a new database when a release changes the physical contract, or when you
+deliberately want to start from empty canonical and operational state. Do this
+with a reviewed redeployment, not by editing app settings by hand.
+
+1. Choose a new `postgresDatabaseName` and a new `postgresUrlSecretName`, for
+   example `cao2` and `cao-postgres-url-cao2`. A new secret name keeps the
+   previous URL in Key Vault, so rollback is a redeployment with the previous
+   names.
+1. Run `az deployment group what-if` with both new names and every other
+   parameter unchanged, including the reviewed `postgresRunRetentionDays`.
+   Expect a new database, a new Key Vault secret, and changed PostgreSQL URL
+   references on the Function App, the ingestion job, and any enabled
+   collection roles. Stop if anything else changes.
+1. Deploy. Incremental deployment does not delete the previous database or its
+   secret. Every role now points at the new, empty database, so the dashboard
+   reports `503` readiness until the next step succeeds.
+1. Start the ingestion job and wait for it to report `Succeeded`, as in
+   [Bootstrap steps](#bootstrap-steps). Then restart the Function App and any
+   collection roles and verify health, readiness, and sign-in.
+1. After the new database is verified and no longer needs rollback, delete the
+   previous database and disable or delete its Key Vault secret as a separate,
+   reviewed change.
+
 ## Configuration reference
 
 ### App settings
@@ -391,7 +416,7 @@ The template creates the following app settings.
 | `CAO_AZURE_ALLOWED_HOSTS` | `allowedHosts` parameter | Exact public host names that the server trusts in forwarded `Host` headers. |
 | `CAO_AZURE_REQUIRE_HTTPS` | Fixed value `true` | Requires `X-Forwarded-Proto: https`. |
 | `CAO_POLICY_PATH` | Fixed value `.github/workflows/cao.azure.json` | Selects the reviewed Azure deployment profile. |
-| `CAO_POSTGRES_URL` | Key Vault secret `cao-postgres-url` | TLS PostgreSQL URL shared by canonical and operational adapters. |
+| `CAO_POSTGRES_URL` | Key Vault secret named by `postgresUrlSecretName` (default `cao-postgres-url`) | TLS PostgreSQL URL shared by canonical and operational adapters. |
 | `CAO_POSTGRES_RUN_RETENTION_DAYS` | Explicit reviewed `postgresRunRetentionDays`; template default `45` is not upgrade-safe | Canonical run-history window and partition-retention horizon. Preserve existing effective retention and the snapshot window before startup. |
 | `CAO_POSTGRES_LINKED_RETENTION_DAYS` | Same explicit `postgresRunRetentionDays` | Linked-evidence horizon shared by all database-owning roles. Never shorten an existing linked window during redeployment. |
 | `REDIS_NAMESPACE` | Fixed value `azure-dashboard` | Legacy name for the canonical PostgreSQL dataset identity; no Redis service is used. |
@@ -435,6 +460,11 @@ Besides the parameters in the deployment command, the template accepts:
 - `operationalCacheMaxBytes`, `operationalCacheMaxValueBytes`, `operationalCacheMaxEntries`, `operationalProtectedMaxBytes`, and `operationalProtectedMaxEntries`.
 - `logAnalyticsWorkspaceName`, `postgresServerName`, `postgresAdministratorLogin`,
   `postgresAdministratorPassword`, `postgresSkuName`, and `postgresSkuTier`.
+- `postgresDatabaseName` (default `cao`) and `postgresUrlSecretName` (default
+  `cao-postgres-url`). The defaults match earlier deployments, so omitting them
+  leaves existing resources unchanged. Use lowercase letters, digits, and hyphens
+  for the secret name. To change them, see
+  [Moving to a new database](#moving-to-a-new-database).
 - `ingestionImageRepository` and `ingestionImageTag` (defaulting to `cao-ingest`
   and the Function App image tag).
 - The collection parameters. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).

@@ -35,6 +35,9 @@ param keyVaultUri string
 @description('Key Vault resource name, used to grant the workers secret access.')
 param keyVaultName string
 
+@description('Key Vault secret that stores the PostgreSQL URL.')
+param postgresUrlSecretName string = 'cao-postgres-url'
+
 @description('Size of the evidence lake file share, in gibibytes.')
 @minValue(100)
 param lakeQuotaGigabytes int = 1024
@@ -289,7 +292,7 @@ var collectionEnvironment = [
 var collectionSecrets = [
   {
     name: 'cao-postgres-url'
-    keyVaultUrl: '${keyVaultUri}secrets/cao-postgres-url'
+    keyVaultUrl: '${keyVaultUri}secrets/${postgresUrlSecretName}'
     identity: collectorIdentity.id
   }
   {

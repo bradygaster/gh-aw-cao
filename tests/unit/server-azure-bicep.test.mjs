@@ -152,7 +152,7 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
     assert.match(ingestion, /registries:\s*\[/);
     assert.match(ingestion, /server:\s*registry\.properties\.loginServer/);
     assert.match(ingestion, /identity:\s*identity\.id/);
-    assert.match(ingestion, /keyVaultUrl:.*cao-postgres-url/);
+    assert.match(ingestion, /keyVaultUrl:.*secrets\/\$\{postgresUrlSecretName\}/);
     assert.match(ingestion, /'--redis-namespace'\s+'azure-dashboard'/);
     assert.match(ingestion, /dependsOn:\s*\[roles\]/);
     assert.equal((collector.match(/registries:\s*registries/g) ?? []).length, 2);
@@ -173,7 +173,7 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
   });
 test('Azure shares PostgreSQL and operational budgets across dashboard and collection roles', () => {
   for (const source of [bicep, collector]) {
-    assert.match(source, /name:\s*'CAO_POSTGRES_URL'\s+secretRef:|'CAO_POSTGRES_URL'[\s\S]*?cao-postgres-url/);
+    assert.match(source, /name:\s*'CAO_POSTGRES_URL'\s+secretRef:|'CAO_POSTGRES_URL'[\s\S]*?secrets\/\$\{postgresUrlSecretName\}/);
     assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_BYTES/);
     assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES/);
     assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_ENTRIES/);
@@ -269,4 +269,26 @@ test('Azure redeployment can keep an existing subnet NSG without forcing one on 
   assert.match(network, /param subnetNetworkSecurityGroupId string = ''/);
   assert.equal(network.match(/properties: union\(subnetNetworkSecurityGroup, \{/g)?.length, 3,
     'every subnet must carry the optional NSG');
+});
+
+test('Azure database and URL secret names are parameters whose defaults preserve existing deployments', () => {
+  assert.equal(generated.parameters.postgresDatabaseName.defaultValue, 'cao');
+  assert.equal(generated.parameters.postgresUrlSecretName.defaultValue, 'cao-postgres-url');
+  assert.match(network, /param postgresDatabaseName string = 'cao'/);
+  assert.match(network, /parent: postgres\s+name: postgresDatabaseName/);
+  assert.match(bicep, /postgresDatabaseName: postgresDatabaseName/);
+  assert.match(bicep, /parent: keyVault\s+name: postgresUrlSecretName/);
+  assert.match(bicep, /name:\s*'CAO_POSTGRES_URL'\s+value:\s*'@Microsoft\.KeyVault\(SecretUri=\$\{keyVault\.properties\.vaultUri\}secrets\/\$\{postgresUrlSecretName\}\)'/);
+  for (const source of [ingestion, collector]) {
+    assert.match(source, /param postgresUrlSecretName string = 'cao-postgres-url'/);
+    assert.match(source, /keyVaultUrl: '\$\{[^}]+\}secrets\/\$\{postgresUrlSecretName\}'/);
+  }
+  for (const source of [bicep, network, ingestion, collector]) {
+    assert.doesNotMatch(source, /secrets\/cao-postgres-url|name: 'cao'\s*$/m, 'Key Vault and database names must come from parameters');
+  }
+  for (const name of ['snapshot-ingestion', 'collection-workers']) {
+    const module = resources.find((resource) => resource.name === name);
+    assert.equal(module.properties.parameters.postgresUrlSecretName.value, "[parameters('postgresUrlSecretName')]");
+  }
+  assert.match(deploymentDocs, /### Moving to a new database/);
 });
