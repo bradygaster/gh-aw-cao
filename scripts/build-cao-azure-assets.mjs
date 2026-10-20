@@ -4,50 +4,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
+import azureAssetAllowlist from "../internal/cli/deploy_azure_assets.json" with { type: "json" };
 
 export const AZURE_ASSET_MANIFEST = "cao-azure.json";
 
 // Exactly the inputs that the azure-functions-runtime, azure-ingest-runtime, and
-// azure-empty-ingest-runtime targets of server/Dockerfile read from the build
+// azure-empty-ingest-runtime and azure-db-provision targets read from the build
 // context (esbuild also reads dashboard/site/tsconfig.json), plus the compiled
 // ARM template. Entries ending in "/" select tracked files below that directory.
 // Adopter policy and ingestion snapshots are supplied at build time through the
 // cao-policy and cao-ingest-source build contexts.
-export const AZURE_ASSET_ALLOWLIST = Object.freeze([
-  ".github/workflows/shared/policy.mjs",
-  "activity/actions-log.mjs",
-  "dashboard/report/bundle-dashboards.mjs",
-  "dashboard/report/compose-dashboard-documents.mjs",
-  "dashboard/report/configure-site.mjs",
-  "dashboard/site/apple-touch-icon.png",
-  "dashboard/site/dashboard-fragments/",
-  "dashboard/site/dashboard.json",
-  "dashboard/site/favicon.svg",
-  "dashboard/site/icon-192.png",
-  "dashboard/site/icon-512.png",
-  "dashboard/site/icon-maskable-512.png",
-  "dashboard/site/index.html",
-  "dashboard/site/manifest.webmanifest",
-  "dashboard/site/package-lock.json",
-  "dashboard/site/package.json",
-  "dashboard/site/scripts/build.mjs",
-  "dashboard/site/scripts/llms.mjs",
-  "dashboard/site/service-worker.js",
-  "dashboard/site/src/",
-  "dashboard/site/tsconfig.json",
-  "internal/dashboardquery/",
-  "server/Dockerfile",
-  "server/azure/empty-data/",
-  "server/azure/main.json",
-  "server/azure/provision.sh",
-  "server/azure/provision.sql",
-  "server/cmd/cao-dashboard/",
-  "server/cmd/cao-functions/",
-  "server/go.mod",
-  "server/go.sum",
-  "server/internal/",
-  "server/postgres/",
-]);
+export const AZURE_ASSET_ALLOWLIST = Object.freeze(azureAssetAllowlist);
 
 // Tests, fixtures, and documentation below allowlisted directories are not
 // build inputs and are omitted.
@@ -195,7 +162,7 @@ export function buildCaoAzureAssets(sourceRoot, destination, revision) {
     revision,
     dockerfile: "server/Dockerfile",
     template: "server/azure/main.json",
-    targets: ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime"],
+    targets: ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime", "azure-db-provision"],
     buildContexts: { "cao-policy": "required", "cao-ingest-source": "azure-ingest-runtime" },
     files: Object.fromEntries(entries.map(({ path: file, content }) => [
       file, createHash("sha256").update(content).digest("hex"),

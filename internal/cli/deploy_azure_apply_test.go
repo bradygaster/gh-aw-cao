@@ -311,12 +311,12 @@ func TestDeployAzureVerifyIngressRemediator(t *testing.T) {
 }
 
 func TestDeployAzureBuildAllowlist(t *testing.T) {
-	for _, name := range []string{".env", ".git/config", ".github/workflows/cao.json", ".github/workflows/cao.azure.json", "unrelated/secret.txt", "server/.env", "dashboard/site/node_modules/a.js", "../escape.go"} {
+	for _, name := range []string{".env", ".git/config", ".github/workflows/cao.json", ".github/workflows/cao.azure.json", "unrelated/secret.txt", "server/.env", "dashboard/site/node_modules/a.js", "../escape.go", "server/internal/testdata/fixture.json", "server/internal/server/.env", "dashboard/site/src/signing.pem", "dashboard/site/src/cao.json", "internal/dashboardquery/query_test.go", "activity/inventory.mjs"} {
 		if deployAzureBuildFileAllowed(name) {
 			t.Fatalf("unsafe build input allowed: %s", name)
 		}
 	}
-	for _, name := range []string{"server/Dockerfile", "server/go.mod", "server/azure/empty-data/gh-aw-logs-runs/empty.jsonl", "dashboard/site/package-lock.json", "dashboard/site/manifest.webmanifest", "internal/dashboardquery/query.go", ".github/workflows/shared/control.mjs", "activity/inventory.mjs"} {
+	for _, name := range []string{"server/Dockerfile", "server/go.mod", "server/azure/empty-data/gh-aw-logs-runs/empty.jsonl", "dashboard/site/package-lock.json", "dashboard/site/manifest.webmanifest", "internal/dashboardquery/query.go", ".github/workflows/shared/policy.mjs", "activity/actions-log.mjs", "server/azure/provision.sh"} {
 		if !deployAzureBuildFileAllowed(name) {
 			t.Fatalf("required build input excluded: %s", name)
 		}

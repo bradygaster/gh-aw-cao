@@ -32,13 +32,6 @@ RUN printf '%s' "${CAO_PROFILE}" | grep -Eq '^cao(\.[a-z0-9-]+)?\.json$' \
       npm --prefix dashboard/site run build -- dist "${policy}"; \
     fi
 
-FROM dashboard-build AS control-plane-inventory
-
-RUN REPORT_ROOT=/workspace \
-    REPORT_INVENTORY=/tmp/control-plane-inventory.json \
-    REPORT_INVENTORY_STATIC=true \
-    node activity/inventory.mjs
-
 FROM golang:1.27.3-alpine@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS server-build
 
 ARG VERSION=dev
@@ -139,6 +132,23 @@ COPY --chown=cao:cao server/azure/empty-data/ /data/
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
 
+FROM postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea AS azure-db-provision
+
+RUN addgroup -S -g 65532 cao && adduser -S -D -H -u 65532 -G cao cao
+COPY --from=server-build /out/cao-dashboard /app/cao-dashboard
+COPY server/postgres/*.sql /app/postgres/
+COPY server/azure/provision.sh server/azure/provision.sql /app/azure/
+WORKDIR /app
+USER 65532:65532
+ENTRYPOINT ["/bin/sh", "/app/azure/provision.sh"]
+
+FROM dashboard-build AS control-plane-inventory
+
+RUN REPORT_ROOT=/workspace \
+    REPORT_INVENTORY=/tmp/control-plane-inventory.json \
+    REPORT_INVENTORY_STATIC=true \
+    node activity/inventory.mjs
+
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS collector-runtime
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
@@ -216,15 +226,5 @@ FROM scratch AS hosted-cli-relay-artifact
 COPY --from=hosted-cli-relay-build /out/cao-cli-relay /cao-cli-relay
 COPY --from=hosted-cli-relay-build /out/cao-cli-relay.sha256 /cao-cli-relay.sha256
 COPY --from=hosted-cli-relay-build /out/cao-cli-relay.json /cao-cli-relay.json
-
-FROM postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea AS azure-db-provision
-
-RUN addgroup -S -g 65532 cao && adduser -S -D -H -u 65532 -G cao cao
-COPY --from=server-build /out/cao-dashboard /app/cao-dashboard
-COPY server/postgres/*.sql /app/postgres/
-COPY server/azure/provision.sh server/azure/provision.sql /app/azure/
-WORKDIR /app
-USER 65532:65532
-ENTRYPOINT ["/bin/sh", "/app/azure/provision.sh"]
 
 FROM dashboard-runtime AS final

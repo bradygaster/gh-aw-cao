@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/githubnext/gh-cao/internal/azcli"
@@ -25,6 +25,19 @@ type deployAzureBuildSource interface {
 }
 
 type deployAzureDevSource struct{ directory string }
+
+//go:embed deploy_azure_assets.json
+var deployAzureAssetAllowlistJSON []byte
+
+var deployAzureAssetAllowlist = func() []string {
+	var entries []string
+	if err := json.Unmarshal(deployAzureAssetAllowlistJSON, &entries); err != nil {
+		panic("invalid embedded Azure asset allowlist: " + err.Error())
+	}
+	return entries
+}()
+
+var deployAzureBuildInputExcluded = regexp.MustCompile(`(^|/)(testdata|__tests__|node_modules|\.git)/|^server/internal/testutil/|_test\.go$|\.(test|spec)\.[cm]?[jt]sx?$|(?i:\.md$|\.(pem|key|p12|pfx|crt|cer|der)$)|(^|/)(\.env(\.|$)|id_(rsa|dsa|ecdsa|ed25519)|\.npmrc$|cao(\.[a-z0-9-]+)?\.json$)`)
 
 type deployAzureBuildContext struct {
 	Directory, Revision, Digest string
@@ -87,7 +100,7 @@ func (s deployAzureDevSource) Materialize(ctx context.Context, destination strin
 			return "", fmt.Errorf("copy build source %s: %w", name, err)
 		}
 	}
-	for _, required := range []string{"server/Dockerfile", "server/go.mod", "dashboard/site/package.json", "activity/inventory.mjs", "aw.yml"} {
+	for _, required := range []string{"server/Dockerfile", "server/go.mod", "dashboard/site/package.json", "dashboard/site/manifest.webmanifest", "server/azure/provision.sh"} {
 		if _, err := os.Stat(filepath.Join(destination, required)); err != nil {
 			return "", fmt.Errorf("development source is not a gh-cao checkout: missing %s", required)
 		}
@@ -99,28 +112,15 @@ func deployAzureBuildFileAllowed(name string) bool {
 	if name == "" || !filepath.IsLocal(name) || strings.Contains(name, "\\") {
 		return false
 	}
-	parts := strings.Split(name, "/")
-	for _, part := range parts {
-		if slices.Contains([]string{"node_modules", "dist", ".git", ".tmp", "test-results", ".cache"}, part) {
-			return false
+	if deployAzureBuildInputExcluded.MatchString(name) {
+		return false
+	}
+	for _, entry := range deployAzureAssetAllowlist {
+		if name == entry || strings.HasSuffix(entry, "/") && strings.HasPrefix(name, entry) {
+			return true
 		}
 	}
-	if name == ".dockerignore" || name == "dashboard/site/manifest.webmanifest" || name == "server/azure/provision.sh" || name == "aw.yml" || name == "README.md" || strings.HasSuffix(name, "/aw.yml") || strings.HasSuffix(name, "/README.md") {
-		return true
-	}
-	if name == ".github/workflows/cao.json" || name == ".github/workflows/cao.azure.json" {
-		return false
-	}
-	if strings.HasPrefix(name, ".github/workflows/") {
-		return (len(parts) == 3 && (strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".lock.yml"))) ||
-			(strings.HasPrefix(name, ".github/workflows/shared/") && slices.Contains([]string{".mjs", ".js", ".json", ".md", ".ts"}, filepath.Ext(name)))
-	}
-	if !strings.HasPrefix(name, "server/") && !strings.HasPrefix(name, "activity/") &&
-		!strings.HasPrefix(name, "dashboard/") && !strings.HasPrefix(name, "internal/dashboardquery/") {
-		return false
-	}
-	return slices.Contains([]string{".go", ".mod", ".sum", ".json", ".jsonl", ".mjs", ".js", ".ts", ".css", ".html", ".svg", ".sql", ".yml", ".yaml", ".txt", ".md", ".bicep", ".xml", ".png", ".woff2", ".ico"}, filepath.Ext(name)) ||
-		name == "server/Dockerfile"
+	return false
 }
 
 func copyDeployAzureFile(source, destination string) error {

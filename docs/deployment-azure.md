@@ -44,6 +44,11 @@ into an owner-only temporary build context. Only allowlisted product files,
 those two policy files, and explicitly selected evidence are uploaded to ACR,
 not the operator's working directory or its credentials.
 
+Development and release builds share the product-input allowlist in
+`internal/cli/deploy_azure_assets.json`. The Azure Dockerfile targets precede
+catalog inventory and collection stages so ACR's legacy builder needs only
+those minimal inputs.
+
 ```bash
 gh cao deploy azure --plan --config /private/operator/deploy-azure.json \
   --template /src/gh-cao/server/azure/main.json --out /private/operator/plan.json
@@ -400,8 +405,8 @@ Monitor failures; runtime does not repair missing partitions.
    **Building from a release asset bundle.** Operators without a full catalog
    checkout can use the attested `cao-azure-REVISION.tgz` attached to each
    release beside the runtime archive. It contains only the Docker build inputs
-   for `azure-functions-runtime`, `azure-ingest-runtime`, and
-   `azure-empty-ingest-runtime`, the compiled `server/azure/main.json`
+   for `azure-functions-runtime`, `azure-ingest-runtime`,
+   `azure-empty-ingest-runtime`, and `azure-db-provision`, the compiled `server/azure/main.json`
    template, and a `cao-azure.json` manifest with the source revision and the
    SHA-256 digest of every file. It never contains adopter policy
    (`cao.json`, `cao.azure.json`), credentials, tests, or documentation. Verify
