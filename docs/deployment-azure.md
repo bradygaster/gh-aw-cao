@@ -49,6 +49,11 @@ Development and release builds share the product-input allowlist in
 catalog inventory and collection stages so ACR's legacy builder needs only
 those minimal inputs.
 
+`resources.functionApp` is also the Container Apps job prefix: use 2-19
+lowercase letters, digits, or hyphens, starting with a letter, ending with a
+letter or digit, and without consecutive hyphens. The longest derived name,
+`PREFIX-db-provision`, must fit Azure's 32-character job-name limit.
+
 ```bash
 gh cao deploy azure --plan --config /private/operator/deploy-azure.json \
   --template /src/gh-cao/server/azure/main.json --out /private/operator/plan.json
@@ -69,6 +74,12 @@ it never silently substitutes for a missing or invalid snapshot.
 Apply creates the resource group if necessary, deploys the exact template ACR
 resource, builds the Functions, database-provisioning, and ingestion Dockerfile targets, records their
 digests, and locks the version-plus-config-hash tags against writes and deletes.
+New managed-identity Key Vault grants can take time to propagate. Apply retries
+the exact reviewed ARM request at most three times only when every nested
+failure is the recognized job secret-fetch error in the ingestion or
+database-provisioning module. Retries use cancellation-aware backoff and an
+eight-minute overall budget, never change access grants, and fail closed on
+mixed, unknown, authorization, or policy errors.
 Only then does it deploy the full template. It refuses an overlapping ingestion
 execution and waits on the exact execution it starts. The separate
 `<app>-db-provision` execution must succeed before runtime-only ingestion starts;

@@ -7,7 +7,9 @@ targetScope = 'resourceGroup'
 @description('Azure region for all dashboard resources.')
 param location string = resourceGroup().location
 
-@description('Globally unique Function App name for the experimental Azure Functions dashboard profile.')
+@minLength(2)
+@maxLength(19)
+@description('Globally unique lowercase Function App name and job prefix, starting with a letter and without consecutive hyphens. At most 19 characters keeps the derived -db-provision job within the Container Apps 32-character limit.')
 param functionAppName string
 
 @description('Default endpoint access. Enabled (default) serves the dashboard over public HTTPS behind GitHub OAuth sign-in; no VPN, proxy, or corporate-network rule is required. Set Disabled only for a deliberately private deployment.')

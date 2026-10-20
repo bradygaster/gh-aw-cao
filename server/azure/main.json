@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "3295845834636612073"
+      "templateHash": "46855819307654529"
     }
   },
   "parameters": {
@@ -18,8 +18,10 @@
     },
     "functionAppName": {
       "type": "string",
+      "minLength": 2,
+      "maxLength": 19,
       "metadata": {
-        "description": "Globally unique Function App name for the experimental Azure Functions dashboard profile."
+        "description": "Globally unique lowercase Function App name and job prefix, starting with a letter and without consecutive hyphens. At most 19 characters keeps the derived -db-provision job within the Container Apps 32-character limit."
       }
     },
     "functionPublicNetworkAccess": {
@@ -1095,7 +1097,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "13519806925564635635"
+              "templateHash": "12734490561269164699"
             }
           },
           "parameters": {
@@ -1113,7 +1115,8 @@
             },
             "namePrefix": {
               "type": "string",
-              "minLength": 3,
+              "minLength": 2,
+              "maxLength": 22,
               "metadata": {
                 "description": "Name prefix for the collection resources."
               }
@@ -1741,7 +1744,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "2740997604878187266"
+              "templateHash": "12356995503207599452"
             }
           },
           "parameters": {
@@ -1749,7 +1752,9 @@
               "type": "string"
             },
             "namePrefix": {
-              "type": "string"
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 19
             },
             "environmentName": {
               "type": "string"
@@ -2028,7 +2033,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "2928209390772572588"
+              "templateHash": "1382375296449266175"
             }
           },
           "parameters": {
@@ -2036,7 +2041,9 @@
               "type": "string"
             },
             "namePrefix": {
-              "type": "string"
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 19
             },
             "environmentName": {
               "type": "string"

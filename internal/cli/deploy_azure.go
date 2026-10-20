@@ -26,21 +26,23 @@ const (
 )
 
 type deployAzureDeps struct {
-	az       azcli.Executor
-	getenv   func(string) (string, bool)
-	now      func() time.Time
-	template func(path string) deployAzureTemplateSource
-	http     *http.Client
-	pause    func(context.Context, time.Duration) error
-	source   func(string) deployAzureBuildSource
+	az          azcli.Executor
+	getenv      func(string) (string, bool)
+	now         func() time.Time
+	template    func(path string) deployAzureTemplateSource
+	http        *http.Client
+	pause       func(context.Context, time.Duration) error
+	source      func(string) deployAzureBuildSource
+	diagnostics io.Writer
 }
 
 func defaultDeployAzureDeps() deployAzureDeps {
 	return deployAzureDeps{
-		az:       azcli.Process{},
-		getenv:   os.LookupEnv,
-		now:      time.Now,
-		template: func(path string) deployAzureTemplateSource { return deployAzureFileTemplate{path: path} },
+		az:          azcli.Process{},
+		getenv:      os.LookupEnv,
+		now:         time.Now,
+		template:    func(path string) deployAzureTemplateSource { return deployAzureFileTemplate{path: path} },
+		diagnostics: os.Stderr,
 	}
 }
 
@@ -115,7 +117,9 @@ Updates to existing instances are not supported.`,
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			if err := deployAzureApply(ctx, deps, configPath, templatePath, planFile, options); err != nil {
+			applyDeps := deps
+			applyDeps.diagnostics = cmd.ErrOrStderr()
+			if err := deployAzureApply(ctx, applyDeps, configPath, templatePath, planFile, options); err != nil {
 				return err
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Azure deployment verified; receipt written to %s\n", options.ReceiptPath)

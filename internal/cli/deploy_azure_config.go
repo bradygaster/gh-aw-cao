@@ -283,7 +283,7 @@ var (
 	deploySubscriptionPattern  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	deployResourceGroupPattern = regexp.MustCompile(`^[-\w.()]{0,89}[-\w()]$`)
 	deployLocationPattern      = regexp.MustCompile(`^[a-z0-9]{2,40}$`)
-	deployFunctionAppPattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$`)
+	deployFunctionAppPattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,17}[a-z0-9]$`)
 	deployStoragePattern       = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
 	deployRegistryPattern      = regexp.MustCompile(`^[a-zA-Z0-9]{5,50}$`)
 	deployKeyVaultPattern      = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9-]{1,22}[a-zA-Z0-9]$`)
@@ -321,7 +321,10 @@ func (c deployAzureConfig) validate() error {
 	require("subscription", c.Subscription, deploySubscriptionPattern, "a subscription GUID")
 	require("resourceGroup", c.ResourceGroup, deployResourceGroupPattern, "a valid resource group name")
 	require("location", c.Location, deployLocationPattern, "a lowercase Azure region name such as westus3")
-	require("resources.functionApp", c.Resources.FunctionApp, deployFunctionAppPattern, "2-60 letters, digits, or hyphens")
+	require("resources.functionApp", c.Resources.FunctionApp, deployFunctionAppPattern, "2-19 lowercase letters, digits, or hyphens, starting with a letter (derived Container Apps job names must fit 32 characters)")
+	if strings.Contains(c.Resources.FunctionApp, "--") {
+		add("resources.functionApp must not contain consecutive hyphens; it is also the Container Apps job prefix")
+	}
 	require("resources.storageAccount", c.Resources.StorageAccount, deployStoragePattern, "3-24 lowercase letters or digits")
 	require("resources.containerRegistry", c.Resources.ContainerRegistry, deployRegistryPattern, "5-50 letters or digits")
 	require("resources.keyVault", c.Resources.KeyVault, deployKeyVaultPattern, "3-24 letters, digits, or hyphens starting with a letter")

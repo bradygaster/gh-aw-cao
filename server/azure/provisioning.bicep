@@ -1,4 +1,6 @@
 param location string
+@minLength(2)
+@maxLength(19)
 param namePrefix string
 param environmentName string
 param containerRegistryName string

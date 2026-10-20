@@ -13,7 +13,8 @@ param location string
 @description('Resource tags.')
 param tags object
 
-@minLength(3)
+@minLength(2)
+@maxLength(22)
 @description('Name prefix for the collection resources.')
 param namePrefix string
 

@@ -34,15 +34,16 @@ func (f testAzureTransport) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 type fakeAzureApply struct {
-	t          *testing.T
-	plan       *fakeAz
-	calls      [][]string
-	failBuild  bool
-	buildRunID bool
-	failJob    bool
-	concurrent bool
-	httpCalls  int
-	polls      int
+	t                    *testing.T
+	plan                 *fakeAz
+	calls                [][]string
+	failBuild            bool
+	buildRunID           bool
+	failJob              bool
+	concurrent           bool
+	httpCalls            int
+	polls                int
+	transientARMFailures int
 }
 
 func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result, error) {
@@ -109,6 +110,11 @@ func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result,
 			if !strings.Contains(string(parameters), secret) {
 				f.t.Fatal("secure value not passed by file")
 			}
+		}
+		if f.transientARMFailures > 0 {
+			f.transientARMFailures--
+			failure := testAzureRetryFailure(testAzureRetryConfig(), flag("--name"), "snapshot-ingestion", "database-provisioning")
+			return azcli.Result{Stderr: testAzureRetryJSON(f.t, failure)}, fmt.Errorf("managed identity propagation: %s", testDeployClientSecret)
 		}
 		return azcli.Result{Stdout: `{"id":"/subscriptions/` + testDeploySubscription + `/resourceGroups/rg-synthetic-test/providers/Microsoft.Resources/deployments/cao-test","properties":{"provisioningState":"Succeeded","outputs":{"functionHostName":{"value":"fa-synthetic-test.azurewebsites.net"},"ingestionJobName":{"value":"fa-synthetic-test-ingest"},"provisioningJobName":{"value":"fa-synthetic-test-db-provision"}}}}`}, nil
 	case "containerapp job execution list":
