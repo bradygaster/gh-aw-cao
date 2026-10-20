@@ -44,6 +44,7 @@ type fakeAzureApply struct {
 	httpCalls            int
 	polls                int
 	transientARMFailures int
+	deploymentOutputs    map[string]any
 }
 
 func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result, error) {
@@ -116,7 +117,26 @@ func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result,
 			failure := testAzureRetryFailure(testAzureRetryConfig(), flag("--name"), "snapshot-ingestion", "database-provisioning")
 			return azcli.Result{Stderr: testAzureRetryJSON(f.t, failure)}, fmt.Errorf("managed identity propagation: %s", testDeployClientSecret)
 		}
-		return azcli.Result{Stdout: `{"id":"/subscriptions/` + testDeploySubscription + `/resourceGroups/rg-synthetic-test/providers/Microsoft.Resources/deployments/cao-test","properties":{"provisioningState":"Succeeded","outputs":{"functionHostName":{"value":"fa-synthetic-test.azurewebsites.net"},"ingestionJobName":{"value":"fa-synthetic-test-ingest"},"provisioningJobName":{"value":"fa-synthetic-test-db-provision"}}}}`}, nil
+		outputs := map[string]any{
+			"functionHostName":    map[string]any{"value": "fa-synthetic-test.azurewebsites.net"},
+			"ingestionJobName":    map[string]any{"value": "fa-synthetic-test-ingest"},
+			"provisioningJobName": map[string]any{"value": "fa-synthetic-test-db-provision"},
+			"collectionEnabled":   map[string]any{"type": "Bool", "value": false},
+			"retentionDays":       map[string]any{"type": "Int", "value": 45},
+			"unrelatedObject":     map[string]any{"type": "Object", "value": map[string]any{"enabled": true}},
+			"unrelatedArray":      map[string]any{"type": "Array", "value": []string{"synthetic"}},
+		}
+		for name, value := range f.deploymentOutputs {
+			outputs[name] = map[string]any{"value": value}
+		}
+		result, err := json.Marshal(map[string]any{
+			"id":         "/subscriptions/" + testDeploySubscription + "/resourceGroups/rg-synthetic-test/providers/Microsoft.Resources/deployments/cao-test",
+			"properties": map[string]any{"provisioningState": "Succeeded", "outputs": outputs},
+		})
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		return azcli.Result{Stdout: string(result)}, nil
 	case "containerapp job execution list":
 		if f.concurrent {
 			return azcli.Result{Stdout: `[{"name":"fa-synthetic-test-ingest-other","properties":{"status":"Running"}}]`}, nil
@@ -191,7 +211,7 @@ func testAzureApplySetup(t *testing.T) (*fakeAzureApply, deployAzureDeps, string
 	}
 }
 
-func TestDeployAzureApplyHappyPathExactOrdering(t *testing.T) {
+func TestDeployAzureApplyHappyPathExactOrderingWithHeterogeneousOutputs(t *testing.T) {
 	fake, deps, config, plan, options := testAzureApplySetup(t)
 	if err := deployAzureApply(context.Background(), deps, config, testDeployTemplatePath(t), plan, options); err != nil {
 		t.Fatal(err)
@@ -236,6 +256,40 @@ func TestDeployAzureApplyHappyPathExactOrdering(t *testing.T) {
 		if image.Tag == "latest" || !strings.Contains(image.Reference, "@sha256:") {
 			t.Fatalf("image not immutable: %+v", image)
 		}
+	}
+}
+
+func TestDeployAzureApplyRejectsInvalidRequiredOutputs(t *testing.T) {
+	for _, tt := range []struct {
+		name, output, want string
+		value              any
+	}{
+		{"hostname-type", "functionHostName", "parse deployment result", false},
+		{"ingestion-type", "ingestionJobName", "parse deployment result", 45},
+		{"provision-type", "provisioningJobName", "parse deployment result", []string{"untrusted"}},
+		{"hostname-null", "functionHostName", "unexpected Function App hostname", nil},
+		{"ingestion-name", "ingestionJobName", "unexpected Function App hostname or ingestion job", "untrusted-ingest"},
+		{"provision-name", "provisioningJobName", "unexpected database provision job", "untrusted-provision"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, deps, config, plan, options := testAzureApplySetup(t)
+			fake.deploymentOutputs = map[string]any{tt.output: tt.value}
+			err := deployAzureApply(context.Background(), deps, config, testDeployTemplatePath(t), plan, options)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("want %q, got %v", tt.want, err)
+			}
+			for _, call := range fake.calls {
+				if azcli.CommandName(call) == "containerapp job start" {
+					t.Fatal("job executed after invalid deployment output")
+				}
+			}
+			if fake.httpCalls != 0 {
+				t.Fatal("verification proceeded after invalid deployment output")
+			}
+			if _, err := os.Stat(options.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid output wrote a success receipt: %v", err)
+			}
+		})
 	}
 }
 
