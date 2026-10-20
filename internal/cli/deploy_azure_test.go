@@ -136,6 +136,9 @@ func fakeAzKey(args []string) string {
 	switch key {
 	case "rest":
 		parts := strings.Split(strings.SplitN(flag("--url"), "?", 2)[0], "/")
+		if parts[len(parts)-1] == "geoRegions" {
+			return "rest Microsoft.Web geoRegions"
+		}
 		return "rest " + parts[len(parts)-2]
 	case "resource show":
 		ids := flag("--ids")
@@ -185,6 +188,10 @@ func (f *fakeAz) Run(ctx context.Context, args ...string) (azcli.Result, error) 
 		return azcli.Result{Stdout: `"` + testDeployPrincipal + `"`}, nil
 	case "role assignment list":
 		return azcli.Result{Stdout: `[{"roleDefinitionName":"Owner","scope":"/subscriptions/` + testDeploySubscription + `"}]`}, nil
+	case "rest Microsoft.Authorization":
+		return azcli.Result{Stdout: `{"value":[{"actions":["*"],"notActions":[]}]}`}, nil
+	case "rest Microsoft.Web geoRegions":
+		return azcli.Result{Stdout: `{"value":[{"name":"West US 3"},{"name":"East US"}]}`}, nil
 	case "provider list":
 		return azcli.Result{Stdout: testDeployProviders(f.t, "Registered", "West US 3")}, nil
 	case "storage account check-name", "acr check-name", "rest Microsoft.KeyVault", "rest Microsoft.Web", "rest Microsoft.DBforPostgreSQL":
@@ -504,7 +511,7 @@ func TestDeployAzureModeFlags(t *testing.T) {
 	}
 }
 
-func TestDeployAzureApplyValidatesPlanThenFailsClosed(t *testing.T) {
+func TestDeployAzureApplyValidatesPlanBeforeInputs(t *testing.T) {
 	fake := &fakeAz{t: t}
 	configPath := writeDeployConfig(t, testDeployConfig())
 	planPath := filepath.Join(t.TempDir(), "plan.json")
@@ -524,8 +531,8 @@ func TestDeployAzureApplyValidatesPlanThenFailsClosed(t *testing.T) {
 		}
 		return err
 	}
-	if err := apply(configPath, testDeployTemplatePath(t), planPath); err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("expected not-implemented failure, got %v", err)
+	if err := apply(configPath, testDeployTemplatePath(t), planPath); err == nil || !strings.Contains(err.Error(), "--source-dir") {
+		t.Fatalf("expected explicit build-source failure, got %v", err)
 	}
 
 	changed := testDeployConfig()

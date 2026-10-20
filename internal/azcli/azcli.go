@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -123,12 +124,15 @@ var readOnlyCommands = [][]string{
 
 // readOnlyRestPaths are the only ARM paths `az rest` may call. Each is a
 // checkNameAvailability action: a POST that reads global name state and
-// changes nothing. Every other `az rest` request, including GET, is refused.
+// changes nothing. Effective-permissions GETs are separately allowlisted.
 var readOnlyRestPaths = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.KeyVault/checkNameAvailability$`),
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.Web/checkNameAvailability$`),
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.DBforPostgreSQL/checkNameAvailability$`),
 }
+
+var readOnlyPermissionsPath = regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/resourceGroups/[-a-z0-9_.()]+)?/providers/Microsoft\.Authorization/permissions$`)
+var readOnlyGeoRegionsPath = regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.Web/geoRegions$`)
 
 // IsReadOnly reports whether args name an allowlisted read-only or what-if command.
 func IsReadOnly(args []string) bool {
@@ -183,11 +187,11 @@ func isReadOnlyRest(options []string) bool {
 			target = value
 		}
 	}
-	if !strings.EqualFold(method, "post") || target == "" {
+	if target == "" {
 		return false
 	}
 	parsed, err := url.Parse(target)
-	if err != nil || parsed.RawPath != "" || parsed.Fragment != "" || parsed.User != nil {
+	if err != nil || parsed.RawPath != "" || parsed.Fragment != "" || parsed.User != nil || path.Clean(parsed.Path) != parsed.Path {
 		return false
 	}
 	switch {
@@ -196,8 +200,26 @@ func isReadOnlyRest(options []string) bool {
 	default:
 		return false
 	}
-	query := parsed.Query()
-	if len(query) != 1 || len(query["api-version"]) != 1 {
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return false
+	}
+	if len(query["api-version"]) != 1 {
+		return false
+	}
+	if strings.EqualFold(method, "get") {
+		if seen["body"] {
+			return false
+		}
+		if readOnlyPermissionsPath.MatchString(parsed.Path) {
+			return len(query) == 1 && query.Get("api-version") == "2022-04-01"
+		}
+		return readOnlyGeoRegionsPath.MatchString(parsed.Path) && len(query) == 3 &&
+			query.Get("api-version") == "2024-11-01" && len(query["sku"]) == 1 &&
+			(query.Get("sku") == "EP1" || query.Get("sku") == "EP2" || query.Get("sku") == "EP3") &&
+			len(query["linuxWorkersEnabled"]) == 1 && query.Get("linuxWorkersEnabled") == "true"
+	}
+	if !strings.EqualFold(method, "post") || len(query) != 1 {
 		return false
 	}
 	for _, pattern := range readOnlyRestPaths {
