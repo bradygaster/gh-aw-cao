@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/githubnext/gh-cao/internal/azcli"
 )
@@ -84,10 +85,21 @@ type deployAzurePreflight struct {
 	siteID      string
 	providers   []deployAzureProvider
 	providerErr error
+	timedOut    bool
 }
 
 func runDeployAzurePreflight(ctx context.Context, az azcli.Executor, config deployAzureConfig, template deployAzureTemplate) *deployAzurePreflight {
 	p := &deployAzurePreflight{az: az, config: config, template: deployAzureTemplateFactsFrom(template.Content)}
+	p.az = azcli.ExecutorFunc(func(ctx context.Context, args ...string) (azcli.Result, error) {
+		bounded, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		result, err := az.Run(bounded, args...)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(bounded.Err(), context.DeadlineExceeded) {
+			p.timedOut = true
+			return result, fmt.Errorf("preflight subprocess az %s timed out after at most one minute: %w", azcli.CommandName(args), context.DeadlineExceeded)
+		}
+		return result, err
+	})
 	for _, check := range []func(context.Context) deployAzureCheck{
 		p.checkTools,
 		p.checkLogin,
@@ -103,7 +115,12 @@ func runDeployAzurePreflight(ctx context.Context, az azcli.Executor, config depl
 		p.checkIngress,
 		p.checkRetention,
 	} {
-		p.checks = append(p.checks, check(ctx))
+		p.timedOut = false
+		result := check(ctx)
+		if p.timedOut {
+			result.Status = deployAzureCheckUnknown
+		}
+		p.checks = append(p.checks, result)
 	}
 	return p
 }
@@ -118,7 +135,7 @@ func (p *deployAzurePreflight) report() deployAzurePreflightReport {
 
 func (p *deployAzurePreflight) failed() bool {
 	for _, check := range p.checks {
-		if check.Status == deployAzureCheckFail {
+		if check.Status == deployAzureCheckFail || check.Status == deployAzureCheckUnknown {
 			return true
 		}
 	}
@@ -128,7 +145,7 @@ func (p *deployAzurePreflight) failed() bool {
 func (p *deployAzurePreflight) err() error {
 	var failures []string
 	for _, check := range p.checks {
-		if check.Status == deployAzureCheckFail {
+		if check.Status == deployAzureCheckFail || check.Status == deployAzureCheckUnknown {
 			failures = append(failures, check.ID+": "+check.Message)
 		}
 	}
@@ -332,120 +349,6 @@ func (p *deployAzurePreflight) targetScope() string {
 	return scope
 }
 
-var (
-	deployAzureCreateRoles = map[string]bool{"owner": true, "contributor": true}
-	deployAzureAssignRoles = map[string]bool{"owner": true, "user access administrator": true, "role based access control administrator": true}
-	deployAzureKnownRoles  = map[string]bool{"owner": true, "contributor": true, "user access administrator": true, "role based access control administrator": true, "reader": true}
-)
-
-func (p *deployAzurePreflight) checkPermissions(ctx context.Context) deployAzureCheck {
-	const id = "permissions"
-	if check := p.skipped(id); check != nil {
-		return *check
-	}
-	scope := p.targetScope()
-	needed := fmt.Sprintf("Owner, or Contributor plus User Access Administrator or Role Based Access Control Administrator, at %s", scope)
-	objectID, err := p.signedInObjectID(ctx)
-	if err != nil {
-		return deployAzureCheckResult(id, deployAzureCheckUnknown, "could not resolve the signed-in principal: "+azError(err),
-			"Confirm the deploying identity holds "+needed+". Resolving the principal requires Microsoft Graph read access.")
-	}
-	var assignments []struct {
-		RoleDefinitionName string `json:"roleDefinitionName"`
-		Scope              string `json:"scope"`
-		Condition          string `json:"condition"`
-	}
-	if err := p.runJSON(ctx, &assignments, "role", "assignment", "list", "--subscription", p.config.Subscription, "--assignee", objectID,
-		"--scope", scope, "--include-inherited", "--include-groups", "--output", "json"); err != nil {
-		return deployAzureCheckResult(id, deployAzureCheckUnknown, "could not list role assignments: "+azError(err),
-			"Confirm the deploying identity holds "+needed+", or grant it Microsoft.Authorization/roleAssignments/read to verify.")
-	}
-	canCreate, canAssign := false, false
-	var held, unrecognized, conditional []string
-	for _, assignment := range assignments {
-		if !deployAzureScopeApplies(assignment.Scope, scope) {
-			continue
-		}
-		role := strings.ToLower(assignment.RoleDefinitionName)
-		held = append(held, assignment.RoleDefinitionName)
-		if !deployAzureKnownRoles[role] {
-			unrecognized = append(unrecognized, assignment.RoleDefinitionName)
-		}
-		if deployAzureCreateRoles[role] {
-			canCreate = true
-		}
-		if deployAzureAssignRoles[role] {
-			if assignment.Condition != "" {
-				conditional = append(conditional, assignment.RoleDefinitionName)
-			} else {
-				canAssign = true
-			}
-		}
-	}
-	sort.Strings(held)
-	heldText := "none"
-	if len(held) > 0 {
-		heldText = strings.Join(slicesCompact(held), ", ")
-	}
-	if canCreate && canAssign {
-		return deployAzureCheckResult(id, deployAzureCheckPass, fmt.Sprintf("can create resources and role assignments at %s (roles: %s)", scope, heldText), "")
-	}
-	var missing []string
-	if !canCreate {
-		missing = append(missing, "create resources (Owner or Contributor)")
-	}
-	if !canAssign {
-		missing = append(missing, "create role assignments (Owner, User Access Administrator, or Role Based Access Control Administrator)")
-	}
-	message := fmt.Sprintf("no active assignment grants %s at %s (roles: %s)", strings.Join(missing, " or "), scope, heldText)
-	if len(unrecognized) > 0 || len(conditional) > 0 {
-		return deployAzureCheckResult(id, deployAzureCheckUnknown, message+"; custom or conditional roles could not be evaluated",
-			"Confirm the custom or conditional roles allow resource and role-assignment creation, or grant "+needed+".")
-	}
-	return deployAzureCheckResult(id, deployAzureCheckFail, message,
-		"Grant the deploying identity "+needed+" (activate any eligible PIM assignment first), then rerun preflight.")
-}
-
-func slicesCompact(values []string) []string {
-	var compact []string
-	for _, value := range values {
-		if len(compact) == 0 || compact[len(compact)-1] != value {
-			compact = append(compact, value)
-		}
-	}
-	return compact
-}
-
-// deployAzureScopeApplies reports whether an assignment at assigned covers target.
-func deployAzureScopeApplies(assigned, target string) bool {
-	assigned = strings.TrimSuffix(strings.ToLower(assigned), "/")
-	target = strings.ToLower(target)
-	return assigned == "" || assigned == target || strings.HasPrefix(target, assigned+"/")
-}
-
-func (p *deployAzurePreflight) signedInObjectID(ctx context.Context) (string, error) {
-	var objectID string
-	switch strings.ToLower(p.account.User.Type) {
-	case "user":
-		if err := p.runJSON(ctx, &objectID, "ad", "signed-in-user", "show", "--query", "id", "--output", "json"); err != nil {
-			return "", err
-		}
-	case "serviceprincipal":
-		if p.account.User.Name == "" {
-			return "", errors.New("service principal application ID is not reported by az account show")
-		}
-		if err := p.runJSON(ctx, &objectID, "ad", "sp", "show", "--id", p.account.User.Name, "--query", "id", "--output", "json"); err != nil {
-			return "", err
-		}
-	default:
-		return "", fmt.Errorf("unsupported principal type %q", p.account.User.Type)
-	}
-	if !deploySubscriptionPattern.MatchString(objectID) {
-		return "", fmt.Errorf("unexpected principal object ID %q", objectID)
-	}
-	return objectID, nil
-}
-
 func (p *deployAzurePreflight) loadProviders(ctx context.Context) error {
 	if p.providers != nil || p.providerErr != nil {
 		return p.providerErr
@@ -568,8 +471,21 @@ func (p *deployAzurePreflight) checkLocation(ctx context.Context) deployAzureChe
 		var locations []struct {
 			Name string `json:"name"`
 		}
-		if err := p.runJSON(ctx, &locations, "appservice", "list-locations", "--subscription", p.config.Subscription, "--sku", sku, "--linux-workers-enabled", "--output", "json"); err != nil {
-			undetermined = append(undetermined, "App Service plan "+sku+" ("+azError(err)+")")
+		var locationErr error
+		if sku == "EP1" || sku == "EP2" || sku == "EP3" {
+			var regions struct {
+				Value []struct {
+					Name string `json:"name"`
+				} `json:"value"`
+			}
+			locationErr = p.runJSON(ctx, &regions, "rest", "--method", "get", "--url",
+				"/subscriptions/"+p.config.Subscription+"/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku="+sku+"&linuxWorkersEnabled=true", "--output", "json")
+			locations = regions.Value
+		} else {
+			locationErr = p.runJSON(ctx, &locations, "appservice", "list-locations", "--subscription", p.config.Subscription, "--sku", sku, "--linux-workers-enabled", "--output", "json")
+		}
+		if locationErr != nil {
+			undetermined = append(undetermined, "App Service plan "+sku+" ("+azError(locationErr)+")")
 		} else {
 			offered := false
 			for _, candidate := range locations {
@@ -682,8 +598,12 @@ func (p *deployAzurePreflight) restNameArgs(provider, resourceType, name string)
 		apiVersion = "2023-01-01"
 	}
 	body, _ := json.Marshal(map[string]string{"name": name, "type": resourceType})
+	path := fmt.Sprintf("/subscriptions/%s/providers/%s", p.config.Subscription, provider)
+	if provider == "Microsoft.DBforPostgreSQL" {
+		path += "/locations/" + p.config.Location
+	}
 	return []string{"rest", "--method", "post",
-		"--url", fmt.Sprintf("/subscriptions/%s/providers/%s/checkNameAvailability?api-version=%s", p.config.Subscription, provider, apiVersion),
+		"--url", fmt.Sprintf("%s/checkNameAvailability?api-version=%s", path, apiVersion),
 		"--body", string(body), "--output", "json"}
 }
 

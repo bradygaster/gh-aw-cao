@@ -147,7 +147,7 @@ test("Azure asset manifest records the source revision and every file digest", (
   assert.equal(manifest.revision, revision);
   assert.equal(manifest.dockerfile, "server/Dockerfile");
   assert.equal(manifest.template, "server/azure/main.json");
-  assert.deepEqual(manifest.targets, ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime"]);
+  assert.deepEqual(manifest.targets, ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime", "azure-db-provision"]);
   const contents = entries.filter((entry) => entry.path !== AZURE_ASSET_MANIFEST);
   assert.deepEqual(Object.keys(manifest.files), contents.map((entry) => entry.path));
   for (const entry of contents) {
@@ -173,7 +173,7 @@ test("Azure asset selection fails closed on credentials or policy inside allowli
   assert.throws(() => buildCaoAzureAssets(root, path.join(workspace, "bad"), "HEAD"), /full lowercase source revision/);
 });
 
-test("Azure Dockerfile targets read only bundled sources or named build contexts", () => {
+test("Azure Dockerfile legacy ACR targets and their preceding stages read only bundled sources", () => {
   const dockerfile = readFileSync(path.join(root, "server/Dockerfile"), "utf8");
   const stages = new Map(dockerfile.split(/(?=^FROM )/m).map((stage) => [/ AS (\S+)/.exec(stage)?.[1], stage]));
   const reachable = new Set();
@@ -185,6 +185,11 @@ test("Azure Dockerfile targets read only bundled sources or named build contexts
     for (const match of stage.matchAll(/--from=(\S+)/g)) visit(match[1]);
   };
   for (const target of ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime", "azure-db-provision"]) visit(target);
+  const order = [...stages.keys()].filter(Boolean);
+  for (const target of ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime", "azure-db-provision"]) {
+    assert.ok(order.includes(target), `${target} must exist`);
+    for (const preceding of order.slice(0, order.indexOf(target) + 1)) reachable.add(preceding);
+  }
   assert.ok(!reachable.has("control-plane-inventory"), "Azure targets must not depend on the catalog inventory");
   assert.ok(reachable.has("cao-policy") && reachable.has("cao-ingest-source"));
   for (const name of reachable) {
@@ -207,4 +212,13 @@ test("Azure Dockerfile targets read only bundled sources or named build contexts
   assert.match(stages.get("cao-policy"), /^COPY \.github\/workflows\/cao\.json \.github\/workflows\/cao\.azure\.json \/$/m);
   assert.match(stages.get("dashboard-build"), /^COPY --from=cao-policy \/ \.github\/workflows\/$/m);
   assert.match(stages.get("azure-ingest-runtime"), /^COPY --from=cao-ingest-source --chown=cao:cao \/ \/data\/$/m);
+});
+
+test("development CLI and release bundles consume the same reviewed Azure asset allowlist", () => {
+  const shared = readFileSync(path.join(root, "internal/cli/deploy_azure_assets.json"), "utf8");
+  assert.deepEqual(AZURE_ASSET_ALLOWLIST, JSON.parse(shared));
+  assert.ok(AZURE_ASSET_ALLOWLIST.includes("dashboard/site/manifest.webmanifest"));
+  const native = readFileSync(path.join(root, "internal/cli/deploy_azure_images.go"), "utf8");
+  assert.match(native, /\/\/go:embed deploy_azure_assets\.json/);
+  assert.match(native, /for _, entry := range deployAzureAssetAllowlist/);
 });

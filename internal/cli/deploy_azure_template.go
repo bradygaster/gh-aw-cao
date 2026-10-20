@@ -148,7 +148,16 @@ type deployAzureSecrets struct {
 
 func resolveDeployAzureSecrets(config deployAzureConfig, getenv func(string) (string, bool)) (deployAzureSecrets, error) {
 	secrets := deployAzureSecrets{entries: map[string]any{}}
+	passwords := map[string]string{}
+	passwordRefs := map[string]string{}
 	for _, secure := range config.secureParameters() {
+		if strings.HasPrefix(secure.name, "postgres") {
+			ref := secure.ref.describe()
+			if previous := passwordRefs[ref]; previous != "" {
+				return deployAzureSecrets{}, fmt.Errorf("%s and %s must reference different database passwords", previous, secure.field)
+			}
+			passwordRefs[ref] = secure.field
+		}
 		if secure.ref.KeyVault != nil {
 			secrets.entries[secure.name] = map[string]any{"reference": map[string]any{
 				"keyVault":   map[string]string{"id": secure.ref.KeyVault.ID},
@@ -162,6 +171,12 @@ func resolveDeployAzureSecrets(config deployAzureConfig, getenv func(string) (st
 		}
 		if len(value) < secure.minLength {
 			return deployAzureSecrets{}, fmt.Errorf("%s from %s must be at least %d characters", secure.field, secure.ref.Env, secure.minLength)
+		}
+		if strings.HasPrefix(secure.name, "postgres") {
+			if previous := passwords[value]; previous != "" {
+				return deployAzureSecrets{}, fmt.Errorf("%s and %s must have different database passwords", previous, secure.field)
+			}
+			passwords[value] = secure.field
 		}
 		secrets.entries[secure.name] = map[string]any{"value": value}
 		secrets.values = append(secrets.values, value)

@@ -54,6 +54,9 @@ param functionImageTag string
 @description('Key Vault name used for GitHub OAuth, session, PostgreSQL, and collection secrets.')
 param keyVaultName string
 
+@description('Enable purge protection for production vaults. Disable only for explicitly disposable environments that must be purged after testing. Existing protected vaults cannot be downgraded.')
+param keyVaultPurgeProtection bool = true
+
 @description('Globally unique name for a new private PostgreSQL Flexible Server.')
 param postgresServerName string = '${functionAppName}-pg'
 
@@ -304,7 +307,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: true
     enabledForTemplateDeployment: false
     enableSoftDelete: true
-    enablePurgeProtection: true
+    enablePurgeProtection: keyVaultPurgeProtection ? true : null
     softDeleteRetentionInDays: 90
     publicNetworkAccess: 'Enabled'
   }

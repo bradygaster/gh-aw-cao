@@ -92,7 +92,7 @@ var testDeployCheckIDs = []string{"tools", "login", "existing-instance", "permis
 	"name-storage-account", "name-container-registry", "name-key-vault", "name-function-app", "name-postgres-server",
 	"ingress-drift", "retention-readback"}
 
-var testDeployRestPath = regexp.MustCompile(`^/subscriptions/` + testDeploySubscription + `/providers/(Microsoft\.KeyVault|Microsoft\.Web|Microsoft\.DBforPostgreSQL)/checkNameAvailability\?api-version=\d{4}-\d{2}-\d{2}(-preview)?$`)
+var testDeployRestPath = regexp.MustCompile(`^/subscriptions/` + testDeploySubscription + `/providers/(Microsoft\.KeyVault|Microsoft\.Web|Microsoft\.DBforPostgreSQL)(/locations/[a-z0-9]+)?/checkNameAvailability\?api-version=\d{4}-\d{2}-\d{2}(-preview)?$`)
 
 func assertDeployCallsReadOnly(t *testing.T, calls [][]string) {
 	t.Helper()
@@ -104,6 +104,12 @@ func assertDeployCallsReadOnly(t *testing.T, calls [][]string) {
 			continue
 		}
 		method, url := call[slices.Index(call, "--method")+1], call[slices.Index(call, "--url")+1]
+		if strings.EqualFold(method, "get") && strings.HasSuffix(url, "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01") {
+			continue
+		}
+		if strings.EqualFold(method, "get") && strings.Contains(url, "/providers/Microsoft.Web/geoRegions?") && azcli.IsReadOnly(call) {
+			continue
+		}
 		if !strings.EqualFold(method, "post") || !testDeployRestPath.MatchString(url) {
 			t.Fatalf("az rest outside the checkNameAvailability allowlist: %q", call)
 		}
@@ -153,7 +159,7 @@ func TestDeployAzurePreflightHealthy(t *testing.T) {
 			namespaces = append(namespaces, strings.TrimPrefix(fakeAzKey(call), "rest "))
 		}
 	}
-	if !slices.Equal(namespaces, []string{"Microsoft.KeyVault", "Microsoft.Web", "Microsoft.DBforPostgreSQL"}) {
+	if !slices.Equal(namespaces, []string{"Microsoft.Authorization", "Microsoft.Web geoRegions", "Microsoft.KeyVault", "Microsoft.Web", "Microsoft.DBforPostgreSQL"}) {
 		t.Fatalf("checkNameAvailability namespaces = %q", namespaces)
 	}
 }
@@ -209,16 +215,15 @@ func TestDeployAzurePreflightChecks(t *testing.T) {
 			f.namedResources = map[string]string{"stsynthetictest": `[{"id":"/subscriptions/x/resourceGroups/rg-other/providers/Microsoft.Storage/storageAccounts/stsynthetictest","type":"Microsoft.Storage/storageAccounts"}]`}
 		}, id: "existing-instance", status: "fail", message: "only fresh deployments are supported"},
 
-		{name: "permissions reader only", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Reader","scope":"/subscriptions/` + testDeploySubscription + `"}]`)}, id: "permissions", status: "fail", message: "create resources (Owner or Contributor)"},
-		{name: "permissions contributor lacks assign", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Contributor","scope":"/subscriptions/` + testDeploySubscription + `"}]`)}, id: "permissions", status: "fail", message: "create role assignments"},
-		{name: "permissions contributor plus RBAC admin", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Contributor","scope":"/subscriptions/` + testDeploySubscription + `"},{"roleDefinitionName":"Role Based Access Control Administrator","scope":"/subscriptions/` + testDeploySubscription + `"}]`)}, id: "permissions", status: "pass", message: "can create resources and role assignments"},
-		{name: "permissions other scope ignored", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Owner","scope":"/subscriptions/` + testDeploySubscription + `/resourceGroups/rg-other"}]`)}, id: "permissions", status: "fail", message: "roles: none"},
-		{name: "permissions custom role", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Synthetic Deployer","scope":"/subscriptions/` + testDeploySubscription + `"}]`)}, id: "permissions", status: "unknown", message: "custom or conditional roles"},
-		{name: "permissions conditional assign", overrides: map[string]fakeAzResponse{"role assignment list": ok(`[{"roleDefinitionName":"Contributor","scope":"/subscriptions/` + testDeploySubscription + `"},{"roleDefinitionName":"Role Based Access Control Administrator","scope":"/subscriptions/` + testDeploySubscription + `","condition":"synthetic"}]`)}, id: "permissions", status: "unknown", message: "custom or conditional roles"},
-		{name: "permissions graph unavailable", overrides: map[string]fakeAzResponse{"ad signed-in-user show": err("Insufficient privileges")}, id: "permissions", status: "unknown", message: "could not resolve the signed-in principal"},
-		{name: "permissions list unavailable", overrides: map[string]fakeAzResponse{"role assignment list": err("AuthorizationFailed")}, id: "permissions", status: "unknown", message: "could not list role assignments"},
+		{name: "permissions reader only", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": ok(`{"value":[{"actions":["*/read"],"notActions":[]}]}`)}, id: "permissions", status: "fail", message: "do not grant"},
+		{name: "permissions contributor lacks assign", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": ok(`{"value":[{"actions":["*"],"notActions":["Microsoft.Authorization/*/write"]}]}`)}, id: "permissions", status: "fail", message: "Microsoft.Authorization/roleAssignments/write"},
+		{name: "permissions union restores assign", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": ok(`{"value":[{"actions":["*"],"notActions":["Microsoft.Authorization/*/write"]},{"actions":["Microsoft.Authorization/roleAssignments/write"],"notActions":[]}]}`)}, id: "permissions", status: "pass", message: "can create resources and role assignments"},
+		{name: "permissions paginated unknown", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": ok(`{"value":[{"actions":["*"]}],"nextLink":"https://management.azure.com/next"}`)}, id: "permissions", status: "unknown", message: "missing or incomplete"},
+		{name: "permissions malformed unknown", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": ok(`{}`)}, id: "permissions", status: "unknown", message: "missing or incomplete"},
+		{name: "permissions unavailable", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": err("AuthorizationFailed")}, id: "permissions", status: "unknown", message: "could not read ARM effective permissions"},
+		{name: "permissions timeout", overrides: map[string]fakeAzResponse{"rest Microsoft.Authorization": {err: context.DeadlineExceeded}}, id: "permissions", status: "unknown", message: "timed out after at most one minute"},
 		{name: "permissions service principal", overrides: map[string]fakeAzResponse{"account show": ok(`{"id":"` + testDeploySubscription + `","state":"Enabled","tenantId":"` + testDeployTenant + `","user":{"name":"00000000-0000-4000-8000-000000000005","type":"servicePrincipal"}}`)}, id: "permissions", status: "pass", message: "can create resources"},
-		{name: "permissions unsupported principal", overrides: map[string]fakeAzResponse{"account show": ok(`{"id":"` + testDeploySubscription + `","state":"Enabled","tenantId":"` + testDeployTenant + `","user":{"name":"x","type":"managedIdentity"}}`)}, id: "permissions", status: "unknown", message: "unsupported principal type"},
+		{name: "permissions managed identity", overrides: map[string]fakeAzResponse{"account show": ok(`{"id":"` + testDeploySubscription + `","state":"Enabled","tenantId":"` + testDeployTenant + `","user":{"name":"x","type":"managedIdentity"}}`)}, id: "permissions", status: "pass", message: "no Microsoft Graph lookup"},
 
 		{name: "providers unregistered", fake: func(f *fakeAz) {
 			f.overrides = map[string]fakeAzResponse{"provider list": ok(testDeployProviders(f.t, "NotRegistered", "West US 3"))}
@@ -229,10 +234,10 @@ func TestDeployAzurePreflightChecks(t *testing.T) {
 		{name: "location unsupported type", fake: func(f *fakeAz) {
 			f.overrides = map[string]fakeAzResponse{"provider list": ok(testDeployProviders(f.t, "Registered", "East US"))}
 		}, id: "location", status: "fail", message: "does not offer"},
-		{name: "location plan sku unavailable", overrides: map[string]fakeAzResponse{"appservice list-locations": ok(`[{"name":"East US"}]`)}, id: "location", status: "fail", message: "App Service plan EP1 on Linux"},
+		{name: "location plan sku unavailable", overrides: map[string]fakeAzResponse{"rest Microsoft.Web geoRegions": ok(`{"value":[{"name":"East US"}]}`)}, id: "location", status: "fail", message: "App Service plan EP1 on Linux"},
 		{name: "location postgres sku missing", overrides: map[string]fakeAzResponse{"postgres flexible-server list-skus": ok(`[{"supportedServerEditions":[{"name":"Burstable","supportedServerSkus":[{"name":"Standard_B1ms"}]}]}]`)}, id: "location", status: "fail", message: "PostgreSQL Burstable Standard_B2s"},
 		{name: "location postgres unrecognized", overrides: map[string]fakeAzResponse{"postgres flexible-server list-skus": ok(`[{"unexpected":true}]`)}, id: "location", status: "unknown", message: "unrecognized capability output"},
-		{name: "location list error", overrides: map[string]fakeAzResponse{"appservice list-locations": {err: failed}}, id: "location", status: "unknown", message: "could not confirm location"},
+		{name: "location list error", overrides: map[string]fakeAzResponse{"rest Microsoft.Web geoRegions": {err: failed}}, id: "location", status: "unknown", message: "could not confirm location"},
 
 		{name: "storage taken", overrides: map[string]fakeAzResponse{"storage account check-name": ok(unavailable)}, id: "name-storage-account", status: "fail", message: "not available (AlreadyExists"},
 		{name: "storage error", overrides: map[string]fakeAzResponse{"storage account check-name": {err: failed}}, id: "name-storage-account", status: "unknown", message: "could not check storage account name"},
@@ -266,7 +271,9 @@ func TestDeployAzurePreflightChecks(t *testing.T) {
 			if check.Status != deployAzureCheckPass && strings.TrimSpace(check.Remediation) == "" {
 				t.Fatalf("%s %s has no remediation", tt.id, check.Status)
 			}
-			anyFailed := slices.ContainsFunc(report.Checks, func(c deployAzureCheck) bool { return c.Status == deployAzureCheckFail })
+			anyFailed := slices.ContainsFunc(report.Checks, func(c deployAzureCheck) bool {
+				return c.Status == deployAzureCheckFail || c.Status == deployAzureCheckUnknown
+			})
 			if anyFailed != (runErr != nil) || anyFailed != (report.Status == deployAzureCheckFail) {
 				t.Fatalf("failed=%t but err=%v status=%s", anyFailed, runErr, report.Status)
 			}

@@ -123,6 +123,10 @@ func TestReadOnlyGuard(t *testing.T) {
 		{"rest", "--method", "POST", "--url", checkName("Microsoft.Web"), "--body", `{"name":"x"}`},
 		{"rest", "-m", "post", "-u", checkName("Microsoft.DBforPostgreSQL"), "-b", `{"name":"x"}`},
 		{"rest", "--method=post", "--url=https://management.azure.com" + checkName("Microsoft.Web")},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "https://management.azure.com/subscriptions/" + sub + "/resourceGroups/rg-synthetic/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=EP1&linuxWorkersEnabled=true"},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.DBforPostgreSQL/locations/westus3/checkNameAvailability?api-version=2024-08-01", "--body", "{}"},
 	}
 	for _, args := range allowed {
 		if _, err := guard.Run(context.Background(), args...); err != nil {
@@ -130,6 +134,16 @@ func TestReadOnlyGuard(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01", "--body", "{}"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01&bad=%zz"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/resourceGroups/../providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/resourceGroups/rg%2Fother/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2020-01-01"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=EP1&linuxWorkersEnabled=false"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=EP1&linuxWorkersEnabled=true&extra=1"},
+		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=EP1&sku=EP2&linuxWorkersEnabled=true"},
 		{"rest", "--url", checkName("Microsoft.Web")},
 		{"rest", "--method", "get", "--url", checkName("Microsoft.Web")},
 		{"rest", "--method", "put", "--url", checkName("Microsoft.Web")},
