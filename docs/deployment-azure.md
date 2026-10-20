@@ -47,7 +47,7 @@ The `server/azure/main.bicep` template creates the following resources in one re
 
 - An Azure subscription and resource group where you can create these resources and assign the **Key Vault Secrets User** role.
 - The Azure CLI with Bicep support.
-- Go 1.27.2 and Node.js 24, to build the deployment package.
+- Go 1.27.3 or newer and Node.js 24, to build the deployment package.
 - Register the subscription resource providers before deploying. Container Apps
   requires both `Microsoft.App` and `Microsoft.ContainerService`, even though
   this template does not create an AKS cluster. A subscription administrator may
