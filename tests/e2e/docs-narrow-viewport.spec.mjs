@@ -723,6 +723,19 @@ for (const { name, viewport } of [
         await expect.poll(() => page.locator(".product-image, .phone-image").evaluateAll(
           (images) => images.every((image) => image.complete && image.naturalWidth > 0),
         )).toBe(true);
+        const rolloutStory = page.locator(".terminal-story");
+        await rolloutStory.scrollIntoViewIfNeeded();
+        await expect(rolloutStory).toContainText("Bring an existing workflow, such as Daily Repo Status from Agentics, under central control.");
+        await expect(rolloutStory).toContainText("reuse the workflow across enrolled repositories");
+        await expect(rolloutStory.locator(".terminal")).not.toContainText(/campaign|dependabot/i);
+        await expect(rolloutStory.locator(".terminal code").last()).toHaveText("Adapt Daily Repo Status for CAO");
+        await expect(rolloutStory.locator('[data-terminal-request="integration"]')).toContainText("Keep policy disabled, review-only");
+        await expect(rolloutStory).toHaveCSS("opacity", "1");
+        const rolloutScreenshot = testInfo.outputPath(`rollout-story-${name}-${colorScheme}.png`);
+        await rolloutStory.screenshot({ path: rolloutScreenshot });
+        await testInfo.attach(`Rollout story (${name}, ${colorScheme})`, {
+          path: rolloutScreenshot, contentType: "image/png",
+        });
         await page.evaluate(() => window.scrollTo(0, 0));
         const screenshot = testInfo.outputPath(`homepage-${name}-${colorScheme}.png`);
         await page.screenshot({ path: screenshot, fullPage: true });
@@ -745,10 +758,14 @@ for (const { name, viewport } of [
       await expect(page.getByRole("heading", { name: "Shared work. Clear ownership.", exact: true })).toBeAttached();
       await expect(page.getByRole("heading", { name: "Monitor what runs.", exact: true })).toBeAttached();
       await expect(page.getByRole("heading", { name: "Roll out safely.", exact: true })).toBeAttached();
-      await expect(page.getByRole("heading", { name: "Reuse what works.", exact: true })).toBeAttached();
+      await expect(page.getByRole("heading", { name: "Roll out with confidence.", exact: true })).toBeAttached();
+      await expect(page.locator(".terminal-story .section-eyebrow")).toHaveText("Setup, authentication, and rollout");
+      await expect(page.locator(".terminal-story .product-story-copy > p:not(.section-eyebrow)")).toHaveText(
+        "Bring an existing workflow, such as Daily Repo Status from Agentics, under central control. Set repository scope and separate read/write credentials. Review proposed reports before authorizing live delivery. Keep rollout policy and steering in your control repository, and reuse the workflow across enrolled repositories. Add campaigns when you need coordinated work.",
+      );
       await expect(page.locator('.product-story a[href^="https://github.github.com/gh-aw/practices/"]'))
         .toHaveCount(0);
-      for (const story of await page.locator(".product-story-copy, .dispatch-story").all()) {
+      for (const story of await page.locator(".runs-story .product-story-copy, .value-story .product-story-copy, .dispatch-story").all()) {
         await expect(story).not.toContainText(/campaign/i);
       }
       expect(await page.locator("html").evaluate((element) => element.scrollWidth))
@@ -766,6 +783,21 @@ for (const { name, viewport } of [
       await expect(page.locator("html")).toHaveAttribute("data-theme", colorScheme);
       await expect(phone).toBeVisible();
       await expect(page.locator(".terminal")).toBeAttached();
+      await expect(page.locator(".terminal code")).toHaveText([
+        "curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash",
+        "gh cao setup",
+        "Adapt Daily Repo Status for CAO",
+      ]);
+      await expect(page.locator(".terminal a")).toHaveCount(0);
+      await expect(page.locator('[data-terminal-output="install"]')).toHaveText("==> CAO runtime materialized and verified.");
+      await expect(page.locator('[data-terminal-output="setup"]')).toHaveText(
+        "Next: gh cao doctor\nThen review git diff and git status, commit, and push the installed files.",
+      );
+      await expect(page.locator(".terminal-label")).toHaveText("Example agent request — not a CLI command");
+      await expect(page.locator('[data-terminal-request="integration"]')).toHaveText(
+        "Import shared/control.md as standalone.\nBind reads and review outputs to admitted targets.\nKeep policy disabled, review-only, and scoped to one repo.\nPreserve upstream ownership. Do not enable or run.",
+      );
+      await expect(page.locator('[data-terminal-output="rollout"]')).toHaveCount(0);
       await expect(page.locator(".product-image, .phone-image")).toHaveCount(3);
       await expect(page.locator(".product-shot-mobile")).toHaveCount(2);
       await page.locator(".product-shot").last().scrollIntoViewIfNeeded();
