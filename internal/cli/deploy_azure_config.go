@@ -30,6 +30,11 @@ type deployAzureConfig struct {
 	RetentionDays int                      `json:"retentionDays"`
 	OAuth         deployAzureOAuth         `json:"oauth"`
 	Secrets       deployAzureSecretSources `json:"secrets"`
+	KeyVault      deployAzureKeyVault      `json:"keyVault,omitempty"`
+}
+
+type deployAzureKeyVault struct {
+	PurgeProtection *bool `json:"purgeProtection,omitempty"`
 }
 
 type deployAzureResources struct {
@@ -61,6 +66,8 @@ type deployAzureOAuth struct {
 
 type deployAzureSecretSources struct {
 	PostgresAdministratorPassword *deployAzureSecretRef `json:"postgresAdministratorPassword"`
+	PostgresOwnerPassword         *deployAzureSecretRef `json:"postgresOwnerPassword,omitempty"`
+	PostgresRuntimePassword       *deployAzureSecretRef `json:"postgresRuntimePassword,omitempty"`
 	GitHubClientSecret            *deployAzureSecretRef `json:"githubClientSecret"`
 	SessionSecret                 *deployAzureSecretRef `json:"sessionSecret"`
 }
@@ -108,11 +115,18 @@ type deployAzureSecureParameter struct {
 }
 
 func (c *deployAzureConfig) secureParameters() []deployAzureSecureParameter {
-	return []deployAzureSecureParameter{
+	parameters := []deployAzureSecureParameter{
 		{"postgresAdministratorPassword", "secrets.postgresAdministratorPassword", 16, c.Secrets.PostgresAdministratorPassword},
 		{"githubClientSecret", "secrets.githubClientSecret", 1, c.Secrets.GitHubClientSecret},
 		{"sessionSecret", "secrets.sessionSecret", 32, c.Secrets.SessionSecret},
 	}
+	if c.Secrets.PostgresOwnerPassword != nil {
+		parameters = append(parameters, deployAzureSecureParameter{"postgresOwnerPassword", "secrets.postgresOwnerPassword", 32, c.Secrets.PostgresOwnerPassword})
+	}
+	if c.Secrets.PostgresRuntimePassword != nil {
+		parameters = append(parameters, deployAzureSecureParameter{"postgresRuntimePassword", "secrets.postgresRuntimePassword", 32, c.Secrets.PostgresRuntimePassword})
+	}
+	return parameters
 }
 
 // parameters returns non-secure main.bicep parameters derived from the config.
@@ -123,7 +137,7 @@ func (c *deployAzureConfig) parameters() map[string]any {
 		"storageAccountName":         c.Resources.StorageAccount,
 		"containerRegistryName":      c.Resources.ContainerRegistry,
 		"keyVaultName":               c.Resources.KeyVault,
-		"functionImageTag":           c.Image.Tag,
+		"functionImageTag":           deployAzureImageTag(*c),
 		"allowedHosts":               nonNil(c.AllowedHosts),
 		"githubAllowedOrganizations": nonNil(c.Access.Organizations),
 		"githubAllowedTeams":         nonNil(c.Access.Teams),
@@ -143,6 +157,9 @@ func (c *deployAzureConfig) parameters() map[string]any {
 		if value != "" {
 			parameters[name] = value
 		}
+	}
+	if c.KeyVault.PurgeProtection != nil {
+		parameters["keyVaultPurgeProtection"] = *c.KeyVault.PurgeProtection
 	}
 	return parameters
 }

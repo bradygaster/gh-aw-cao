@@ -16,6 +16,15 @@ const provisionSql = await readFile(new URL('../../server/azure/provision.sql', 
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
 const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
 
+test('Key Vault purge protection remains default-on with an explicit disposable opt-out', () => {
+  assert.equal(generated.parameters.keyVaultPurgeProtection.type, 'bool');
+  assert.equal(generated.parameters.keyVaultPurgeProtection.defaultValue, true);
+  const vault = resources.find((resource) => resource.type === 'Microsoft.KeyVault/vaults');
+  assert.equal(vault.properties.enablePurgeProtection, "[if(parameters('keyVaultPurgeProtection'), true(), null())]");
+  assert.equal(vault.properties.softDeleteRetentionInDays, 90);
+  assert.match(bicep, /enablePurgeProtection: keyVaultPurgeProtection \? true : null/);
+});
+
 test('Documented bootstrap supplies required inputs and explicit reviewed retention', () => {
   const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
   assert.ok(command, 'expected the documented bootstrap command');
@@ -216,7 +225,7 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /resource keyVault 'Microsoft\.KeyVault\/vaults@/);
   assert.match(bicep, /enableRbacAuthorization:\s*true/);
   assert.match(bicep, /enableSoftDelete:\s*true/);
-  assert.match(bicep, /enablePurgeProtection:\s*true/);
+  assert.match(bicep, /enablePurgeProtection:\s*keyVaultPurgeProtection \? true : null/);
   assert.match(bicep, /enabledForTemplateDeployment:\s*false/);
   assert.match(bicep, /param previousSessionSecret string = ''/);
   assert.match(bicep, /name:\s*'cao-session-secret-previous'/);

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,9 @@ type deployAzureDeps struct {
 	getenv   func(string) (string, bool)
 	now      func() time.Time
 	template func(path string) deployAzureTemplateSource
+	http     *http.Client
+	pause    func(context.Context, time.Duration) error
+	source   func(string) deployAzureBuildSource
 }
 
 func defaultDeployAzureDeps() deployAzureDeps {
@@ -68,8 +72,9 @@ secret-free plan file. --preflight runs only the preflight checks (tools,
 login, permissions, resource providers, name availability, location, existing
 instance, ingress drift, and retention read-back), prints every result, and
 fails if any check failed; it writes no plan file. Only fresh deployments are
-supported: existing resources fail closed. --apply validates a plan file but is
-not yet implemented.`,
+supported: existing resources fail closed. --apply rechecks a reviewed plan, builds immutable images,
+deploys, ingests the explicitly selected evidence, and verifies public OAuth ingress.
+Updates to existing instances are not supported.`,
 		Args: cobra.NoArgs,
 	}
 	flags := cmd.Flags()
@@ -77,10 +82,17 @@ not yet implemented.`,
 	flags.Bool("plan", false, "Preview with read-only checks and what-if (default mode)")
 	flags.Bool("preflight", false, "Run read-only preflight checks only; writes no plan file")
 	flags.Bool("json", false, "Print preflight results as JSON (with --preflight)")
-	flags.Bool("apply", false, "Apply a reviewed plan file (not yet implemented)")
+	flags.Bool("apply", false, "Apply a reviewed plan to a fresh deployment")
 	flags.String("plan-file", "", "Reviewed plan file required by --apply")
 	flags.String("template", "", "Compiled ARM template (development source until assets are distributed)")
 	flags.String("out", defaultDeployAzurePlanPath, "Plan file to write")
+	flags.String("source-dir", "", "Development gh-cao checkout used as the allowlisted build source")
+	flags.String("repo-dir", ".", "Operator repository containing reviewed cao.json and cao.azure.json")
+	flags.String("snapshot-dir", "", "Verified dashboard snapshot directory to ingest")
+	flags.Bool("empty-evidence", false, "Explicitly initialize without evidence")
+	flags.String("receipt", ".cao/deploy-azure-receipt.json", "Secret-free deployment receipt")
+	flags.Duration("timeout", 45*time.Minute, "Overall apply timeout")
+	cmd.MarkFlagsMutuallyExclusive("snapshot-dir", "empty-evidence")
 	cmd.MarkFlagsMutuallyExclusive("plan", "apply", "preflight")
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		apply, _ := flags.GetBool("apply")
@@ -91,7 +103,23 @@ not yet implemented.`,
 			if planFile == "" {
 				return errors.New("--apply requires --plan-file from a reviewed --plan run")
 			}
-			return deployAzureApply(cmd.Context(), deps, configPath, templatePath, planFile)
+			options := deployAzureApplyOptions{}
+			options.SourceDir, _ = flags.GetString("source-dir")
+			options.RepoDir, _ = flags.GetString("repo-dir")
+			options.SnapshotDir, _ = flags.GetString("snapshot-dir")
+			options.EmptyEvidence, _ = flags.GetBool("empty-evidence")
+			options.ReceiptPath, _ = flags.GetString("receipt")
+			timeout, _ := flags.GetDuration("timeout")
+			if timeout <= 0 {
+				return errors.New("--timeout must be positive")
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+			defer cancel()
+			if err := deployAzureApply(ctx, deps, configPath, templatePath, planFile, options); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Azure deployment verified; receipt written to %s\n", options.ReceiptPath)
+			return err
 		}
 		if flags.Changed("plan-file") {
 			return errors.New("--plan-file is only valid with --apply")
@@ -303,6 +331,9 @@ func deployAzureRedacting(next azcli.Executor, secrets deployAzureSecrets) azcli
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return result, fmt.Errorf("az %s: %w", azcli.CommandName(args), ctxErr)
 			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return result, fmt.Errorf("az %s: %w", azcli.CommandName(args), context.DeadlineExceeded)
+			}
 			return result, fmt.Errorf("az %s: %s", azcli.CommandName(args), secrets.redact(err.Error()))
 		}
 		return result, nil
@@ -456,7 +487,7 @@ func readDeployAzurePlan(path string) (deployAzurePlan, error) {
 	return plan, nil
 }
 
-func deployAzureApply(ctx context.Context, deps deployAzureDeps, configPath, templatePath, planFile string) error {
+func deployAzureApply(ctx context.Context, deps deployAzureDeps, configPath, templatePath, planFile string, options ...deployAzureApplyOptions) error {
 	plan, err := readDeployAzurePlan(planFile)
 	if err != nil {
 		return err
@@ -478,7 +509,10 @@ func deployAzureApply(ctx context.Context, deps deployAzureDeps, configPath, tem
 	if template.Digest != plan.Template.SHA256 {
 		return fmt.Errorf("plan file %s was created from a different template; rerun --plan", planFile)
 	}
-	return fmt.Errorf("deploy azure --apply is not yet implemented; plan file %s is valid and no Azure changes were made", planFile)
+	if len(options) != 1 {
+		return errors.New("--apply requires --source-dir and exactly one of --snapshot-dir or --empty-evidence")
+	}
+	return deployAzureExecute(ctx, deps, loaded, template, plan, planFile, options[0])
 }
 
 func sortedKeys[V any](values map[string]V) []string {

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "13522696526907358130"
+      "templateHash": "17678355614586457366"
     }
   },
   "parameters": {
@@ -108,6 +108,13 @@
       "type": "string",
       "metadata": {
         "description": "Key Vault name used for GitHub OAuth, session, PostgreSQL, and collection secrets."
+      }
+    },
+    "keyVaultPurgeProtection": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable purge protection for production vaults. Disable only for explicitly disposable environments that must be purged after testing. Existing protected vaults cannot be downgraded."
       }
     },
     "postgresServerName": {
@@ -476,7 +483,7 @@
         "enableRbacAuthorization": true,
         "enabledForTemplateDeployment": false,
         "enableSoftDelete": true,
-        "enablePurgeProtection": true,
+        "enablePurgeProtection": "[if(parameters('keyVaultPurgeProtection'), true(), null())]",
         "softDeleteRetentionInDays": 90,
         "publicNetworkAccess": "Enabled"
       }

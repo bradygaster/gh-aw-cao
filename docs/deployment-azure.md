@@ -27,6 +27,70 @@ flowchart LR
 
 ## Prerequisites
 
+### Native fresh-deployment command
+
+`gh cao deploy azure` supports **fresh deployments only**. Review the non-secret
+deployment config, run `--plan`, then apply that exact plan. Apply repeats
+preflight and what-if and refuses any change-set drift before writing to Azure.
+Updates, resuming a partially created deployment, and upgrades are follow-up
+work; a subsequent `--plan` against a successfully deployed instance must fail
+closed as an existing instance.
+
+For a development build, supply the compiled `server/azure/main.json` with
+`--template` and a gh-cao checkout with `--source-dir`. Supply the operator's
+repository with `--repo-dir` (default `.`); its reviewed
+`.github/workflows/cao.json` and `.github/workflows/cao.azure.json` are layered
+into an owner-only temporary build context. Only allowlisted product files,
+those two policy files, and explicitly selected evidence are uploaded to ACR,
+not the operator's working directory or its credentials.
+
+```bash
+gh cao deploy azure --plan --config /private/operator/deploy-azure.json \
+  --template /src/gh-cao/server/azure/main.json --out /private/operator/plan.json
+
+gh cao deploy azure --apply --config /private/operator/deploy-azure.json \
+  --template /src/gh-cao/server/azure/main.json \
+  --plan-file /private/operator/plan.json \
+  --source-dir /src/gh-cao --repo-dir /private/operator \
+  --empty-evidence --receipt /private/operator/deploy-azure-receipt.json
+```
+
+Evidence is mandatory and explicit: choose either `--empty-evidence` or
+`--snapshot-dir DIR`. Snapshot mode checks the `payload-hashes.json` SHA-256
+manifest and copies only allowlisted, verified payloads and
+`inventory-sources.json`. Empty mode builds `azure-empty-ingest-runtime`;
+it never silently substitutes for a missing or invalid snapshot.
+
+Apply creates the resource group if necessary, deploys the exact template ACR
+resource, builds the Functions, database-provisioning, and ingestion Dockerfile targets, records their
+digests, and locks the version-plus-config-hash tags against writes and deletes.
+Only then does it deploy the full template. It refuses an overlapping ingestion
+execution and waits on the exact execution it starts. The separate
+`<app>-db-provision` execution must succeed before runtime-only ingestion starts;
+bootstrap container failures stop the deployment before verification.
+Configure environment or Key Vault references for
+`secrets.postgresAdministratorPassword`, `secrets.postgresOwnerPassword`,
+`secrets.postgresRuntimePassword`, `secrets.githubClientSecret`, and
+`secrets.sessionSecret`. The owner and runtime passwords each require at least
+32 characters and must be different from each other and the administrator
+password.
+
+Verification checks health, readiness, signed-out API denial, both GitHub OAuth
+redirects, and independent SCM denial. Main-site HTTP 403 triggers an ingress
+read-back and a distinct diagnostic if tenant automation changed the settings;
+the command never fights or repairs such changes. `--timeout` bounds the overall
+apply (default 45 minutes). The secret-free receipt defaults to
+`.cao/deploy-azure-receipt.json` and records the reviewed plan digest, deployment
+identity, source/context identity, immutable image references, exact job
+execution, verification results, and timestamps. Existing receipts are not
+overwritten.
+
+Key Vault purge protection remains enabled by default. Only explicitly
+disposable environments should set `"keyVault": {"purgeProtection": false}` in
+the reviewed deployment config. This cannot downgrade an already protected
+vault. Deleting a disposable resource group still requires separately purging
+its soft-deleted vault; production vaults must retain purge protection.
+
 ### Azure resources
 
 The `server/azure/main.bicep` template creates the following resources in one resource group.
