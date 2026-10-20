@@ -2,6 +2,7 @@ param storageAccountName string
 param keyVaultName string
 param containerRegistryName string
 param functionPrincipalId string
+param secretNames array
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -45,15 +46,20 @@ resource functionsStorageTableContributor 'Microsoft.Authorization/roleAssignmen
   }
 }
 
-resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, functionPrincipalId, 'Key Vault Secrets User')
-  scope: keyVault
+resource secrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = [for secretName in secretNames: {
+  parent: keyVault
+  name: secretName
+}]
+
+resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (secretName, i) in secretNames: {
+  name: guid(secrets[i].id, functionPrincipalId, 'Key Vault Secrets User')
+  scope: secrets[i]
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: functionPrincipalId
     principalType: 'ServicePrincipal'
   }
-}
+}]
 
 resource functionsRegistryPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(registry.id, functionPrincipalId, 'AcrPull')

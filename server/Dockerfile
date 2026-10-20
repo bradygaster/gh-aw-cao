@@ -217,4 +217,14 @@ COPY --from=hosted-cli-relay-build /out/cao-cli-relay /cao-cli-relay
 COPY --from=hosted-cli-relay-build /out/cao-cli-relay.sha256 /cao-cli-relay.sha256
 COPY --from=hosted-cli-relay-build /out/cao-cli-relay.json /cao-cli-relay.json
 
+FROM postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea AS azure-db-provision
+
+RUN addgroup -S -g 65532 cao && adduser -S -D -H -u 65532 -G cao cao
+COPY --from=server-build /out/cao-dashboard /app/cao-dashboard
+COPY server/postgres/*.sql /app/postgres/
+COPY server/azure/provision.sh server/azure/provision.sql /app/azure/
+WORKDIR /app
+USER 65532:65532
+ENTRYPOINT ["/bin/sh", "/app/azure/provision.sh"]
+
 FROM dashboard-runtime AS final

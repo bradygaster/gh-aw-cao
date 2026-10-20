@@ -10,6 +10,9 @@ const resources = Object.values(generated.resources);
 const profile = JSON.parse(await readFile(new URL('../../.github/workflows/cao.azure.json', import.meta.url), 'utf8'));
 const network = await readFile(new URL('../../server/azure/network.bicep', import.meta.url), 'utf8');
 const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
+const provisioning = await readFile(new URL('../../server/azure/provisioning.bicep', import.meta.url), 'utf8');
+const provisionScript = await readFile(new URL('../../server/azure/provision.sh', import.meta.url), 'utf8');
+const provisionSql = await readFile(new URL('../../server/azure/provision.sql', import.meta.url), 'utf8');
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
 const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
 
@@ -17,8 +20,9 @@ test('Documented bootstrap supplies required inputs and explicit reviewed retent
   const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
   assert.ok(command, 'expected the documented bootstrap command');
   const supplied = new Set([...command.matchAll(/^\s+(\w+)=/gm)].map((match) => match[1]));
-  for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword']) {
+  for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword', 'postgresOwnerPassword', 'postgresRuntimePassword']) {
     supplied.add(secret);
+    assert.match(deploymentDocs, new RegExp(`\`${secret}\``));
   }
   assert.equal(supplied.has('postgresRunRetentionDays'), true);
   const missing = Object.entries(generated.parameters)
@@ -237,7 +241,7 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   );
   assert.match(
     functionRoles,
-    /guid\(keyVault\.id,\s*functionPrincipalId,\s*'Key Vault Secrets User'\)/,
+    /guid\(secrets\[i\]\.id,\s*functionPrincipalId,\s*'Key Vault Secrets User'\)/,
     'Key Vault role assignment IDs must change when the Function App managed identity is replaced',
   );
   assert.match(
@@ -272,16 +276,17 @@ test('Azure redeployment can keep an existing subnet NSG without forcing one on 
     'every subnet must carry the optional NSG');
 });
 
-test('Azure database and URL secret names are parameters whose defaults preserve existing deployments', () => {
+test('Azure database and runtime URL secret names remain configurable without reusing the admin URL', () => {
   assert.equal(generated.parameters.postgresDatabaseName.defaultValue, 'cao');
-  assert.equal(generated.parameters.postgresUrlSecretName.defaultValue, 'cao-postgres-url');
+  assert.equal(generated.parameters.postgresUrlSecretName.defaultValue, 'cao-postgres-runtime-url');
+  assert.equal(generated.parameters.postgresUrlSecretName.maxLength, 110);
   assert.match(network, /param postgresDatabaseName string = 'cao'/);
   assert.match(network, /parent: postgres\s+name: postgresDatabaseName/);
   assert.match(bicep, /postgresDatabaseName: postgresDatabaseName/);
   assert.match(bicep, /parent: keyVault\s+name: postgresUrlSecretName/);
   assert.match(bicep, /name:\s*'CAO_POSTGRES_URL'\s+value:\s*'@Microsoft\.KeyVault\(SecretUri=\$\{keyVault\.properties\.vaultUri\}secrets\/\$\{postgresUrlSecretName\}\)'/);
   for (const source of [ingestion, collector]) {
-    assert.match(source, /param postgresUrlSecretName string = 'cao-postgres-url'/);
+    assert.match(source, /param postgresUrlSecretName string = 'cao-postgres-runtime-url'/);
     assert.match(source, /keyVaultUrl: '\$\{[^}]+\}secrets\/\$\{postgresUrlSecretName\}'/);
   }
   for (const source of [bicep, network, ingestion, collector]) {
@@ -294,34 +299,128 @@ test('Azure database and URL secret names are parameters whose defaults preserve
   assert.match(deploymentDocs, /### Moving to a new database/);
 });
 
-test('Azure ingestion idempotently bootstraps both stores before ingesting', () => {
+test('Azure ingestion has no privileged initialization or secret access', () => {
   const module = resources.find((resource) => resource.name === 'snapshot-ingestion');
   const job = Object.values(module.properties.template.resources).find((resource) => resource.type === 'Microsoft.App/jobs');
-  const template = module.properties.template;
-  const [canonical, operational] = job.properties.template.initContainers;
-  assert.deepEqual(job.properties.template.initContainers.map((container) => container.name),
-    ['bootstrap-canonical', 'bootstrap-operational']);
-  for (const [container, store, namespace] of [
-    [canonical, 'canonical', "[parameters('canonicalNamespace')]"],
-    [operational, 'operational', "[parameters('operationalNamespace')]"],
-  ]) {
-    assert.equal(container.image, "[parameters('ingestionImage')]");
-    assert.deepEqual(container.command, ['/app/cao-dashboard']);
-    assert.deepEqual(container.args, ['database', 'bootstrap', '--store', store, '--namespace', namespace]);
-    assert.match(String(container.env), /variables\('adminEnvironment'\)/);
-  }
-  assert.deepEqual(template.variables.adminEnvironment, [{ name: 'CAO_DATABASE_ADMIN_URL', secretRef: 'cao-postgres-url' }]);
-  assert.match(String(canonical.env), /variables\('retentionEnvironment'\)/);
-  assert.deepEqual(template.variables.retentionEnvironment.map((entry) => entry.value),
-    ["[string(parameters('postgresRunRetentionDays'))]", "[string(parameters('postgresRunRetentionDays'))]"]);
-  for (const setting of ['CacheMaxBytes', 'CacheMaxValueBytes', 'CacheMaxEntries', 'ProtectedMaxBytes', 'ProtectedMaxEntries']) {
-    assert.match(String(operational.env), new RegExp(`parameters\\('operational${setting}'\\)`));
-    assert.equal(module.properties.parameters[`operational${setting}`].value, `[parameters('operational${setting}')]`);
-  }
+  assert.equal(job.properties.template.initContainers, undefined);
   assert.equal(module.properties.parameters.canonicalNamespace.value, 'azure-dashboard');
-  assert.equal(module.properties.parameters.operationalNamespace.value, 'azure-dashboard-operational');
-  assert.ok(!job.properties.template.containers[0].env.some((entry) => entry.name === 'CAO_DATABASE_ADMIN_URL'),
-    'the ingest container itself does not receive the bootstrap-only setting');
+  assert.doesNotMatch(JSON.stringify(module), /CAO_DATABASE_ADMIN_URL|bootstrap|owner-password|runtime-password/);
+  assert.deepEqual(job.properties.configuration.secrets, [{
+    name: 'cao-postgres-url',
+    keyVaultUrl: "[format('{0}secrets/{1}', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri, parameters('postgresUrlSecretName'))]",
+    identity: "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-ingest-identity', parameters('namePrefix')))]",
+  }]);
+  assert.deepEqual(job.properties.template.containers[0].env.find((entry) => entry.name === 'CAO_POSTGRES_URL'),
+    { name: 'CAO_POSTGRES_URL', secretRef: 'cao-postgres-url' });
   assert.match(deploymentDocs, /database bootstrap --store canonical/);
   assert.match(deploymentDocs, /database bootstrap --store operational/);
+});
+
+test('Runtime URL uses only the restricted login and secure runtime password', () => {
+  const runtimeSecret = resources.find((resource) => resource.type === 'Microsoft.KeyVault/vaults/secrets'
+    && resource.name === "[format('{0}/{1}', parameters('keyVaultName'), parameters('postgresUrlSecretName'))]");
+  assert.ok(runtimeSecret);
+  assert.match(runtimeSecret.properties.value, /postgresql:\/\/cao_runtime_login:/);
+  assert.match(runtimeSecret.properties.value, /uriComponent\(parameters\('postgresRuntimePassword'\)\)/);
+  assert.match(runtimeSecret.properties.value, /options=-csearch_path%3Dcao/);
+  assert.doesNotMatch(runtimeSecret.properties.value, /Administrator|OwnerPassword/);
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  assert.doesNotMatch(app.properties.siteConfig.appSettings, /CAO_DATABASE_ADMIN_URL|owner-password|runtime-password/);
+  assert.match(app.properties.siteConfig.appSettings,
+    /CAO_POSTGRES_URL.*?secrets\/\{1\}.*?parameters\('postgresUrlSecretName'\)/);
+  for (const name of ['snapshot-ingestion', 'collection-workers']) {
+    const module = resources.find((resource) => resource.name === name);
+    assert.equal(module.properties.parameters.postgresUrlSecretName.value, "[parameters('postgresUrlSecretName')]");
+    assert.doesNotMatch(JSON.stringify(module), /CAO_DATABASE_ADMIN_URL|owner-password|runtime-password/);
+  }
+  for (const name of ['postgresAdministratorPassword', 'postgresOwnerPassword', 'postgresRuntimePassword']) {
+    assert.equal(generated.parameters[name].type.toLowerCase(), 'securestring');
+    assert.equal(generated.parameters[name].defaultValue, undefined);
+  }
+});
+
+test('Only the separate provisioning identity can resolve the administrator secret', () => {
+  const module = resources.find((resource) => resource.name === 'database-provisioning');
+  const template = module.properties.template;
+  const job = template.resources.find((resource) => resource.type === 'Microsoft.App/jobs');
+  const identity = template.resources.find((resource) => resource.type === 'Microsoft.ManagedIdentity/userAssignedIdentities');
+  assert.equal(identity.name, "[format('{0}-db-provision-identity', parameters('namePrefix'))]");
+  assert.equal(job.properties.configuration.triggerType, 'Manual');
+  assert.equal(job.properties.configuration.replicaRetryLimit, 0);
+  assert.equal(job.properties.template.containers[0].image, "[parameters('provisioningImage')]");
+  assert.deepEqual(job.properties.template.containers[0].env.find((entry) => entry.name === 'CAO_DATABASE_ADMIN_URL'),
+    { name: 'CAO_DATABASE_ADMIN_URL', secretRef: "[variables('secretNames')[0]]" });
+  assert.equal(template.variables.secretNames[0], "[format('{0}-admin', parameters('postgresUrlSecretName'))]");
+  const grants = template.resources.find((resource) => resource.type === 'Microsoft.Resources/deployments');
+  assert.equal(grants.properties.parameters.secretNames.value, "[variables('secretNames')]");
+  assert.match(grants.properties.parameters.principalId.value, /db-provision-identity/);
+
+  // Inspect every nested RBAC template, not just the provisioning module.
+  function checkRoles(current) {
+    for (const resource of Object.values(current.resources ?? {})) {
+      if (resource.type === 'Microsoft.Authorization/roleAssignments'
+        && resource.properties.roleDefinitionId.includes('4633458b-17de-408a-b874-0445c86b69e6')) {
+        assert.equal(resource.scope,
+          "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), parameters('secretNames')[copyIndex()])]");
+        assert.equal(resource.copy.count, "[length(parameters('secretNames'))]");
+      }
+      if (resource.properties?.template) checkRoles(resource.properties.template);
+    }
+  }
+  checkRoles(generated);
+  const functionGrants = resources.find((resource) => resource.name === 'function-managed-identity-roles');
+  assert.match(functionGrants.properties.parameters.secretNames.value, /parameters\('postgresUrlSecretName'\)/);
+  assert.doesNotMatch(functionGrants.properties.parameters.secretNames.value, /-admin|owner-password|runtime-password/);
+  const ingestGrants = resources.find((resource) => resource.name === 'snapshot-ingestion')
+    .properties.template.resources.find((resource) => resource.type === 'Microsoft.Resources/deployments');
+  assert.deepEqual(ingestGrants.properties.parameters.secretNames.value, ["[parameters('postgresUrlSecretName')]"]);
+  const collectorGrants = resources.find((resource) => resource.name === 'collection-workers')
+    .properties.template.resources.find((resource) => resource.name === 'collector-roles');
+  assert.deepEqual(collectorGrants.properties.parameters.secretNames.value,
+    ["[parameters('postgresUrlSecretName')]", 'cao-collect-private-key']);
+});
+
+test('Provisioning uses the deployment ACR and checked-in grants under the non-login owner', () => {
+  const module = resources.find((resource) => resource.name === 'database-provisioning');
+  assert.match(module.properties.parameters.provisioningImage.value, /Microsoft\.ContainerRegistry\/registries/);
+  assert.match(module.properties.parameters.provisioningImage.value, /provisioningImageRepository/);
+  assert.doesNotMatch(module.properties.parameters.provisioningImage.value, /docker\.io|postgres:16/);
+  assert.match(dockerfile, /FROM postgres:16-alpine@sha256:[a-f0-9]{64} AS azure-db-provision/);
+  assert.match(dockerfile, /COPY server\/postgres\/\*\.sql \/app\/postgres\//);
+  assert.match(provisionScript, /PGOPTIONS='-c role=cao_owner -c search_path=cao'/);
+  for (const store of ['canonical', 'operational']) {
+    assert.match(provisionScript, new RegExp(`database bootstrap --store ${store}`));
+    assert.match(provisionScript, new RegExp(`-f /app/postgres/${store}-grants.sql`));
+  }
+  for (const source of [bicep, ingestion, provisioning]) {
+    assert.doesNotMatch(source, /GRANT |REVOKE |CREATE ROLE|cao_operational_audit_events/);
+  }
+  for (const role of ['cao_owner', 'cao_runtime', 'cao_retention', 'cao_evidence']) {
+    assert.ok(provisionSql.includes(`'${role}'`));
+  }
+  assert.match(provisionSql, /NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS/);
+  assert.match(provisionSql, /GRANT TEMPORARY ON DATABASE %I TO cao_runtime/);
+  assert.match(provisionSql, /CREATE SCHEMA IF NOT EXISTS cao AUTHORIZATION cao_owner/);
+  assert.doesNotMatch(provisionSql, /cao_retention_login|cao_evidence_login|GRANT ALL|ALL TABLES/);
+  for (const name of ['CacheMaxBytes', 'CacheMaxValueBytes', 'CacheMaxEntries', 'ProtectedMaxBytes', 'ProtectedMaxEntries']) {
+    assert.equal(module.properties.parameters[`operational${name}`].value, `[parameters('operational${name}')]`);
+  }
+  for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+    assert.deepEqual(module.properties.template.resources.find((resource) => resource.type === 'Microsoft.App/jobs')
+      .properties.template.containers[0].env.find((entry) => entry.name === setting),
+    { name: setting, value: "[string(parameters('postgresRunRetentionDays'))]" });
+  }
+});
+
+test('No nested deployment outputs a password or credential-bearing URL', () => {
+  function checkOutputs(template) {
+    for (const [name, output] of Object.entries(template.outputs ?? {})) {
+      assert.doesNotMatch(name, /password|secret|token|connection/i);
+      assert.doesNotMatch(JSON.stringify(output), /Password|postgresql:\/\/|listSecrets|listKeys|ADMIN_URL/);
+    }
+    for (const resource of Object.values(template.resources ?? {})) {
+      if (resource.properties?.template) checkOutputs(resource.properties.template);
+    }
+  }
+  checkOutputs(generated);
 });

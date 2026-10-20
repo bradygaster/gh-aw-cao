@@ -36,7 +36,7 @@ param keyVaultUri string
 param keyVaultName string
 
 @description('Key Vault secret that stores the PostgreSQL URL.')
-param postgresUrlSecretName string = 'cao-postgres-url'
+param postgresUrlSecretName string = 'cao-postgres-runtime-url'
 
 @description('Size of the evidence lake file share, in gibibytes.')
 @minValue(100)
@@ -122,6 +122,10 @@ module roles 'worker-roles.bicep' = {
     keyVaultName: keyVault.name
     containerRegistryName: registry.name
     principalId: collectorIdentity.properties.principalId
+    secretNames: [
+      postgresUrlSecretName
+      'cao-collect-private-key'
+    ]
   }
 }
 
