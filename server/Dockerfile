@@ -1,3 +1,13 @@
+# Policy and ingestion snapshots are adopter inputs. They default to the main
+# build context; replace them with --build-context cao-policy=DIR or
+# --build-context cao-ingest-source=DIR when building from a release asset bundle.
+FROM scratch AS cao-policy
+COPY .github/workflows/cao.json .github/workflows/cao.azure.json /
+
+FROM scratch AS cao-ingest-source
+ARG CAO_INGEST_SOURCE
+COPY ${CAO_INGEST_SOURCE:-.cao-ingest-source-required}/ /
+
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS dashboard-build
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
@@ -13,10 +23,7 @@ RUN sed -i \
       dashboard/site/package-lock.json \
     && npm --prefix dashboard/site ci --omit=dev --ignore-scripts
 COPY . .
-RUN REPORT_ROOT=/workspace \
-    REPORT_INVENTORY=/tmp/control-plane-inventory.json \
-    REPORT_INVENTORY_STATIC=true \
-    node activity/inventory.mjs
+COPY --from=cao-policy / .github/workflows/
 RUN printf '%s' "${CAO_PROFILE}" | grep -Eq '^cao(\.[a-z0-9-]+)?\.json$' \
     && policy="../../.github/workflows/${CAO_PROFILE}" \
     && if echo "${REVISION}" | grep -Eq '^[0-9a-f]{40}$'; then \
@@ -24,6 +31,13 @@ RUN printf '%s' "${CAO_PROFILE}" | grep -Eq '^cao(\.[a-z0-9-]+)?\.json$' \
     else \
       npm --prefix dashboard/site run build -- dist "${policy}"; \
     fi
+
+FROM dashboard-build AS control-plane-inventory
+
+RUN REPORT_ROOT=/workspace \
+    REPORT_INVENTORY=/tmp/control-plane-inventory.json \
+    REPORT_INVENTORY_STATIC=true \
+    node activity/inventory.mjs
 
 FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS server-build
 
@@ -113,9 +127,7 @@ ENTRYPOINT ["/app/cao-functions"]
 
 FROM dashboard-runtime AS azure-ingest-runtime
 
-ARG CAO_INGEST_SOURCE
-RUN test -n "${CAO_INGEST_SOURCE}"
-COPY --chown=cao:cao ${CAO_INGEST_SOURCE}/ /data/
+COPY --from=cao-ingest-source --chown=cao:cao / /data/
 
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
@@ -166,7 +178,7 @@ COPY --from=dashboard-runtime --chown=cao:cao /app/ /app/
 COPY --from=dashboard-build --chown=cao:cao /workspace/activity/ /app/catalog/activity/
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/shared/control.mjs /app/catalog/.github/workflows/shared/control.mjs
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/shared/policy.mjs /app/catalog/.github/workflows/shared/policy.mjs
-COPY --from=dashboard-build --chown=cao:cao /tmp/control-plane-inventory.json /app/catalog/control-plane-inventory.json
+COPY --from=control-plane-inventory --chown=cao:cao /tmp/control-plane-inventory.json /app/catalog/control-plane-inventory.json
 # gh aw logs discovers agentic workflow names from local compiled workflows
 # before it queries runs, so the collection catalog must retain the lock files.
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/*.lock.yml /app/catalog/.github/workflows/
