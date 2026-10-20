@@ -15,12 +15,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	debuglogger "github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/server"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	debuglogger "github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/server"
 )
 
 var benchmarkLog = debuglogger.New("cao:dashboard:benchmark")
@@ -43,12 +43,42 @@ type benchmarkReport struct {
 	Measurements []benchmarkMeasurement `json:"measurements"`
 }
 
+// benchmarkEvidenceRejectionStage identifies which emptiness check
+// validateBenchmarkEvidence failed, so a misconfigured or incomplete
+// deployed-artifact ingest is diagnosable without logging the source counts
+// themselves, which can reveal deployment-specific record volumes.
+type benchmarkEvidenceRejectionStage string
+
+const (
+	benchmarkEvidenceRejectionStageNone     benchmarkEvidenceRejectionStage = "none"
+	benchmarkEvidenceRejectionStageNoRecord benchmarkEvidenceRejectionStage = "no-records"
+	benchmarkEvidenceRejectionStageNoRuns   benchmarkEvidenceRejectionStage = "no-runs"
+)
+
+// classifyBenchmarkEvidence reports which of validateBenchmarkEvidence's two
+// emptiness checks, if any, counts fails: no records at all across every
+// source, or records present but none in the $runs source specifically. It
+// is a pure function extracted from validateBenchmarkEvidence so each
+// rejection stage is independently testable against a constructed source
+// count map, without executing any Postgres ingest.
+func classifyBenchmarkEvidence(records int, counts map[string]int) benchmarkEvidenceRejectionStage {
+	switch {
+	case records == 0:
+		return benchmarkEvidenceRejectionStageNoRecord
+	case counts["$runs"] == 0:
+		return benchmarkEvidenceRejectionStageNoRuns
+	default:
+		return benchmarkEvidenceRejectionStageNone
+	}
+}
+
 func validateBenchmarkEvidence(counts map[string]int) (int, error) {
 	records := 0
 	for _, count := range counts {
 		records += count
 	}
-	if records == 0 || counts["$runs"] == 0 {
+	if stage := classifyBenchmarkEvidence(records, counts); stage != benchmarkEvidenceRejectionStageNone {
+		benchmarkLog.Printf("benchmark evidence rejected stage=%s", stage)
 		return records, errors.New("deployed Postgres projection is empty")
 	}
 	return records, nil
@@ -170,6 +200,7 @@ func benchmarkQueries(ctx context.Context, store *postgresx.Store, source, datab
 	if err != nil {
 		return report, err
 	}
+	benchmarkLog.Printf("benchmark ingest completed sources=%d records=%d", len(result.Counts), report.Records)
 	definitions, err := loadBenchmarkDefinitions(databasePath, dashboardPath, result.EvaluatedAt, candidates)
 	if err != nil {
 		return report, err
@@ -181,14 +212,7 @@ func benchmarkQueries(ctx context.Context, store *postgresx.Store, source, datab
 		var metrics model.Metrics
 		err := store.WithReadTransaction(ctx, func(ctx context.Context, reader postgresx.NativeReader) error {
 			var err error
-			sources, metrics, err = reader.ExecuteSQLPlanWithOptions(ctx, definitions, []string{name}, postgresx.SQLExecutionOptions{
-				Pages: map[string]postgresx.SQLPage{name: {Limit: benchmarkPageLimit}},
-				ResourceLimits: &postgresx.SQLResourceLimits{
-					MaxInputRows:    query.MaxWorkingRows,
-					MaxOperations:   10 * query.MaxOperations,
-					MaxWorkingBytes: 4 * query.MaxWorkingBytes,
-				},
-			})
+			sources, metrics, err = reader.ExecuteSQLPlanWithOptions(ctx, definitions, []string{name}, benchmarkExecutionOptions(name))
 			return err
 		})
 		if err != nil {
@@ -202,6 +226,20 @@ func benchmarkQueries(ctx context.Context, store *postgresx.Store, source, datab
 	}
 	benchmarkLog.Printf("benchmark completed measurements=%d", len(report.Measurements))
 	return report, nil
+}
+
+// benchmarkExecutionOptions builds the paging and resource budgets for
+// measuring one candidate query. The budgets are deliberately larger than
+// production limits so the benchmark reports cost instead of failing closed.
+func benchmarkExecutionOptions(name string) postgresx.SQLExecutionOptions {
+	return postgresx.SQLExecutionOptions{
+		Pages: map[string]postgresx.SQLPage{name: {Limit: benchmarkPageLimit}},
+		ResourceLimits: &postgresx.SQLResourceLimits{
+			MaxInputRows:    query.MaxWorkingRows,
+			MaxOperations:   10 * query.MaxOperations,
+			MaxWorkingBytes: 4 * query.MaxWorkingBytes,
+		},
+	}
 }
 
 // buildBenchmarkMeasurement validates one candidate query's result and

@@ -24,21 +24,30 @@ const (
 )
 
 type Definition struct {
-	Name           string              `json:"name"`
-	From           string              `json:"from"`
-	Union          []string            `json:"union,omitempty"`
-	Joins          []Join              `json:"joins,omitempty"`
-	Filter         *Filter             `json:"filter,omitempty"`
-	Compute        []ComputedField     `json:"compute,omitempty"`
-	Aggregate      *Aggregate          `json:"aggregate,omitempty"`
-	TemporalSeries *TemporalSeries     `json:"temporal-series,omitempty"`
-	Predict        []json.RawMessage   `json:"predict,omitempty"`
-	Window         []WindowField       `json:"window,omitempty"`
-	Select         []SelectedField     `json:"select,omitempty"`
-	OrderBy        []OrderField        `json:"order-by,omitempty"`
-	Limit          *int                `json:"limit,omitempty"`
-	Stores         []string            `json:"stores,omitempty"`
-	StoresBySource map[string][]string `json:"stores-by-source,omitempty"`
+	Name           string            `json:"name"`
+	From           string            `json:"from"`
+	Union          []string          `json:"union,omitempty"`
+	Joins          []Join            `json:"joins,omitempty"`
+	Filter         *Filter           `json:"filter,omitempty"`
+	Compute        []ComputedField   `json:"compute,omitempty"`
+	Aggregate      *Aggregate        `json:"aggregate,omitempty"`
+	TemporalSeries *TemporalSeries   `json:"temporal-series,omitempty"`
+	Predict        []json.RawMessage `json:"predict,omitempty"`
+	Window         []WindowField     `json:"window,omitempty"`
+	Select         []SelectedField   `json:"select,omitempty"`
+	OrderBy        []OrderField      `json:"order-by,omitempty"`
+	Limit          *int              `json:"limit,omitempty"`
+	Facet          *Facet            `json:"facet,omitempty"`
+	Stores         []string          `json:"stores,omitempty"`
+}
+
+const MaxChartFacets = 64
+
+type Facet struct {
+	Field  string `json:"field,omitempty"`
+	Row    string `json:"row,omitempty"`
+	Column string `json:"column,omitempty"`
+	As     string `json:"as"`
 }
 
 type Join struct {
@@ -78,6 +87,27 @@ type Argument struct {
 	Value     any     `json:"value,omitempty"`
 	Context   string  `json:"context,omitempty"`
 	Parameter string  `json:"parameter,omitempty"`
+}
+
+func (a Argument) MarshalJSON() ([]byte, error) {
+	switch {
+	case a.Field != nil:
+		return json.Marshal(struct {
+			Field string `json:"field"`
+		}{*a.Field})
+	case a.Context != "":
+		return json.Marshal(struct {
+			Context string `json:"context"`
+		}{a.Context})
+	case a.Parameter != "":
+		return json.Marshal(struct {
+			Parameter string `json:"parameter"`
+		}{a.Parameter})
+	default:
+		return json.Marshal(struct {
+			Value any `json:"value"`
+		}{a.Value})
+	}
 }
 
 // argumentKind identifies which of the mutually exclusive shapes a compute
@@ -207,14 +237,15 @@ func (d *Definition) UnmarshalJSON(data []byte) error {
 }
 
 type TemporalSeries struct {
-	Time     string            `json:"time"`
-	Series   string            `json:"series"`
-	Shape    string            `json:"shape,omitempty"`
-	Link     string            `json:"link,omitempty"`
-	Carry    []string          `json:"carry,omitempty"`
-	Measures []TemporalMeasure `json:"measures,omitempty"`
-	Maps     []TemporalMap     `json:"maps,omitempty"`
-	Trend    *TemporalTrend    `json:"trend,omitempty"`
+	Time       string            `json:"time"`
+	Series     string            `json:"series"`
+	Shape      string            `json:"shape,omitempty"`
+	Link       string            `json:"link,omitempty"`
+	Carry      []string          `json:"carry,omitempty"`
+	PointCarry []string          `json:"point-carry,omitempty"`
+	Measures   []TemporalMeasure `json:"measures,omitempty"`
+	Maps       []TemporalMap     `json:"maps,omitempty"`
+	Trend      *TemporalTrend    `json:"trend,omitempty"`
 }
 
 type TemporalTrend struct {

@@ -4,8 +4,73 @@
     "id": "central-agentic-ops-dashboard",
     "title": "Central Agentic Ops Dashboard",
     "description": "Authoritative declarative dashboard document for built-in and custom pages in the presenter prototype.",
-    "repository": "githubnext/gh-aw-cao",
+    "repository": "githubnext/gh-cao",
+    "data-status": {
+      "freshness-source": "dashboard-data-freshness",
+      "health-source": "dashboard-ingestion-health",
+      "stale-after-hours": 24
+    },
+    "callouts": [
+      {
+        "id": "stale-data",
+        "title": "Dashboard data may be stale",
+        "description": "No new workflow activity is present in the ingested data for at least 24 hours. Check ingestion and shard details before relying on these results.",
+        "icon": "alert",
+        "navigation-page": "indexing",
+        "visible-when": {
+          "source": "dashboard-data-freshness",
+          "field": "latest-data-at",
+          "older-than-hours": 24
+        }
+      }
+    ],
     "card-templates": [
+      {
+        "id": "command",
+        "icon": "terminal",
+        "title": { "field": "command-title", "title": "Command" },
+        "subtitle": { "field": "command-target", "title": "Target" },
+        "status": { "field": "status", "title": "Status" },
+        "labels": [],
+        "details": [
+          { "field": "id", "title": "Command ID" },
+          { "field": "error", "title": "Reason" }
+        ],
+        "timing": [
+          { "field": "command-created-at", "title": "Queued", "type": "temporal", "format": "human-friendly-timestamp", "icon": "clock" }
+        ]
+      },
+      {
+        "id": "ingested-shard",
+        "icon": "database",
+        "title": { "field": "shard", "title": "Shard" },
+        "subtitle": { "field": "kind", "title": "Import kind" },
+        "labels": [{ "field": "status", "title": "Import status", "display": "status" }],
+        "details": [
+          { "field": "ingested-at", "title": "Ingested at", "format": "human-friendly-timestamp" },
+          { "field": "committed-records", "title": "Committed records" },
+          { "field": "workflow-runs", "title": "Workflow runs" },
+          { "field": "payload-hash", "title": "Payload hash" }
+        ]
+      },
+      {
+        "id": "outcome-evidence-summary",
+        "icon": "graph",
+        "title": { "field": "summary", "title": "Evidence readiness" },
+        "labels": [],
+        "details": [{ "field": "measured-goals", "title": "Measured goals" }]
+      },
+      {
+        "id": "repository-outcome-signal",
+        "icon": "repo",
+        "title": { "field": "repository-coordinate", "title": "Repository" },
+        "subtitle": { "field": "coverage-summary", "title": "Measurements" },
+        "labels": [{ "field": "signal", "title": "Signal", "display": "label" }],
+        "details": [
+          { "field": "goals", "title": "Primary measures" },
+          { "field": "newest-evidence-at", "title": "Latest observation", "type": "temporal", "format": "human-friendly-timestamp" }
+        ]
+      },
       {
         "id": "repository",
         "icon": "repo",
@@ -781,6 +846,10 @@
       {
         "id": "maintenance-repository",
         "icon": "repo",
+        "drill": {
+          "type": "external",
+          "field": "repository-url"
+        },
         "title": {
           "field": "repository",
           "title": "Repository"
@@ -799,6 +868,10 @@
         "actions": [
           {
             "action": "upgrade-target-repository",
+            "when": {
+              "field": "upgrade-action-visible",
+              "equals": true
+            },
             "context": [
               "repository"
             ]
@@ -818,9 +891,10 @@
         "id": "update-repository",
         "level": "operate",
         "label": "Update all",
-        "description": "Update all installed Agentic Workflow campaigns in this repository.",
+        "description": "Queue an individual update for every listed campaign, then open Commands.",
         "icon": "sync",
-        "command": "./cao.sh update --repo {{repository}}",
+        "command": "gh aw update https://github.com/githubnext/gh-cao/{{campaign}} --repo {{cao-repository}} --pr-message 'This pull request was requested through [Central Agentic Ops (CAO)]({{cao-repository-url}}) to update the {{campaign}} campaign from its upstream source, keeping installed workflows current with published fixes and improvements. Return to the [CAO dashboard]({{cao-url}}#page-maintenance-campaigns).'",
+        "preview-command": "gh aw update https://github.com/githubnext/gh-cao/{{campaign}} --repo {{cao-repository}}",
         "placement": "view",
         "arguments": [
           {
@@ -830,6 +904,14 @@
             "type": "boolean",
             "flag": "--create-pull-request",
             "default": true
+          },
+          {
+            "id": "auto-merge",
+            "label": "Auto merge",
+            "description": "Enable auto-merge on the created pull request. Requires Create pull request.",
+            "type": "boolean",
+            "flag": "--auto-merge",
+            "default": false
           }
         ]
       },
@@ -837,9 +919,10 @@
         "id": "upgrade-repository",
         "level": "operate",
         "label": "Upgrade all",
-        "description": "Upgrade the gh-aw compiler version across this repository's Agentic Workflows files.",
+        "description": "Queue an individual Agentic Workflows upgrade for every listed repository, then open Commands.",
         "icon": "download",
-        "command": "gh aw upgrade --repo {{repository}}",
+        "command": "gh aw upgrade --repo {{repository}} --pr-message 'This pull request was requested through [Central Agentic Ops (CAO)]({{cao-repository-url}}) to upgrade GitHub Agentic Workflows in {{repository}}, refreshing workflow tooling, action versions, and generated lock files. Return to the [CAO dashboard]({{cao-url}}#page-maintenance).'",
+        "preview-command": "gh aw upgrade --repo {{repository}}",
         "placement": "view",
         "arguments": [
           {
@@ -857,16 +940,24 @@
             "type": "boolean",
             "flag": "--pre-releases",
             "default": false
+          },
+          {
+            "id": "auto-merge",
+            "label": "Auto merge",
+            "description": "Enable auto-merge on the created pull request. Requires Create pull request.",
+            "type": "boolean",
+            "flag": "--auto-merge",
+            "default": false
           }
         ]
       },
       {
         "id": "upgrade-target-repository",
         "level": "operate",
-        "label": "Upgrade repository",
+        "label": "Upgrade",
         "description": "Upgrade Agentic Workflows in the selected repository and create a pull request.",
         "icon": "download",
-        "command": "gh aw upgrade --repo {{repository}}",
+        "command": "gh aw upgrade --repo {{repository}} --pr-message 'This pull request was requested through [Central Agentic Ops (CAO)]({{cao-repository-url}}) to upgrade GitHub Agentic Workflows in {{repository}}, refreshing workflow tooling, action versions, and generated lock files. Return to the [CAO dashboard]({{cao-url}}#page-maintenance).'",
         "placement": "row",
         "arguments": [
           {
@@ -884,6 +975,14 @@
             "type": "boolean",
             "flag": "--pre-releases",
             "default": false
+          },
+          {
+            "id": "auto-merge",
+            "label": "Auto merge",
+            "description": "Enable auto-merge on the created pull request. Requires Create pull request.",
+            "type": "boolean",
+            "flag": "--auto-merge",
+            "default": false
           }
         ]
       },
@@ -893,8 +992,26 @@
         "label": "Update",
         "description": "Update this campaign's agentic workflow.",
         "icon": "sync",
-        "command": "./cao.sh update {{campaign}}",
-        "placement": "row"
+        "command": "gh aw update https://github.com/githubnext/gh-cao/{{campaign}} --repo {{cao-repository}} --pr-message 'This pull request was requested through [Central Agentic Ops (CAO)]({{cao-repository-url}}) to update the {{campaign}} campaign from its upstream source, keeping installed workflows current with published fixes and improvements. Return to the [CAO dashboard]({{cao-url}}#page-maintenance-campaigns).'",
+        "placement": "row",
+        "arguments": [
+          {
+            "id": "create-pull-request",
+            "label": "Create pull request",
+            "description": "Create a pull request with the workflow campaign updates.",
+            "type": "boolean",
+            "flag": "--create-pull-request",
+            "default": false
+          },
+          {
+            "id": "auto-merge",
+            "label": "Auto merge",
+            "description": "Enable auto-merge on the created pull request. Requires Create pull request.",
+            "type": "boolean",
+            "flag": "--auto-merge",
+            "default": false
+          }
+        ]
       },
       {
         "id": "set-campaign-live",
@@ -902,7 +1019,7 @@
         "label": "Switch to live",
         "description": "Switch this campaign's workflows to live mode.",
         "icon": "play",
-        "command": "./cao.sh mode live {{campaign}}",
+        "command": "gh cao campaigns mode live {{campaign}}",
         "placement": "row"
       },
       {
@@ -911,7 +1028,7 @@
         "label": "Switch to preview",
         "description": "Switch this campaign's workflows to preview mode.",
         "icon": "eye",
-        "command": "./cao.sh mode preview {{campaign}}",
+        "command": "gh cao campaigns mode preview {{campaign}}",
         "placement": "row"
       },
       {
@@ -920,7 +1037,7 @@
         "label": "Activate campaign",
         "description": "Activate this campaign's orchestrator and worker workflows.",
         "icon": "play",
-        "command": "./cao.sh enable {{campaign}}",
+        "command": "gh cao campaigns enable {{campaign}}",
         "placement": "row"
       },
       {
@@ -929,7 +1046,7 @@
         "label": "Deactivate",
         "description": "Deactivate future campaign workflow runs. Active runs continue until separately cancelled on GitHub.",
         "icon": "pause",
-        "command": "./cao.sh disable {{campaign}}",
+        "command": "gh cao campaigns disable {{campaign}}",
         "placement": "row"
       },
       {
@@ -947,9 +1064,34 @@
         "label": "Add",
         "description": "Copy the canonical CAO add command for this package. The dashboard does not install packages.",
         "icon": "plus",
-        "command": "./cao.sh add {{package-source}}",
+        "command": "gh cao campaigns add {{package-source}}",
         "placement": "row",
         "copy-only": true
+      },
+      {
+        "id": "add-repository",
+        "level": "operate",
+        "label": "Add repository",
+        "description": "Stage one exact repository in local CAO policy in review mode. Review and commit the policy change before activation; credential access is configured separately.",
+        "icon": "plus",
+        "command": "gh cao repos add {{repository}}",
+        "placement": "view",
+        "selector": {
+          "label": "Repository",
+          "placeholder": "Search owner/repository",
+          "debounce-ms": 300,
+          "query": {
+            "command": "gh search repos",
+            "fields": ["fullName", "description"],
+            "limit": 20
+          },
+          "mapping": {
+            "value": "fullName",
+            "label": "fullName",
+            "description": "description",
+            "target": "repository"
+          }
+        }
       }
     ],
     "horizon": {
@@ -1027,6 +1169,7 @@
           "runs",
           "issues",
           "cost",
+          "operational-value",
           "friction",
           "engines-models",
           "firewall",
@@ -1038,7 +1181,7 @@
         "label": "Experimental",
         "experimental": true,
         "pages": [
-          "operational-value",
+          "model-routing",
           "skills",
           "steering",
           "simulators"
@@ -1057,6 +1200,8 @@
         "placement": "bottom",
         "pages": [
           "maintenance",
+          "governance",
+          "commands",
           "marketplace",
           "indexing",
           "configuration"
@@ -1065,6 +1210,8 @@
     ]
   },
   "fragments": [
+    "dashboard-fragments/commands.json",
+    "dashboard-fragments/governance.json",
     "dashboard-fragments/shared-events.json",
     "dashboard-fragments/shared-inventory.json",
     "dashboard-fragments/shared-campaigns.json",
@@ -1077,6 +1224,7 @@
     "dashboard-fragments/campaign-insights.json",
     "dashboard-fragments/inventory.json",
     "dashboard-fragments/operations.json",
+    "dashboard-fragments/model-routing.json",
     "dashboard-fragments/simulators.json",
     "dashboard-fragments/overview.json",
     "dashboard-fragments/overview-attention.json",

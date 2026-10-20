@@ -24,6 +24,7 @@ import {
   installSqliteIndexedDB
 } from '../../src/data/storage/sqlite-indexeddb.js';
 import { CANONICAL_SCHEMA_VERSION } from '../../src/data/model/schema.js';
+import { sqliteRetention } from '../../../../activity/sqlite-retention.mjs';
 
 const temporaryDirectories = /** @type {string[]} */ ([]);
 const originalIndexedDB = globalThis.indexedDB;
@@ -57,6 +58,31 @@ function batch() {
   );
   return canonical;
 }
+
+it('keeps a year of outcome history through ingestion and doctor independently of run and detail TTLs', async () => {
+  const filename = temporaryDatabase();
+  const indexedDB = installSqliteIndexedDB(filename);
+  const now = Date.parse('2026-10-01T00:00:00Z');
+  const day = 86_400_000;
+  const canonical = normalize([]);
+  canonical.repositories.push({ id: 'repository:1', owner: 'octo', name: 'api' });
+  canonical.campaigns.push({ id: 'campaign:example', slug: 'example' });
+  canonical.operationalValues.push(...[15, 40, 364, 365, 366].map((age) => ({
+    id: `value:${age}`, repositoryId: 'repository:1', campaignId: 'campaign:example',
+    campaign: 'example', valueId: 'worker.remaining', value: 0,
+    timestamp: new Date(now - age * day).toISOString()
+  })));
+  await upsertCanonicalBatch(indexedDB, canonical);
+  await maintainCanonicalDatabase(indexedDB, {
+    now, maxDatabaseBytes: 100 * 1024 * 1024, ...sqliteRetention(7 * day, 30 * day, day)
+  });
+  const expected = ['value:15', 'value:40', 'value:364', 'value:365'].sort();
+  expect((await readCollection(indexedDB, 'operationalValues')).map((row) => row.id).sort()).toEqual(expected);
+  const diagnosis = await doctorSqliteDatabase(filename, { now, ttlDays: 7, runTtlDays: 30 });
+  expect(diagnosis.healthy).toBe(true);
+  expect((await readCollection(indexedDB, 'operationalValues')).map((row) => row.id).sort()).toEqual(expected);
+  expect(sqliteRetention(undefined, 730 * day, day).retentionWindowMsByStore.operationalValues).toBe(730 * day);
+});
 
 afterEach(() => {
   globalThis.indexedDB = originalIndexedDB;
@@ -344,7 +370,9 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       'ingest',
       '--database', filename,
       '--context', context,
-      '--logs', logs
+      '--logs', logs,
+      '--retention-days', 'all',
+      '--run-retention-days', 'all'
     ], { encoding: 'utf8' }));
     expect(ingestion.counts).toMatchObject({ runs: 1, domains: 1, tools: 3, audits: 2, issues: 0 });
 
@@ -356,7 +384,7 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       '--where', 'conclusion=success'
     ], { encoding: 'utf8' }));
     expect(runs).toEqual([
-      expect.objectContaining({ id: 'github:run:githubnext/gh-aw-cao:303' })
+      expect.objectContaining({ id: 'github:run:githubnext/gh-cao:303' })
     ]);
 
     const diagnosis = JSON.parse(execFileSync(process.execPath, [
@@ -390,7 +418,9 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       'ingest-jsonl',
       '--database', filename,
       '--input-dir', shardDirectory,
-      '--context', context
+      '--context', context,
+      '--retention-days', 'all',
+      '--run-retention-days', 'all'
     ], { encoding: 'utf8' }));
     expect(ingestion).toMatchObject({
       result: {
@@ -486,7 +516,7 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     const input = (databaseId, timestamp) => JSON.stringify({
       schema_version: 2,
       kind: 'workflow_runs',
-      request: { repository: 'githubnext/gh-aw-cao' },
+      request: { repository: 'githubnext/gh-cao' },
       payload: [{
         databaseId,
         attempt: 1,
@@ -521,8 +551,8 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
       '--collection', 'runs'
     ], { encoding: 'utf8' }));
     expect(/** @type {{ id: string }[]} */ (runs).map((run) => run.id)).toEqual([
-      'github:run:githubnext/gh-aw-cao:100',
-      'github:run:githubnext/gh-aw-cao:200'
+      'github:run:githubnext/gh-cao:100',
+      'github:run:githubnext/gh-cao:200'
     ]);
 
     const diagnosis = JSON.parse(execFileSync(process.execPath, [
@@ -533,10 +563,73 @@ describe('SQLite IndexedDB compatibility layer', { timeout: 30000 }, () => {
     ], { encoding: 'utf8' }));
     expect(diagnosis).toMatchObject({
       healthy: true,
-      ttlDays: 30,
+      ttlDays: 7,
       runTtlDays: 'all',
       after: { counts: { runs: 2 } }
     });
+  });
+
+  it('applies separate default linked and run windows in SQLite CLI ingestion', async () => {
+    const filename = temporaryDatabase();
+    const runsDirectory = join(filename, '..', 'runs');
+    const recordsDirectory = join(filename, '..', 'records');
+    mkdirSync(runsDirectory);
+    mkdirSync(recordsDirectory);
+    const records = batch();
+    records.audits = [];
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000).toISOString();
+    const expired = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+    const recent = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    records.runs[0].observedAt = old;
+    records.runs.push({ ...records.runs[0], id: 'run:recent', observedAt: recent });
+    records.runs.push({ ...records.runs[0], id: 'run:expired', observedAt: expired });
+    records.tools.push(
+      { id: 'tool:old', runId: 'run:1', observedAt: old },
+      { id: 'tool:recent', runId: 'run:recent', observedAt: recent }
+    );
+    records.operationalValues.push({ id: 'value:old', repositoryId: 'repository:1', observedAt: old });
+    for (const [phase, directory] of [['runs', runsDirectory], ['records', recordsDirectory]]) {
+      const entries = Object.entries(records).flatMap(([collection, rows]) =>
+        (phase === 'runs'
+          ? ['campaigns', 'repositories', 'workflows', 'runs', 'experiments', 'experimentAssignments'].includes(collection)
+          : !['campaigns', 'repositories', 'workflows', 'runs', 'experiments', 'experimentAssignments'].includes(collection))
+          ? rows.map((record) => ({ kind: 'record', collection, record }))
+          : []);
+      writeFileSync(join(directory, 'shard.jsonl'), [
+        { kind: 'metadata', schemaVersion: CANONICAL_SCHEMA_VERSION, ingestionVersion: 4,
+          sourceRecords: entries.length, phase, records: entries.length },
+        ...entries
+      ].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+    }
+    const ingestion = JSON.parse(execFileSync(process.execPath, [
+      resolve('../../activity/cao.mjs'), 'ingest-jsonl',
+      '--database', filename, '--runs-dir', runsDirectory, '--records-dir', recordsDirectory
+    ], { encoding: 'utf8' }));
+    expect(ingestion.counts).toMatchObject({ runs: 2, tools: 1, operationalValues: 1 });
+    const indexedDB = createSqliteIndexedDB(filename);
+    expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);
+  });
+
+  it('defaults SQLite repair to seven-day linked detail and 30-day runs and values', async () => {
+    const filename = temporaryDatabase();
+    const indexedDB = installSqliteIndexedDB(filename);
+    const canonical = batch();
+    canonical.audits = [];
+    canonical.runs[0].observedAt = '2026-09-01T00:00:00Z';
+    canonical.runs.push({ ...canonical.runs[0], id: 'run:recent', observedAt: '2026-09-09T00:00:00Z' });
+    canonical.tools.push(
+      { id: 'tool:old', runId: 'run:1', observedAt: '2026-09-01T00:00:00Z' },
+      { id: 'tool:recent', runId: 'run:recent', observedAt: '2026-09-09T00:00:00Z' }
+    );
+    canonical.operationalValues.push({
+      id: 'value:old', repositoryId: 'repository:1', observedAt: '2026-09-01T00:00:00Z'
+    });
+    await upsertCanonicalBatch(indexedDB, canonical);
+    const diagnosis = await doctorSqliteDatabase(filename, { now: Date.parse('2026-09-10T00:00:00Z') });
+    expect(diagnosis).toMatchObject({ healthy: true, ttlDays: 7, runTtlDays: 30 });
+    expect((await readCollection(indexedDB, 'runs')).map(({ id }) => id)).toEqual(['run:1', 'run:recent']);
+    expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:recent']);
+    expect((await readCollection(indexedDB, 'operationalValues')).map(({ id }) => id)).toEqual(['value:old']);
   });
 
   it('repairs malformed, orphaned, and expired canonical data', async () => {

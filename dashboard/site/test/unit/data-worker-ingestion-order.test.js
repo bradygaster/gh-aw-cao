@@ -55,7 +55,7 @@ describe('canonical dashboard worker ingestion order', () => {
         run_id: 303,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow_name: 'Dashboard',
         workflow_path: '.github/workflows/dashboard.md',
         status: 'completed',
@@ -84,7 +84,7 @@ describe('canonical dashboard worker ingestion order', () => {
       `gh-aw-logs-runs/logs-${'a'.repeat(64)}-${index.toString(16).padStart(16, '0')}.jsonl`);
     const inventory = {
       repositories: {
-        rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }],
+        rows: [{ organization: 'githubnext', repository: 'gh-cao' }],
         metadata: { 'as-of': '2026-09-09T05:00:00Z' }
       }
     };
@@ -148,29 +148,33 @@ describe('canonical dashboard worker ingestion order', () => {
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }),
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) })
     ]);
-    expect(storedRunIds).toEqual(['github:run:githubnext/gh-aw-cao:303']);
+    expect(storedRunIds).toEqual(['github:run:githubnext/gh-cao:303']);
     const updates = posted.filter((message) => message.type === 'loading-progress'
       && /** @type {{ phase?: string }} */ (message.state)?.phase === 'update')
       .map((message) => /** @type {{ completed: number, total: number, stage: string }} */ (message.state));
-    const preparationStepWeight = Math.max(1, shardCount / 7);
+    const preparationStepWeight = Math.max(1, Math.ceil(shardCount / 7));
     const totalSteps = shardCount + 3 * preparationStepWeight;
     expect(updates.some(({ stage, completed, total }) =>
       stage === 'files' && completed === shardCount && total === totalSteps)).toBe(true);
     expect(updates.some(({ stage, completed, total }) =>
-      stage === 'maintenance' && completed > shardCount
-      && completed < shardCount + preparationStepWeight && total === totalSteps)).toBe(true);
-    const inventoryProgress = updates.at(-2);
+      stage === 'maintenance' && completed > shardCount + preparationStepWeight
+      && completed < shardCount + 2 * preparationStepWeight && total === totalSteps)).toBe(true);
+    const inventoryProgress = updates.find(({ stage }) => stage === 'inventory');
+    const maintenanceProgress = updates.find(({ stage }) => stage === 'maintenance');
     const queryProgress = updates.at(-1);
     expect(inventoryProgress).toMatchObject({
-      stage: 'inventory', completed: shardCount + preparationStepWeight, total: totalSteps
+      stage: 'inventory', completed: shardCount, total: totalSteps
+    });
+    expect(maintenanceProgress).toMatchObject({
+      stage: 'maintenance', completed: shardCount + preparationStepWeight, total: totalSteps
     });
     expect(queryProgress).toMatchObject({
       stage: 'queries', completed: shardCount + 2 * preparationStepWeight, total: totalSteps
     });
-    if (!inventoryProgress || !queryProgress) throw new Error('Missing post-shard progress.');
+    if (!inventoryProgress || !maintenanceProgress || !queryProgress) throw new Error('Missing post-shard progress.');
     const stageBoundaries = [
       shardCount,
-      inventoryProgress.completed,
+      maintenanceProgress.completed,
       queryProgress.completed,
       totalSteps
     ].map((completed) => completed / totalSteps);
@@ -182,5 +186,17 @@ describe('canonical dashboard worker ingestion order', () => {
       && /** @type {{ phase?: string }} */ (message.state)?.phase === 'complete'))
       .toBeGreaterThan(posted.findIndex((message) => message.type === 'loading-progress'
         && /** @type {{ stage?: string }} */ (message.state)?.stage === 'queries'));
+    requestedUrls.length = 0;
+    const { processDataRequest } = await import('../../src/data-worker.js');
+    await processDataRequest({
+      operation: 'load-canonical-dashboard',
+      sourceUrl: 'https://dashboard.example/payload-hashes.json',
+      sourceNames: [],
+      context: { pages: [], queries: [] }
+    });
+    expect(requestedUrls).toEqual([
+      'https://dashboard.example/inventory-sources.json',
+      'https://dashboard.example/payload-hashes.json'
+    ]);
   }, 30_000);
 });

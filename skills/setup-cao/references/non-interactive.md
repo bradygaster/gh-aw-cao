@@ -1,7 +1,43 @@
 # Non-interactive setup
 
-Load this reference only when `./cao.sh setup` cannot run in an interactive
-terminal. This is a constrained fallback, not a second setup flow.
+Load this reference when no user is available, `CI` is set, or `gh cao setup`
+cannot run in an interactive terminal. This is a constrained fallback, not a
+second setup flow.
+
+## No user available
+
+Take the safe default without asking questions or waiting for input. Bare
+installation may use `install.sh` without `--setup` and leaves exact
+control-repository scope with no campaigns. Explicit `--setup` may apply only
+when the control repository is public, the campaign map is empty, and existing
+scope is absent or already exactly the control repository. It configures public
+Actions-backed Pages, selects repository `GITHUB_TOKEN` (`workflow-token`),
+and records Activity scope for exactly the control repository. It preserves all
+other policy fields and writes policy only after external settings succeed.
+
+During setup, do not create a repository without an explicitly authorized
+exact coordinate, open a browser, commit, push, install or enable campaigns, or dispatch
+workflows. Refuse non-interactive setup for a private/internal control
+repository, non-empty campaign map, or broader existing scope; do not silently
+narrow it. Missing prerequisites, unclear repository selection, and
+incompatible existing scope/authentication are blockers, not permission to
+guess or broaden access. An outdated installed gh-aw must be upgraded
+explicitly before retrying. Report the applied defaults or blocker plainly.
+
+`install.sh --quickstart` is the only exception: the explicit flag authorizes
+its selected public-target campaign, public Pages, bounded commit and push, and
+workflow dispatches. It may run without prompts from a clean public or private
+control-repository checkout on the default branch. Outside a checkout it may
+create only the signed-in user's private `cao` control repository, using a
+fresh UTC `cao-YYYYMMDD-HHMMSS` name when the remote name or local clone path is
+occupied (numeric suffixes are checked through `-10` if needed). Lookup failures
+remain blockers; existing repositories and paths are never reused or overwritten.
+The public canonical `github/gh-aw` Repo Assist target is referenced rather than
+created; other control names or owners require exact
+`--create-repo OWNER/NAME`, and another target requires exact
+`--target OWNER/REPO`. Explicit repository names are never silently changed.
+
+## Explicit broader setup with a user available
 
 1. Run `gh auth status` and resolve the control repository with `gh repo view`.
 2. Ask for the exact comma-separated `OWNER/REPOSITORY` read scope.
@@ -22,15 +58,15 @@ terminal. This is a constrained fallback, not a second setup flow.
    `control-plane.campaigns` as an empty object.
 7. Use the matching repository-local command, following
    [authentication](authentication.md) and the
-   [authentication profile guide](../../../docs/control-plane-authentication.md).
+   [authentication profile guide](https://github.com/githubnext/gh-cao/blob/main/docs/control-plane-authentication.md).
    Enterprise Apps must already exist, and their selected organizations must
    belong to the same enterprise. The client IDs below are required but are not
    secrets:
 
    ```bash
-   ./cao.sh setup-auth github-app --repo OWNER/CONTROL-REPOSITORY --dry-run
-   ./cao.sh setup-auth enterprise-app --repo OWNER/CONTROL-REPOSITORY --read-client-id READ_APP_CLIENT_ID --write-client-id WRITE_APP_CLIENT_ID --policy .github/workflows/cao.json --dry-run
-   ./cao.sh setup-auth token --repo OWNER/CONTROL-REPOSITORY --policy .github/workflows/cao.json --dry-run
+   gh cao setup auth github-app --repo OWNER/CONTROL-REPOSITORY --dry-run
+   gh cao setup auth enterprise-app --repo OWNER/CONTROL-REPOSITORY --read-client-id READ_APP_CLIENT_ID --write-client-id WRITE_APP_CLIENT_ID --policy .github/workflows/cao.json --dry-run
+   gh cao setup auth token --repo OWNER/CONTROL-REPOSITORY --policy .github/workflows/cao.json --dry-run
    ```
 
    These commands preview the selected profile; they do not configure
@@ -42,9 +78,10 @@ terminal. This is a constrained fallback, not a second setup flow.
 8. Configure Pages in the control repository's settings to use GitHub Actions;
    for a private repository, restrict access to repository readers. Verify
    visibility and stop if the plan cannot restrict a private site's access.
-9. Run `./cao.sh validate`, `gh aw doctor --repo
+9. Run `gh cao doctor`, `gh aw doctor --repo
    OWNER/CONTROL_REPOSITORY --dir .`, and `git diff --check`; inspect the policy
-   and diff before asking to commit or push.
+   and diff before asking to commit or push. Full policy/workflow validation
+   runs in Actions after publication.
 
 Do not manually copy runtime files, invent a new credential profile, install a
 campaign, enable a workflow, or dispatch work.

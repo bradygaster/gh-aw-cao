@@ -36,7 +36,7 @@ function batch() {
   });
   value.tools.push({
     id: 'tool:1', runId: value.runs[0].id, timestamp: observedAt, observedAt,
-    type: 'tool.call', name: 'search', mcpServer: 'github', mcpTool: 'search',
+    type: 'mcp.tool_call', name: 'search', mcpServer: 'github', mcpTool: 'search',
     toolType: 'mcp', isSkill: false, requestBytes: 42, responseBytes: 0,
     correlationId: 'call-1', provenance: { source: 'gh-aw-logs', sourceId: 'call-1', observedAt }
   });
@@ -50,9 +50,8 @@ function batch() {
 
 describe('canonical field pruning', () => {
   it('never prunes a field required by a canonical database query', () => {
-    const recordStores = ['domains', 'tools', 'skills', 'friction', 'audits', 'issues'];
     for (const definition of definitions) {
-      const stores = definition.from === '$records' ? recordStores : [definition.from.slice(1)];
+      const stores = [definition.from.slice(1)];
       const derived = new Set([
         ...(definition.joins ?? []).flatMap((join) => join.fields.map((field) => field.as ?? field.field)),
         ...(definition.compute ?? []).map((field) => field.as)
@@ -160,6 +159,7 @@ describe.each(['IndexedDB', 'SQLite'])('pruning at the %s storage boundary', (ba
     input.evalObservations?.push({
       id: 'eval-result:1', evalId: 'eval:1', runId: input.runs[0].id,
       timestamp: observedAt, resultTimestamp: observedAt, sourceEvalId: 'correctness-v1',
+      auditId: 'audit:eval',
       evalResult: 'YES', answer: 'YES', requestedModel: 'unused-copy', resolvedModel: 'unused-copy', observedAt, provenance
     });
     input.audits.push({
@@ -196,6 +196,7 @@ describe.each(['IndexedDB', 'SQLite'])('pruning at the %s storage boundary', (ba
     expect(sources.evals.rows[0]).toMatchObject({ eval: 'correctness', 'source-eval-id': 'correctness-v1' });
     expect(sources['eval-observations'].rows[0]).toMatchObject({
       'source-eval-id': 'correctness-v1', 'result-timestamp': observedAt, 'eval-result': 'YES',
+      'audit-id': 'audit:eval',
       'requested-model': 'requested', 'resolved-model': 'resolved'
     });
     expect(sources.audits.rows.find((row) => row.id === 'audit:target')).toMatchObject({ 'target-repo': 'octo/api' });

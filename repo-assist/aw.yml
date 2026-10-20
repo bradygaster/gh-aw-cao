@@ -1,10 +1,10 @@
 name: Repo Assist
 icon: ":gear:"
 description: Review-first issue triage, issue fixes, repository maintenance, and owned pull request upkeep.
-min-version: v0.91.5
+min-version: v0.92.6
 experimental: true
 includes:
-  - ../aw.yml
+  - README.md
   - .github/workflows/repo-assist-issue-fix.md
   - .github/workflows/repo-assist-issue-triage.md
   - .github/workflows/repo-assist-maintenance.md

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/githubapp"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/githubapp"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
 )
 
 func TestCollectionHealthSourceIsAvailableOnlyToAuthorizedReaders(t *testing.T) {
@@ -117,7 +117,7 @@ func TestCollectionStatusRequiresHostedAdministrator(t *testing.T) {
 	}
 
 	request = httptest.NewRequestWithContext(
-		context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "operator"}),
+		context.WithValue(t.Context(), oauthSessionContextKey{}, assuredSession("operator")),
 		http.MethodGet, "/api/v1/ingestion/health", nil,
 	)
 	response = httptest.NewRecorder()
@@ -231,7 +231,7 @@ func TestCollectorConfigFromEnvReadsTheCollectionProfile(t *testing.T) {
 	t.Setenv("CAO_COLLECT_LAKE_DIRECTORY", lake)
 	t.Setenv("CAO_COLLECT_CATALOG_ROOT", catalog)
 	t.Setenv("CAO_COLLECT_CONTROL_REPOSITORY", "octo/control")
-	t.Setenv("CAO_POLICY_PATH", "/app/.github/workflows/cao.coolify.json")
+	t.Setenv("CAO_POLICY_PATH", "/app/.github/workflows/cao.hosted.json")
 	t.Setenv("CAO_COLLECT_STATIC_INVENTORY", "/app/catalog/control-plane-inventory.json")
 	t.Setenv("CAO_COLLECT_WORKERS", "4")
 	t.Setenv("CAO_COLLECT_PROJECTION_INTERVAL", "90s")
@@ -252,7 +252,7 @@ func TestCollectorConfigFromEnvReadsTheCollectionProfile(t *testing.T) {
 	if !config.RecoverDeliveries {
 		t.Fatal("expected delivery recovery to be enabled")
 	}
-	if config.PolicyPath != "/app/.github/workflows/cao.coolify.json" ||
+	if config.PolicyPath != "/app/.github/workflows/cao.hosted.json" ||
 		config.StaticInventoryPath != "/app/catalog/control-plane-inventory.json" {
 		t.Fatalf("unexpected inventory configuration: %+v", config)
 	}

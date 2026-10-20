@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/sqlbuilder"
+	"github.com/githubnext/gh-cao/server/internal/sqlbuilder"
 )
 
 type SQLKind string
@@ -69,17 +69,6 @@ type sqlCompiler struct {
 // Structured SQL values are wire projections only; this compiler creates no
 // stored JSON documents and has no row-evaluator fallback.
 func CompileSQL(definitions []Definition, requested []string, resolve SQLSourceResolver) (SQLPlan, error) {
-	if err := Validate(definitions); err != nil {
-		return SQLPlan{}, err
-	}
-	order, err := Dependencies(definitions, requested)
-	if err != nil {
-		return SQLPlan{}, err
-	}
-	index := make(map[string]Definition, len(definitions))
-	for _, definition := range definitions {
-		index[definition.Name] = definition
-	}
 	compiler := sqlCompiler{}
 	relations := map[string]SQLRelation{}
 	load := func(name string) error {
@@ -101,30 +90,16 @@ func CompileSQL(definitions []Definition, requested []string, resolve SQLSourceR
 		relations[name] = compiler.materialize(relation, name, "source", 0)
 		return nil
 	}
-	for _, name := range order {
-		definition, derived := index[name]
-		if !derived {
-			if err := load(name); err != nil {
-				return SQLPlan{}, err
-			}
-			continue
-		}
-		inputs := append([]string{definition.From}, definition.Union...)
-		for _, join := range definition.Joins {
-			inputs = append(inputs, join.Source)
-		}
-		for _, input := range inputs {
-			if _, derived := index[input]; !derived {
-				if err := load(input); err != nil {
-					return SQLPlan{}, err
-				}
-			}
-		}
+	err := WalkPlan(definitions, requested, load, func(definition Definition) error {
 		relation, err := compiler.definition(definition, relations)
 		if err != nil {
-			return SQLPlan{}, fmt.Errorf("query %q: %w", name, err)
+			return fmt.Errorf("query %q: %w", definition.Name, err)
 		}
-		relations[name] = relation
+		relations[definition.Name] = relation
+		return nil
+	})
+	if err != nil {
+		return SQLPlan{}, err
 	}
 	outputs := make(map[string]SQLRelation, len(requested))
 	for _, name := range requested {
@@ -324,6 +299,13 @@ func (c *sqlCompiler) definition(definition Definition, relations map[string]SQL
 	if definition.Limit != nil {
 		relation.SQL += " ORDER BY " + relation.Order + " LIMIT " + c.bind(*definition.Limit)
 		relation = c.materialize(relation, definition.Name, "limit", 0)
+	}
+	if definition.Facet != nil {
+		var err error
+		relation, err = c.facet(relation, *definition.Facet, definition.Name)
+		if err != nil {
+			return SQLRelation{}, err
+		}
 	}
 	return relation, nil
 }
@@ -599,11 +581,45 @@ func (c *sqlCompiler) compute(relation SQLRelation, computed ComputedField) (SQL
 	case "positive-integer":
 		value := sqlNumeric(args[0])
 		out.Expression, out.Kind = "CASE WHEN "+value+" > 0 AND "+value+" = trunc("+value+") THEN "+value+" ELSE "+sqlNumeric(args[1])+" END", SQLNumber
+	case "timestamp":
+		at := args[0].Expression
+		if args[0].Kind == SQLText {
+			const pattern = `^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`
+			at = "CASE WHEN " + at + " ~ '" + pattern + "' AND left(" + at + ", 4) <> '0000' AND pg_input_is_valid(" + at + ", 'timestamp with time zone') THEN (" + at + ")::timestamptz ELSE NULL::timestamptz END"
+		} else if args[0].Kind != SQLTimestamp {
+			out.Expression, out.Kind = "NULL::numeric", SQLNumber
+			break
+		}
+		out.Expression, out.Kind = "floor(extract(epoch FROM "+at+") * 1000)", SQLNumber
+	case "iso-timestamp":
+		value := sqlNumeric(args[0])
+		bounded := "(CASE WHEN " + value + " BETWEEN -62135596800000 AND 253402300799999 THEN trunc(" + value + ") END)"
+		out.Expression, out.Kind = "to_char((to_timestamp(trunc("+bounded+"/1000)) + mod("+bounded+",1000) * INTERVAL '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')", SQLText
+	case "sqrt":
+		value := sqlNumeric(args[0])
+		out.Expression, out.Kind = "sqrt(CASE WHEN "+value+" >= 0 THEN "+value+" END)", SQLNumber
 	case "date-day":
 		if args[0].Kind != SQLTimestamp {
 			return SQLColumn{}, errors.New("date-day requires a typed timestamp")
 		}
 		out.Expression, out.Kind = "to_char("+args[0].Expression+" AT TIME ZONE 'UTC', 'YYYY-MM-DD')", SQLText
+	case "activity-shard-day":
+		const pattern = `^(?:[^?#]*/)?([0-9]{4}-[0-9]{2}-[0-9]{2})-[0-9]{4,}-[a-fA-F0-9]{16}\.jsonl(?:[?#].*)?$`
+		day := "substring(" + sqlText(args[0]) + " from '" + pattern + "')"
+		out.Expression, out.Kind = "CASE WHEN left("+day+", 4) <> '0000' AND pg_input_is_valid("+day+
+			", 'date') THEN "+day+" ELSE NULL::text END", SQLText
+	case "date-bucket":
+		unit, ok := computed.Args[1].Value.(string)
+		if !ok || (unit != "hour" && unit != "day" && unit != "week" && unit != "month") {
+			return SQLColumn{}, errors.New("date-bucket requires a supported literal UTC unit")
+		}
+		at := args[0].Expression
+		if args[0].Kind == SQLText {
+			at = "CASE WHEN pg_input_is_valid(" + at + ", 'timestamp with time zone') THEN (" + at + ")::timestamptz ELSE NULL::timestamptz END"
+		} else if args[0].Kind != SQLTimestamp {
+			return SQLColumn{}, errors.New("date-bucket requires text or a typed timestamp")
+		}
+		out.Expression, out.Kind = "to_char(date_trunc('"+unit+"', "+at+" AT TIME ZONE 'UTC'), 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')", SQLText
 	case "format-percent":
 		value := sqlNumeric(args[0])
 		out.Expression, out.Kind = "CASE WHEN "+value+" IS NULL THEN NULL::text ELSE trim_scale(round("+value+"*100,1))::text || '%' END", SQLText
@@ -633,6 +649,9 @@ func (c *sqlCompiler) compute(relation SQLRelation, computed ComputedField) (SQL
 				reference = "(" + args[1].Expression + ")::timestamptz"
 			}
 			success := sqlText(args[2]) + " = 'success'"
+			if args[2].Kind == SQLBoolean {
+				success = "COALESCE(" + args[2].Expression + ", FALSE)"
+			}
 			out.Expression, out.Kind, out.Point = "CASE WHEN "+args[0].Expression+" IS NOT NULL AND "+reference+" IS NOT NULL THEN "+
 				"jsonb_build_array("+at+", floor(extract(epoch FROM "+reference+")*1000), "+success+")::text ELSE NULL::text END", SQLText, "calendar"
 		} else {
@@ -743,8 +762,10 @@ func (c *sqlCompiler) join(left, right SQLRelation, join Join, name string) (SQL
 		keys = append(keys, rightKey+" <> ''")
 		grouping = append(grouping, rightKey)
 	}
-	c.joins = append(c.joins, "SELECT 1 FROM "+right.SQL+" WHERE "+strings.Join(keys, " AND ")+" GROUP BY "+
-		strings.Join(grouping, ",")+" HAVING count(*) > 1 LIMIT 1")
+	if join.Type != "inner-many" {
+		c.joins = append(c.joins, "SELECT 1 FROM "+right.SQL+" WHERE "+strings.Join(keys, " AND ")+" GROUP BY "+
+			strings.Join(grouping, ",")+" HAVING count(*) > 1 LIMIT 1")
+	}
 	joinType := "INNER JOIN"
 	if join.Type == "left" {
 		joinType = "LEFT JOIN"
@@ -762,8 +783,12 @@ func (c *sqlCompiler) join(left, right SQLRelation, join Join, name string) (SQL
 		column.Presence = "TRUE"
 		columns[alias] = column
 	}
+	order := left.Order
+	if join.Type == "inner-many" {
+		order = "row_number() OVER (ORDER BY " + left.Order + "," + right.Order + ")"
+	}
 	return c.materialize(SQLRelation{SQL: left.SQL + " " + joinType + " " + right.SQL + " ON " + strings.Join(condition, " AND "),
-		Columns: columns, Order: left.Order}, name, "join", 1), nil
+		Columns: columns, Order: order}, name, "join", 1), nil
 }
 
 func (c *sqlCompiler) aggregate(input SQLRelation, aggregate *Aggregate, name string) (SQLRelation, error) {
@@ -782,7 +807,7 @@ func (c *sqlCompiler) aggregate(input SQLRelation, aggregate *Aggregate, name st
 	}
 	for index, value := range aggregate.Values {
 		column := sqlField(input, value.Field)
-		if column.Kind == SQLStructured {
+		if column.Kind == SQLStructured && value.Reducer != "unique" {
 			return SQLRelation{}, errors.New("structured aggregate measures are forbidden")
 		}
 		predicate, err := c.filter(input, value.Filter)
@@ -793,6 +818,11 @@ func (c *sqlCompiler) aggregate(input SQLRelation, aggregate *Aggregate, name st
 		var expression string
 		kind := SQLNumber
 		switch value.Reducer {
+		case "unique":
+			kind = column.Kind
+			first := "(array_agg(" + column.Expression + " ORDER BY " + input.Order + ") FILTER (WHERE " + predicate + " AND " + column.Expression + " IS NOT NULL))[1]"
+			expression = "CASE WHEN count(DISTINCT to_jsonb(" + column.Expression + ")) FILTER (WHERE " + predicate + ") = 1 THEN " +
+				first + " ELSE NULL END"
 		case "count":
 			expression = "count(*) FILTER (WHERE " + where + ")"
 		case "distinct-count":
@@ -810,6 +840,9 @@ func (c *sqlCompiler) aggregate(input SQLRelation, aggregate *Aggregate, name st
 			if value.Reducer == "sum" {
 				expression = "coalesce(" + expression + ", 0::numeric)"
 			}
+		case "median", "p75", "p90", "p95":
+			quantile := map[string]string{"median": "0.5", "p75": "0.75", "p90": "0.9", "p95": "0.95"}[value.Reducer]
+			expression = "percentile_cont(" + quantile + ") WITHIN GROUP (ORDER BY (" + sqlNumeric(column) + ")::double precision) FILTER (WHERE " + where + ")"
 		case "latest-failure-streak":
 			if column.Point != "failure" {
 				return SQLRelation{}, errors.New("latest-failure-streak requires failure-streak-point values")

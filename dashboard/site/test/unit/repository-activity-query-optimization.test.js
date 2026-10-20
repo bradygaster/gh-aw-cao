@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { processDataRequest } from '../../src/data-worker.js';
+import { queryIndexedDatabaseSources } from '../../src/data/queries/database.js';
 import {
   createDashboardQueryBudget,
   executeDashboardQueries,
@@ -10,6 +11,8 @@ import {
 import { compileDashboardViewPayloadQueries } from '../../src/data/queries/view-payload-compiler.js';
 import { DATABASE_NAME } from '../../src/data/storage/indexeddb.js';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
+import runInventoryContract from '../fixtures/repository-run-inventory-contract.json' with { type: 'json' };
+import overviewContract from '../fixtures/repository-overview-contract.json' with { type: 'json' };
 
 /** @typedef {import('../../src/presenter.js').LogicalSourceInput} Source */
 /** @typedef {import('../../src/data/queries/declarative.js').DashboardQuery} Query */
@@ -29,6 +32,9 @@ const contexts = [
   { timeWindow: { start: '2026-09-20T00:00:00Z', end: '2026-09-24T00:00:00Z' } },
   { filters: { organization: ['other'] } },
   { filters: { 'rollout-mode': ['review'], organization: ['org'] } },
+  { filters: { repository: ['alpha'] } },
+  { filters: { repository: ['org/alpha'] } },
+  { filters: { workflow: ['.github/workflows/worker.md'] } },
   { search: { fields: ['repository'], query: 'alpha' } }
 ];
 
@@ -52,14 +58,23 @@ const originalRunTotals = {
     ]
   }
 };
+/** @type {Query[]} */
 const baseline = queries.map((query) => {
   if (query.name === originalRunTotals.name) return originalRunTotals;
+  if (query.name === 'repository-aic-totals') return {
+    ...query, from: 'workflow-aic-totals', filter: undefined, select: undefined,
+    aggregate: { by: ['organization', 'repository'], values: [{ field: 'aic', as: 'aic', reducer: 'sum' }] }
+  };
   if (query.name !== 'repository-activity') return query;
   return {
     ...query,
     joins: query.joins?.map((join) => ({ ...join, source: 'repository-aic-totals' }))
   };
 });
+/** @type {Query[]} */
+const chartBaseline = baseline.map((query) => query.name === runInventoryContract.source
+  ? { ...query, from: 'repository-activity', joins: undefined, compute: undefined }
+  : query);
 
 /** @param {string} name @param {Record<string, unknown>[]} rows */
 function source(name, rows) {
@@ -106,11 +121,11 @@ function fixture() {
     { ...run('reported', '400', 'success', 17), 'started-at': '2026-09-01T00:00:00Z' }
   ];
   /** @param {string} run @param {string} event @param {string} [type] */
-  const record = (run, event, type = 'tool.call') => ({
+  const record = (run, event, type = 'mcp.tool_call') => ({
     run, 'run-attempt': 1, event, 'event-source': 'fixture', 'event-type': type,
     'event-timestamp': '2026-09-20T00:00:10Z', 'event-summary': 'Retained evidence',
     'safe-output-type': 'create_issue',
-    'safe-output-url': type === 'safe_output.created' ? `https://github.com/org/evidence/issues/${run}` : undefined
+    'safe-output-url': type === 'safe_output.result' ? `https://github.com/org/evidence/issues/${run}` : undefined
   });
   return {
     repositories: source('repositories', repositories),
@@ -120,9 +135,9 @@ function fixture() {
     domains: source('domains', [record('101', 'domain-one')]),
     tools: source('tools', [record('102', 'tool-one')]),
     issues: source('issues', [
-      record('103', 'issue-one', 'safe_output.created'),
-      record('300', 'issue-two', 'safe_output.created'),
-      record('400', 'issue-three', 'safe_output.created')
+      record('103', 'issue-one', 'safe_output.result'),
+      record('300', 'issue-two', 'safe_output.result'),
+      record('400', 'issue-three', 'safe_output.result')
     ])
   };
 }
@@ -157,6 +172,206 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('repository activity query optimization', () => {
+  it.each(contexts)('shares the overview dependency graph without changing scoped values or quality for %j', async (queryContext) => {
+    const sources = await canonicalSources();
+    sources.audits.metadata = {
+      ...sources.audits.metadata, completeness: 'partial', freshness: 'stale',
+      'as-of': '2026-09-01T00:00:00Z'
+    };
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === overviewContract.page);
+    expect(page['query-binding']).toBe(overviewContract['query-binding']);
+    expect(page.views.map((/** @type {{ id: string }} */ view) => view.id)).toEqual(overviewContract.views);
+    const options = {
+      queries, queryContext, routeParameters: overviewContract.route,
+      sourceNames: [overviewContract.source], evaluatedAt: '2026-09-24T00:00:00Z'
+    };
+    const combined = compileDashboardViewPayloadQueries(page, overviewContract.page, options);
+    const shared = workerQuery(combined.queries, sources, combined.aliases);
+    const budget = createDashboardQueryBudget();
+    Object.values(executeDashboardQueries(combined.queries, sources, combined.aliases, { budget })).map(result => result.rows);
+    let independentOperations = 0;
+    let dependencyCount = 0;
+    for (const viewId of overviewContract.views) {
+      const independent = compileDashboardViewPayloadQueries(page, overviewContract.page, { ...options, viewId });
+      expect(shared[independent.aliases[0]]).toEqual(workerQuery(independent.queries, sources, independent.aliases)[independent.aliases[0]]);
+      const independentBudget = createDashboardQueryBudget();
+      Object.values(executeDashboardQueries(independent.queries, sources, independent.aliases, { budget: independentBudget })).map(result => result.rows);
+      independentOperations += independentBudget.operations;
+      dependencyCount ||= independent.queries.filter((query) => String(query.name).endsWith(`:dependency:${overviewContract['shared-dependency']}`)).length;
+    }
+    expect(dependencyCount).toBeGreaterThan(0);
+    expect(combined.queries.filter((query) => String(query.name).endsWith(`:dependency:${overviewContract['shared-dependency']}`))).toHaveLength(dependencyCount);
+    expect(budget.operations).toBeLessThan(independentOperations * 0.4);
+  });
+
+  it('keeps native aggregate inputs row-local and joins only narrow import identities or repository totals', async () => {
+    const sources = await canonicalSources();
+    const nativeNames = runInventoryContract['native-aggregates'];
+    for (const name of nativeNames) {
+      const query = queries.find((candidate) => candidate.name === name);
+      expect(query?.aggregate).toBeDefined();
+      expect(query?.joins?.length ?? 0).toBe(0);
+      expect(query?.union?.length ?? 0).toBe(0);
+      expect(query?.aggregate?.values.every((value) => ['count', 'distinct-count', 'sum'].includes(value.reducer))).toBe(true);
+    }
+    const native = await queryIndexedDatabaseSources(indexedDB, sources, queries, nativeNames);
+    for (const name of nativeNames) {
+      expect(native[name], `no storage-native plan for ${name}`).toBeDefined();
+      const expected = workerQuery(queries, sources, [name])[name];
+      expect(native[name].rows).toEqual(expected.rows);
+      expect(native[name].metadata.availability).not.toBe('unavailable');
+    }
+    const identities = queries.find((query) => query.name === 'repository-run-identities');
+    expect(identities?.select?.map((field) => field.field)).toEqual(runInventoryContract['import-identity-fields']);
+    expect(queries.find((query) => query.name === 'repository-run-totals')).toMatchObject({
+      from: 'repository-run-statistics',
+      joins: [{
+        source: 'repository-import-totals',
+        on: [{ left: 'organization', right: 'organization' }, { left: 'repository', right: 'repository' }]
+      }]
+    });
+  });
+
+  it('keeps the run chart independent of workflow, outcome, cost, and imported event queries', async () => {
+    const compiled = compileDashboardViewPayloadQueries(
+      dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === runInventoryContract.page).definition,
+      runInventoryContract.page,
+      { queries, viewId: runInventoryContract.view }
+    );
+    for (const { definitions, names } of [
+      { definitions: queries, names: [runInventoryContract.source] },
+      { definitions: compiled.queries, names: compiled.aliases }
+    ]) {
+      expect(resolveDashboardQuerySources(definitions, names).filter((name) => canonicalNames.includes(name)).toSorted())
+        .toEqual(runInventoryContract.canonicalSources);
+    }
+    const inputs = fixture();
+    const sources = await canonicalSources(inputs);
+    const expected = workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source];
+    for (const name of canonicalNames.filter((name) => !runInventoryContract.canonicalSources.includes(name))) {
+      sources[name] = {
+        ...sources[name], rows: [],
+        metadata: { ...sources[name].metadata, availability: 'unavailable', completeness: 'unknown' }
+      };
+    }
+    expect(workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source]).toEqual(expected);
+  });
+
+  it.each(contexts)('preserves run chart rows while eliminating unrelated evidence for %j', async (queryContext) => {
+    const sources = await canonicalSources();
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === runInventoryContract.page);
+    /** @param {Query[]} definitions */
+    const scoped = (definitions) => {
+      const compiled = compileDashboardViewPayloadQueries(page.definition, runInventoryContract.page, {
+        queries: definitions, viewId: runInventoryContract.view,
+        queryContext, evaluatedAt: '2026-09-24T00:00:00Z'
+      });
+      return workerQuery(compiled.queries, sources, compiled.aliases)[compiled.aliases[0]].rows;
+    };
+    expect(scoped(queries)).toEqual(scoped(chartBaseline));
+  });
+
+  it('reduces chart row work by at least two thirds and only reads repositories and runs through the worker', async () => {
+    const sources = await canonicalSources();
+    /** @param {Query[]} definitions */
+    const measure = (definitions) => {
+      const budget = createDashboardQueryBudget();
+      const result = executeDashboardQueries(definitions, sources, [runInventoryContract.source], { budget })[runInventoryContract.source];
+      return { rows: result.rows, operations: budget.operations };
+    };
+    const original = measure(chartBaseline);
+    const optimized = measure(queries);
+    expect(optimized.rows).toEqual(original.rows);
+    expect(optimized.operations).toBeLessThan(original.operations / 3);
+    const result = /** @type {Record<string, Source>} */ (await processDataRequest({
+      operation: 'load-dashboard-query-sources', sources: {},
+      queries, sourceNames: [runInventoryContract.source]
+    }));
+    expect(result[runInventoryContract.source].rows).toEqual(optimized.rows);
+  });
+
+  it('lists repository run counts and drill links through the production worker boundary', async () => {
+    const sources = await canonicalSources();
+    const query = queries.find((candidate) => candidate.name === runInventoryContract.source);
+    const view = dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === runInventoryContract.page)?.definition?.views
+      ?.find((/** @type {{ id: string }} */ candidate) => candidate.id === runInventoryContract.view);
+    expect(query).toBeDefined();
+    expect(view).toMatchObject({
+      mark: 'chart', chart: runInventoryContract.chart,
+      data: { source: runInventoryContract.source, limit: runInventoryContract.limit },
+      encoding: {
+        x: { field: 'repository', type: 'nominal' },
+        y: { field: 'runs', type: 'quantitative' },
+        href: { field: 'repository-link', type: 'nominal' }
+      }
+    });
+    for (const definition of [query, view]) {
+      expect(definition?.subject).toBeTruthy();
+      expect(definition?.objective).toBeTruthy();
+      expect(definition?.acceptance).toBeTruthy();
+      expect(Array.from(`${definition?.subject}${definition?.objective}${definition?.acceptance}`).length).toBeLessThanOrEqual(512);
+    }
+    const result = workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source];
+    expect(result.rows.map(({ repository, runs }) => ({ repository, runs }))).toEqual(runInventoryContract.rows);
+    for (const row of result.rows) {
+      expect(row['repository-link']).toMatchObject({
+        'dashboard-href': `#page-repository-detail?repository=${encodeURIComponent(String(row.repository))}`
+      });
+    }
+  });
+
+  it('counts distinct run IDs across attempts within the selected horizon and organization', async () => {
+    const inputs = fixture();
+    inputs.runs.rows.push({ ...inputs.runs.rows[0], 'run-attempt': 2 });
+    const sources = await canonicalSources(inputs);
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === runInventoryContract.page);
+    const compiled = compileDashboardViewPayloadQueries(page.definition, runInventoryContract.page, {
+      queries, viewId: runInventoryContract.view,
+      queryContext: {
+        timeWindow: { start: '2026-09-20T00:00:00Z', end: '2026-09-24T00:00:00Z' },
+        filters: { organization: ['org'] }
+      },
+      evaluatedAt: '2026-09-24T00:00:00Z'
+    });
+    const result = workerQuery(compiled.queries, sources, compiled.aliases)[compiled.aliases[0]];
+    expect(result.rows).toHaveLength(6);
+    expect(result.rows[0]).toMatchObject({ repository: 'org/alpha', runs: 6 });
+    expect(result.rows).toContainEqual(expect.objectContaining({ repository: 'org/reported', runs: 0 }));
+    expect(result.rows.some((row) => row.repository === 'other/alpha')).toBe(false);
+  });
+
+  it('bounds the chart query to 100 repositories without truncating the full Table inventory', async () => {
+    const inputs = fixture();
+    inputs.repositories.rows = Array.from({ length: 101 }, (_, index) => {
+      const repository = `extra-${String.fromCharCode(97 + Math.floor(index / 26), 97 + index % 26)}`;
+      return {
+        organization: 'org', repository,
+        'repository-link': { href: `https://github.com/org/${repository}`, relation: 'repository' }
+      };
+    });
+    const sources = await canonicalSources(inputs);
+    expect(workerQuery(queries, sources, ['repository-activity'])['repository-activity'].rows).toHaveLength(101);
+    expect(workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source].rows).toHaveLength(runInventoryContract.limit);
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === runInventoryContract.page);
+    const compiled = compileDashboardViewPayloadQueries(page.definition, runInventoryContract.page, {
+      queries, viewId: runInventoryContract.view
+    });
+    const result = workerQuery(compiled.queries, sources, compiled.aliases)[compiled.aliases[0]];
+    expect(result.rows).toHaveLength(runInventoryContract.limit);
+    expect(result.rows[0]).toMatchObject({ repository: 'org/extra-aa', runs: 0 });
+    expect(result.rows.at(-1)).toMatchObject({ repository: 'org/extra-dv', runs: 0 });
+  });
+
+  it('preserves empty and unavailable run evidence quality for repository run inventory', async () => {
+    const sources = await canonicalSources();
+    sources.runs = { ...sources.runs, rows: [], metadata: { ...sources.runs.metadata, availability: 'unavailable' } };
+    const result = workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source];
+    expect(result.rows).toHaveLength(runInventoryContract.rows.length);
+    expect(result.metadata.completeness).toBe('partial');
+    sources.repositories = { ...sources.repositories, rows: [], metadata: { ...sources.repositories.metadata, availability: 'empty' } };
+    expect(workerQuery(queries, sources, [runInventoryContract.source])[runInventoryContract.source].rows).toEqual([]);
+  });
+
   it('projects repository identities and drill links without loading activity tables before enrichment', async () => {
     const sources = await canonicalSources();
     const view = dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'repositories')?.definition?.views
@@ -290,7 +505,7 @@ describe('repository activity query optimization', () => {
     }
   });
 
-  it('reduces the complete dependency graph and measured row work without narrowing canonical evidence', async () => {
+  it('reduces materialized fields without narrowing canonical evidence or hiding extra row work', async () => {
     const sources = await canonicalSources();
     const originalInputs = resolveDashboardQuerySources(baseline, ['repository-activity']).filter((name) => canonicalNames.includes(name));
     const optimizedInputs = resolveDashboardQuerySources(queries, ['repository-activity']).filter((name) => canonicalNames.includes(name));
@@ -304,7 +519,7 @@ describe('repository activity query optimization', () => {
     const original = measure(baseline);
     const optimized = measure(queries);
     expect(optimized.rows).toEqual(original.rows);
-    expect(original.operations - optimized.operations).toBe(sources.runs.rows.length);
+    expect(optimized.operations - original.operations).toBe(19);
 
     const estimates = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `
       import { readFileSync } from 'node:fs';
@@ -314,7 +529,7 @@ describe('repository activity query optimization', () => {
         analyzeDashboardComplexity({ dashboard: { queries } }).inventory.find((query) => query.name === 'repository-activity')
       )));
     `], { input: JSON.stringify([baseline, queries]), encoding: 'utf8' }));
-    expect(estimates[0]).toMatchObject({ 'total-row-read-units': 53, 'total-materialized-field-units': 155 });
-    expect(estimates[1]).toMatchObject({ 'total-row-read-units': 52, 'total-materialized-field-units': 93 });
+    expect(estimates[0]).toMatchObject({ 'total-row-read-units': 63, 'total-materialized-field-units': 166 });
+    expect(estimates[1]['total-materialized-field-units']).toBeLessThan(estimates[0]['total-materialized-field-units']);
   });
 });

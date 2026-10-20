@@ -8,16 +8,16 @@ const unitDirectory = join(root, "tests", "unit");
 
 export const unitTestAreas = {
   activity: [/^activity-/, /^actions-log\./, /^github-telemetry\./],
-  dashboard: [/^dashboard-/, /^coolify-deployment-/, /^server-azure-/],
+  dashboard: [/^dashboard-/, /^cli-action-/, /^server-azure-/],
   workflows: [
     /^workflow-contract-/, /^control-/, /^campaign-/, /^contoso-/,
-    /^setup-github-apps\./, /^gh-aw-version-/, /^release-workflow\./,
+    /^setup-github-apps\./, /^setup-hosted-cli-app\./, /^gh-aw-version-/, /^release-workflow\./, /^build-release\./,
     /^add-operational-value-skill\./, /^token-intervention-lifecycle\./,
   ],
   tooling: [
-    /^cao-/, /^ops-publish/, /^optimization-/, /^dependabot-/,
+    /^cao-/, /^ops-publish/, /^optimization-/, /^dependabot-/, /^azure-local-/,
     /^eslint-rules-/, /^actions-context\./, /^agent-plugin\./,
-    /^install-script\./, /^repository-/, /^no-hardcoded-github-actions-url\./,
+    /^install-script\./, /^quickstart\./, /^setup-terminal\./, /^repository-/, /^no-hardcoded-github-actions-url\./,
     /^token-optimization-data-contract\./, /^unit-area-selection\./,
     /^backfill-stress-report\./, /^source-map-compat\./,
   ],

@@ -51,7 +51,10 @@ The supported control-plane credentials are:
 
 `GH_AW_GITHUB_AUTH_MODE` explicitly selects `app`, `pat`, or the repository-local
 `workflow-token` mode. With no mode configured, Activity uses `GITHUB_TOKEN`
-when the exact collection scope contains only the control repository. GitHub App setup
+when the exact collection scope contains only the control repository. An
+explicit `control-plane.activity.repositories` list narrows evidence collection
+within the global allowed-repository scope without narrowing campaign rollout
+authority. GitHub App setup
 writes `app` as soon as the read App credentials and selected-repository
 installations are verified, so Activity can run while write-App setup is still
 in progress. PAT setup writes `pat` only after the complete selected profile is
@@ -82,6 +85,61 @@ workflow-token quota. Owner-wide or cross-repository Activity scopes require
 `app` or `pat`; Activity rejects those scopes rather than silently collecting
 only the control repository.
 
+The public quickstart has broader rollout scope because Repo Assist
+reads its selected public target, but the agentic workflows themselves run in
+the control repository. It declares the narrower Activity scope explicitly:
+
+```json
+{
+  "control-plane": {
+    "scope": {
+      "allowed-repositories": [
+        "acme/cao",
+        "github/gh-aw"
+      ]
+    },
+    "activity": {
+      "repositories": ["acme/cao"]
+    }
+  }
+}
+```
+
+Every Activity repository must remain within `allowed-owners` and, when
+`control-plane.scope.allowed-repositories` is present, must also appear in that
+exact allowlist. The field accepts exact `OWNER/REPOSITORY` coordinates only.
+Omitting it preserves the fail-closed rule: workflow-token mode rejects broader
+collection scope rather than inferring a control-repository-only subset.
+
+### Reuse approved Apps
+
+If private read/write Apps are already approved, use
+`gh cao setup auth github-app --repo OWNER/CONTROL --read-client-id READ-ID --write-client-id WRITE-ID`
+instead of registering replacements. Add `--dry-run` to preview exact scopes.
+Setup prompts securely for the keys and verifies App identity, permission
+ceilings, and selected repositories using the App's own credentials, without
+requiring the operator to list every organization installation. Repository
+administrators can extend an approved installation to their repositories where
+organization policy permits, even if the App has organization permissions.
+New installations still require the appropriate approval. Approval does not
+supply private keys: an authorized App credential manager must provide them
+through the secure prompts. A rerun with stored client IDs prompts for the same
+keys again instead of forcing App replacement.
+
+Repository-administrator enrollment of approved Apps is available on GitHub.com
+and GHES 3.24 or later. An organization owner must still approve new
+installations with organization-level permissions, repository administration,
+or repository creation, and organization policy can restrict installation
+changes to owners.
+
+GitHub's separate provisioning permissions,
+`repository_creation:write` and `installation_repositories:write`, allow
+repository creation without broad administration and exact-repository
+installation management with fine-grained credentials. CAO deliberately does
+not add either permission to its runtime Apps or PATs and does not automatically
+enroll repositories. Installation changes never expand the reviewed policy.
+See the [GitHub App improvements announcement](https://github.blog/changelog/2026-10-13-github-app-improvements-for-least-privilege-and-management/).
+
 ### Automated App setup
 
 Use this path when the control repository and every target belong to one organization.
@@ -104,7 +162,7 @@ The helper reads `allowed-repositories`; it does not expand `allowed-owners` int
 Preview the two private App manifests and exact repository selections:
 
 ```bash
-./cao.sh setup-auth github-app \
+gh cao setup auth github-app \
   --repo acme/central-agentic-ops \
   --dry-run
 ```
@@ -112,13 +170,18 @@ Preview the two private App manifests and exact repository selections:
 Then create and configure the Apps:
 
 ```bash
-./cao.sh setup-auth github-app \
+gh cao setup auth github-app \
   --repo acme/central-agentic-ops
 ```
 
 Choose **Only select repositories** and select only those printed by the command. CAO stores client IDs as repository variables and sends private keys directly to Actions secrets.
 
-Automated setup uses the same selected-repository installation scope for both Apps while keeping their permissions separate. When the write App must cover fewer repositories than the read App, create and install the Apps manually: install the read App on every evidence source and the write App only on approved output destinations. Then configure the credentials:
+Automated setup installs the read App on the control repository and every exact
+allowlisted evidence source. The write App defaults to only the control
+repository. Repeat `--write-repository OWNER/REPO` to replace that default with
+approved output destinations; do not add write access merely because a
+repository supplies read evidence. Existing manually installed credentials can
+also be stored directly, but the verified setup path is preferred:
 
 ```bash
 gh variable set GH_AW_GITHUB_READ_APP_ID \
@@ -147,13 +210,13 @@ node .github/workflows/shared/setup-github-apps.mjs --repo acme/central-agentic-
 [GitHub App manifests cannot create enterprise-owned Apps](https://docs.github.com/en/enterprise-cloud@latest/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). Create read and write Apps in enterprise settings, install both on selected repositories in every enrolled organization, then run:
 
 ```bash
-./cao.sh setup-auth enterprise-app \
+gh cao setup auth enterprise-app \
   --repo acme/central-agentic-ops \
   --read-client-id '<read-app-client-id>' \
   --write-client-id '<write-app-client-id>' \
   --dry-run
 
-./cao.sh setup-auth enterprise-app \
+gh cao setup auth enterprise-app \
   --repo acme/central-agentic-ops \
   --read-client-id '<read-app-client-id>' \
   --write-client-id '<write-app-client-id>'
@@ -161,7 +224,7 @@ node .github/workflows/shared/setup-github-apps.mjs --repo acme/central-agentic-
 
 The command prompts for each private key. Never put a private key in a command argument. Enterprise ownership alone does not grant repository access; each organization installation is still required.
 
-The CLI reads `control-plane.scope.allowed-repositories` from `.github/workflows/cao.json`, groups the control repository and exact allowed repositories by owner, and verifies a selected-repository installation for each account. The manifest helper creates private organization-owned Apps only, so every selected repository must belong to the control repository organization. For multiple organizations in one enterprise, manually create enterprise-owned private Apps because GitHub App manifests do not support enterprise-owned App creation. Install them separately on each enrolled organization, then run `./cao.sh setup-auth enterprise-app` to store their client IDs and interactively enter their private keys. Installation IDs and tokens are not stored in policy or dispatch inputs. gh-aw selects the correct installation from the target owner and repository at runtime.
+The CLI reads `control-plane.scope.allowed-repositories` from `.github/workflows/cao.json`, groups the control repository and exact allowed repositories by owner, and verifies a selected-repository installation for each account. The manifest helper creates private organization-owned Apps only, so every selected repository must belong to the control repository organization. For multiple organizations in one enterprise, manually create enterprise-owned private Apps because GitHub App manifests do not support enterprise-owned App creation. Install them separately on each enrolled organization, then run `gh cao setup auth enterprise-app` to store their client IDs and interactively enter their private keys. Installation IDs and tokens are not stored in policy or dispatch inputs. gh-aw selects the correct installation from the target owner and repository at runtime.
 
 On a GitHub Enterprise Cloud data-residency hostname, export `GH_HOST` before
 running setup. The helper uses that host for repository API calls and all App
@@ -222,7 +285,7 @@ Follow this order:
 
 1. Do not rerun before the reported reset time. GitHub directs integrations with zero remaining capacity to wait until `x-ratelimit-reset`; repeated requests while limited can result in integration blocking. See [rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit) and [REST API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 2. For long-lived cross-repository automation, configure the least-privilege GitHub App profile. Follow [GitHub's guide to authenticated App requests in Actions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow). Shared control requests only `Actions: read` and `Contents: read` for pre-activation and still applies the checked-in CAO scope.
-3. If an App cannot be installed and the exact scope is PAT-compatible, use separate owner-scoped read-only and write-capable fine-grained PATs only after informed consent. Follow [GitHub's fine-grained PAT guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token), restrict each token to its required repositories and permissions, set expirations, and let `cao setup-auth token` store the protected Actions secrets and non-secret repository maps.
+3. If an App cannot be installed and the exact scope is PAT-compatible, use separate owner-scoped read-only and write-capable fine-grained PATs only after informed consent. Follow [GitHub's fine-grained PAT guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token), restrict each token to its required repositories and permissions, set expirations, and let `gh cao setup auth token` store the protected Actions secrets and non-secret repository maps.
 
 ## Fine-Grained PAT Fallback
 
@@ -257,6 +320,10 @@ Keep this profile within these boundaries:
 
 The workflow token is scoped to the repository containing the workflow. Public checkout does not grant target-repository write access, and a public repository's visibility does not expand the token's Actions, security, issue, or pull-request permissions. If a worker cannot read required target evidence with the available token, it must report incomplete and produce no speculative result.
 
+:::caution[No additional GitHub credentials is not the same as free]
+The built-in token removes a *GitHub credential* requirement. It does not remove *model* cost or entitlement. Every agentic run still consumes the configured engine's model entitlement and the campaign's AI credit budget, which are provisioned, billed, and rate-limited separately from GitHub permissions. A control repository can therefore satisfy this profile completely and still be unable to run: `copilot-requests: write` must be granted, the account or organization must be entitled to the configured model, and `max-ai-credits` plus any `monthly-ai-credit-budget` must have headroom. Treat missing model access as a blocked run with its own reason, never as an absence of findings.
+:::
+
 ## Credential Boundary
 
 - Each App client ID lives in its control-repository Actions variable, and each private key or PAT lives in its corresponding Actions secret.
@@ -289,7 +356,7 @@ A campaign-only installation should narrow these permissions to that campaign's 
 Preview the owner-scoped PAT configuration:
 
 ```bash
-./cao.sh setup-auth token \
+gh cao setup auth token \
   --repo acme/central-agentic-ops \
   --write-repository acme/approved-output-repository \
   --dry-run
@@ -298,7 +365,7 @@ Preview the owner-scoped PAT configuration:
 Then configure the profile:
 
 ```bash
-./cao.sh setup-auth token \
+gh cao setup auth token \
   --repo acme/central-agentic-ops \
   --write-repository acme/approved-output-repository
 ```
@@ -342,7 +409,7 @@ A PAT is not a substitute for repository or organization access. Use one only wh
 Explain that the PAT is user-bound, longer-lived than an App token, API-limited, and manually rotated. Obtain explicit confirmation to proceed. Inability to install an App, or the presence of an existing PAT secret, is not consent.
 
 ```bash
-./cao.sh setup-auth token \
+gh cao setup auth token \
   --repo acme/central-agentic-ops
 ```
 
@@ -431,4 +498,15 @@ Before promotion, verify:
 
 ## Offline dashboard access
 
-GitHub Apps have no `offline_access` repository permission or OAuth scope to request. The hosted dashboard uses GitHub's expiring user access tokens and server-side refresh tokens for authenticated requests while connected; these credentials are not copied to the browser cache. The static dashboard can display previously downloaded data offline, but authentication and server-backed operations require a connection.
+`offline_access` is a GitHub App **user-authorization scope**, not a repository
+permission or offline data grant. Hosted sign-in requests it for GitHub App
+client IDs (`Iv...`) to receive an expiring user token and refresh token even
+when expiration is disabled globally on that App. The App's configured
+permissions still govern access; organization/team checks require
+organization **Members: read** and an approved installation in each allowed
+organization. OAuth App clients retain `read:org`.
+This GitHub App scope is available on GitHub.com and GHES 3.23 or later.
+
+Tokens and refresh tokens remain server-side, never in browser caches. The
+static dashboard can display previously downloaded data offline, but sign-in,
+refresh, and server-backed operations require a connection.

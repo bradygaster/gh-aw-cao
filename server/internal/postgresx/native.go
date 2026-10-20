@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/sqlbuilder"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/sqlbuilder"
 )
 
 type entityColumn struct{ field, name, kind, sql string }
@@ -349,6 +349,24 @@ func (w *Writer) Flush(ctx context.Context) error {
 			columns = append(columns, "run_at")
 		}
 		if _, err := w.tx.CopyFrom(ctx, pgx.Identifier{tableName}, columns, pgx.CopyFromRows(batch)); err != nil {
+			if table.name == "runs" && sourceName == source {
+				var earliest, latest time.Time
+				for _, values := range batch {
+					runAt, ok := values[len(values)-1].(time.Time)
+					if !ok {
+						continue
+					}
+					if earliest.IsZero() || runAt.Before(earliest) {
+						earliest = runAt
+					}
+					if latest.IsZero() || runAt.After(latest) {
+						latest = runAt
+					}
+				}
+				if !earliest.IsZero() {
+					return fmt.Errorf("copy native %s batch with run_at range %s through %s: %w", source, earliest.Format(time.RFC3339Nano), latest.Format(time.RFC3339Nano), err)
+				}
+			}
 			return fmt.Errorf("copy native %s batch: %w", source, err)
 		}
 		delete(w.batches, source)
@@ -426,14 +444,20 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		for i, column := range columns {
 			quoted[i] = "s." + query.SQLIdentifier(column)
 		}
-		statement := fmt.Sprintf("INSERT INTO %s (%s,run_at) SELECT %s,p.run_at FROM %s s JOIN runs p ON p.namespace=s.namespace AND p.id=s.run_id",
+		stage := query.SQLIdentifier(name + "_stage")
+		cutoff := weekStart(w.ingestedAt.AddDate(0, 0, -w.store.linkedRetentionDays))
+		var expired int64
+		if err := w.tx.QueryRow(ctx, "SELECT count(*) FROM "+stage+" s JOIN runs p ON p.namespace=s.namespace AND p.id=s.run_id WHERE p.run_at<$1", cutoff).Scan(&expired); err != nil {
+			return State{}, err
+		}
+		statement := fmt.Sprintf("INSERT INTO %s (%s,run_at) SELECT %s,p.run_at FROM %s s JOIN runs p ON p.namespace=s.namespace AND p.id=s.run_id WHERE p.run_at >= $1",
 			query.SQLIdentifier(name), strings.Join(columns, ","), strings.Join(quoted, ","),
-			query.SQLIdentifier(name+"_stage"))
-		tag, err := w.tx.Exec(ctx, statement)
+			stage)
+		tag, err := w.tx.Exec(ctx, statement, cutoff)
 		if err != nil {
 			return State{}, fmt.Errorf("publish run-owned %s: %w", name, err)
 		}
-		if tag.RowsAffected() != w.ordinals[source] {
+		if tag.RowsAffected()+expired != w.ordinals[source] {
 			return State{}, fmt.Errorf("run-owned %s references a missing or ambiguous parent", name)
 		}
 		if err := w.tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM "+query.SQLIdentifier(name)+" WHERE namespace=$1 GROUP BY id HAVING count(*)>1)", w.store.namespace).Scan(&duplicate); err != nil {
@@ -488,10 +512,8 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 	}
 	// Autovacuum cannot analyze uncommitted replacement rows or partitioned parents.
 	// Refresh estimates before integrity joins can choose quadratic cold-start plans.
-	for _, source := range tableNames() {
-		if _, err := w.tx.Exec(ctx, "ANALYZE "+query.SQLIdentifier(entityTables[source].name)); err != nil {
-			return State{}, fmt.Errorf("refresh native %s statistics: %w", source, err)
-		}
+	if _, err := w.tx.Exec(ctx, "SELECT cao_analyze_native()"); err != nil {
+		return State{}, fmt.Errorf("refresh native statistics: %w", err)
 	}
 	if err := overlayRepositoryLifecycle(ctx, w.store.namespace, func(ctx context.Context, statement string, args ...any) error {
 		_, err := w.tx.Exec(ctx, statement, args...)

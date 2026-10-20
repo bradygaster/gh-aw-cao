@@ -31,7 +31,7 @@ function batch() {
       source: 'fixture',
       sourceId: 'repo-1',
       observedAt: '2026-09-09T05:00:00Z',
-      data: { id: 'repository:1', fullName: 'githubnext/gh-aw-cao' }
+      data: { id: 'repository:1', fullName: 'githubnext/gh-cao' }
     }
   ]);
 }
@@ -61,15 +61,20 @@ async function writeTransactionRecord(record) {
 
 /** @param {string} storeName @param {Record<string, unknown>[]} records */
 async function writeRecords(storeName, records) {
-  const database = await openCanonicalDatabase(indexedDB);
-  try {
-    const transaction = database.transaction(storeName, 'readwrite');
-    const store = transaction.objectStore(storeName);
-    for (const record of records) store.put(record);
-    await transactionDone(transaction);
-  } finally {
-    database.close();
+  if (storeName === 'transactions') {
+    const database = await openCanonicalDatabase(indexedDB);
+    try {
+      const transaction = database.transaction(storeName, 'readwrite');
+      for (const record of records) transaction.objectStore(storeName).put(record);
+      await transactionDone(transaction);
+    } finally {
+      database.close();
+    }
+    return;
   }
+  await upsertCanonicalBatch(indexedDB, { ...normalize([]), [storeName]: records }, {
+    validateRelationships: false
+  });
 }
 
 beforeEach(async () => {
@@ -87,6 +92,50 @@ afterEach(() => {
 });
 
 describe('canonical IndexedDB', () => {
+  it('expires every run-linked store after seven days without expiring its run', async () => {
+    const linkedStores = /** @type {const} */ ([
+      'domains', 'tools', 'skills', 'friction', 'audits', 'issues',
+      'experimentAssignments', 'graderObservations', 'evalObservations'
+    ]);
+    await writeRecords('runs', [
+      { id: 'run:old', observedAt: '2026-09-01T00:00:00Z' },
+      { id: 'run:new', observedAt: '2026-09-09T00:00:00Z' }
+    ]);
+    for (const store of linkedStores) {
+      await writeRecords(store, [
+        { id: `${store}:old`, runId: 'run:old', observedAt: '2026-09-01T00:00:00Z' },
+        { id: `${store}:new`, runId: 'run:new', observedAt: '2026-09-09T00:00:00Z' }
+      ]);
+    }
+    await writeRecords('operationalValues', [
+      { id: 'value:old', observedAt: '2026-09-01T00:00:00Z' }
+    ]);
+
+    await maintainCanonicalDatabase(indexedDB, {
+      now: Date.parse('2026-09-10T00:00:00Z'),
+      maxDatabaseBytes: Number.MAX_SAFE_INTEGER
+    });
+
+    expect((await readCollection(indexedDB, 'runs')).map(({ id }) => id)).toEqual(['run:new', 'run:old']);
+    for (const store of linkedStores) {
+      expect((await readCollection(indexedDB, store)).map(({ id }) => id)).toEqual([`${store}:new`]);
+    }
+    expect((await readCollection(indexedDB, 'operationalValues')).map(({ id }) => id)).toEqual(['value:old']);
+  });
+
+  it('honors an explicit longer retention window for historical IndexedDB imports', async () => {
+    await writeRecords('runs', [{ id: 'run:old', observedAt: '2026-09-01T00:00:00Z' }]);
+    await writeRecords('tools', [{
+      id: 'tool:old', runId: 'run:old', observedAt: '2026-09-01T00:00:00Z'
+    }]);
+    await maintainCanonicalDatabase(indexedDB, {
+      now: Date.parse('2026-09-10T00:00:00Z'),
+      retentionWindowMs: 30 * 24 * 60 * 60 * 1000,
+      maxDatabaseBytes: Number.MAX_SAFE_INTEGER
+    });
+    expect((await readCollection(indexedDB, 'tools')).map(({ id }) => id)).toEqual(['tool:old']);
+  });
+
   it('maintains retention and size limits without loading whole stores', async () => {
     await writeRecords('repositories', [{ id: 'repository:1' }]);
     await writeRecords('runs', [
@@ -225,6 +274,7 @@ describe('canonical IndexedDB', () => {
       'repositories',
       'runs',
       'skills',
+      'storageShards',
       'tools',
       'transactions',
       'workflows'
@@ -233,16 +283,17 @@ describe('canonical IndexedDB', () => {
     expect([...database.transaction('repositories').objectStore('repositories').indexNames]).toEqual([]);
     expect([...database.transaction('workflows').objectStore('workflows').indexNames]).toEqual(['byCampaign', 'byRepository']);
     expect([...database.transaction('runs').objectStore('runs').indexNames])
-      .toEqual(['byConclusion', 'byEvent', 'byEventConclusion', 'byRepository', 'byWorkflow']);
+      .toEqual(['byConclusion', 'byEvent', 'byEventConclusion', 'byRepository', 'byStorageTimestamp', 'byWorkflow']);
     expect([...database.transaction('domains').objectStore('domains').indexNames])
-      .toEqual(['byQueryDomain', 'byQuerySummary', 'byRun']);
+      .toEqual(['byQueryDomain', 'byQuerySummary', 'byRun', 'byStorageRun', 'byStorageTimestamp']);
     expect([...database.transaction('tools').objectStore('tools').indexNames])
-      .toEqual(['byQueryMcpIdentity', 'byQuerySummary', 'byRun', 'byTypeStatusRun', 'byTypeStatusRunSummary']);
+      .toEqual(['byQueryMcpIdentity', 'byQuerySummary', 'byRun', 'byStorageRun', 'byStorageTimestamp', 'byTypeStatusRun', 'byTypeStatusRunSummary']);
     expect([...database.transaction('audits').objectStore('audits').indexNames])
-      .toEqual(['byQuerySummary', 'byRun', 'byTypeStatusRun', 'byTypeStatusRunSummary']);
-    expect([...database.transaction('issues').objectStore('issues').indexNames]).toEqual(['byQuerySummary', 'byRun']);
+      .toEqual(['byQuerySummary', 'byRun', 'byStorageRun', 'byStorageTimestamp', 'byTypeStatusRun', 'byTypeStatusRunSummary']);
+    expect([...database.transaction('issues').objectStore('issues').indexNames])
+      .toEqual(['byQuerySummary', 'byRun', 'byStorageRun', 'byStorageTimestamp']);
     expect([...database.transaction('operationalValues').objectStore('operationalValues').indexNames])
-      .toEqual(['byRepository', 'byValue']);
+      .toEqual(['byRepository', 'byStorageTimestamp', 'byValue']);
     expect([...database.transaction('transactions').objectStore('transactions').indexNames]).toEqual(['byCreatedAt']);
     database.close();
   });
@@ -346,8 +397,8 @@ describe('canonical IndexedDB', () => {
       request.onupgradeneeded = () => {
         const repositories = request.result.createObjectStore('repositories', { keyPath: 'id' });
         repositories.put({
-          id: 'repository:dashboard-sources:githubnext%2Fgh-aw-cao',
-          fullName: 'githubnext/gh-aw-cao'
+          id: 'repository:dashboard-sources:githubnext%2Fgh-cao',
+          fullName: 'githubnext/gh-cao'
         });
       };
       request.onsuccess = () => resolve(request.result);
@@ -375,6 +426,7 @@ describe('canonical IndexedDB', () => {
       'repositories',
       'runs',
       'skills',
+      'storageShards',
       'tools',
       'transactions',
       'workflows'
@@ -440,6 +492,7 @@ describe('canonical IndexedDB', () => {
       'repositories',
       'runs',
       'skills',
+      'storageShards',
       'tools',
       'transactions',
       'workflows'
@@ -454,10 +507,10 @@ describe('canonical IndexedDB', () => {
     await upsertCanonicalBatch(indexedDB, batch());
 
     expect(await readCollection(indexedDB, 'repositories')).toEqual([
-      expect.objectContaining({ id: 'repository:1', owner: 'githubnext', name: 'gh-aw-cao' })
+      expect.objectContaining({ id: 'repository:1', owner: 'githubnext', name: 'gh-cao' })
     ]);
     expect(await readRecord(indexedDB, 'repositories', 'repository:1')).toMatchObject({
-      owner: 'githubnext', name: 'gh-aw-cao'
+      owner: 'githubnext', name: 'gh-cao'
     });
   });
 
@@ -494,7 +547,7 @@ describe('canonical IndexedDB', () => {
     await upsertCanonicalBatch(indexedDB, batch());
 
     expect(transactions).toHaveBeenCalledWith(
-      'repositories',
+      ['repositories', 'storageShards'],
       'readwrite',
       { durability: 'relaxed' }
     );
@@ -567,7 +620,7 @@ describe('canonical IndexedDB', () => {
 
     expect(debug).toHaveBeenCalledWith(
       'relaxed transaction durability unsupported; using default durability',
-      { storeCount: 1 }
+      { storeCount: 2 }
     );
     expect(debug).toHaveBeenCalledWith('explicitly committing queued IndexedDB requests');
     expect(debug).toHaveBeenCalledWith(
@@ -632,16 +685,16 @@ describe('canonical IndexedDB', () => {
 
   it('uses run indexes without changing filtered collection order', async () => {
     const records = [
-      { id: 'event:1', runId: 'run:1', type: 'tool.call' },
-      { id: 'event:2', runId: 'run:2', type: 'tool.call' },
-      { id: 'event:3', runId: 'run:1', type: 'tool.result' },
-      { id: 'event:4', runId: 'run:1', type: 'tool.call' }
+      { id: 'event:1', runId: 'run:1', type: 'mcp.tool_call' },
+      { id: 'event:2', runId: 'run:2', type: 'mcp.tool_call' },
+      { id: 'event:3', runId: 'run:1', type: 'tool.execution_complete' },
+      { id: 'event:4', runId: 'run:1', type: 'mcp.tool_call' }
     ];
     const operators = /** @type {import('../../src/data-operations.js').DataOperator[]} */ ([{
       op: 'filter',
       predicates: [
         { field: 'runId', equals: 'run:1' },
-        { field: 'type', equals: 'tool.call' }
+        { field: 'type', equals: 'mcp.tool_call' }
       ]
     }]);
     await writeRecords('tools', records);
@@ -658,7 +711,7 @@ describe('canonical IndexedDB', () => {
   it('falls back to JavaScript for predicates IndexedDB cannot represent', async () => {
     const records = [
       { id: 'event:1', type: 'github-api.request' },
-      { id: 'event:2', type: 'tool.call' }
+      { id: 'event:2', type: 'mcp.tool_call' }
     ];
     const operators = /** @type {import('../../src/data-operations.js').DataOperator[]} */ ([{
       op: 'filter',

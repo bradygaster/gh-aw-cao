@@ -25,7 +25,7 @@ export const ENTITY_COLLECTIONS = [
 ];
 export const NORMALIZED_COLLECTIONS = ['campaigns', ...ENTITY_COLLECTIONS];
 export const QUERY_COLLECTIONS = [...ENTITY_COLLECTIONS, 'transactions'];
-export const DEFAULT_DEPLOYED_DATA_URL = 'https://githubnext.github.io/gh-aw-cao/cao/payload-hashes.json';
+export const DEFAULT_DEPLOYED_DATA_URL = 'https://githubnext.github.io/gh-cao/cao/payload-hashes.json';
 export const DEFAULT_OUTPUT_DIRECTORY = '.cao';
 export const DEFAULT_SHARDS_PATH = `${DEFAULT_OUTPUT_DIRECTORY}/gh-aw-logs-shards`;
 export const DEFAULT_DATABASE_PATH = `${DEFAULT_OUTPUT_DIRECTORY}/gh-aw-logs.sqlite`;
@@ -36,24 +36,37 @@ export const DEFAULT_GH_LIMIT = 30;
 
 export const USAGE = `Usage:
   cao init
-  cao setup
+  cao setup [--json]
+  cao quickstart [--step install | --wait] --target OWNER/REPO [--campaign PACKAGE] [--json]
+  cao quickstart --step run|collect|dashboard [--json]
+    Default: install only. Install and --wait require explicit --target; --campaign is optional.
+    Later stages use the sole target in committed policy and reject --target/--campaign.
+    Explains selections, components, policy, authentication, public Pages, and commit/push effects before each phase.
+    Each stage ends with an inspection checkpoint; --json keeps stdout machine-readable.
+    run dispatches one review; collect snapshots evidence; dashboard checks deployment.
+    --wait explicitly runs and waits for the entire legacy journey.
   cao setup-auth github-app [--repo OWNER/REPO] [APP_SETUP_OPTIONS...]
+    Reuse approved private Apps with --read-client-id ID --write-client-id ID; keys are prompted securely.
   cao setup-auth enterprise-app --repo OWNER/REPO --read-client-id ID --write-client-id ID [--write-repository OWNER/REPO...] [--policy PATH] [--dry-run]
+  cao setup-auth hosted-cli --repo OWNER/REPO --private-key-out PATH [--target-repository OWNER/REPO...] [--app-name NAME] [--dry-run] [--no-open]
+    Dedicated least-privilege App for the dashboard server's execute-cli worker; never requests administration or installation permissions.
   cao setup-auth token --repo OWNER/REPO [--write-repository OWNER/REPO...] [--policy PATH] [--expires-in DAYS] [--dry-run] [--no-open] [--keep-existing|--replace-existing]
   cao add CAMPAIGN [GH_AW_ADD_OPTIONS...]
-  cao update [--pre-releases] [GH_AW_UPDATE_OPTIONS...]
-  cao update (main|master|latest|COMMIT_SHA) [GH_AW_ADD_OPTIONS...]
+  cao add --repository OWNER/REPO
+  cao update [--campaign SLUG] [--pre-releases] [GH_AW_UPDATE_OPTIONS...]
+  cao update (main|master|latest|COMMIT_SHA) [--campaign SLUG] [GH_AW_ADD_OPTIONS...]
   cao upgrade-gh-aw VERSION
   cao mode (live|preview) CAMPAIGN...
   cao enable CAMPAIGN...
   cao disable CAMPAIGN...
-  cao discover-workflows --control-settings FILE --inventory FILE --output FILE --repo OWNER/REPO [--root DIRECTORY]
+  cao discover-workflows --control-settings FILE --inventory FILE --output FILE --repo OWNER/REPO [--root DIRECTORY] [--offline]
   cao dashboard-complexity [QUERY_ID] --input FILE [--database FILE] [--format json|markdown] [--limit COUNT]
   cao prune-dashboard --input FILE [--output FILE]
   cao ingest [--database FILE] --context CONTEXT_JSON --logs LOG_DIRECTORY [--retention-days DAYS|all] [--run-retention-days DAYS|all]
   cao ingest-jsonl [--database FILE] [--input FILE|--input-dir SHARD_DIRECTORY|--runs-dir DIRECTORY --records-dir DIRECTORY] [--context CONTEXT_JSON] [--retention-days DAYS|all] [--run-retention-days DAYS|all]
   cao audit-jsonl [--input-dir SHARD_DIRECTORY]
   cao compact-jsonl --input-dir SHARD_DIRECTORY --group OWNER/REPOSITORY=SHARD_PREFIX [--group OWNER/REPOSITORY=SHARD_PREFIX...] [--max-bytes BYTES]
+  cao recycle-cache --input-dir SHARD_DIRECTORY [--retention-days DAYS|all] [--max-bytes BYTES]
   cao issue-status [--database FILE] --input-dir SHARD_DIRECTORY [--batch-size COUNT] [--graphql-cost-budget POINTS] [--graphql-min-remaining POINTS]
   cao pages [PAGE_ID] [--dashboard FILE] [--json]
   cao queries [--dashboard FILE] [--json]
@@ -69,7 +82,7 @@ export const USAGE = `Usage:
   cao doctor [--database FILE] [--ttl-days DAYS|all] [--run-ttl-days DAYS|all]
   cao validate [--json] [--strict-warnings]
   cao download [--url URL] [--output DIRECTORY] [--manifest-sha256 DIGEST]
-  cao hash-payloads [--database FILE] [--shard-dir SHARD_DIRECTORY] [--normalized-dir DIRECTORY] [--runs-dir DIRECTORY] [--records-dir DIRECTORY] [--inventory FILE] [--output FILE] [--max-bytes BYTES]
+  cao hash-payloads [--database FILE] [--shard-dir SHARD_DIRECTORY] [--normalized-dir DIRECTORY] [--runs-dir DIRECTORY] [--records-dir DIRECTORY] [--inventory FILE] [--output FILE] [--max-bytes BYTES] [--max-cache-bytes BYTES]
   cao activity-stats [--repo OWNER/REPO] [--workflow FILE] [--artifact NAME] [--limit COUNT] [--keep] [--output FILE]
   cao validate-activity-data --database FILE --shard-dir DIRECTORY --payload-hashes FILE --control-settings FILE --inventory FILE --memory-manifest FILE
   cao gh runs [--database FILE] [--repo OWNER/REPO] [--workflow NAME|FILE] [--status STATUS] [--since TIME] [--until TIME] [--limit COUNT]
@@ -88,18 +101,21 @@ Query local CAO data as JSON. Download the deployed snapshot before querying:
   cao computation runtime-health --campaign dependabot --diagnose
   cao operational-value --output .cao/gh-aw-logs-shards/operational-values.jsonl --retention-days 30 --history-campaign optimization --max-github-api-rate-limit -2000
   cao cluster-problems
-  cao gh runs -R githubnext/gh-aw-cao -w cao-activity --status failure --since 2026-09-01 --until 2026-09-15
-  cao gh issues -R githubnext/gh-aw-cao --since 2026-09-01
-  cao gh prs -R githubnext/gh-aw-cao -w cao-activity -L 10
+  cao gh runs -R githubnext/gh-cao -w cao-activity --status failure --since 2026-09-01 --until 2026-09-15
+  cao gh issues -R githubnext/gh-cao --since 2026-09-01
+  cao gh prs -R githubnext/gh-cao -w cao-activity -L 10
 
 Update CAO:
   cao update                         Latest compatible published release
   cao update main                    Catalog default-branch HEAD, pinned to a full SHA
   cao update master                  Alias for the catalog default-branch HEAD
   cao update latest                  Return to the latest published stable release
+  cao update --campaign dependabot   Update only the installed Dependabot campaign
   cao update 0123456789abcdef0123456789abcdef01234567
-  Explicit refs accept main, master, latest, or a 7-40 character commit SHA and reapply every
-  installed CAO package at that commit, replacing campaign-owned files.
+  Explicit refs accept main, master, latest, or a 7-40 character commit SHA and reapply
+  selected installed CAO packages at that commit, replacing campaign-owned files.
+  --campaign SLUG selects exactly one installed campaign; use root for the CAO root
+  package. Omit it to update all installed CAO packages.
   Options may appear before or after the ref.
   main and master both use the catalog repository's GitHub default branch.
   Use latest after an untagged branch/SHA install; subsequent bare updates follow
@@ -127,7 +143,7 @@ Agent analysis:
   Every discovery command emits JSON with --json; diagnostics stay on stderr.
   Named queries are the reviewed Dashboard Language queries of the deployed
   dashboard, so the CLI, the browser, and MCP return the same evidence.
-  Bootstrap guide: https://githubnext.github.io/gh-aw-cao/agent-analysis/
+  Bootstrap guide: https://githubnext.github.io/gh-cao/agent-analysis/
 
 Resources:
   runs    Workflow runs executed in --repo

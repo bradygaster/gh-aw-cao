@@ -15,9 +15,9 @@ This minimal policy enables the installed Dependabot campaign and its workers in
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/.github/workflows/shared/cao.schema.json",
+  "$schema": "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json",
   "version": 1,
-  "gh-aw-version": "v0.91.5",
+  "gh-aw-version": "v0.92.6",
   "control-plane": {
     "scope": {
       "allowed-owners": ["acme"]
@@ -47,6 +47,7 @@ The schema defaults are:
 | --- | --- | --- |
 | `control-plane.scope.allowed-owners` | Control repository owner | Owner names |
 | `control-plane.scope.allowed-repositories` | All repositories under an allowed owner | Exact `owner/repository` names |
+| `control-plane.activity.repositories` | Global scope | Nonempty exact collection subset admitted by owner and repository scope |
 | `control-plane.inventory.max-scan-repositories` | `1000` | `1` through `100000` |
 | `control-plane.inventory.cell-count` | `1` | `1` through `1000` |
 | `control-plane.inventory.cell-index` | `0` | Less than `cell-count` |
@@ -61,6 +62,14 @@ The schema defaults are:
 | `control-plane.campaigns.<campaign>.targets.<owner/repository>.mode` | Campaign mode | `review` or `live` |
 
 Each entry under `control-plane.campaigns` may override the defaults with `enabled`, `mode`, `max-repositories`, and `rollout-percent`; `monthly-ai-credit-budget` remains accepted as a deprecated compatibility field but has no runtime admission effect. The internal `dashboard` campaign also accepts `deploy: false` to keep building its reusable artifact while another workflow owns Pages deployment; `deploy` defaults to `true`. Its optional `targets` map assigns a different mode to an exact repository while unmatched repositories retain the campaign mode. Every campaign target must remain inside the global allowed owners and, when present, the global repository allowlist. The `workers` map is the campaign's workflow catalog: every worker entry requires its exact `workflow` slug, may set `enabled: false` to disable that worker, and may set `max-mode` to narrow its mode. Campaign and worker names are lowercase kebab-case identifiers loaded directly from this policy.
+
+The optional `control-plane.activity.repositories` field declares an explicit
+evidence-collection subset when campaign rollout scope is broader than the
+repositories whose workflow runs Activity should ingest. Every entry must be
+an exact repository admitted by `allowed-owners` and, when an exact
+`allowed-repositories` list is present, must appear there. The field does not
+grant campaign authority or credential reach. When omitted, Activity uses the
+global scope and preserves its fail-closed authentication checks.
 
 The optional `control-plane.web` section configures deterministic web surfaces without changing rollout authority. Dashboard views declared in experimental navigation sections are omitted by default; set `experimental` to `true` to include them. Set `favicon` to an absolute HTTPS URL without credentials, query, or fragment, or to a non-traversing `./` relative path available in the generated site. The dashboard campaign ships `./favicon.svg` as its default.
 
@@ -111,7 +120,7 @@ Imports resolve relative to the importing file and must remain within the
 extension's directory after symlink resolution. Cycles, more than eight
 imports, duplicate keys, expressions, non-host overrides, and invalid
 composed policy fail closed. See the
-[control architecture specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/control-architecture.md#531-deployment-specific-host-extensions)
+[control architecture specification](https://github.com/githubnext/gh-cao/blob/main/specs/control-architecture.md#531-deployment-specific-host-extensions)
 and [managed Redis guide](deployment-managed-redis.md) for host-module options.
 
 For example, this policy keeps Dependabot in review across its scope while promoting one exact target to live:
@@ -147,6 +156,96 @@ For example, this policy keeps Dependabot in review across its scope while promo
 
 Shared control applies schema defaults, then `control-plane.defaults`, campaign values, the exact target mode, and any explicit worker ceiling, in that order. A dispatch request may narrow the result. Workers independently resolve their exact target from the policy revision at `github.workflow_sha`; an envelope that requests a wider mode fails before agent execution. Campaign repository and percentage caps still apply across all candidates regardless of target mode.
 
+### Standalone Agentic Workflows
+
+Any agentic workflow can opt into CAO without becoming a campaign or introducing
+an orchestrator/worker pair. Install or maintain its Markdown source in the
+control repository, retain its own trigger and mission, and declare its exact
+workflow slug under `control-plane.workflows`:
+
+```json
+{
+  "version": 1,
+  "gh-aw-version": "v0.92.6",
+  "control-plane": {
+    "scope": {
+      "allowed-owners": ["acme"],
+      "allowed-repositories": ["acme/service-a", "acme/service-b"]
+    },
+    "workflows": {
+      "fleet-audit": {
+        "enabled": true,
+        "mode": "review",
+        "max-mode": "review",
+        "max-repositories": 2,
+        "rollout-percent": 50
+      }
+    }
+  }
+}
+```
+
+In `.github/workflows/fleet-audit.md`, add the shared-control import and
+pre-activation gate:
+
+```yaml
+jobs:
+  pre-activation:
+    outputs:
+      cao_authorized: ${{ steps.cao_admission.outputs.authorized == 'true' && steps.cao_precompute.outputs.authorized != 'false' }}
+if: needs.pre_activation.outputs.cao_authorized == 'true'
+imports:
+  - uses: shared/control.md
+    with:
+      role: standalone
+      workflow: fleet-audit
+      read_repository: ${{ github.repository }}
+      read_contents: read
+```
+
+Keep the workflow's existing gh-aw engine, read permissions, tools, credentials,
+and safe outputs. Its pre-activation permissions need `contents: read` and
+`actions: read`, as in the campaign integration. Expose optional `target_repo`,
+`safe_output_repo`, `safe_output_mode`, `max_repos`, and `rollout_percent` manual
+inputs only when needed; omit defaults that would unintentionally narrow a
+scheduled or manual run's checked-in policy.
+The [compilation fixture](https://github.com/githubnext/gh-cao/blob/main/tests/fixtures/workflows/fleet-audit.md)
+shows a complete review-report workflow.
+
+The identity is the filename slug, not the display name. Admission verifies it
+against the actual compiled workflow reference and policy at `github.workflow_sha`.
+No campaign descriptor, worker mapping, dispatch envelope, or campaign
+installation record is required. An undeclared or disabled workflow cannot
+activate. Compile with the policy-pinned `gh aw`, then commit source, generated
+lock, and policy together; use `gh aw run fleet-audit` for a manual run.
+
+Standalone workflows inherit `control-plane.defaults` and global scope and
+inventory settings. Each declaration supports `enabled`, `mode`,
+`max-repositories`, `rollout-percent`, optional `targets.<owner/repository>.mode`,
+and optional `max-mode`. As with worker ceilings, `max-mode` can only narrow
+default and exact-target modes; `live` does not promote a review target.
+`monthly-ai-credit-budget` remains compatibility-only. Persistent `debug`,
+campaign workers, and gh-aw execution capabilities are not accepted in this map.
+
+Precompute uses the same bounded discovery, deterministic cells and batches,
+and request narrowing as campaign orchestration. It excludes archived/disabled
+repositories and admits the first deterministic subset bounded by the
+repository limit and percentage of the eligible batch. The workflow performs
+its mission directly against that admitted set; it does not dispatch workers
+or discover additional targets. An empty set is a no-op; unavailable required
+inventory evidence fails closed.
+
+Read `/tmp/gh-aw/agent/control-precompute.json` and use each admitted candidate's
+`safe_output_mode` and `safe_output_repo`. Mixed review/live target policies
+remain distinct: review proposals go to the validated review destination
+(the control repository by default), and live target writes go only to that
+target. Fleet admission does not mint broader credentials or add safe-output
+capabilities. Declare the required read scope, output repository allowlists,
+and authentication in the workflow using gh-aw; if they cannot reach an
+admitted target or implement its output route, report incomplete rather than
+falling back to a different destination. Merely installing or observing a
+workflow does not opt it into this contract.
+
 ### Monthly Campaign Budgets
 
 `monthly-ai-credit-budget` is deprecated. Existing policy files may keep the field during migration, but shared control no longer reads month-to-date usage or gates repository admission with monthly AI Credit totals. Existing repository, rollout, dispatch, and native gh-aw workflow credit limits remain cumulative.
@@ -171,7 +270,7 @@ entry to disable it or add public, private, or GitHub Enterprise registries.
         {
           "id": "official",
           "name": "Official CAO catalog",
-          "repository": "githubnext/gh-aw-cao",
+          "repository": "githubnext/gh-cao",
           "ref": "main",
           "auth": { "type": "none" }
         },
@@ -194,7 +293,7 @@ one environment secret name. GitHub App entries reference `app-id-secret`,
 `private-key-secret`, and `installation-id-secret`. Values stay in the trusted
 Activity or hosted resolver and are never published to the dashboard. The
 marketplace is read-only: its action copies
-`./cao.sh add OWNER/REPOSITORY[/PATH]@COMMIT`; it does not execute installation.
+`gh cao campaigns add OWNER/REPOSITORY[/PATH]@COMMIT`; it does not execute installation.
 See [Browse campaign packages](marketplace.md) for registry setup, backend
 behavior, troubleshooting, and the read-only dashboard flow.
 `specs/marketplace.md` defines the normalized package and failure contracts.
@@ -219,7 +318,8 @@ Configure a GitHub App or fine-grained PAT profile for every cross-repository sc
 | `GH_AW_GITHUB_TOKEN` | Deprecated PAT fallback | Legacy combined token retained for backward compatibility. |
 | `GH_AW_CI_TOKEN` | Optional Dependabot path | Additional token used only when an empty CI commit is required. |
 
-The root campaign manifest remains free of interactive setup so `gh aw add` works non-interactively. Follow [Automated App setup](authentication.md#automated-app-setup) to create both Apps and install them for the accounts represented in the exact repository allowlist, or configure the four values manually. Shared control uses the read-only App for GitHub tools and admission. It exposes the write-capable App to safe outputs and, with only `Actions: write`, to best-effort API-gate persistence after a fresh capacity denial. Orchestrator safe outputs to the control repository use the permission-scoped workflow token when no App token is active; cross-repository outputs retain their configured credential. Each path uses only its documented credential fallback when that credential's reach is sufficient.
+The installer-managed root package remains free of interactive setup
+so gh-aw installation works non-interactively. Follow [Automated App setup](authentication.md#automated-app-setup) to create both Apps and install them for the accounts represented in the exact repository allowlist, or configure the four values manually. Shared control uses the read-only App for GitHub tools and admission. It exposes the write-capable App to safe outputs and, with only `Actions: write`, to best-effort API-gate persistence after a fresh capacity denial. Orchestrator safe outputs to the control repository use the permission-scoped workflow token when no App token is active; cross-repository outputs retain their configured credential. Each path uses only its documented credential fallback when that credential's reach is sufficient.
 
 ## Manual Inputs
 
@@ -249,7 +349,7 @@ Steering can refine evidence, priorities, and selection within resolved policy. 
 
 ## Optional Observability
 
-The dispatcher span is built into `shared/control.md`; exporter configuration determines where gh-aw sends it. Set the `GH_AW_DEFAULT_OTLP_ENDPOINT` Actions variable and `GH_AW_DEFAULT_OTLP_HEADERS` Actions secret at repository, organization, or enterprise scope. Export is disabled when the endpoint or matching headers are absent. Hosted dashboard servers configure their own OpenTelemetry export; see [Azure](deployment-azure.md#monitoring-the-deployment), [Coolify](deployment-coolify.md#monitoring-the-deployment), and [Upstash Redis](deployment-upstash.md#monitoring-the-deployment).
+The dispatcher span is built into `shared/control.md`; exporter configuration determines where gh-aw sends it. Set the `GH_AW_DEFAULT_OTLP_ENDPOINT` Actions variable and `GH_AW_DEFAULT_OTLP_HEADERS` Actions secret at repository, organization, or enterprise scope. Export is disabled when the endpoint or matching headers are absent. Hosted dashboard servers configure their own OpenTelemetry export; see [Azure](deployment-azure.md#monitoring-the-deployment) and [Upstash Redis](deployment-upstash.md#monitoring-the-deployment).
 
 ```bash
 CONTROL_REPO="acme/central-agentic-ops"

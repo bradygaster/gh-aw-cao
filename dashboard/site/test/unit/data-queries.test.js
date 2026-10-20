@@ -36,8 +36,8 @@ function metadata(id, overrides = {}) {
 const workflows = {
   source: 'workflows',
   rows: [
-    { id: 'workflow:a', organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', campaign: 'aw-doctor' },
-    { id: 'workflow:b', organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md' }
+    { id: 'workflow:a', organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', campaign: 'aw-doctor' },
+    { id: 'workflow:b', organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md' }
   ],
   metadata: metadata('workflows')
 };
@@ -47,13 +47,13 @@ const usage = {
   source: 'usage',
   rows: [
     {
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1',
+      organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1',
       engine: 'copilot', 'engine-version': '1.2.3', 'agent-id': 'copilot', 'model-id': 'model-b',
       'requested-model': 'model-a', 'resolved-model': 'model-b', 'rollout-mode': 'review', aic: 4,
       'observed-at': '2026-09-01T00:00:00Z', 'run-link': { href: 'run-1' }
     },
     {
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2',
+      organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2',
       engine: 'copilot', 'engine-version': '1.2.4', 'agent-id': 'copilot', 'model-id': 'model-b',
       'requested-model': 'model-b', 'resolved-model': 'model-b', 'rollout-mode': 'live', aic: 6,
       'observed-at': '2026-09-02T00:00:00Z', 'run-link': { href: 'run-2' }
@@ -89,10 +89,91 @@ function overviewRuns(rows, workflowRows = []) {
 
 describe('declarative dashboard queries', () => {
 
+  it('avoids redundant input copies when a later operator materializes independent rows', () => {
+    const row = Object.freeze({ value: 2 });
+    const input = { source: 'input', rows: [row], metadata: metadata('input') };
+    const budget = createDashboardQueryBudget({ maxOperations: 2 });
+    const result = executeDashboardQuery({
+      name: 'computed', from: 'input',
+      filter: { predicates: [{ field: 'value', equals: 2 }] },
+      compute: [{ as: 'double', function: 'product', args: [{ field: 'value' }, { value: 2 }] }]
+    }, { input }, undefined, budget);
+    expect(result.rows).toEqual([{ value: 2, double: 4 }]);
+    expect(result.rows[0]).not.toBe(row);
+    expect(budget.operations).toBe(2);
+    result.rows[0].value = 3;
+    expect(row.value).toBe(2);
+  });
+
+  it('fuses adjacent compute and select without changing ordered expressions or projection semantics', () => {
+    const rows = [
+      Object.freeze({ value: 2, label: 'two', blank: null, absent: undefined, discarded: true }),
+      Object.freeze({ value: 0, label: 'zero', blank: null })
+    ];
+    const compute = [
+      { as: 'double', function: /** @type {const} */ ('product'), args: [{ field: 'value' }, { value: 2 }] },
+      { as: 'result', function: /** @type {const} */ ('sum'), args: [{ field: 'double' }, { value: 1 }] }
+    ];
+    const select = [
+      { field: 'result', as: 'total' }, { field: 'label' },
+      { field: 'blank' }, { field: 'absent' }, { field: 'missing' }
+    ];
+    const expected = tidy(rows, [{ op: 'compute', values: compute }, { op: 'select', fields: select }]);
+    const budget = createDashboardQueryBudget({ maxOperations: rows.length });
+    const result = executeDashboardQuery({
+      name: 'projected', from: 'input', compute, select
+    }, { input: { source: 'input', rows, metadata: metadata('input') } }, undefined, budget);
+    expect(result.rows).toEqual(expected);
+    expect(result.rows).toEqual([
+      { total: 5, label: 'two', blank: null }, { total: 1, label: 'zero', blank: null }
+    ]);
+    expect(budget.operations).toBe(rows.length);
+    expect(result.rows[0]).not.toBe(rows[0]);
+    result.rows[0].label = 'changed';
+    expect(rows[0].label).toBe('two');
+    expect(() => {
+      const cancelled = executeDashboardQuery({
+        name: 'cancelled', from: 'input', compute, select
+      }, { input: { source: 'input', rows, metadata: metadata('input') } }, undefined,
+      createDashboardQueryBudget({ maxOperations: rows.length - 1 }));
+      return cancelled.rows;
+    }).toThrow('max-operations');
+  });
+
+  it('retains independent result rows for selection-only pipelines and charges their copy pass', () => {
+    const row = Object.freeze({ value: 2 });
+    const budget = createDashboardQueryBudget({ maxOperations: 2 });
+    const result = executeDashboardQuery({
+      name: 'filtered', from: 'input',
+      filter: { predicates: [{ field: 'value', equals: 2 }] }
+    }, { input: { source: 'input', rows: [row], metadata: metadata('input') } }, undefined, budget);
+    expect(result.rows).toEqual([{ value: 2 }]);
+    expect(result.rows[0]).not.toBe(row);
+    expect(budget.operations).toBe(2);
+  });
+
+  it('lets joins materialize rows without mutating or aliasing their inputs', () => {
+    const row = Object.freeze({ value: 2 });
+    const budget = createDashboardQueryBudget({ maxOperations: 2 });
+    const result = executeDashboardQuery({
+      name: 'joined', from: 'input',
+      joins: [{
+        source: 'other', type: 'left', on: [{ left: 'value', right: 'value' }],
+        fields: [{ field: 'label', as: 'label' }]
+      }]
+    }, {
+      input: { source: 'input', rows: [row], metadata: metadata('input') },
+      other: { source: 'other', rows: [{ value: 2, label: 'two' }], metadata: metadata('other') }
+    }, undefined, budget);
+    expect(result.rows).toEqual([{ value: 2, label: 'two' }]);
+    expect(result.rows[0]).not.toBe(row);
+    expect(budget.operations).toBe(2);
+  });
+
   it('unions specialized run records before applying query clauses', () => {
     const result = executeDashboardQuery(
       {
-        name: 'run-records',
+        name: 'combined-events',
         from: 'audits',
         union: ['domains', 'tools', 'issues'],
         select: [{ field: 'event' }],
@@ -177,7 +258,7 @@ describe('declarative dashboard queries', () => {
   it('counts every specialized record kind when identifying imported runs', () => {
     const run = (/** @type {string} */ id) => ({
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: 'activity.md',
       run: id,
       'run-attempt': 1
@@ -197,12 +278,12 @@ describe('declarative dashboard queries', () => {
   });
 
   it.each([
-    ['delivering value', { successes: 0, failures: 0, active: 0, graders: 1 }, 'Your campaigns are delivering value.'],
-    ['active', { successes: 0, failures: 2, active: 1, graders: 0 }, 'Your campaigns are humming.'],
-    ['under strain', { successes: 1, failures: 2, active: 0, graders: 0 }, 'Your campaigns are under strain.'],
-    ['needs attention', { successes: 2, failures: 1, active: 0, graders: 0 }, 'Your campaigns need attention.'],
-    ['successful', { successes: 1, failures: 0, active: 0, graders: 0 }, 'Your campaigns are humming.'],
-    ['idle', { successes: 0, failures: 0, active: 0, graders: 0 }, 'Your campaigns are idle.']
+    ['delivering value', { successes: 0, failures: 0, active: 0, graders: 1 }, 'Your factory is delivering value.'],
+    ['active', { successes: 0, failures: 2, active: 1, graders: 0 }, 'Your factory is humming.'],
+    ['under strain', { successes: 1, failures: 2, active: 0, graders: 0 }, 'Your factory is under strain.'],
+    ['needs attention', { successes: 2, failures: 1, active: 0, graders: 0 }, 'Your factory needs attention.'],
+    ['successful', { successes: 1, failures: 0, active: 0, graders: 0 }, 'Your factory is humming.'],
+    ['idle', { successes: 0, failures: 0, active: 0, graders: 0 }, 'Your factory is idle.']
   ])('classifies factory status as %s in Dashboard Language', (_state, counts, expected) => {
     const runs = [
       ...Array.from({ length: counts.successes }, (_, index) => ({ run: `success-${index}`, 'run-conclusion': 'success', 'run-status': 'completed' })),
@@ -237,13 +318,13 @@ describe('declarative dashboard queries', () => {
     );
 
     expect(result['overview-factory-status'].metadata.availability).toBe('available');
-    expect(result['overview-factory-status'].rows).toEqual([{ 'factory-heading': 'Your campaigns are humming.' }]);
+    expect(result['overview-factory-status'].rows).toEqual([{ 'factory-heading': 'Your factory is humming.' }]);
   });
 
   it('uses retained failure descriptions as campaign problem titles', () => {
     const workflowRows = [{
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: '.github/workflows/dashboard.md',
       campaign: 'dashboard',
       'campaign-name': 'CAO Dashboard',
@@ -251,12 +332,12 @@ describe('declarative dashboard queries', () => {
       'workflow-role': 'worker',
       'workflow-link': {
         relation: 'workflow',
-        href: 'https://github.com/githubnext/gh-aw-cao/actions/workflows/501'
+        href: 'https://github.com/githubnext/gh-cao/actions/workflows/501'
       }
     }];
     const runRows = [{
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: '.github/workflows/dashboard.md',
       run: '42',
       'run-attempt': 1,
@@ -271,7 +352,7 @@ describe('declarative dashboard queries', () => {
       'rollout-mode': 'review',
       'run-link': {
         relation: 'run',
-        href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42'
+        href: 'https://github.com/githubnext/gh-cao/actions/runs/42'
       }
     }];
     const result = executeDashboardQueries(
@@ -300,17 +381,17 @@ describe('declarative dashboard queries', () => {
         'failure-log': '##[error]Agent process exited with code 1.',
         'status-detail': 'Agent process exited with code 1.',
         'run-link': expect.objectContaining({
-          href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42'
+          href: 'https://github.com/githubnext/gh-cao/actions/runs/42'
         }),
         'workflow-link': expect.objectContaining({
           'dashboard-href': expect.stringContaining('#page-workflow-runtime')
         }),
         'workflow-source-link': expect.objectContaining({
-          href: 'https://github.com/githubnext/gh-aw-cao/actions/workflows/501'
+          href: 'https://github.com/githubnext/gh-cao/actions/workflows/501'
         }),
         'runtime-repository-link': expect.objectContaining({
-          'dashboard-href': '#page-repository-detail?repository=githubnext%2Fgh-aw-cao',
-          'dashboard-label': 'githubnext/gh-aw-cao'
+          'dashboard-href': '#page-repository-detail?repository=githubnext%2Fgh-cao',
+          'dashboard-label': 'githubnext/gh-cao'
         }),
         'target-repository-link': expect.objectContaining({
           'dashboard-href': '#page-repository-detail?repository=github%2Fgh-aw',
@@ -334,24 +415,31 @@ describe('declarative dashboard queries', () => {
         },
         runs: { source: 'runs', rows: [], metadata: metadata('runs') },
         'overview-runs': overviewRuns([]),
-        workflows: { source: 'workflows', rows: [], metadata: metadata('workflows') },
+        workflows: {
+          source: 'workflows',
+          rows: [
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'one.md' },
+            { organization: 'github', repository: 'target', workflow: 'two.yml' }
+          ],
+          metadata: metadata('workflows')
+        },
         'grader-observations': {
           source: 'grader-observations',
           rows: [{ grader: 'value-created' }],
           metadata: metadata('grader-observations')
         }
       },
-      ['overview-header-presentation', 'overview-campaign-station']
+      ['overview-header-presentation', 'overview-factory-station']
     );
 
     expect(result['overview-header-presentation'].rows).toEqual([{
-      heading: 'Your campaigns are delivering value.'
+      heading: 'Your factory is delivering value.'
     }]);
-    expect(result['overview-campaign-station'].rows).toEqual([{
+    expect(result['overview-factory-station'].rows).toEqual([{
       value: 1,
       'display-value': '100%',
-      detail: '2/2 healthy campaigns',
-      description: '100% campaign health',
+      detail: '2/2 healthy workflows',
+      description: '100% factory health',
       active: false
     }]);
   });
@@ -363,7 +451,7 @@ describe('declarative dashboard queries', () => {
       ['github', 'gh-aw-mcpg'],
       ['github', 'gh-aw-actions'],
       ['github', 'gh-aw-threat-detection'],
-      ['githubnext', 'gh-aw-cao']
+      ['githubnext', 'gh-cao']
     ].map(([organization, repository], index) => ({
       id: `repository:${index}`,
       organization,
@@ -398,12 +486,12 @@ describe('declarative dashboard queries', () => {
 
   it('executes built-in aggregate-local filters with the same filtered totals', () => {
     const runRows = [
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'success', 'run-status': 'completed', 'rollout-mode': 'live' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'failure', 'run-status': 'completed', 'rollout-mode': 'review' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '3', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'timed-out', 'run-status': 'queued', 'rollout-mode': 'live', 'aic-total': 3 },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '4', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'startup-failure', 'run-status': 'in_progress', 'rollout-mode': 'review', 'aic-total': 5 },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '5', 'run-attempt': 1, event: 'push', 'run-conclusion': 'success', 'run-status': 'in-progress', 'rollout-mode': 'review', 'aic-total': 7 },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '6', 'run-attempt': 1, event: 'push', 'run-conclusion': 'action-required', 'run-status': 'completed', 'rollout-mode': 'review' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'success', 'run-status': 'completed', 'rollout-mode': 'live' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'failure', 'run-status': 'completed', 'rollout-mode': 'review' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '3', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'timed-out', 'run-status': 'queued', 'rollout-mode': 'live', 'aic-total': 3 },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '4', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'startup-failure', 'run-status': 'in_progress', 'rollout-mode': 'review', 'aic-total': 5 },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '5', 'run-attempt': 1, event: 'push', 'run-conclusion': 'success', 'run-status': 'in-progress', 'rollout-mode': 'review', 'aic-total': 7 },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '6', 'run-attempt': 1, event: 'push', 'run-conclusion': 'action-required', 'run-status': 'completed', 'rollout-mode': 'review' },
       { organization: 'githubnext', repository: 'other', workflow: 'c.md', run: '7', 'run-attempt': 1, event: 'push', 'run-conclusion': 'success', 'run-status': 'completed', 'rollout-mode': 'review' }
     ];
     const result = executeDashboardQueries(
@@ -418,8 +506,8 @@ describe('declarative dashboard queries', () => {
         workflows: {
           source: 'workflows',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', campaign: 'dashboard', 'workflow-active': 'false' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md', 'workflow-active': false },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', campaign: 'dashboard', 'workflow-active': 'false' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md', 'workflow-active': false },
             { organization: 'githubnext', repository: 'other', workflow: 'c.md', 'workflow-active': 'true' }
           ],
           metadata: metadata('workflows')
@@ -427,9 +515,9 @@ describe('declarative dashboard queries', () => {
         'firewall-observations': {
           source: 'firewall-observations',
           rows: [
-            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', decision: 'allowed', 'request-count': 2, 'workflow-link': { href: 'https://github.com/githubnext/gh-aw-cao/blob/HEAD/a.md' } },
-            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2', decision: 'denied', 'request-count': 5, 'workflow-link': { href: 'https://github.com/githubnext/gh-aw-cao/blob/HEAD/a.md' } },
-            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2', decision: 'denied', 'request-count': 3, 'workflow-link': { href: 'https://github.com/githubnext/gh-aw-cao/blob/HEAD/a.md' } },
+            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', decision: 'allowed', 'request-count': 2, 'workflow-link': { href: 'https://github.com/githubnext/gh-cao/blob/HEAD/a.md' } },
+            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2', decision: 'denied', 'request-count': 5, 'workflow-link': { href: 'https://github.com/githubnext/gh-cao/blob/HEAD/a.md' } },
+            { domain: 'api.github.com', organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2', decision: 'denied', 'request-count': 3, 'workflow-link': { href: 'https://github.com/githubnext/gh-cao/blob/HEAD/a.md' } },
             { domain: 'uploads.github.com', organization: 'githubnext', repository: 'other', workflow: 'c.md', run: '3', decision: 'allowed', 'request-count': 7, 'workflow-link': { href: 'https://github.example.com/githubnext/other/blob/HEAD/c.md' } }
           ],
           metadata: metadata('firewall-observations')
@@ -437,8 +525,8 @@ describe('declarative dashboard queries', () => {
         audits: {
           source: 'audits',
           rows: [
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'event-1' },
-            { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'event-2' }
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'event-1' },
+            { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'event-2' }
           ],
           metadata: metadata('audits')
         },
@@ -466,9 +554,9 @@ describe('declarative dashboard queries', () => {
       {
         domain: 'api.github.com',
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: 'a.md',
-        'workflow-source-url': 'https://github.com/githubnext/gh-aw-cao/blob/HEAD/a.md',
+        'workflow-source-url': 'https://github.com/githubnext/gh-cao/blob/HEAD/a.md',
         runs: 2,
         accepted: 2,
         blocked: 8
@@ -485,29 +573,29 @@ describe('declarative dashboard queries', () => {
       }
     ]);
     expect(result['repository-workflow-totals'].rows).toEqual([
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflows: 2, disabled: 2 },
+      { organization: 'githubnext', repository: 'gh-cao', workflows: 2, disabled: 2 },
       { organization: 'githubnext', repository: 'other', workflows: 1, disabled: 0 }
     ]);
     expect(result['repository-run-totals'].rows).toEqual([
-      { organization: 'githubnext', repository: 'gh-aw-cao', runs: 6, failed: 3, 'action-required': 1, 'imported-runs': 2 },
+      { organization: 'githubnext', repository: 'gh-cao', runs: 6, failed: 3, 'action-required': 1, 'imported-runs': 2 },
       { organization: 'githubnext', repository: 'other', runs: 1, failed: 0, 'action-required': 0, 'imported-runs': 0 }
     ]);
   });
 
   it('counts distinct targets from successful worker dispatches only', () => {
     const runRows = [
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '1', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '2', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '3', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw-firewall' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '4', event: 'workflow_dispatch', 'run-conclusion': 'failure', 'target-repository': 'github/failed' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'orchestrator.md', run: '5', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/orchestrated' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '6', event: 'push', 'run-conclusion': 'success', 'target-repository': 'github/pushed' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '7', event: 'workflow_dispatch', 'run-conclusion': 'success' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', run: '8', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'outside/not-registered' }
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '1', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '2', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '3', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/gh-aw-firewall' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '4', event: 'workflow_dispatch', 'run-conclusion': 'failure', 'target-repository': 'github/failed' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'orchestrator.md', run: '5', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'github/orchestrated' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '6', event: 'push', 'run-conclusion': 'success', 'target-repository': 'github/pushed' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '7', event: 'workflow_dispatch', 'run-conclusion': 'success' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', run: '8', event: 'workflow_dispatch', 'run-conclusion': 'success', 'target-repository': 'outside/not-registered' }
     ];
     const workflowRows = [
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'worker.md', 'workflow-role': 'worker' },
-      { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'orchestrator.md', 'workflow-role': 'orchestrator' }
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'worker.md', 'workflow-role': 'worker' },
+      { organization: 'githubnext', repository: 'gh-cao', workflow: 'orchestrator.md', 'workflow-role': 'orchestrator' }
     ];
 
     const result = executeDashboardQueries(
@@ -533,22 +621,21 @@ describe('declarative dashboard queries', () => {
     ]);
   });
 
-  it('counts campaigns used by the Overview presentation queries', () => {
+  it('keeps Factory health undefined when no workflows are registered', () => {
     const sources = {
-      campaigns: {
-        source: 'campaigns',
-        rows: [{ id: 'campaign:activity', campaign: 'activity' }, { id: 'campaign:dashboard', campaign: 'dashboard' }],
-        metadata: metadata('campaigns')
-      }
+      workflows: { source: 'workflows', rows: [], metadata: metadata('workflows') },
+      'overview-runs': overviewRuns([])
     };
 
     const result = executeDashboardQueries(
       dashboardQueries,
       sources,
-      ['database-campaign-count']
+      ['overview-factory-health-presentation']
     );
 
-    expect(result['database-campaign-count'].rows).toEqual([{ campaigns: 2 }]);
+    expect(result['overview-factory-health-presentation'].rows).toEqual([
+      expect.objectContaining({ 'factory-health': null })
+    ]);
   });
 
   it('derives one compiler upgrade decision per repository', () => {
@@ -608,23 +695,29 @@ describe('declarative dashboard queries', () => {
     expect(result['maintenance-repositories'].rows).toEqual([
       {
         repository: 'acme/current',
+        'repository-url': 'https://github.com/acme/current',
         'gh-aw-version': 'v0.89.0',
         'gh-aw-current-version': 'v0.89.0',
         'upgrade-required': 0,
+        'upgrade-action-visible': false,
         'upgrade-state': 'Current'
       },
       {
         repository: 'acme/service',
+        'repository-url': 'https://github.com/acme/service',
         'gh-aw-version': 'v0.88.0, v0.89.0',
         'gh-aw-current-version': 'v0.89.0',
         'upgrade-required': 1,
+        'upgrade-action-visible': true,
         'upgrade-state': 'Upgrade recommended'
       },
       {
         repository: 'acme/unknown',
+        'repository-url': 'https://github.com/acme/unknown',
         'gh-aw-version': '',
         'gh-aw-current-version': '',
         'upgrade-required': 0,
+        'upgrade-action-visible': true,
         'upgrade-state': 'Upgrade status unavailable'
       }
     ]);
@@ -839,8 +932,8 @@ describe('declarative dashboard queries', () => {
     );
 
     expect(derived.inventory.rows).toEqual([
-      { repository: 'githubnext/gh-aw-cao', workflow: 'a.md', aic: 10 },
-      { repository: 'githubnext/gh-aw-cao', workflow: 'b.md', aic: 0 }
+      { repository: 'githubnext/gh-cao', workflow: 'a.md', aic: 10 },
+      { repository: 'githubnext/gh-cao', workflow: 'b.md', aic: 0 }
     ]);
     expect(derived.inventory.metadata.freshness).toBe('stale');
     expect(derived['aic-totals'].metadata['query-name']).toBe('aic-totals');
@@ -850,9 +943,9 @@ describe('declarative dashboard queries', () => {
     const events = {
       source: 'audits',
       rows: [
-        { repository: 'api', event: '1', 'event-type': 'firewall.request.blocked', 'request-count': 2 },
-        { repository: 'api', event: '2', 'event-type': 'firewall.request.allowed', 'request-count': 0 },
-        { repository: 'api', event: null, 'event-type': 'firewall.request.blocked', 'request-count': null },
+        { repository: 'api', event: '1', 'event-type': 'firewall.http_access', decision: 'denied', 'request-count': 2 },
+        { repository: 'api', event: '2', 'event-type': 'firewall.http_access', decision: 'allowed', 'request-count': 0 },
+        { repository: 'api', event: null, 'event-type': 'firewall.http_access', decision: 'denied', 'request-count': null },
         { repository: 'web', event: '3', 'event-type': 'gateway.request', 'request-count': 4 },
         { repository: 'web', event: '4', 'event-type': null, 'request-count': 3 }
       ],
@@ -869,13 +962,13 @@ describe('declarative dashboard queries', () => {
             field: 'event',
             as: 'matched-blocked-records',
             reducer: 'count',
-            filter: { predicates: [{ field: 'event-type', equals: 'firewall.request.blocked' }] }
+            filter: { predicates: [{ field: 'decision', equals: 'denied' }] }
           },
           {
             field: 'request-count',
             as: 'blocked-requests',
             reducer: 'sum',
-            filter: { predicates: [{ field: 'event-type', equals: 'firewall.request.blocked' }] }
+            filter: { predicates: [{ field: 'decision', equals: 'denied' }] }
           },
           {
             field: 'event',
@@ -884,7 +977,7 @@ describe('declarative dashboard queries', () => {
             filter: {
               predicates: [{
                 field: 'event-type',
-                in: ['firewall.request.allowed', 'firewall.request.blocked']
+                equals: 'firewall.http_access'
               }, {
                 field: 'repository',
                 equals: 'api'
@@ -975,7 +1068,7 @@ describe('declarative dashboard queries', () => {
         source: 'audits',
         get rows() {
           reads += 1;
-          return [{ event: '1', 'event-type': 'firewall.request.blocked' }];
+          return [{ event: '1', 'event-type': 'firewall.http_access' }];
         },
         metadata: metadata('audits')
       };
@@ -1026,15 +1119,15 @@ describe('declarative dashboard queries', () => {
           field: 'event',
           as: 'blocked-events',
           reducer: 'count',
-          filter: { predicates: [{ field: 'event-type', equals: 'firewall.request.blocked' }] }
+          filter: { predicates: [{ field: 'event-type', equals: 'firewall.http_access' }] }
         }]
       }
     });
     const events = {
       source: 'audits',
       rows: [
-        { event: '1', 'event-type': 'firewall.request.blocked' },
-        { event: '2', 'event-type': 'firewall.request.allowed' }
+        { event: '1', 'event-type': 'firewall.http_access' },
+        { event: '2', 'event-type': 'firewall.http_access' }
       ],
       metadata: metadata('audits')
     };
@@ -1126,12 +1219,31 @@ describe('declarative dashboard queries', () => {
       'mcp-calls': { source: 'mcp-calls', rows: [], metadata: metadata('mcp-calls', { availability: 'unavailable' }) }
     }, ['mcp-top-tools'])['mcp-top-tools'];
     expect(unavailable.metadata.availability).toBe('unavailable');
-    expect(unavailable.metadata['query-diagnostic']).toBe(
-      '$.dashboard.queries[mcp-top-tools]: input source "mcp-tool-totals" is unavailable.'
+    expect(unavailable.metadata['query-diagnostic']).toContain(
+      '$.dashboard.queries[mcp-top-tools]: input source "mcp-tool-totals" is unavailable'
     );
+    expect(unavailable.metadata['query-diagnostic']).toContain('input source "mcp-calls" is unavailable');
     expect(unavailable.metadata['query-error']).toEqual({
       code: 'input-unavailable', source: 'mcp-calls'
     });
+  });
+
+  it('bounds upstream diagnostics when an unavailable input supplies an oversized message', () => {
+    const result = executeDashboardQueries([{ name: 'dependent', from: 'input' }], {
+      input: {
+        source: 'input',
+        rows: [],
+        metadata: metadata('input', {
+          availability: 'unavailable',
+          'query-diagnostic': `${'x'.repeat(2048)}must-not-appear`
+        })
+      }
+    }, ['dependent']).dependent;
+
+    expect(result.metadata.availability).toBe('unavailable');
+    expect(result.metadata['query-diagnostic']).toContain('upstream diagnostic: ');
+    expect(result.metadata['query-diagnostic']).not.toContain('must-not-appear');
+    expect(String(result.metadata['query-diagnostic']).length).toBeLessThan(2200);
   });
 
   it('groups MCP activity by tool and excludes the safe outputs server', () => {
@@ -1139,22 +1251,22 @@ describe('declarative dashboard queries', () => {
         source: 'mcp-calls',
         rows: [
           {
-            organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+            organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
             'mcp-observation': 'call-1', 'mcp-server': 'github', 'mcp-tool': 'search_issues',
             'request-bytes': 10, 'response-bytes': 20
           },
           {
-            organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md',
+            organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md',
             'mcp-observation': 'call-2', 'mcp-server': 'github', 'mcp-tool': 'search_issues',
             'request-bytes': 30, 'response-bytes': 40
           },
           {
-            organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+            organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
             'mcp-observation': 'call-3', 'mcp-server': 'github', 'mcp-tool': 'create_issue',
             'request-bytes': 50, 'response-bytes': 60
           },
           {
-            organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+            organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
             'mcp-observation': 'call-4', 'mcp-server': 'safe_outputs', 'mcp-tool': 'create_issue'
           }
         ],
@@ -1185,11 +1297,11 @@ describe('declarative dashboard queries', () => {
       source: 'skills',
       rows: [
         {
-          event: 'skill-1', organization: 'githubnext', repository: 'gh-aw-cao',
+          event: 'skill-1', organization: 'githubnext', repository: 'gh-cao',
           workflow: '.github/workflows/a.md', name: 'reactive-ui', 'invocation-count': 2
         },
         {
-          event: 'skill-3', organization: 'githubnext', repository: 'gh-aw-cao',
+          event: 'skill-3', organization: 'githubnext', repository: 'gh-cao',
           workflow: '.github/workflows/b.md', name: 'dashboard-authoring', 'invocation-count': 1
         }
       ],
@@ -1208,27 +1320,27 @@ describe('declarative dashboard queries', () => {
     ]);
     expect(derived['skill-invocations-by-workflow'].rows).toMatchObject([
       {
-        'workflow-coordinate': 'githubnext/gh-aw-cao:.github/workflows/a.md',
+        'workflow-coordinate': 'githubnext/gh-cao:.github/workflows/a.md',
         invocations: 2,
         'workflow-link': {
-          'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-aw-cao%3A.github%2Fworkflows%2Fa.md',
-          'dashboard-label': 'View githubnext/gh-aw-cao:.github/workflows/a.md workflow dashboard'
+          'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-cao%3A.github%2Fworkflows%2Fa.md',
+          'dashboard-label': 'View githubnext/gh-cao:.github/workflows/a.md workflow dashboard'
         }
       },
       {
-        'workflow-coordinate': 'githubnext/gh-aw-cao:.github/workflows/b.md',
+        'workflow-coordinate': 'githubnext/gh-cao:.github/workflows/b.md',
         invocations: 1
       }
     ]);
     expect(derived['skill-workflow-inventory'].rows).toMatchObject([
       {
         skill: 'reactive-ui',
-        'repository-coordinate': 'githubnext/gh-aw-cao',
+        'repository-coordinate': 'githubnext/gh-cao',
         workflow: '.github/workflows/a.md',
         invocations: 2,
         'workflow-link': {
-          'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-aw-cao%3A.github%2Fworkflows%2Fa.md',
-          'dashboard-label': 'View githubnext/gh-aw-cao:.github/workflows/a.md workflow dashboard'
+          'dashboard-href': '#page-workflow-runtime?workflow=githubnext%2Fgh-cao%3A.github%2Fworkflows%2Fa.md',
+          'dashboard-label': 'View githubnext/gh-cao:.github/workflows/a.md workflow dashboard'
         }
       },
       {
@@ -1246,10 +1358,10 @@ describe('declarative dashboard queries', () => {
     const repositories = {
       source: 'repositories',
       rows: [{
-        id: 'repository:githubnext/gh-aw-cao',
+        id: 'repository:githubnext/gh-cao',
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
-        'repository-coordinate': 'githubnext/gh-aw-cao',
+        repository: 'gh-cao',
+        'repository-coordinate': 'githubnext/gh-cao',
         'repository-link': { href: 'repo' }
       }],
       metadata: metadata('repositories')
@@ -1258,17 +1370,17 @@ describe('declarative dashboard queries', () => {
       source: 'workflows',
       rows: [
         {
-          organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+          organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
           campaign: 'aw-doctor', 'campaign-name': 'AW Doctor', 'workflow-role': 'orchestrator',
           'rollout-mode': 'review', 'workflow-active': 'true'
         },
         {
-          organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md',
+          organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md',
           campaign: 'aw-doctor', 'campaign-name': 'AW Doctor', 'workflow-role': 'worker',
           'rollout-mode': 'review', 'workflow-active': 'false'
         },
         {
-          organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'c.md',
+          organization: 'githubnext', repository: 'gh-cao', workflow: 'c.md',
           campaign: 'aw-doctor', 'campaign-name': 'AW Doctor', 'workflow-role': 'worker',
           'rollout-mode': 'review', 'workflow-active': 'true'
         }
@@ -1288,24 +1400,24 @@ describe('declarative dashboard queries', () => {
     const runs = {
       source: 'runs',
       rows: [
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'failure', 'aic-total': 4, 'started-at': '2026-09-01T01:00:00Z' },
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'schedule', 'run-conclusion': 'success', 'aic-total': 6, 'started-at': '2026-09-02T01:00:00Z' },
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'c.md', run: '3', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'success', 'aic-total': 0, 'target-repository': 'githubnext/gh-aw-cao', 'started-at': '2026-09-03T01:00:00Z' }
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'failure', 'aic-total': 4, 'started-at': '2026-09-01T01:00:00Z' },
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '2', 'run-attempt': 1, event: 'schedule', 'run-conclusion': 'success', 'aic-total': 6, 'started-at': '2026-09-02T01:00:00Z' },
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'c.md', run: '3', 'run-attempt': 1, event: 'workflow_dispatch', 'run-conclusion': 'success', 'aic-total': 0, 'target-repository': 'githubnext/gh-cao', 'started-at': '2026-09-03T01:00:00Z' }
       ],
       metadata: metadata('runs')
     };
     const events = {
       source: 'audits',
       rows: [
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'event-1' },
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: 'unobserved', 'run-attempt': 1, event: 'event-2' },
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'c.md', run: '3', 'run-attempt': 1, event: 'event-3' }
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, event: 'event-1' },
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: 'unobserved', 'run-attempt': 1, event: 'event-2' },
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'c.md', run: '3', 'run-attempt': 1, event: 'event-3' }
       ],
       metadata: metadata('audits')
     };
     const outcomes = {
       source: 'outcomes',
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', 'safe-output': 'report-1' }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao', 'safe-output': 'report-1' }],
       metadata: metadata('outcomes')
     };
     const derived = executeDashboardQueries(
@@ -1317,10 +1429,10 @@ describe('declarative dashboard queries', () => {
     expect(derived['entity-workflows'].rows).toEqual([
       expect.objectContaining({ workflow: 'a.md', runs: 2, 'successful-runs': 1, 'failed-runs': 1, 'aic-per-run': 5 }),
       expect.objectContaining({ workflow: 'b.md', runs: 0, 'successful-runs': 0, 'failed-runs': 0, 'aic-per-run': null }),
-      expect.objectContaining({ workflow: 'c.md', runs: 1, 'successful-runs': 1, 'failed-runs': 0, 'aic-per-run': 0 })
+      expect.objectContaining({ workflow: 'c.md', runs: 1, 'successful-runs': 1, 'failed-runs': 0, 'aic-per-run': null })
     ]);
     expect(derived['repository-activity'].rows).toEqual([expect.objectContaining({
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       workflows: 3,
       reports: 1,
       runs: 3,
@@ -1332,11 +1444,11 @@ describe('declarative dashboard queries', () => {
     expect(derived['workflow-inventory'].rows).toEqual([
       expect.objectContaining({ workflow: 'a.md', runs: 2, 'successful-runs': 1, 'failed-runs': 1, 'aic-per-run': 5, ingestion: '50%' }),
       expect.objectContaining({ workflow: 'b.md', runs: 0, 'successful-runs': 0, 'failed-runs': 0, 'aic-per-run': null, ingestion: null }),
-      expect.objectContaining({ workflow: 'c.md', runs: 1, 'successful-runs': 1, 'failed-runs': 0, 'aic-per-run': 0, ingestion: '100%' })
+      expect.objectContaining({ workflow: 'c.md', runs: 1, 'successful-runs': 1, 'failed-runs': 0, 'aic-per-run': null, ingestion: '100%' })
     ]);
     expect(derived['workflow-aic-per-run'].rows).toEqual(
       derived['workflow-inventory'].rows
-        .filter((row) => row['has-observed-runs'])
+        .filter((row) => typeof row['aic-per-run'] === 'number' && row['aic-per-run'] > 0)
         .map((row) => ({
           'workflow-label': row['workflow-label'],
           'workflow-link': row['workflow-link'],
@@ -1379,40 +1491,39 @@ describe('declarative dashboard queries', () => {
       workflows: {
         source: 'workflows',
         rows: [
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', 'workflow-name': 'A' },
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md' }
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', 'workflow-name': 'A' },
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md' }
         ],
         metadata: metadata('workflows')
       },
       runs: {
         source: 'runs',
         rows: [
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, 'aic-total': 4 },
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 2, 'aic-total': 6 },
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'b.md', run: '2', 'run-attempt': 1 },
-          { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'undeclared.md', run: '3', 'run-attempt': 1, 'aic-total': 100 }
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, 'aic-total': 4 },
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 2, 'aic-total': 6 },
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'b.md', run: '2', 'run-attempt': 1 },
+          { organization: 'githubnext', repository: 'gh-cao', workflow: 'undeclared.md', run: '3', 'run-attempt': 1, 'aic-total': 100 }
         ],
         metadata: metadata('runs')
       }
     }, ['workflow-aic-per-run']);
 
     expect(derived['workflow-aic-per-run'].rows).toEqual([
-      expect.objectContaining({ 'workflow-label': 'githubnext/gh-aw-cao:a.md', 'aic-per-run': 5 }),
-      expect.objectContaining({ 'workflow-label': 'githubnext/gh-aw-cao:b.md', 'aic-per-run': 0 })
+      expect.objectContaining({ 'workflow-label': 'githubnext/gh-cao:a.md', 'aic-per-run': 5 })
     ]);
   });
 
   it('includes rerun attempts in workflow run counts and average AIC', () => {
     const rerunWorkflows = {
       source: 'workflows',
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md' }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md' }],
       metadata: metadata('workflows')
     };
     const reruns = {
       source: 'runs',
       rows: [
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, 'run-conclusion': 'failure', 'aic-total': 4 },
-        { organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md', run: '1', 'run-attempt': 2, 'run-conclusion': 'success', 'aic-total': 6 }
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 1, 'run-conclusion': 'failure', 'aic-total': 4 },
+        { organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md', run: '1', 'run-attempt': 2, 'run-conclusion': 'success', 'aic-total': 6 }
       ],
       metadata: metadata('runs')
     };
@@ -1431,13 +1542,13 @@ describe('declarative dashboard queries', () => {
   it('keeps unavailable repository report and evaluation metrics unknown', () => {
     const repositories = {
       source: 'repositories',
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao' }],
       metadata: metadata('repositories')
     };
     const queryWorkflows = {
       source: 'workflows',
       rows: [{
-        organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+        organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
         'workflow-active': 'true'
       }],
       metadata: metadata('workflows')
@@ -1445,7 +1556,7 @@ describe('declarative dashboard queries', () => {
     const runs = {
       source: 'runs',
       rows: [{
-        organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'a.md',
+        organization: 'githubnext', repository: 'gh-cao', workflow: 'a.md',
         run: '1', 'run-conclusion': 'success', 'aic-total': 4
       }],
       metadata: metadata('runs')
@@ -1458,7 +1569,7 @@ describe('declarative dashboard queries', () => {
     );
 
     expect(derived['repository-activity'].rows).toEqual([expect.objectContaining({
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       reports: null,
       runs: 1,
       aic: 4
@@ -1556,10 +1667,28 @@ describe('declarative dashboard queries', () => {
 
   describe('join operator edge cases', () => {
     /**
-     * @typedef {{ source: string, type?: 'inner'|'left', on: Array<{ left: string, right: string }>, fields: Array<{ field: string, as: string }> }} TestJoin
+     * @typedef {{ source: string, type?: 'inner'|'left'|'inner-many', on: Array<{ left: string, right: string }>, fields: Array<{ field: string, as: string }> }} TestJoin
      */
     /** @param {TestJoin[]} joins */
     const query = (joins) => ({ name: 'join-test', from: 'left', joins });
+    it('expands only explicit many joins in stable input order and drops unmatched keys', () => {
+      const result = executeDashboardQuery(query([join({ type: 'inner-many' })]), {
+        left: source('left', [{ id: 'a', order: 1 }, { id: 'none' }, { id: 'a', order: 2 }, { id: null }]),
+        right: source('right', [{ id: 'a', value: 9 }, { id: 'a', value: 0 }, { id: null, value: 3 }])
+      });
+      expect(result.metadata.availability).toBe('available');
+      expect(result.rows).toEqual([
+        { id: 'a', order: 1, 'joined-value': 9 }, { id: 'a', order: 1, 'joined-value': 0 },
+        { id: 'a', order: 2, 'joined-value': 9 }, { id: 'a', order: 2, 'joined-value': 0 }
+      ]);
+    });
+    it('charges expanded matches against the operation budget before materializing all rows', () => {
+      const budget = createDashboardQueryBudget({ maxOperations: 40 });
+      expect(() => executeDashboardQuery(query([join({ type: 'inner-many' })]), {
+        left: source('left', Array.from({ length: 10 }, () => ({ id: 'a' }))),
+        right: source('right', Array.from({ length: 10 }, (_, value) => ({ id: 'a', value })))
+      }, undefined, budget).rows).toThrow(DashboardQueryCancelledError);
+    });
     /**
      * @param {Partial<TestJoin>} [overrides]
      * @returns {TestJoin}
@@ -1591,14 +1720,14 @@ describe('declarative dashboard queries', () => {
         ]
       })]), {
         left: source('left', [
-          { organization: 'githubnext', repository: 'gh-aw-cao', ordinal: 2 },
-          { organization: 'github', repository: 'next/gh-aw-cao', ordinal: 1 },
+          { organization: 'githubnext', repository: 'gh-cao', ordinal: 2 },
+          { organization: 'github', repository: 'next/gh-cao', ordinal: 1 },
           { organization: 'githubnext/github', repository: 'aw-cao', ordinal: 3 }
         ]),
         right: source('right', [
-          { owner: 'github', repo: 'next/gh-aw-cao', value: 'second' },
+          { owner: 'github', repo: 'next/gh-cao', value: 'second' },
           { owner: 'githubnext/github', repo: 'aw-cao', value: 'third' },
-          { owner: 'githubnext', repo: 'gh-aw-cao', value: 'first' }
+          { owner: 'githubnext', repo: 'gh-cao', value: 'first' }
         ])
       });
 
@@ -1994,7 +2123,7 @@ describe('declarative dashboard queries', () => {
     expect(first.inventory.rows).toEqual([{ workflow: 'a.md' }, { workflow: 'b.md' }]);
     expect(firstBudget.operations).toBe(4);
 
-    workflows.rows.push({ organization: 'githubnext', repository: 'gh-aw-cao', workflow: 'c.md' });
+    workflows.rows.push({ organization: 'githubnext', repository: 'gh-cao', workflow: 'c.md' });
     try {
       const second = executeDashboardQueries(definition, { workflows }, undefined, { budget: secondBudget });
 

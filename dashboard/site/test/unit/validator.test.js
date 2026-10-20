@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import { validateDashboardDocument, validateLogicalSources } from '../../src/validator.js';
 import { DASHBOARD_QUERY_LIMITS, QUERY_MAX_JOINS } from '../../src/specification.js';
 import { campaignDashboardSources } from '../campaign-dashboard-documents.js';
@@ -32,6 +33,110 @@ dashboard:
 `;
 
 describe('dashboard document validation', () => {
+  describe.each(['built-in', 'custom'])('%s page analysis contracts', (kind) => {
+    it('accepts omitted optional annotations', () => {
+      const document = JSON.parse(authoritativeDashboardSource);
+      const page = document.dashboard.pages.find((/** @type {{ kind: string }} */ candidate) => candidate.kind === kind);
+      for (const field of ['intent', 'subject', 'objective', 'acceptance']) delete page[field];
+      expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    });
+
+    it.each(['intent', 'subject', 'objective', 'acceptance'].flatMap((field) =>
+      ['', '   ', 42].map((invalid) => ({ field, invalid }))
+    ))('rejects $field = $invalid', ({ field, invalid }) => {
+      const document = JSON.parse(authoritativeDashboardSource);
+      const page = document.dashboard.pages.find((/** @type {{ kind: string }} */ candidate) => candidate.kind === kind);
+      page[field] = invalid;
+      expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+        ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining(`.${field}`) })])
+      });
+    });
+
+    it.each([
+      { field: 'subject', length: 513 },
+      { field: 'intent', length: 8001 }
+    ])('rejects $field annotations beyond their budget', ({ field, length }) => {
+      const document = JSON.parse(authoritativeDashboardSource);
+      const page = document.dashboard.pages.find((/** @type {{ kind: string }} */ candidate) => candidate.kind === kind);
+      page[field] = 'a'.repeat(length);
+      expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+        ok: false, errors: expect.arrayContaining([expect.objectContaining({
+          path: field === 'intent' ? expect.stringContaining('.intent')
+            : `$.dashboard.pages[${document.dashboard.pages.indexOf(page)}]`,
+          message: expect.stringContaining(`at most ${length - 1}`)
+        })])
+      });
+    });
+  });
+
+  it('accepts declared table card templates and rejects unresolved references and other marks', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const view = document.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'commands').views[0];
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    view['lazy-list'] = false;
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+    view['lazy-list'] = true;
+    view.encoding.card = 'missing-template';
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+    view.encoding.card = 'command';
+    view.mark = 'list';
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.encoding.card') })])
+    });
+  });
+  describe('scatter reduction options', () => {
+    /** @param {unknown} scatter @param {string} [chart] @param {string} [mark] */
+    function validate(scatter, chart = 'scatter', mark = 'chart') {
+      const document = JSON.parse(authoritativeDashboardSource);
+      const page = document.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'indexing');
+      const view = page.views.find((/** @type {{ id: string }} */ view) => view.id === 'indexing-workflow-runs');
+      Object.assign(view, { scatter, chart, mark });
+      return validateDashboardDocument(JSON.stringify(document));
+    }
+
+    it.each([undefined, {}, { cluster: true }, { cluster: false }])('accepts %j with unchanged defaults', (options) => {
+      expect(validate(options).ok).toBe(true);
+    });
+
+    it.each([null, false, [], 'false', { cluster: 'false' }, { cluster: 0 }, { cluster: null }, { sample: false }])('rejects invalid scatter options %j', (options) => {
+      expect(validate(options)).toMatchObject({
+        ok: false, errors: expect.arrayContaining([expect.objectContaining({ path: expect.stringContaining('.scatter') })])
+      });
+    });
+
+    it.each([['line', 'chart'], ['bar', 'chart'], ['scatter', 'table']])('rejects options on %s / %s', (chart, mark) => {
+      expect(validate({ cluster: false }, chart, mark)).toMatchObject({
+        ok: false, errors: expect.arrayContaining([expect.objectContaining({
+          path: expect.stringContaining('.scatter'), message: 'scatter options are allowed only on scatter charts.'
+        })])
+      });
+    });
+  });
+
+  it.each([
+    { fields: [] }, { fields: ['repository', 'repository'] }, { fields: ['unknown-field'] }, { fields: ['gh-aw-version'] }
+  ])('rejects invalid batch action context $fields', ({ fields }) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const page = document.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'maintenance');
+    page.views[0].list['action-context'] = fields;
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+      ok: false, errors: expect.arrayContaining([expect.objectContaining({
+        path: expect.stringContaining('.list.action-context')
+      })])
+    });
+  });
+
+  it('rejects a batch action against an incrementally loaded list', () => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const page = document.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === 'maintenance');
+    page.views[0]['lazy-list'] = true;
+    expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({ ok: false });
+  });
+
   it('accepts the authoritative built-in overview view definition', () => {
     const accepted = validateDashboardDocument(authoritativeDashboardSource);
     expect(accepted.ok).toBe(true);
@@ -176,6 +281,26 @@ describe('dashboard document validation', () => {
         message: 'pull-refresh must be a Boolean when present.'
       })])
     });
+  });
+
+  it.each(['repository-detail', 'campaigns'])('validates %s page query binding without accepting coerced values', (pageId) => {
+    const document = JSON.parse(authoritativeDashboardSource);
+    const page = document.dashboard.pages.find(
+      (/** @type {{ id?: string }} */ candidate) => candidate.id === pageId
+    );
+    for (const binding of ['page', 'view', undefined]) {
+      page['query-binding'] = binding;
+      expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    }
+    for (const binding of ['all', true, ['page'], null]) {
+      page['query-binding'] = binding;
+      expect(validateDashboardDocument(JSON.stringify(document))).toMatchObject({
+        ok: false,
+        errors: expect.arrayContaining([expect.objectContaining({
+          message: 'query-binding must be "view" or "page" when present.'
+        })])
+      });
+    }
   });
 
   it('validates the optional page mode-indicator flag', () => {
@@ -469,7 +594,7 @@ describe('dashboard document validation', () => {
       ok: false,
       errors: expect.arrayContaining([{
         code: 'DLS-E015',
-        message: 'query "unused-run-query" is not used by a view, callout, or another retained query.',
+        message: 'query "unused-run-query" is not used by a view, callout, data status, or another retained query.',
         path: `$.dashboard.queries[${document.dashboard.queries.length - 1}].name`
       }])
     });
@@ -477,7 +602,7 @@ describe('dashboard document validation', () => {
 
   it('accepts declared queries as callout visibility sources', () => {
     const document = JSON.parse(authoritativeDashboardSource);
-    document.dashboard.callouts = [{
+    document.dashboard.callouts.push({
       id: 'failed-run-callout',
       title: 'Failed runs',
       description: 'One or more runs need attention.',
@@ -486,7 +611,7 @@ describe('dashboard document validation', () => {
         field: 'run-conclusion',
         equals: 'failure'
       }
-    }];
+    });
 
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
   });
@@ -550,6 +675,8 @@ describe('dashboard document validation', () => {
     const floor = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-floor');
     floor.config.stations = ['campaigns', 'repositories'];
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    floor.config.stations = ['campaigns', 'repositories', 'issues', 'value-gains'];
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
     floor.config.stations = ['campaigns', 'campaigns'];
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
     floor.config.stations = ['campaigns', 'workers'];
@@ -561,30 +688,31 @@ describe('dashboard document validation', () => {
     const overview = document.dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'overview');
     const floor = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-floor');
     const header = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-header');
-    floor.config.sources = { campaigns: 'overview-campaign-station' };
+    floor.config.sources = { campaigns: 'overview-factory-station' };
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
-    floor.config.sources = { issues: 'database-issue-count' };
+    floor.config.sources = { issues: 'overview-issue-station', 'value-gains': 'overview-value-station' };
+    expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
+    floor.config.sources = { workers: 'overview-worker-summary' };
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
     delete floor.config.sources;
     header.config = { sources: { presentation: 'overview-header-presentation' } };
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
-    const links = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'link-button-list');
-    links.config.sources = { status: 'overview-factory-status' };
+    header.config.sources = { status: 'overview-factory-status' };
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
   });
 
-  it('allows browser first-load presentation only as a boolean on the factory header', () => {
+  it.each(['browser-first-load', 'data-status'])('allows %s presentation only as a boolean on the factory header', (key) => {
     const document = JSON.parse(authoritativeDashboardSource);
     const overview = document.dashboard.pages.find((/** @type {{ id?: string }} */ page) => page.id === 'overview');
     const header = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-header');
-    expect(header.config['browser-first-load']).toBe(true);
+    header.config[key] = true;
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
-    header.config['browser-first-load'] = 'true';
+    header.config[key] = 'true';
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
-    header.config['browser-first-load'] = false;
+    header.config[key] = false;
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
     const floor = overview.views.find((/** @type {{ element?: string }} */ view) => view.element === 'factory-floor');
-    floor.config['browser-first-load'] = true;
+    floor.config[key] = true;
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(false);
   });
 
@@ -619,9 +747,32 @@ describe('dashboard document validation', () => {
     ]));
   });
 
-  it('accepts supported dashboard CLI actions', () => {
+  it.each([
+    { preview: 'gh aw upgrade --repo {{repository}}', valid: true },
+    { preview: 'gh aw upgrade', valid: true },
+    { preview: 'gh aw upgrade --repo {{other}}', valid: false },
+    { preview: 'gh aw upgrade --repo other/repository', valid: false },
+    { preview: 'gh aw compile', valid: false },
+    { preview: '', valid: false },
+    { preview: 'gh aw\nupgrade', valid: false },
+    { preview: `${' '.repeat(1000)}gh aw upgrade`, valid: false },
+    { preview: 'gh aw upgrade --repo "{{repository}}', valid: false },
+    { preview: false, valid: false }
+  ])('validates compact CLI previews as command prefixes: $preview', ({ preview, valid }) => {
     const document = JSON.parse(authoritativeDashboardSource);
-    document.dashboard['cli-actions'].push({
+    const action = document.dashboard['cli-actions'].find((/** @type {{ id: string }} */ item) => item.id === 'upgrade-repository');
+    action['preview-command'] = preview;
+    const result = validateDashboardDocument(JSON.stringify(document));
+    expect(result.ok).toBe(valid);
+    if (!valid) expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringContaining('.preview-command') })
+    ]));
+  });
+
+  it('accepts supported dashboard CLI actions', () => {
+    const document = parse(validDocument);
+    document.dashboard.pages = document.dashboard.pages.filter((/** @type {{ kind: string }} */ page) => page.kind === 'custom');
+    document.dashboard['cli-actions'] = [{
       id: 'compile-workflows',
       label: 'Compile workflows',
       description: 'Validate editable workflow sources.',
@@ -636,8 +787,8 @@ describe('dashboard document validation', () => {
         flag: '--pre-releases',
         default: false
       }]
-    });
-    const addedAction = document.dashboard['cli-actions'][document.dashboard['cli-actions'].length - 1];
+    }];
+    const addedAction = document.dashboard['cli-actions'][0];
     const actionArguments = addedAction.arguments;
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
     addedAction['copy-only'] = 'true';
@@ -647,7 +798,7 @@ describe('dashboard document validation', () => {
     addedAction['copy-only'] = true;
 
     delete addedAction.arguments;
-    addedAction.command = './cao.sh update';
+    addedAction.command = 'gh cao update';
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
 
     addedAction.command = 'gh workflow run maintenance.yml --repo {{repository}}';
@@ -689,7 +840,7 @@ describe('dashboard document validation', () => {
     expect(rejected.ok).toBe(false);
     expect(rejected.errors).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        message: 'CLI action command must start with "./cao.sh", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".'
+        message: 'CLI action command must start with "gh cao", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".'
       })
     ]));
 
@@ -698,7 +849,7 @@ describe('dashboard document validation', () => {
       ok: false,
       errors: expect.arrayContaining([
         expect.objectContaining({
-          message: 'CLI action command must start with "./cao.sh", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".'
+          message: 'CLI action command must start with "gh cao", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".'
         })
       ])
     });
@@ -899,7 +1050,7 @@ describe('dashboard document validation', () => {
         y: {
           field: 'blocked',
           type: 'quantitative',
-          title: 'Blocked requests'
+          title: 'Blocked'
         }
       }
     });
@@ -1233,7 +1384,7 @@ describe('dashboard document validation', () => {
       from: 'workflows',
       joins: [{ source: 'workflow-aic-run-totals', type: 'left' }],
       filter: {
-        predicates: [{ field: 'observed-runs', gte: 1 }]
+        predicates: [{ field: 'observed-aic-runs', gte: 1 }]
       }
     });
     expect(page.definition.views.find((/** @type {{ id: string }} */ view) =>
@@ -1261,7 +1412,7 @@ describe('dashboard document validation', () => {
     expect(validateDashboardDocument(JSON.stringify(document)).ok).toBe(true);
   });
 
-  it('defines Overview as declarative factory and campaign navigation elements', () => {
+  it('defines Overview as declarative factory elements without campaign navigation', () => {
     const document = JSON.parse(authoritativeDashboardSource);
     const page = document.dashboard.pages.find((/** @type {{ id: string }} */ candidate) =>
       candidate.id === 'overview'
@@ -1270,7 +1421,7 @@ describe('dashboard document validation', () => {
     expect(page.views).toEqual([
       expect.objectContaining({
         id: 'overview-header',
-        description: 'Campaign health measures campaigns without current runtime errors; repository coverage measures registered repositories reached by successful worker execution.',
+        description: 'Factory health measures all workflows across CAO and targeted repositories without current runtime failures; repository coverage measures registered repositories reached by successful worker execution. Weekly rhythm compares all workflow runs regardless of status or conclusion.',
         data: { sources: ['overview-header-presentation', 'overview-rhythm'] },
         mark: 'element',
         element: 'factory-header',
@@ -1279,27 +1430,15 @@ describe('dashboard document validation', () => {
       }),
       expect.objectContaining({
         id: 'overview-floor',
-        data: { sources: ['overview-campaign-station', 'overview-repository-station'] },
+        data: { sources: ['overview-factory-station', 'overview-repository-station', 'overview-issue-station', 'overview-value-station'] },
         mark: 'element',
         element: 'factory-floor',
         config: expect.objectContaining({ animate: 'number' }),
         layout: 'full'
-      }),
-      expect.objectContaining({
-        id: 'overview-campaigns',
-        data: { sources: ['overview-campaign-links'] },
-        mark: 'element',
-        element: 'link-button-list',
-        config: expect.objectContaining({
-          'label-field': 'campaign-name',
-          'link-field': 'campaign-dashboard-link',
-          'fallback-icon': 'goal'
-        }),
-        layout: 'full'
       })
     ]);
     expect(page.views.find((/** @type {{ id: string }} */ view) => view.id === 'overview-campaigns'))
-      .not.toHaveProperty('description');
+      .toBeUndefined();
     expect(validateDashboardDocument(authoritativeDashboardSource).ok).toBe(true);
   });
 
@@ -2221,6 +2360,15 @@ dashboard:
       ].join('\n')
     );
     expect(validateDashboardDocument(withCallout).ok).toBe(true);
+    const withAge = withCallout.replace('        equals: github-api-rate-limit-403', '        older-than-hours: 24');
+    expect(validateDashboardDocument(withAge).ok).toBe(true);
+    for (const age of ['0', '-1', '.inf', '.nan', '"24"', 'null']) {
+      expect(validateDashboardDocument(withAge.replace('older-than-hours: 24', `older-than-hours: ${age}`)).ok).toBe(false);
+    }
+    expect(validateDashboardDocument(withAge.replace(
+      '        older-than-hours: 24',
+      '        older-than-hours: 24\n        equals: old'
+    )).ok).toBe(false);
 
     const invalidNavigation = validateDashboardDocument(withCallout.replace('      navigation-page: custom-summary', '      navigation-page: missing-page'));
     expect(invalidNavigation.ok).toBe(false);
@@ -4376,7 +4524,10 @@ dashboard:
     if (!result.ok) {
       expect(result.errors).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ code: 'DLS-E010', path: '$.dashboard.pages[0].views[0].encoding.x' }),
+          expect.objectContaining({
+            code: 'DLS-E010', path: '$.dashboard.pages[0].views[0].encoding.x',
+            message: expect.stringContaining('add "time-unit": "day" inside encoding.x')
+          }),
           expect.objectContaining({ code: 'DLS-E010', path: '$.dashboard.pages[0].views[1].encoding.x.type' })
         ])
       );
@@ -5409,6 +5560,26 @@ describe('declarative query validation', () => {
     }
   });
 
+  it('validates bounded point metadata only for temporal panels', () => {
+    const definition = {
+      time: 'observed-at', series: 'workflow', shape: 'panels',
+      carry: ['workflow'],
+      'point-carry': ['evaluator-digest', 'maturity-status'],
+      measures: [{ field: 'value', kind: 'primary' }]
+    };
+    const makeDocument = (/** @type {Record<string, unknown>} */ overrides) => queryDocument([{
+      name: 'workflow-costs', from: 'grader-observations',
+      'temporal-series': { ...definition, ...overrides }
+    }]);
+    expect(validateDashboardDocument(makeDocument({})).ok).toBe(true);
+    for (const overrides of [
+      { shape: 'groups' }, { 'point-carry': [] },
+      { 'point-carry': Array(17).fill('value') }, { 'point-carry': ['missing-field'] }
+    ]) {
+      expect(validateDashboardDocument(makeDocument(overrides)).ok).toBe(false);
+    }
+  });
+
   it('validates reusable temporal-series projections', () => {
     const query = {
       name: 'workflow-costs',
@@ -5437,7 +5608,7 @@ describe('declarative query validation', () => {
   it('accepts bounded aggregate-local filters over pre-aggregation scalar fields', () => {
     const result = validateDashboardDocument(queryDocument([{
       name: 'workflow-costs',
-      from: 'audits',
+      from: 'domains',
       aggregate: {
         by: ['workflow'],
         values: [{
@@ -5446,7 +5617,7 @@ describe('declarative query validation', () => {
           reducer: 'sum',
           filter: {
             predicates: [
-              { field: 'event-type', equals: 'firewall.request.blocked' },
+              { field: 'event-type', equals: 'firewall.http_access' },
               { field: 'event-source', in: ['firewall', 'gateway'] }
             ]
           }

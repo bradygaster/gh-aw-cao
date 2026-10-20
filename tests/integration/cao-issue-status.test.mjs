@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const cao = path.resolve('activity/cao.mjs');
+const fixtureDay = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'cao-issue-status-'));
@@ -25,14 +26,14 @@ async function fixture() {
         run_id: 303,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_name: 'Dashboard',
         workflow_path: '.github/workflows/dashboard.lock.yml',
         status: 'completed',
         conclusion: 'success',
-        created_at: '2026-09-09T03:59:00Z',
-        started_at: '2026-09-09T04:00:00Z',
-        updated_at: '2026-09-09T04:01:00Z'
+        created_at: `${fixtureDay}T03:59:00Z`,
+        started_at: `${fixtureDay}T04:00:00Z`,
+        updated_at: `${fixtureDay}T04:01:00Z`
       }
     },
     {
@@ -40,10 +41,10 @@ async function fixture() {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:30Z',
+        timestamp: `${fixtureDay}T04:00:30Z`,
         type: 'create_issue',
         provider: 'github',
-        url: 'https://github.com/githubnext/gh-aw-cao/issues/42'
+        url: 'https://github.com/githubnext/gh-cao/issues/42'
       }
     },
     {
@@ -51,10 +52,10 @@ async function fixture() {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:31Z',
+        timestamp: `${fixtureDay}T04:00:31Z`,
         type: 'create_issue',
         provider: 'github',
-        url: 'https://github.com/githubnext/gh-aw-cao/issues/43'
+        url: 'https://github.com/githubnext/gh-cao/issues/43'
       }
     }
   ];
@@ -66,7 +67,9 @@ async function fixture() {
     '--database',
     databasePath,
     '--input-dir',
-    shardDirectory
+    shardDirectory,
+    '--retention-days', 'all',
+    '--run-retention-days', 'all'
   ]);
   const ghPath = path.join(bin, 'gh');
   await writeFile(ghPath, `#!/usr/bin/env node
@@ -82,7 +85,7 @@ if (queryArgument.includes('repository(')) {
       state: 'CLOSED',
       stateReason: 'COMPLETED',
       closedAt: '2026-09-20T12:00:00Z',
-      url: 'https://github.com/githubnext/gh-aw-cao/issues/' + number
+      url: 'https://github.com/githubnext/gh-cao/issues/' + number
     } },
     rateLimit: { cost: 1, remaining: 998, resetAt: '2026-09-20T13:00:00Z' }
   } }));
@@ -143,7 +146,9 @@ test('issue-status enriches issues through one-item GraphQL batches within a sma
       '--database',
       item.databasePath,
       '--input-dir',
-      item.shardDirectory
+      item.shardDirectory,
+      '--retention-days', 'all',
+      '--run-retention-days', 'all'
     ]);
     const query = await execFileAsync(process.execPath, [
       cao,
@@ -193,7 +198,7 @@ process.stdout.write(JSON.stringify(query.includes('repository(') ? {
         state: 'OPEN',
         stateReason: null,
         closedAt: null,
-        url: 'https://github.com/githubnext/gh-aw-cao/issues/43'
+        url: 'https://github.com/githubnext/gh-cao/issues/43'
       }
     },
     rateLimit: { cost: 1, remaining: 998, resetAt: '2026-09-20T13:00:00Z' }
@@ -294,6 +299,10 @@ if (args[0] === 'api' && args[1] === 'rate_limit') {
   } }));
   process.exit(0);
 }
+if (args[0] === 'api' && args[1] === 'repos/githubnext/gh-cao/actions/workflows?per_page=100') {
+  process.stdout.write(JSON.stringify([{ workflows: [{ path: '.github/workflows/dashboard.lock.yml' }] }]));
+  process.exit(0);
+}
 if (args[0] === 'aw' && args[1] === 'logs') {
   const shardPattern = args[args.indexOf('--cached-jsonl') + 1];
   const shardPath = shardPattern.replace(/\\*$/, '') + 'fixture.jsonl';
@@ -306,14 +315,14 @@ if (args[0] === 'aw' && args[1] === 'logs') {
         run_id: 303,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_name: 'Dashboard',
         workflow_path: '.github/workflows/dashboard.lock.yml',
         status: 'completed',
         conclusion: 'success',
-        created_at: '2026-09-09T03:59:00Z',
-        started_at: '2026-09-09T04:00:00Z',
-        updated_at: '2026-09-09T04:01:00Z'
+        created_at: `${fixtureDay}T03:59:00Z`,
+        started_at: `${fixtureDay}T04:00:00Z`,
+        updated_at: `${fixtureDay}T04:01:00Z`
       }
     }))},
     ${JSON.stringify(JSON.stringify({
@@ -321,10 +330,10 @@ if (args[0] === 'aw' && args[1] === 'logs') {
       kind: 'safe_output_item',
       safe_output: {
         run_id: 303,
-        timestamp: '2026-09-09T04:00:30Z',
+        timestamp: `${fixtureDay}T04:00:30Z`,
         type: 'create_issue',
         provider: 'github',
-        url: 'https://github.com/githubnext/gh-aw-cao/issues/42'
+        url: 'https://github.com/githubnext/gh-cao/issues/42'
       }
     }))}
   ].join('\\n') + '\\n');
@@ -340,7 +349,7 @@ if (args[0] === 'api' && args[1] === 'graphql') {
         state: 'CLOSED',
         stateReason: 'COMPLETED',
         closedAt: '2026-09-20T12:00:00Z',
-        url: 'https://github.com/githubnext/gh-aw-cao/issues/42'
+        url: 'https://github.com/githubnext/gh-cao/issues/42'
       } },
       rateLimit: { cost: 1, remaining: 998, resetAt: '2026-09-20T13:00:00Z' }
     } }));
@@ -357,11 +366,13 @@ process.exit(1);
     const env = {
       ...process.env,
       PATH: `${item.bin}:${process.env.PATH}`,
-      GITHUB_REPOSITORY: 'githubnext/gh-aw-cao',
+      GITHUB_REPOSITORY: 'githubnext/gh-cao',
       REPORT_AIC_CACHE: path.join(item.root, 'logs'),
       REPORT_ACTIVITY_DATABASE: item.databasePath,
       REPORT_GH_AW_LOGS_EXIT_CODE: path.join(item.root, 'collection-exit-code'),
       REPORT_GH_AW_LOGS_SHARDS: item.shardDirectory,
+      REPORT_RUN_WINDOW_DAYS: '3650',
+      REPORT_DETAIL_WINDOW_DAYS: '3650',
       GRAPHQL_CALLS_PATH: item.callsPath
     };
     await execFileAsync('bash', [path.resolve('activity/collect-logs.sh')], { env });
@@ -384,7 +395,9 @@ process.exit(1);
       '--runs-dir',
       runsDirectory,
       '--records-dir',
-      recordsDirectory
+      recordsDirectory,
+      '--retention-days', 'all',
+      '--run-retention-days', 'all'
     ]);
     const query = await execFileAsync(process.execPath, [
       cao,
@@ -412,7 +425,7 @@ process.exit(1);
     const issueQuery = graphqlCalls.find((arguments_) => arguments_.some((argument) => argument.includes('issueOrPullRequest(number: 42)')));
     assert.ok(issueQuery);
     assert.ok(issueQuery.some((argument) => argument.includes('owner=githubnext')));
-    assert.ok(issueQuery.some((argument) => argument.includes('name=gh-aw-cao')));
+    assert.ok(issueQuery.some((argument) => argument.includes('name=gh-cao')));
   } finally {
     await rm(item.root, { recursive: true, force: true });
   }

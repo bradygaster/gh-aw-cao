@@ -1,8 +1,9 @@
 import { isSpuriousAbortAfterSuccessResponse } from "./dashboard-view-assessment.mjs";
 
-export const deployedDashboardUrl = "https://githubnext.github.io/gh-aw-cao/cao/";
-export const DEPLOYED_REFRESH_TIMEOUT_MS = 300_000;
-export const DEPLOYED_STORAGE_QUOTA_BYTES = 2 * 1024 ** 3;
+export const deployedDashboardUrl = "https://githubnext.github.io/gh-cao/cao/";
+export const DEPLOYED_REFRESH_TIMEOUT_MS = 600_000;
+// IndexedDB and the service-worker cache together exceed 2 GiB in the deployed snapshot.
+export const DEPLOYED_STORAGE_QUOTA_BYTES = 4 * 1024 ** 3;
 export const populatedDashboardPages = [
   { pageId: "repositories", storeName: "repositories" },
   { pageId: "workflows", storeName: "workflows" },
@@ -11,10 +12,25 @@ export const populatedDashboardPages = [
 const deployedDashboardBase = new URL(deployedDashboardUrl);
 const deployedActivityShardDirectories = new Set(["gh-aw-logs-runs", "gh-aw-logs-records"]);
 
+export async function deployedStorageContext({
+  playwright, browserName, headless, channel, launchOptions, contextOptions,
+}, use) {
+  // Origin quota overrides do not enlarge Chromium's memory-sized incognito pool.
+  // An empty userDataDir creates a fresh disk-backed profile removed on close.
+  const context = await playwright[browserName].launchPersistentContext("", {
+    headless, channel, ...launchOptions, ...contextOptions,
+  });
+  try {
+    await use(context);
+  } finally {
+    await context.close();
+  }
+}
+
 export async function configureDeployedStorageQuota(page, url) {
   const session = await page.context().newCDPSession(page);
   try {
-    // Incognito quotas depend on runner memory, not the dataset under test.
+    // Keep the origin budget independent of the runner's available storage.
     await session.send("Storage.overrideQuotaForOrigin", {
       origin: new URL(url).origin,
       quotaSize: DEPLOYED_STORAGE_QUOTA_BYTES,

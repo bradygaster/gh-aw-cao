@@ -1,7 +1,7 @@
 {
-  "$schema": "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/.github/workflows/shared/cao.schema.json",
+  "$schema": "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json",
   "version": 1,
-  "gh-aw-version": "v0.91.5",
+  "gh-aw-version": "v0.92.6",
   "control-plane": {
     "scope": {
       "allowed-owners": [
@@ -14,7 +14,7 @@
         "github/gh-aw-mcpg",
         "github/gh-aw-actions",
         "github/gh-aw-threat-detection",
-        "githubnext/gh-aw-cao"
+        "githubnext/gh-cao"
       ]
     },
     "defaults": {
@@ -30,7 +30,19 @@
         {
           "id": "official",
           "name": "Official CAO catalog",
-          "repository": "githubnext/gh-aw-cao",
+          "repository": "githubnext/gh-cao",
+          "ref": "main",
+          "auth": {
+            "type": "pat",
+            "secret": "GH_TOKEN"
+          }
+        },
+        {
+          "id": "agentics",
+          "name": "Agentics workflows",
+          "repository": "githubnext/agentics",
+          "path": "workflows",
+          "format": "workflows",
           "ref": "main",
           "auth": {
             "type": "pat",
@@ -73,6 +85,17 @@
           },
           "reliability": {
             "workflow": "cao-evolution-reliability"
+          }
+        }
+      },
+      "bug-bash": {
+        "icon": "rocket",
+        "mode": "review",
+        "max-repositories": 1,
+        "workers": {
+          "investigation": {
+            "workflow": "bug-bash-investigation",
+            "max-mode": "review"
           }
         }
       },
@@ -199,7 +222,7 @@
         "rollout-percent": 100,
         "icon": "check-circle",
         "targets": {
-          "githubnext/gh-aw-cao": {
+          "githubnext/gh-cao": {
             "mode": "live"
           }
         },
@@ -243,9 +266,6 @@
           "glossary": {
             "workflow": "self-care-glossary"
           },
-          "hosted-health": {
-            "workflow": "self-care-hosted-health"
-          },
           "open-source-failures": {
             "workflow": "self-care-open-source-failures"
           },
@@ -257,9 +277,6 @@
           },
           "reactive-ui-expert": {
             "workflow": "self-care-reactive-ui-expert"
-          },
-          "redis-query-optimization": {
-            "workflow": "self-care-redis-query-optimization"
           },
           "release-blogger": {
             "workflow": "self-care-release-blogger"
@@ -277,13 +294,13 @@
   "target-authority": {
     "campaigns": {
       "self-care": {
-        "authority": "githubnext/gh-aw-cao"
+        "authority": "githubnext/gh-cao"
       },
       "cao-evolution": {
-        "authority": "githubnext/gh-aw-cao"
+        "authority": "githubnext/gh-cao"
       },
       "dependabot": {
-        "authority": "githubnext/gh-aw-cao"
+        "authority": "githubnext/gh-cao"
       }
     }
   }

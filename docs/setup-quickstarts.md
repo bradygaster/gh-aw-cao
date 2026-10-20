@@ -1,94 +1,149 @@
 ---
 title: Set Up CAO
-description: Create one control repository, install CAO, and follow the interactive setup.
+description: Set up CAO, monitor one repository, and explore your dashboard before adding automation.
 ---
 
-## 1. Open the Control Repository
+This guide walks you through installing CAO in a control repository, connecting
+one repository to monitor, and publishing a dashboard of its existing GitHub
+Agentic Workflow runs, costs, and outcomes.
 
-Use a private repository unless every target and all future operational data may be public.
+This setup is for monitoring only. You can add an agentic workflow or a campaign
+later if you choose.
 
-You need GitHub CLI (`gh`), Git, Bash, `curl`, and Node.js 24 or newer. Use a
-GitHub CLI account that can access the control repository and the repositories
-you plan to enroll. If you are not signed in, run `gh auth login` (add
-`--hostname HOST` for a non-default GitHub host), then confirm your session:
+## Prerequisites
+
+- You need **Git**, **Bash**, **`curl`**, **Node.js 24+**, and **GitHub CLI 2.68+**.
+- Run **`gh auth login`** if needed.
+- You need permission to configure **Actions**, **credentials**, and
+  **Pages** in your control repository.
+- CAO lives in a **control repository** that stores its configuration
+  and runs collection. Prefer a separate repository; the repository you monitor
+  does not need CAO installed in it.
+- Use a **private control repository** for private or internal evidence.
+  **Dashboard visibility** is a separate choice: a private repository does **not**
+  guarantee a private Pages site. Setup checks this and asks before allowing
+  public publication.
+
+## 1. Install CAO
+
+From a clean checkout of your chosen control repository, on its default branch:
 
 ```bash
-gh auth status
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash
 ```
 
-If you already have a **empty** local control-repository checkout, open a terminal at its
-root. Otherwise, clone an existing repository:
+**Ready:** the CAO runtime, Activity collector, and dashboard workflows are
+installed locally. No campaign is installed or run.
+
+<details>
+<summary>Need a new control repository?</summary>
+
+Run this outside a Git checkout, replacing `OWNER/CONTROL_REPOSITORY` with the
+exact repository you want to create:
 
 ```bash
-gh repo clone OWNER/CONTROL_REPOSITORY
-cd CONTROL_REPOSITORY
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh |
+  bash -s -- --create-repo OWNER/CONTROL_REPOSITORY
 ```
 
-Create one when needed:
+The installer creates and clones a private repository. Enter the directory it
+prints before continuing.
+
+</details>
+
+<span id="guided-setup-instead"></span>
+
+## 2. Connect one repository
 
 ```bash
-gh repo create OWNER/CONTROL_REPOSITORY --private --clone
-cd CONTROL_REPOSITORY
+gh cao setup
 ```
 
-Replace uppercase placeholders with your values. `CONTROL_REPOSITORY` is the
-repository name without its owner in the `cd` command.
+Follow **Repositories → Connections → Review and apply**:
 
-## 2. Install and Set Up
+1. Enter the exact `OWNER/REPOSITORY` you want to monitor, not an organization
+   wildcard. The control repository stays included in scope.
+2. Connect authentication. Setup offers authentication choices based on that scope;
+   check the selected profile's prerequisites before approving.
+3. Review the repository list, credentials, and dashboard visibility, then apply.
 
-```bash
-curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/install.sh |
-  bash
+**Ready:** repository scope and authentication are configured.
+Setup installs no campaign and runs no workflow; it does not commit or push.
+The campaign map in `.github/workflows/cao.json` should remain empty.
 
-./cao.sh setup
-```
+Need help choosing credentials? See [Authentication](authentication.md).
+Run setup in an interactive terminal for this guided path; headless setup only
+supports the exact current public control repository, not an external target.
 
-The setup command:
+## 3. Publish your configuration
 
-1. asks which repositories CAO should read; enter exact `owner/repository`
-   names or `*` wildcards in either component (for example, `acme*/service-*`
-   or `*/service-*`); `*` means `*/*`;
-2. expands patterns against your accessible organization list and saves only
-   exact matched repositories in policy, then checks visibility and owners;
-3. offers authentication choices based on that scope; verify each profile's
-   prerequisites in the [authentication profile guide](control-plane-authentication.md);
-4. shows the exact plan before changing policy, credentials, or Pages settings;
-5. configures the control repository's Pages source as GitHub Actions and, for a private repository, restricts the site to repository readers (requires Pages access control support and permission to manage Pages settings);
-6. installs no campaign and runs no workflow.
-
-## 3. Validate, Review, and Save
+Check the installation and inspect the installed files:
 
 ```bash
-./cao.sh validate
-git diff --check
+gh cao doctor
 git status --short
+git diff -- .github
 ```
 
-Validation checks the installed control plane; the expected result is a valid
-policy with the exact repository scope you selected. Setup installs no
-user-facing campaign and runs no workflow.
+Check that `.github/workflows/cao.json` names only the intended repositories
+and that `control-plane.campaigns` is `{}`. Do not publish private evidence to a
+public dashboard.
 
-Review the complete status and diff before committing. The following command
-stages every change under these paths, so use it only in a clean checkout. If
-you are reusing a repository with other work, stage only the setup files you
-reviewed.
+Commit the CAO files and push to the control repository's default branch:
 
 ```bash
-git add .github activity dashboard cao.sh
-git commit -m "Install Central Agentic Ops control plane"
-git push --set-upstream origin HEAD
+git add .github activity dashboard
+git commit -m "Set up CAO monitoring"
+git push
 ```
 
-## Next: Add a Campaign
+**Ready:** GitHub Actions can use your reviewed configuration.
+Check **CAO validation** in Actions for full policy and workflow validation.
+The installation includes scheduled Activity collection; pushing the policy
+also triggers collection. This collects evidence, not new agentic work.
 
-Choose and install the first operation as a separate change:
+## 4. Open your dashboard
+
+In the control repository's **Actions** tab, wait for **CAO Activity** and then
+**CAO Dashboard** to complete, including its Pages deployment.
+Open the site link in **Settings → Pages**.
+
+If collection has not started, request it once from the control checkout:
 
 ```bash
-./cao.sh add githubnext/gh-aw-cao/CAMPAIGN
+gh workflow run cao-activity.yml
 ```
 
-Replace `CAMPAIGN` with a campaign slug from [Browse campaigns](catalog.md).
-Read the campaign guide before installing it. Adding a campaign installs its
-workflows but does not run them. For manual or non-interactive authentication,
-use the detailed [authentication guide](authentication.md).
+Activity refreshes the evidence; it does not run the workflows you monitor.
+Successful collection triggers dashboard publication automatically. Check the
+Actions runs for progress rather than repeatedly dispatching collection.
+
+**Your first look:** find the repository in **Overview**, open **Runs**, and
+follow a run back to its evidence. Costs and outcomes appear where available;
+missing evidence is not proof of zero cost or success.
+
+**No Agentic Workflow history yet?** An empty dashboard is expected. CAO monitors
+GitHub Agentic Workflows, not every ordinary Actions job. You can finish setup
+without generating a run. Preview the
+[sample dashboard](https://githubnext.github.io/gh-cao/cao/) to see populated
+views, or return after your existing workflows have run and Activity has refreshed.
+
+## Optional: add automation later
+
+Monitoring is enough to get started. When you have a task you want CAO to perform,
+browse the [campaign catalog](https://githubnext.github.io/gh-cao/catalog/).
+Install a chosen campaign with:
+
+```bash
+gh cao campaigns add githubnext/gh-cao/CAMPAIGN
+```
+
+Installation is not execution. Review and commit its workflows and policy
+together before enabling or running it. Start in **review** mode with **one
+repository**; model access and AI credits are separate prerequisites.
+See [Roll out a campaign](rollout-and-routing.md) for the execution steps.
+
+Want a guided campaign example instead? The separate
+[Repo Assist walkthrough](repo-assist-quickstart.md) starts from a fresh control
+repository and requests one review-only maintenance proposal. It is optional,
+not a prerequisite for monitoring.

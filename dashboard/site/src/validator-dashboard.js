@@ -3,6 +3,7 @@ import { parseAllDocuments } from 'yaml';
 import { isReadOnlyCliAction, parseCliActionTokens, validateActionLevel, validWorkflowDispatchArguments } from './action-validator.js';
 import { CARD_TEMPLATE_ACTION_KEYS, CARD_DETAIL_LABEL_VALUES, CARD_STATUS_KEYS, CARD_TEMPLATE_KEYS, CARD_TIMING_FIELD_KEYS, DASHBOARD_KEYS, DASHBOARD_HORIZON_KEYS, DEFAULTS_KEYS, CLI_ACTION_KEYS, CLI_ACTION_ARGUMENT_KEYS, CLI_ACTION_ARGUMENT_TYPE_VALUES, CLI_ACTION_PLACEMENT_VALUES, ERROR_CODES, FIELD_DEFINITION_KEYS, FIELD_DISPLAY_VALUES, FIELD_FORMAT_VALUES, IDENTIFIER_PATTERN, LANGUAGE_VERSION, MAX_CLI_ACTIONS, MAX_CLI_ACTION_ARGUMENTS, MAX_CLI_ACTION_COMMAND_LENGTH, PAGE_ICON_VALUES, SITE_CALLOUT_KEYS, SITE_CALLOUT_VISIBILITY_KEYS, QUERY_SOURCE_VALUES, TABLE_ACTION_WHEN_KEYS, UNIT_DEFINITION_KEYS, UNIT_FORMAT_VALUES } from './specification.js';
 import { cliActionTemplateFields } from './cli-action-template.js';
+import { assertDialogSelector } from './dialog-selector.js';
 import { compileDashboardQueryTypes } from './query-type-checker.js';
 import { findDeadDashboardQueries } from './query-usage.js';
 import { validateTooltip, validateNavigation, validatePage } from './validator-pages.js';
@@ -402,11 +403,12 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
     }
   }
   state.declaredQueries = queryTypes.queryFields;
+  state.declaredQueryFieldTypes = queryTypes.queryFieldTypes;
   state.declaredQueryTables = queryTypes.queryTables;
   for (const query of findDeadDashboardQueries(dashboard)) {
     errors.push(createError(
       ERROR_CODES.unusedQuery,
-      `query "${query.name}" is not used by a view, callout, or another retained query.`,
+      `query "${query.name}" is not used by a view, callout, data status, or another retained query.`,
       query.path
     ));
   }
@@ -423,6 +425,7 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
   );
   const unitIds = validateUnits(dashboard.units, getValueNodeByKey(dashboardNode, 'units'), errors);
   validateSiteCallouts(dashboard.callouts, getValueNodeByKey(dashboardNode, 'callouts'), errors);
+  validateDataStatus(dashboard['data-status'], getValueNodeByKey(dashboardNode, 'data-status'), errors);
 
   if (!Array.isArray(dashboard.pages) || dashboard.pages.length === 0) {
     errors.push(createError(
@@ -519,6 +522,32 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
         }
       }
       validateStringField(action.command, `${path}.command`, true, errors);
+      if (action['preview-command'] !== undefined) {
+        validateStringField(action['preview-command'], `${path}.preview-command`, true, errors);
+        const previewTokens = typeof action['preview-command'] === 'string'
+          ? parseCliActionTokens(action['preview-command']) : null;
+        const commandTokens = typeof action.command === 'string' ? parseCliActionTokens(action.command) : null;
+        if (!previewTokens?.length || !commandTokens
+          || typeof action['preview-command'] === 'string' && (
+            action['preview-command'].length > MAX_CLI_ACTION_COMMAND_LENGTH
+            || /[\r\n\0]/.test(action['preview-command'])
+          )
+          || previewTokens.some((token, index) => token !== commandTokens[index])) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+            'CLI action preview-command must be a non-empty, single-line token prefix of command.',
+            `${path}.preview-command`));
+        }
+      }
+      if (action.selector !== undefined) {
+        try {
+          assertDialogSelector(action.selector, typeof action.command === 'string' ? cliActionTemplateFields(action.command) : []);
+        } catch (error) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, error instanceof Error ? error.message : 'Invalid dialog selector.', `${path}.selector`));
+        }
+        if (action.level !== 'operate' || action.placement !== 'view' || action['copy-only'] === true) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'Selector actions must be executable, view-placed operate actions.', `${path}.selector`));
+        }
+      }
       if (typeof action.command === 'string') {
         if (action.command.length > MAX_CLI_ACTION_COMMAND_LENGTH) {
           errors.push(createError(
@@ -531,7 +560,7 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
         const isGhAwCommand =
           commandTokens?.[0] === 'gh' && commandTokens[1] === 'aw' && commandTokens.length >= 3;
         const isCaoCommand =
-          commandTokens?.[0] === './cao.sh' && commandTokens.length >= 2;
+          commandTokens?.[0] === 'gh' && commandTokens[1] === 'cao' && commandTokens.length >= 3;
         const isWorkflowDispatchCommand =
           commandTokens?.[0] === 'gh'
           && commandTokens[1] === 'workflow'
@@ -553,7 +582,7 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
         if (!isCaoCommand && !isGhAwCommand && !isWorkflowDispatchCommand && !isAgentTaskCreateCommand) {
           errors.push(createError(
             ERROR_CODES.missingOrInvalidRequiredField,
-            'CLI action command must start with "./cao.sh", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".',
+            'CLI action command must start with "gh cao", "gh aw", "gh workflow run", or be "gh agent-task create --from-file -".',
             `${path}.command`
           ));
         }
@@ -781,6 +810,18 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
         }
       });
     }
+    if (isPlainObject(page.route) && Array.isArray(page.route.breadcrumbs)) {
+      page.route.breadcrumbs.forEach((breadcrumb, breadcrumbIndex) => {
+        if (!isPlainObject(breadcrumb) || typeof breadcrumb.page !== 'string' || !IDENTIFIER_PATTERN.test(breadcrumb.page)) return;
+        if (!pageIds.has(breadcrumb.page)) {
+          errors.push(createError(
+            ERROR_CODES.missingOrInvalidRequiredField,
+            'route breadcrumb page must reference a declared dashboard page id.',
+            `$.dashboard.pages[${index}].route.breadcrumbs[${breadcrumbIndex}].page`
+          ));
+        }
+      });
+    }
     const views = page.kind === 'built-in' && isPlainObject(page.definition)
       ? page.definition.views
       : page.views;
@@ -896,6 +937,41 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
   }
 
   /**
+   * @param {unknown} status
+   * @param {unknown} statusNode
+   * @param {ValidationError[]} errors
+   */
+  function validateDataStatus(status, statusNode, errors) {
+    if (status === undefined) return;
+    const path = '$.dashboard.data-status';
+    if (!isPlainObject(status)) {
+      errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'data-status must be a mapping.', path));
+      return;
+    }
+    validateObjectKeys(statusNode, ['freshness-source', 'health-source', 'stale-after-hours'], path, errors);
+    /** @type {Array<[string, string[]]>} */
+    const bindings = [
+      ['freshness-source', ['latest-data-at']],
+      ['health-source', ['configured', 'health']]
+    ];
+    for (const [key, fields] of bindings) {
+      const source = status[key];
+      if (key === 'health-source' && source === undefined) continue;
+      validateSource(source, `${path}.${key}`, errors);
+      if (typeof source === 'string' && !state.declaredQueries.has(source)) {
+        errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, 'data-status sources must reference declared queries.', `${path}.${key}`));
+      }
+      if (typeof source === 'string' && state.declaredQueries.has(source)
+          && fields.some((field) => !sourceFieldNames(source)?.includes(field))) {
+        errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, `data-status source must expose ${fields.join(', ')}.`, `${path}.${key}`));
+      }
+    }
+    if (typeof status['stale-after-hours'] !== 'number' || !Number.isFinite(status['stale-after-hours']) || status['stale-after-hours'] <= 0) {
+      errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'stale-after-hours must be positive and finite.', `${path}.stale-after-hours`));
+    }
+  }
+
+  /**
    * @param {unknown} visibility
    * @param {unknown} visibilityNode
    * @param {string} path
@@ -918,7 +994,14 @@ export function validateDashboard(dashboard, dashboardNode, errors) {
     ) {
       errors.push(createError(ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference, 'visible-when field must be declared by visible-when source.', `${path}.field`));
     }
-    if (!Object.hasOwn(visibility, 'equals') || ['object', 'function', 'symbol'].includes(typeof visibility.equals)) {
+    const hasAge = Object.hasOwn(visibility, 'older-than-hours');
+    if (hasAge) {
+      if (Object.hasOwn(visibility, 'equals') || typeof visibility['older-than-hours'] !== 'number'
+          || !Number.isFinite(visibility['older-than-hours']) || visibility['older-than-hours'] <= 0) {
+        errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField,
+          'visible-when older-than-hours must be positive and finite, and cannot be combined with equals.', `${path}.older-than-hours`));
+      }
+    } else if (!Object.hasOwn(visibility, 'equals') || ['object', 'function', 'symbol'].includes(typeof visibility.equals)) {
       errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'visible-when equals must be a scalar.', `${path}.equals`));
     }
   }

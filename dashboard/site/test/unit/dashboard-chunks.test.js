@@ -13,6 +13,7 @@ import {
   splitDashboardDocument,
 } from '../../src/dashboard-chunks.js';
 import { dashboardPagePaginatedSourceBindings } from '../../src/presenter.js';
+import { authoritativeDashboard } from '../authoritative-dashboard.js';
 
 /** @returns {import('../../src/presenter.js').PresentationDocument} */
 function sampleDocument() {
@@ -66,6 +67,22 @@ function sampleDocument() {
 }
 
 describe('dashboard-chunks source discovery', () => {
+  it('keeps every page analysis contract in its lazy chunk and restores it without bloating core navigation', () => {
+    const { core, pageChunks } = splitDashboardDocument(authoritativeDashboard);
+    for (const page of authoritativeDashboard.dashboard.pages) {
+      const stub = core.dashboard.pages.find((candidate) => candidate.id === page.id);
+      const chunk = pageChunks.get(page.id);
+      expect(stub, page.id).toBeDefined();
+      expect(chunk, page.id).toBeDefined();
+      if (!chunk) throw new Error(`Missing page chunk: ${page.id}`);
+      for (const field of ['intent', 'subject', 'objective', 'acceptance']) {
+        expect(stub?.[field], `${page.id}.${field}`).toBeUndefined();
+        expect(chunk.page[field], `${page.id}.${field}`).toBe(page[field]);
+        expect(mergeDashboardPage(stub, chunk.page)[field]).toBe(page[field]);
+      }
+    }
+  });
+
   it('collects the source names a page renders, including callouts', () => {
     expect(dashboardPageSourceNames(sampleDocument(), 'alpha-page')).toEqual(['alpha-source', 'callout-source']);
     expect(dashboardPageSourceNames(sampleDocument(), 'alpha-page', 'table')).toEqual(['alpha-source', 'callout-source']);
@@ -78,6 +95,14 @@ describe('dashboard-chunks source discovery', () => {
       'callout-source',
       'factory-summary',
     ]);
+  });
+
+  it('retains all ordinary view sources across modes for declarative page bindings', () => {
+    const document = sampleDocument();
+    document.dashboard.pages[0]['query-binding'] = 'page';
+    for (const mode of /** @type {const} */ (['chart', 'table', 'card'])) {
+      expect(dashboardPageSourceNames(document, 'alpha-page', mode)).toEqual(['alpha-source', 'callout-source']);
+    }
   });
 
   it('requests only sources used by the selected view mode', () => {
@@ -170,7 +195,7 @@ describe('dashboardPageIsLoaded', () => {
 describe('splitDashboardDocument / resolveDashboardDocument round-trip', () => {
   it('produces a core document without inline views/definitions or top-level queries', () => {
     const { core, pageChunks } = splitDashboardDocument(sampleDocument());
-    expect(core.dashboard.queries).toBeUndefined();
+    expect(core.dashboard.queries?.map((query) => query.name)).toEqual(['callout-source']);
     for (const page of core.dashboard.pages) {
       expect(page.views).toBeUndefined();
       expect(page.definition).toBeUndefined();

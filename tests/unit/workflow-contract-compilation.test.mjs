@@ -37,7 +37,6 @@ test("clean-room compilation emits the expected GitHub Actions settings", { time
     cpSync(join(root, ".github"), join(temporaryRoot, ".github"), { recursive: true });
     cpSync(join(root, "AGENTS.md"), join(temporaryRoot, "AGENTS.md"));
     cpSync(join(root, "aw.yml"), join(temporaryRoot, "aw.yml"));
-    cpSync(join(root, "cao.sh"), join(temporaryRoot, "cao.sh"));
     cpSync(join(root, "README.md"), join(temporaryRoot, "README.md"));
     for (const campaignDirectory of ["activity", "cao-evolution", "dashboard", "dependabot", "optimization", "repo-assist"]) {
       cpSync(join(root, campaignDirectory), join(temporaryRoot, campaignDirectory), { recursive: true });
@@ -76,7 +75,7 @@ test("clean-room compilation emits the expected GitHub Actions settings", { time
       "compile",
       "--no-check-update",
       "--schedule-seed",
-      "githubnext/gh-aw-cao",
+      "githubnext/gh-cao",
     ], { cwd: temporaryRoot, stdio: "pipe" });
 
     const lockNames = readdirSync(generatedDirectory)
@@ -180,12 +179,12 @@ test("clean-room compilation emits the expected GitHub Actions settings", { time
     const advisoryMaintainer = workflow("uk-ai-advisory-campaign-maintainer.lock.yml", generatedDirectory);
     assert.match(advisoryMaintainer, /schedule:/);
     assert.match(advisoryMaintainer, /uk-ai-advisory\/implementation-status\.md/);
-    assert.match(advisoryMaintainer, /copilot\/gpt-5\.4/);
+    assert.match(advisoryMaintainer, /copilot\/gpt-5\.6-sol/);
 
     const craMaintainer = workflow("eu-cra-compliance-campaign-maintainer.lock.yml", generatedDirectory);
     assert.match(craMaintainer, /schedule:/);
     assert.match(craMaintainer, /eu-cra-compliance\/implementation-status\.md/);
-    assert.match(craMaintainer, /copilot\/gpt-5\.4/);
+    assert.match(craMaintainer, /copilot\/gpt-5\.6-sol/);
 
     const prReviewer = workflow("pr-reviewer.lock.yml", generatedDirectory);
     assert.match(prReviewer, /create_pull_request_review_comment/);

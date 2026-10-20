@@ -18,7 +18,7 @@ function shard(runId) {
       run_id: runId,
       run_attempt: 1,
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow_name: 'Dashboard',
       workflow_path: '.github/workflows/dashboard.md',
       status: 'completed',
@@ -75,24 +75,47 @@ test('iPhone WebKit retains canonical data through ingest, reload, and another i
         .map((/** @type {{ payloadHash: string }} */ receipt) => receipt.payloadHash).sort()
     };
   }, storageUrl);
+  const cachedShards = async () => page.evaluate(async ({ url, identities }) => {
+    const { normalizedJsonlCurrentShards } = await import(url);
+    return normalizedJsonlCurrentShards(indexedDB,
+      identities.map((payloadIdentity) => ({ payloadIdentity, expectedPhase: 'runs' })));
+  }, { url: moduleUrl, identities: [firstIdentity, secondIdentity] });
+  const readSnapshot = async () => page.evaluate(async (url) => {
+    const { processDataRequest } = await import(url);
+    return processDataRequest({ operation: 'read-dashboard-snapshot' });
+  }, `${origin}/src/data-worker.js`);
 
+  expect(await readSnapshot()).toBeNull();
   expect(await ingest(firstShard, firstIdentity)).toMatchObject({ updated: true });
+  const createdAt = new Date().toISOString();
+  await page.evaluate(async ({ url, createdAt }) => {
+    const { recordTransaction } = await import(url);
+    await recordTransaction(indexedDB, {
+      id: 'dashboard-snapshot:complete', kind: 'dashboard-snapshot', createdAt
+    });
+  }, { url: storageUrl, createdAt });
+  expect(await readSnapshot()).toEqual({ createdAt });
   const firstState = await stored();
-  expect(firstState.runIds).toEqual(['github:run:githubnext/gh-aw-cao:1001']);
+  expect(firstState.runIds).toEqual(['github:run:githubnext/gh-cao:1001']);
   expect(firstState.receiptHashes).toEqual([firstIdentity]);
 
   await page.reload();
+  expect(await readSnapshot()).toEqual({ createdAt });
   expect(await stored()).toEqual(firstState);
+  expect(await cachedShards()).toEqual([true, false]);
   expect(await ingest(firstShard, firstIdentity)).toMatchObject({ updated: false, skipped: true });
   expect(await ingest(secondShard, secondIdentity)).toMatchObject({ updated: true });
+  expect(await cachedShards()).toEqual([true, true]);
   expect(await stored()).toEqual({
     runIds: [
-      'github:run:githubnext/gh-aw-cao:1001',
-      'github:run:githubnext/gh-aw-cao:1002'
+      'github:run:githubnext/gh-cao:1001',
+      'github:run:githubnext/gh-cao:1002'
     ],
     receiptHashes: [firstIdentity, secondIdentity]
   });
 
   await page.reload();
+  expect(await readSnapshot()).toEqual({ createdAt });
   expect((await stored()).runIds).toHaveLength(2);
+  expect(await cachedShards()).toEqual([true, true]);
 });

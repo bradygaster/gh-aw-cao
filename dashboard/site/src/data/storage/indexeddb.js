@@ -1,9 +1,13 @@
-import { EVIDENCE_DEFINITION_STORES, mergeEvidenceDefinition, relationshipErrors } from '../model/schema.js';
+import { relationshipErrors } from '../model/schema.js';
 import { pruneCanonicalRecord } from '../model/fields.js';
-import { recordTimestamp } from './retention.js';
+import { BROWSER_RETENTION_WINDOWS_MS, recordTimestamp, RETENTION_TIMESTAMPS as RETENTION_TIMESTAMP_FIELDS } from './retention.js';
 import { scopedStorageKey } from '../../storage-scope.js';
 import { createDebug } from '../../debug.js';
 import { tidy } from '../../data-operations.js';
+import {
+  STORAGE_SHARD_STORE, maintainStorageShards, rebuildStorageShards,
+  withStorageMetadata, writeAccountedRecords
+} from './shards.js';
 import {
   AUDIT_CURATION_TRANSACTION_ID,
   AUDIT_CURATION_VERSION,
@@ -14,7 +18,7 @@ import {
 const debug = createDebug('data:indexeddb');
 
 export const DATABASE_NAME = 'gh-aw-cao-dashboard-data';
-export const DATABASE_VERSION = 37;
+export const DATABASE_VERSION = 42;
 /** @type {Set<(versions: { oldVersion: number, newVersion: number }) => void>} */
 const upgradeListeners = new Set();
 
@@ -51,7 +55,7 @@ export const ENTITY_STORES = /** @type {const} */ ([
   'experiments', 'experimentAssignments', 'graders', 'graderObservations', 'evals', 'evalObservations'
 ]);
 export const TRANSACTION_STORE = 'transactions';
-export const DATABASE_STORES = /** @type {const} */ ([...ENTITY_STORES, TRANSACTION_STORE]);
+export const DATABASE_STORES = /** @type {const} */ ([...ENTITY_STORES, TRANSACTION_STORE, STORAGE_SHARD_STORE]);
 export const CANONICAL_DATABASE_SCHEMA = /** @type {Record<
  * string, { keyPath: string, indexes: Record<string, string | string[]> }
  * >} */ ({
@@ -142,8 +146,26 @@ export const CANONICAL_DATABASE_SCHEMA = /** @type {Record<
   transactions: {
     keyPath: 'id',
     indexes: { byCreatedAt: 'createdAt' }
+  },
+  storageShards: {
+    keyPath: 'id',
+    indexes: {}
   }
 });
+for (const storeName of ENTITY_STORES) {
+  if (Object.hasOwn(RETENTION_TIMESTAMP_FIELDS, storeName)) {
+    CANONICAL_DATABASE_SCHEMA[storeName].indexes.byStorageTimestamp = ['_storage.timestamp', 'id'];
+  }
+}
+for (const storeName of [
+  'domains', 'tools', 'skills', 'friction', 'audits', 'issues',
+  'experimentAssignments', 'graderObservations', 'evalObservations'
+]) {
+  CANONICAL_DATABASE_SCHEMA[storeName].indexes.byStorageRun = ['runId', 'id'];
+}
+for (const storeName of ['experimentAssignments', 'graderObservations', 'evalObservations']) {
+  CANONICAL_DATABASE_SCHEMA[storeName].indexes.byAudit = 'auditId';
+}
 const DEFAULT_WRITE_BATCH_SIZE = 1000;
 const MAX_TRANSACTION_RECORDS = 1000;
 const INGESTION_LOCK_ID = 'lock:canonical-ingestion';
@@ -194,15 +216,15 @@ const monotonicNow = () => globalThis.performance?.now() ?? Date.now();
 export function prepareCanonicalRecord(storeName, record) {
   const indexes = Object.keys(CANONICAL_DATABASE_SCHEMA[storeName]?.indexes ?? {})
     .filter((name) => Object.hasOwn(CANONICAL_QUERY_INDEX_FIELDS, name));
-  if (indexes.length === 0) return record;
-  return {
+  if (indexes.length === 0) return withStorageMetadata(storeName, record);
+  return withStorageMetadata(storeName, {
     ...record,
     _queryKeys: Object.fromEntries(indexes.flatMap((name) => {
       const values = CANONICAL_QUERY_INDEX_FIELDS[name].map((field) => record[field] ?? null);
       return values.every((value) => losslessQueryKeyValue(value))
         ? [[name, JSON.stringify(values)]] : [];
     }))
-  };
+  });
 }
 
 /**
@@ -229,6 +251,7 @@ function losslessQueryKeyValue(value, seen = new Set(), depth = 0) {
  */
 function canonicalRecord(record) {
   if (record && Object.hasOwn(record, '_queryKeys')) delete record._queryKeys;
+  if (record && Object.hasOwn(record, '_storage')) delete record._storage;
   return record;
 }
 
@@ -601,25 +624,18 @@ export async function upsertCanonicalBatchWithConnection(database, batch, option
       options.signal?.throwIfAborted();
       const boundedRecords = records.slice(offset, offset + batchSize)
         .map((record) => pruneCanonicalRecord(storeName, record));
-      const transaction = readwriteTransaction(database, storeName);
+      const transaction = readwriteTransaction(database, [storeName, STORAGE_SHARD_STORE]);
       const done = transactionDone(transaction);
-      const store = transaction.objectStore(storeName);
-      if (EVIDENCE_DEFINITION_STORES.has(storeName)) {
-        let pendingLookups = boundedRecords.length;
-        for (const record of boundedRecords) {
-          const lookup = store.get(/** @type {IDBValidKey} */ (record.id));
-          lookup.onsuccess = () => {
-            store.put(mergeEvidenceDefinition(
-              /** @type {Record<string, unknown> | undefined} */ (lookup.result), record
-            ));
-            if (--pendingLookups === 0) commitTransaction(transaction);
-          };
-        }
-      } else {
-        for (const record of boundedRecords) store.put(prepareCanonicalRecord(storeName, record));
+      try {
+        await writeAccountedRecords(transaction, storeName,
+          boundedRecords.map((record) => prepareCanonicalRecord(storeName, record)));
         commitTransaction(transaction);
+        await done;
+      } catch (error) {
+        try { transaction.abort(); } catch { /* Already aborted or completed. */ }
+        await done.catch(() => undefined);
+        throw error;
       }
-      await done;
       committedRecords += boundedRecords.length;
       committedBatches += 1;
       await options.onBatchCommitted?.({ committedBatches, committedRecords });
@@ -653,13 +669,31 @@ function estimatedRecordBytes(record) {
 }
 
 /**
- * Applies retention and database-size limits with cursor scans so maintenance
- * never materializes the canonical database or its large linked-record stores.
+ * Applies retention and size limits using indexed, bounded shard cleanup.
+ * Full scans are reserved for explicitly requested relationship or legacy audit repair.
  *
  * @param {IDBFactory} indexedDB
- * @param {{ now?: number, retentionWindowMs?: number, retentionWindowMsByStore?: Record<string, number>, maxDatabaseBytes: number, usageBytes?: number | null, reconcileRelationships?: boolean, preserveEntityIds?: { repositories?: string[], workflows?: string[] }, onMaintenanceProgress?: (completed: number, total: number) => void, signal?: AbortSignal }} options
+ * @param {{ now?: number, retentionWindowMs?: number, retentionWindowMsByStore?: Record<string, number>, maxDatabaseBytes: number, usageBytes?: number | null, reconcileRelationships?: boolean, repairAuditCuration?: boolean, preserveEntityIds?: { repositories?: string[], workflows?: string[] }, onMaintenanceProgress?: (completed: number, total: number) => void, signal?: AbortSignal }} options
  */
 export async function maintainCanonicalDatabase(indexedDB, options) {
+  if (options.reconcileRelationships || options.repairAuditCuration) return reconcileCanonicalDatabase(indexedDB, options);
+  options.signal?.throwIfAborted();
+  const database = await openCanonicalDatabase(indexedDB);
+  try {
+    return await maintainStorageShards(database, {
+      ...options, entityStores: ENTITY_STORES, runLinkedStores: RUN_LINKED_STORES
+    });
+  } finally {
+    database.close();
+  }
+}
+
+/**
+ * Explicit relationship or legacy audit repair; never used for routine ingestion maintenance.
+ * @param {IDBFactory} indexedDB
+ * @param {Parameters<typeof maintainCanonicalDatabase>[1]} options
+ */
+async function reconcileCanonicalDatabase(indexedDB, options) {
     options.signal?.throwIfAborted();
     const now = options.now ?? Date.now();
     const defaultWindow = Number.isFinite(options.retentionWindowMs)
@@ -770,7 +804,9 @@ export async function maintainCanonicalDatabase(indexedDB, options) {
               return;
             }
           }
-          const configuredWindow = options.retentionWindowMsByStore?.[storeName];
+          const configuredWindow = options.retentionWindowMsByStore?.[storeName]
+            ?? (Number.isFinite(options.retentionWindowMs)
+              ? undefined : BROWSER_RETENTION_WINDOWS_MS[/** @type {keyof typeof BROWSER_RETENTION_WINDOWS_MS} */ (storeName)]);
           const windowMs = Number.isFinite(configuredWindow)
             ? Math.max(0, Number(configuredWindow))
             : defaultWindow;
@@ -957,6 +993,7 @@ export async function maintainCanonicalDatabase(indexedDB, options) {
         createdAt: new Date(now).toISOString()
       });
       await receiptDone;
+      await rebuildStorageShards(database, ENTITY_STORES);
       debug('curated canonical audits', { prunedAudits, version: AUDIT_CURATION_VERSION });
       return { deletedRecords, estimatedBytes, retainedRecords, prunedAudits };
     } finally {
@@ -1111,6 +1148,53 @@ export async function queryCollection(indexedDB, storeName, operators, options =
 }
 
 /**
+ * Visits bounded batches in primary-key order within one readonly snapshot.
+ * The synchronous visitor keeps projection and reduction inside the transaction.
+ * @param {IDBFactory} indexedDB
+ * @param {typeof ENTITY_STORES[number]} storeName
+ * @param {(rows: Record<string, unknown>[]) => void} visit
+ * @param {{ batchSize?: number, checkpoint?: () => void }} [options]
+ */
+export async function scanCanonicalCollection(indexedDB, storeName, visit, options = {}) {
+  const batchSize = options.batchSize ?? 1000;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1000) {
+    throw new TypeError('Canonical scan batchSize must be between 1 and 1000');
+  }
+  const database = await openCanonicalDatabase(indexedDB);
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(storeName);
+      const store = transaction.objectStore(storeName);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error ?? new Error('Canonical scan aborted'));
+      transaction.oncomplete = () => resolve(undefined);
+      /** @param {IDBKeyRange | undefined} range */
+      const read = (range) => {
+        const request = store.getAll(range, batchSize);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          try {
+            options.checkpoint?.();
+            const records = request.result;
+            visit(records.map((record) => canonicalRecord(record)));
+            if (records.length === batchSize) {
+              const lastKey = records[records.length - 1][String(store.keyPath)];
+              read(IDBKeyRange.lowerBound(lastKey, true));
+            }
+          } catch (error) {
+            transaction.abort();
+            reject(error);
+          }
+        };
+      };
+      read(undefined);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+/**
  * Counts distinct index keys without reading their event records. A nullable
  * trailing dimension is recovered by subtracting its indexed counts from the
  * prefix counts: IndexedDB omits null and absent keys, whereas query grouping
@@ -1138,6 +1222,7 @@ export async function queryCollectionCountGroups(indexedDB, storeName, plan) {
       await done;
       return null;
     }
+
     /** @type {Record<string, unknown>[]} */
     const groups = [];
     let requestCount = 3;
@@ -1290,7 +1375,7 @@ export async function queryCollectionCountGroups(indexedDB, storeName, plan) {
  * @param {IDBFactory} indexedDB
  * @param {typeof ENTITY_STORES[number]} storeName
  * @param {string} indexName
- * @param {{ maxKeys: number, checkpoint?: () => void }} options
+ * @param {{ maxKeys: number, checkpoint?: () => void, exactKey?: string }} options
  * @returns {Promise<Array<{ key: string, row: Record<string, unknown> }> | null>}
  */
 export async function readCollectionQueryKeys(indexedDB, storeName, indexName, options) {
@@ -1307,6 +1392,18 @@ export async function readCollectionQueryKeys(indexedDB, storeName, indexName, o
       return null;
     }
     const fields = CANONICAL_QUERY_INDEX_FIELDS[indexName];
+    if (options.exactKey !== undefined && fields.length === 1) {
+      // JSON string tuples sort before every non-string tuple. Check the tail
+      // without scanning the string dictionary, retaining coercion semantics.
+      const nonString = await requestResult(index.openKeyCursor(IDBKeyRange.lowerBound('[#')));
+      options.checkpoint?.();
+      if (!nonString) {
+        await done;
+        if (options.maxKeys < 1) throw new Error(`IndexedDB query keys exceeded max-input-rows of ${options.maxKeys}`);
+        const [value] = JSON.parse(options.exactKey);
+        return [{ key: options.exactKey, row: { [fields[0]]: value } }];
+      }
+    }
     /** @type {Array<{ key: string, row: Record<string, unknown> }>} */
     const rows = [];
     try {
@@ -1517,10 +1614,12 @@ export async function replaceCanonicalBatch(indexedDB, batch, options = {}) {
       const records = batch[storeName] ?? [];
       const retained = new Set(records.map((record) => String(record.id)));
       // Evict first so reclaimed space is available to the writes that follow.
-      const removal = readwriteTransaction(database, storeName);
+      const removal = readwriteTransaction(database, [storeName, STORAGE_SHARD_STORE]);
       const removalDone = transactionDone(removal);
       const removalStore = removal.objectStore(storeName);
       const knownDeleted = recordsToDelete?.[storeName];
+      /** @type {IDBValidKey[]} */
+      const removedIds = [];
       const reconciliationStrategy = knownDeleted
         ? 'retained-snapshot'
         : typeof removalStore.openKeyCursor === 'function'
@@ -1528,17 +1627,16 @@ export async function replaceCanonicalBatch(indexedDB, batch, options = {}) {
           : 'all-keys-fallback';
       try {
         if (knownDeleted) {
-          for (const id of knownDeleted) removalStore.delete(/** @type {IDBValidKey} */ (id));
+          removedIds.push(.../** @type {IDBValidKey[]} */ (knownDeleted));
           deletedRecords += knownDeleted.length;
           requestCount += knownDeleted.length;
-          commitTransaction(removal);
         } else if (typeof removalStore.openKeyCursor !== 'function') {
           requestCount += 1;
           const existing = await requestResult(removalStore.getAllKeys());
           scannedKeys += existing.length;
           for (const id of existing) {
             if (retained.has(String(id))) continue;
-            removalStore.delete(id);
+            removedIds.push(id);
             deletedRecords += 1;
             requestCount += 1;
           }
@@ -1555,7 +1653,7 @@ export async function replaceCanonicalBatch(indexedDB, batch, options = {}) {
               }
               scannedKeys += 1;
               if (!retained.has(String(cursor.primaryKey))) {
-                removalStore.delete(cursor.primaryKey);
+                removedIds.push(cursor.primaryKey);
                 deletedRecords += 1;
                 requestCount += 1;
               }
@@ -1563,6 +1661,10 @@ export async function replaceCanonicalBatch(indexedDB, batch, options = {}) {
             };
           });
         }
+        const removed = (await Promise.all(removedIds.map((id) => requestResult(removalStore.get(id)))))
+          .filter((record) => record !== undefined);
+        await writeAccountedRecords(removal, storeName, [], removed);
+        commitTransaction(removal);
         await removalDone;
         committedBatches += 1;
       } catch (error) {
@@ -1585,11 +1687,11 @@ export async function replaceCanonicalBatch(indexedDB, batch, options = {}) {
       const changedRecords = recordsToWrite[storeName];
       for (let offset = 0; offset < changedRecords.length; offset += batchSize) {
         const boundedRecords = changedRecords.slice(offset, offset + batchSize);
-        const transaction = readwriteTransaction(database, storeName);
+        const transaction = readwriteTransaction(database, [storeName, STORAGE_SHARD_STORE]);
         const done = transactionDone(transaction);
-        const store = transaction.objectStore(storeName);
         try {
-          for (const record of boundedRecords) store.put(prepareCanonicalRecord(storeName, record));
+          await writeAccountedRecords(transaction, storeName,
+            boundedRecords.map((record) => prepareCanonicalRecord(storeName, record)));
           requestCount += boundedRecords.length;
           commitTransaction(transaction);
           await done;
@@ -1692,6 +1794,26 @@ export async function readTransaction(indexedDB, id) {
       database.transaction(TRANSACTION_STORE).objectStore(TRANSACTION_STORE).get(id)
     );
     return result && typeof result === 'object' ? result : null;
+  } finally {
+    database.close();
+  }
+}
+
+/** @param {IDBFactory} indexedDB @param {string[]} ids */
+export async function readTransactionBatch(indexedDB, ids) {
+  const database = await openCanonicalDatabase(indexedDB);
+  try {
+    const transaction = database.transaction(TRANSACTION_STORE);
+    const done = transactionDone(transaction);
+    const store = transaction.objectStore(TRANSACTION_STORE);
+    try {
+      const records = await Promise.all(ids.map((id) => requestResult(store.get(id))));
+      await done;
+      return records;
+    } catch (error) {
+      await done.catch(() => undefined);
+      throw error;
+    }
   } finally {
     database.close();
   }

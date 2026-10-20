@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ingestCachedGhAwJsonl } from '../../src/data/ingest/coordinator.js';
+import { ingestCachedGhAwJsonl, ingestDashboardSources, ingestNormalizedJsonl } from '../../src/data/ingest/coordinator.js';
+import { CANONICAL_SCHEMA_VERSION } from '../../src/data/model/schema.js';
 import {
   CANONICAL_DATABASE_SCHEMA,
   DATABASE_NAME,
@@ -13,6 +14,7 @@ import {
   queryIndexedDatabaseSources
 } from '../../src/data/queries/database.js';
 import { processDataRequest } from '../../src/data-worker.js';
+import { compileDashboardViewPayloadQueries } from '../../src/data/queries/view-payload-compiler.js';
 import { createDashboardQueryBudget, executeDashboardQueries, resolveDashboardQuerySources } from '../../src/data/queries/declarative.js';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
 
@@ -47,19 +49,19 @@ const sources = {  campaigns: {
     metadata
   },
   repositories: {
-    rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', 'rollout-mode': 'review' }],
+    rows: [{ organization: 'githubnext', repository: 'gh-cao', 'rollout-mode': 'review' }],
     metadata
   },
   workflows: {
     rows: [{
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.lock.yml',
+      organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.lock.yml',
       campaign: 'dashboard', 'campaign-name': 'CAO Dashboard', 'workflow-id': '501',
       'workflow-name': 'Published registry name', 'workflow-role': 'worker',
       'workflow-registry-state': 'active', 'workflow-active': 'true',
       'admission-status': 'admitted', 'inventory-ready': true,
       'workflow-link': {
         relation: 'workflow',
-        href: 'https://github.com/githubnext/gh-aw-cao/actions/workflows/501'
+        href: 'https://github.com/githubnext/gh-cao/actions/workflows/501'
       },
       'created-at': '2026-09-01T00:00:00Z', 'updated-at': '2026-09-08T00:00:00Z',
       'rollout-mode': 'review'
@@ -68,7 +70,7 @@ const sources = {  campaigns: {
   },
   runs: {
     rows: [{
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+      organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
       run: '42', 'run-attempt': 2, 'run-status': 'completed', 'run-conclusion': 'failure',
       'started-at': '2026-09-09T04:00:00Z', 'failure-message': 'Build failed',
       'failure-detail': 'Build failed', 'failure-log': '##[error]Build failed',
@@ -77,13 +79,13 @@ const sources = {  campaigns: {
       'rollout-mode': 'review', engine: 'copilot', 'engine-version': '1.2.3',
       'gh-aw-version': 'v0.89.4',
       'requested-model': 'model-a', 'resolved-model': 'model-b',
-      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42', label: 'Run 42' }
+      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/42', label: 'Run 42' }
     }],
     metadata
   },
   'job-performance': {
     rows: [{
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+      organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
       run: '42', 'run-attempt': 2, 'job-id': '99', job: 'build',
       'job-status': 'completed', 'job-conclusion': 'failure', 'job-duration-seconds': 120,
       'started-at': '2026-09-09T04:01:00Z', runner: 'ubuntu-latest', engine: 'copilot', model: 'model-b'
@@ -92,11 +94,11 @@ const sources = {  campaigns: {
   },
   'work-items': {
     rows: [{
-      'work-item-id': 'githubnext/gh-aw-cao:.github/workflows/dashboard.md',
+      'work-item-id': 'githubnext/gh-cao:.github/workflows/dashboard.md',
       name: 'Dashboard · Publish report', objective: 'Dashboard',
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+      organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
       run: '42', 'workflow-name': 'Dashboard', 'workflow-icon': 'workflow', campaign: 'dashboard',
-      scope: 'githubnext/gh-aw-cao', domain: 'dashboard', 'work-type': 'worker',
+      scope: 'githubnext/gh-cao', domain: 'dashboard', 'work-type': 'worker',
       'lifecycle-state': 'blocked', phase: 'completed', reason: 'Build failed',
       'reason-evidence-class': 'observed', 'next-action': 'Resolve the run failure',
       'next-actor': 'maintainer', 'safe-output-kind': 'workflow-output', 'waiting-on': 'scheduled run',
@@ -104,27 +106,27 @@ const sources = {  campaigns: {
       'verification-state': 'pending', 'outcome-state': 'pending',
       'started-at': '2026-09-09T04:00:00Z', 'ended-at': '2026-09-09T04:02:00Z',
       'observed-at': '2026-09-09T04:00:00Z',
-      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42' }
+      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/42' }
     }],
     metadata
   },
   'security-findings': {
     rows: [{
-      organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md', run: '42',
+      organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md', run: '42',
       'smell-observation-id': 'threat-detection:observation-1', 'smell-id': 'threat-detection-secret-leak',
       'smell-name': 'Secret leak detected', 'smell-category': 'trust-and-security', 'smell-severity': 'high',
       'smell-summary': 'Threat detection reported untrusted or unsafe agent behavior.',
       'smell-evidence': 'credentials', 'observed-at': '2026-09-09T04:01:00Z',
-      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42' }
+      'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/42' }
     }],
     metadata
   },
   tools: {
     rows: [
       {
-        organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+        organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
         run: '42', 'run-attempt': 2, event: 'event:tool-call',
-        'event-timestamp': '2026-09-09T04:00:10Z', 'event-source': 'mcp', 'event-type': 'tool.call',
+        'event-timestamp': '2026-09-09T04:00:10Z', 'event-source': 'mcp', 'event-type': 'mcp.tool_call',
         'event-summary': 'github.list_issues', 'event-status': 'requested',
         'request-count': 7,
         'correlation-id': 'call-1', 'safe-output-type': 'create_issue',
@@ -138,9 +140,9 @@ const sources = {  campaigns: {
   audits: {
     rows: [
       {
-        organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+        organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
         run: '42', 'run-attempt': 2, event: 'event:agent-turn',
-        'event-timestamp': '2026-09-09T04:00:20Z', 'event-source': 'agent', 'event-type': 'agent_turn',
+        'event-timestamp': '2026-09-09T04:00:20Z', 'event-source': 'agent', 'event-type': 'user.message',
         'event-summary': 'Planned the change', 'source-sequence': 1, 'observed-at': '2026-09-09T04:00:20Z'
       }
     ],
@@ -151,7 +153,7 @@ const sources = {  campaigns: {
   operationalValues: { rows: /** @type {Record<string, unknown>[]} */ ([]), metadata },
   marketplacePackages: { rows: /** @type {Record<string, unknown>[]} */ ([]), metadata },
   usage: {
-    rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md', run: '42', aic: 17 }],
+    rows: [{ organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md', run: '42', aic: 17 }],
     metadata
   }
 };
@@ -169,6 +171,7 @@ function collection(generation, auditRows) {
 }
 
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
   await new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DATABASE_NAME);
     request.onsuccess = () => resolve(undefined);
@@ -181,6 +184,80 @@ afterEach(() => {
 });
 
 describe('canonical view sources', () => {
+  it.each(['acme/control', 'github/gh-aw'])('attributes a retained worker issue in %s after a normalized Activity import', async (issueRepository) => {
+    const inventory = {
+      campaigns: { rows: [{ campaign: 'repo-assist', 'campaign-name': 'Repo Assist' }], metadata },
+      repositories: { rows: [{ organization: 'acme', repository: 'control' }], metadata },
+      workflows: {
+        rows: [{
+          organization: 'acme', repository: 'control',
+          workflow: '.github/workflows/repo-assist-maintenance.md',
+          campaign: 'repo-assist', 'workflow-role': 'worker',
+          'workflow-registry-state': 'active', 'workflow-active': 'true'
+        }],
+        metadata
+      }
+    };
+    await ingestDashboardSources(indexedDB, inventory, { deferMaintenance: true });
+    const workflowId = 'workflow:acme%2Fcontrol%3A.github%2Fworkflows%2Frepo-assist-maintenance.md';
+    const runId = 'github:run:acme/control:38530688831';
+    const records = [
+      {
+        collection: 'workflows',
+        record: {
+          id: workflowId, repositoryId: 'repository:acme%2Fcontrol',
+          name: 'Repo Assist maintenance · github/gh-aw · review',
+          path: '.github/workflows/repo-assist-maintenance.md',
+          state: 'unknown', observedAt: metadata['as-of']
+        }
+      },
+      {
+        collection: 'runs',
+        record: {
+          id: runId, repositoryId: 'repository:acme%2Fcontrol', workflowId,
+          owner: 'acme', repository: 'control', githubRunId: '38530688831',
+          workflowPath: '.github/workflows/repo-assist-maintenance.md',
+          attempt: 1, status: 'completed', conclusion: 'success',
+          observedAt: metadata['as-of'], ghAwVersion: 'v0.91.5'
+        }
+      },
+      {
+        collection: 'issues',
+        record: {
+          id: `github:issue:${issueRepository}:2`, runId, type: 'safe_output.result',
+          timestamp: metadata['as-of'], observedAt: metadata['as-of'],
+          source: 'safe_outputs', summary: 'Maintenance review proposal',
+          correlationId: `https://github.com/${issueRepository}/issues/2`,
+          repositoryFullName: issueRepository, number: 2,
+          githubEntityType: 'issue', isPullRequest: false, state: 'open', closed: false,
+          sequence: 0
+        }
+      }
+    ];
+    const payload = [
+      { kind: 'metadata', schemaVersion: CANONICAL_SCHEMA_VERSION, ingestionVersion: 4, phase: 'all', records: records.length },
+      ...records.map((record) => ({ kind: 'record', ...record }))
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n';
+    await ingestNormalizedJsonl(indexedDB, (async function* () { yield payload; })(), {
+      payloadScope: 'activity-reports', payloadIdentity: 'a'.repeat(64), deferMaintenance: true
+    });
+    await expect(ingestDashboardSources(indexedDB, inventory, { deferMaintenance: true })).resolves.toMatchObject({ skipped: true });
+    const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (await processDataRequest({
+      operation: 'load-dashboard-query-sources', sources: inventory,
+      queries: dashboardQueries, sourceNames: ['campaign-worker-issues', 'campaign-issue-tab-counts']
+    }));
+    expect(result['campaign-worker-issues'].metadata.availability).toBe('available');
+    expect(result['campaign-worker-issues'].rows).toEqual([
+      expect.objectContaining({
+        campaign: 'repo-assist', organization: 'acme', repository: 'control',
+        workflow: '.github/workflows/repo-assist-maintenance.md',
+        run: '38530688831', 'issue-state': 'open',
+        'issue-link': expect.objectContaining({ href: `https://github.com/${issueRepository}/issues/2` })
+      })
+    ]);
+    expect(result['campaign-issue-tab-counts'].rows).toEqual([{ campaign: 'repo-assist', items: 1 }]);
+  });
+
   it('summarizes canonical database diagnostics inside the query layer', async () => {
     const diagnostics = /** @type {import('../../src/diagnostics.js').DatabaseDiagnostics} */ (await processDataRequest({
       operation: 'query-canonical-database-diagnostics'
@@ -221,7 +298,7 @@ describe('canonical view sources', () => {
 
   it('matches declarative counts for every canonical database table', async () => {
     await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
-    const tableNames = [...DATABASE_STORES];
+    const tableNames = DATABASE_STORES.filter((store) => store !== 'storageShards');
     const canonical = await queryCanonicalViewSources(indexedDB, sources, tableNames);
     const definitions = tableNames.map((table) => ({
       name: `${table}-count`,
@@ -246,14 +323,25 @@ describe('canonical view sources', () => {
     expect(collectionReads).not.toHaveBeenCalled();
   });
 
+  it('does not expose physical shard accounting through native source counts', async () => {
+    await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
+    const definition = {
+      name: 'internal-count', from: 'storageShards',
+      aggregate: { values: [{ field: 'id', as: 'count', reducer: 'count' }] }
+    };
+    const counts = vi.spyOn(IDBObjectStore.prototype, 'count');
+    expect(await queryNativeCountSources(indexedDB, sources, [definition], ['internal-count'])).toEqual({});
+    expect(counts).not.toHaveBeenCalled();
+  });
+
   it('projects canonical operational values with campaign fields', async () => {
     await processDataRequest({ operation: 'query-canonical-database-diagnostics' });
     await putCanonicalRecord('repositories', {
       id: 'repository:fixture',
       owner: 'githubnext',
-      name: 'gh-aw-cao',
-      fullName: 'githubnext/gh-aw-cao',
-      repositoryLink: { href: 'https://github.com/githubnext/gh-aw-cao' }
+      name: 'gh-cao',
+      fullName: 'githubnext/gh-cao',
+      repositoryLink: { href: 'https://github.com/githubnext/gh-cao' }
     });
     await putCanonicalRecord('campaigns', {
       id: 'campaign:dependabot',
@@ -265,9 +353,10 @@ describe('canonical view sources', () => {
     await putCanonicalRecord('operationalValues', {
       id: 'operational-value:dependabot',
       repositoryId: 'repository:fixture',
-      repository: 'githubnext/gh-aw-cao',
+      repository: 'githubnext/gh-cao',
       campaign: 'dependabot',
       valueId: 'dependabot-vulnerability-alerts',
+      'cadence-days': 7,
       value: 4,
       timestamp: '2026-09-09T04:00:00Z',
       observedAt: '2026-09-09T04:00:00Z'
@@ -277,13 +366,61 @@ describe('canonical view sources', () => {
 
     expect(result['operational-values'].rows).toEqual([expect.objectContaining({
       organization: 'githubnext',
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       campaign: 'dependabot',
       'campaign-name': 'Dependabot',
       'operational-value-definition': 'dependabot-vulnerability-alerts',
+      'cadence-days': 7,
       'operational-value': 4,
       'observed-at': '2026-09-09T04:00:00Z'
     })]);
+  });
+
+  it('renders campaignless repository outcomes from canonical storage through worker view payloads', async () => {
+    await processDataRequest({ operation: 'query-canonical-database-diagnostics' });
+    const records = [];
+    for (const [index, value] of [4, 0].entries()) {
+      const day = index + 8;
+      const timestamp = `2026-09-${String(day).padStart(2, '0')}T04:00:00Z`;
+      records.push({
+        schema_version: 2, kind: 'operational_value',
+        operational_value: {
+          repository: 'octo/standalone', value_id: 'remaining-alerts', value, timestamp,
+          workflow_slug: 'standalone', metric_role: 'primary',
+          metric_name: 'Remaining alerts', metric_unit: 'alerts',
+          metric_direction: 'decrease', maturity_status: 'matured',
+          evaluator_digest: 'a'.repeat(64), cadence_days: 1,
+          measurement_kind: 'snapshot', coverage_status: 'complete',
+          window_start: `2026-09-${String(day - 1).padStart(2, '0')}T04:00:00Z`,
+          window_end: timestamp
+        }
+      });
+    }
+    await ingestCachedGhAwJsonl(indexedDB, `${records.map(row => JSON.stringify(row)).join('\n')}\n`, {
+      now: Date.parse(metadata['as-of'])
+    });
+    const projected = await queryCanonicalViewSources(indexedDB, sources, ['repositories', 'operational-values']);
+    for (const [pageId, viewId, expected] of [
+      ['operational-value', 'operational-value-signals', {
+        'repository-coordinate': 'octo/standalone', signal: 'Improving', 'measured-goals': 1
+      }],
+      ['operational-value-repository', 'repository-outcome-comparison', {
+        'operational-value': 0, 'native-change': -4, movement: 'Improving', 'value-workflow': 'standalone'
+      }]
+    ]) {
+      const page = authoritativeDashboard.dashboard.pages.find((/** @type {{ id: string }} */ page) => page.id === pageId);
+      const payload = compileDashboardViewPayloadQueries(page, String(pageId), {
+        viewId: String(viewId), queries: dashboardQueries,
+        routeParameters: { organization: 'octo', repository: 'standalone' },
+        evaluatedAt: metadata['as-of']
+      });
+      const result = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (await processDataRequest({
+        operation: 'execute-dashboard-queries', queries: payload.queries,
+        sourceNames: payload.aliases, sources: projected
+      }));
+      expect(result[payload.aliases[0]].metadata?.availability).toBe('available');
+      expect(result[payload.aliases[0]].rows).toMatchObject([expected]);
+    }
   });
 
   it('projects safe-output links declaratively for issues and pull requests', async () => {
@@ -293,9 +430,9 @@ describe('canonical view sources', () => {
       runId: 'github:run:42:attempt:2',
       timestamp: '2026-09-09T04:00:10Z',
       source: 'safe-output',
-      type: 'safe_output.created',
+      type: 'safe_output.result',
       summary: 'Created issue',
-      correlationId: 'https://github.com/githubnext/gh-aw-cao/issues/123',
+      correlationId: 'https://github.com/githubnext/gh-cao/issues/123',
       safeOutputType: 'create_issue',
       isPullRequest: false,
       number: 123
@@ -305,9 +442,9 @@ describe('canonical view sources', () => {
       runId: 'github:run:42:attempt:2',
       timestamp: '2026-09-09T04:00:20Z',
       source: 'safe-output',
-      type: 'safe_output.created',
+      type: 'safe_output.result',
       summary: 'Created pull request',
-      correlationId: 'https://github.com/githubnext/gh-aw-cao/pull/124',
+      correlationId: 'https://github.com/githubnext/gh-cao/pull/124',
       safeOutputType: 'create_pull_request',
       isPullRequest: true,
       number: 124
@@ -318,21 +455,21 @@ describe('canonical view sources', () => {
     expect(projected.outcomes.rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
         'outcome-title': 'Created issue',
-        'issue-link': { href: 'https://github.com/githubnext/gh-aw-cao/issues/123', label: 'View issue' },
+        'issue-link': { href: 'https://github.com/githubnext/gh-cao/issues/123', label: 'View issue' },
         'pull-request-link': null,
-        'external-link': { href: 'https://github.com/githubnext/gh-aw-cao/issues/123', label: 'View issue' }
+        'external-link': { href: 'https://github.com/githubnext/gh-cao/issues/123', label: 'View issue' }
       }),
       expect.objectContaining({
         'outcome-title': 'Created pull request',
         'issue-link': null,
-        'pull-request-link': { href: 'https://github.com/githubnext/gh-aw-cao/pull/124', label: 'View pull request' },
-        'external-link': { href: 'https://github.com/githubnext/gh-aw-cao/pull/124', label: 'View pull request' }
+        'pull-request-link': { href: 'https://github.com/githubnext/gh-cao/pull/124', label: 'View pull request' },
+        'external-link': { href: 'https://github.com/githubnext/gh-cao/pull/124', label: 'View pull request' }
       })
     ]));
   });
 
   it('returns the same zero counts as declarative execution for empty tables', async () => {
-    const tableNames = [...DATABASE_STORES];
+    const tableNames = DATABASE_STORES.filter((store) => store !== 'storageShards');
     const definitions = tableNames.map((table) => ({
       name: `${table}-count`,
       from: table,
@@ -411,7 +548,7 @@ describe('canonical view sources', () => {
     );
 
     expect(result['repository-logical-count'].rows).toEqual([{ repositories: 1 }]);
-    expect(result['repository-optional-count']).toBeUndefined();
+    expect(result['repository-optional-count'].rows).toEqual([{ repositories: 1 }]);
     expect(nativeCounts).toHaveBeenCalledOnce();
   });
 
@@ -440,7 +577,7 @@ describe('canonical view sources', () => {
     );
 
     expect(result['indexing-tools-table-count'].rows).toEqual([
-      { table: 'tool events', records: 1 }
+      { table: 'tools', records: 1 }
     ]);
     expect(result['indexing-domains-table-count'].rows).toEqual([]);
     expect(Object.keys(result)).toEqual(required.filter((name) => (
@@ -465,8 +602,8 @@ describe('canonical view sources', () => {
     expect(collectionReads.mock.contexts.map((store) => /** @type {IDBObjectStore} */ (store).name))
       .toEqual(['repositories', 'campaigns', 'operationalValues']);
     expect(results['indexing-database-table-counts'].rows).toEqual(expect.arrayContaining([
-      { table: 'workflow runs', records: 1 },
-      { table: 'tool events', records: 1 }
+      { table: 'runs', records: 1 },
+      { table: 'tools', records: 1 }
     ]));
   });
 
@@ -484,14 +621,41 @@ describe('canonical view sources', () => {
 
     expect(result['failed-runs']).toMatchObject({
       source: 'failed-runs',
-      rows: [{ repository: 'gh-aw-cao', run: '42', 'run-conclusion': 'failure' }],
+      rows: [{ repository: 'gh-cao', run: '42', 'run-conclusion': 'failure' }],
       metadata: { 'source-kind': 'derived', 'query-name': 'failed-runs' }
     });
     expect(indexedReads).toHaveBeenCalledTimes(4);
     expect(collectionReads).not.toHaveBeenCalled();
   });
 
-  it('keeps computed daily run aggregates in the declarative engine', async () => {
+  it('retains orphan evidence when a computed run-key constraint can match missing run identity', async () => {
+    await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
+    await putCanonicalRecord('audits', { id: 'orphan-audit', runId: 'absent-run', type: 'workflow.info' });
+    const definitions = [{
+      name: 'orphan-run-key', from: 'audits',
+      compute: [{ as: 'run-key', function: 'concat', args: [
+        { field: 'organization' }, { value: '/' }, { field: 'repository' }, { value: ':' }, { field: 'run' }
+      ] }],
+      select: [{ field: 'event' }, { field: 'run-key' }]
+    }];
+    const canonical = await queryCanonicalViewSources(indexedDB, sources, ['audits']);
+    const projected = executeDashboardQueries(definitions, canonical, ['orphan-run-key']);
+    const key = projected['orphan-run-key'].rows.find(row => row.event === 'orphan-audit')?.['run-key'];
+    expect(key).toBe('/:');
+    const scoped = [...definitions, {
+      name: 'orphan-selected', from: 'orphan-run-key',
+      filter: { predicates: [{ field: 'run-key', equals: key }] },
+      select: [{ field: 'event' }]
+    }];
+    const native = await queryNativeCountSources(indexedDB, sources, scoped, ['orphan-selected']);
+    expect(native).not.toHaveProperty('orphan-selected');
+    const result = await loadCanonicalViewSources(indexedDB, sources, {
+      queries: scoped, sourceNames: ['orphan-selected']
+    });
+    expect(result['orphan-selected'].rows).toEqual([{ event: 'orphan-audit' }]);
+  });
+
+  it('streams row-local computed daily run aggregates without changing declarative results', async () => {
     await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
 
     const native = await queryNativeCountSources(
@@ -501,10 +665,12 @@ describe('canonical view sources', () => {
       ['runs-daily-conclusions']
     );
 
-    expect(Object.keys(native)).toEqual([]);
+    const canonical = await queryCanonicalViewSources(indexedDB, sources, ['runs']);
+    const expected = executeDashboardQueries(dashboardQueries, canonical, ['runs-daily-conclusions']);
+    expect(native['runs-daily-conclusions'].rows).toEqual(expected['runs-daily-conclusions'].rows);
   });
 
-  it('falls back for joins, transformed counts, invalid queries, and non-table sources', async () => {
+  it('streams eligible transformed counts and declines joins, invalid queries, and non-table sources', async () => {
     await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
     const definitions = [
       {
@@ -579,7 +745,13 @@ describe('canonical view sources', () => {
       requested
     );
 
-    expect(Object.keys(projected)).toEqual(['repository-count']);
+    expect(Object.keys(projected)).toEqual([
+      'repository-count', 'filtered-run-count', 'grouped-run-count', 'non-key-run-count',
+      'distinct-run-count', 'limited-run-count', 'selected-run-count'
+    ]);
+    const canonical = await queryCanonicalViewSources(indexedDB, sources, ['repositories', 'runs']);
+    const expected = executeDashboardQueries(definitions, canonical, requested);
+    for (const name of Object.keys(projected)) expect(projected[name].rows).toEqual(expected[name].rows);
     expect(projected['repository-count']).toMatchObject({
       source: 'repository-count',
       rows: [{ repositories: 1 }],
@@ -660,7 +832,7 @@ describe('canonical view sources', () => {
     expect(Object.keys(projected)).toEqual(['failed-runs']);
     expect(projected['failed-runs']).toMatchObject({
       source: 'failed-runs',
-      rows: [{ repository: 'gh-aw-cao', run: '42', 'run-conclusion': 'failure' }],
+      rows: [{ repository: 'gh-cao', run: '42', 'run-conclusion': 'failure' }],
       metadata: { 'source-kind': 'derived' }
     });
     expect(metrics).toMatchObject({
@@ -683,7 +855,7 @@ describe('canonical view sources', () => {
       rows: [{
         id: expect.any(String),
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/dashboard.md',
         'workflow-name': 'Published registry name',
         'workflow-role': 'worker',
@@ -730,7 +902,7 @@ describe('canonical view sources', () => {
         'updated-at': '2026-09-08T00:00:00Z',
         'workflow-link': {
           relation: 'workflow',
-          href: 'https://github.com/githubnext/gh-aw-cao/actions/workflows/501'
+          href: 'https://github.com/githubnext/gh-cao/actions/workflows/501'
         }
       })
     ]);
@@ -748,10 +920,10 @@ describe('canonical view sources', () => {
       source: 'tools',
       rows: [{
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         run: '42',
         event: 'event:tool-call',
-        'event-type': 'tool.call'
+        'event-type': 'mcp.tool_call'
       }],
       metadata: { 'source-kind': 'database-query' }
     });
@@ -759,7 +931,7 @@ describe('canonical view sources', () => {
       source: 'mcp-calls',
       rows: [{
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         run: '42',
         'mcp-observation': 'event:tool-call',
         'mcp-status': 'requested',
@@ -772,8 +944,8 @@ describe('canonical view sources', () => {
     });
   });
 
-  it('does not read database stores for a populated published source', async () => {
-    const collectionReads = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+  it('ignores populated report projections and reads canonical evidence instead', async () => {
+    await loadCanonicalViewSources(indexedDB, sources, { ingest: true });
     const published = { rows: [{ 'mcp-observation': 'published-call' }], metadata };
 
     const projected = await queryDatabaseSources(
@@ -782,8 +954,9 @@ describe('canonical view sources', () => {
       ['mcp-calls']
     );
 
-    expect(projected['mcp-calls'].rows).toEqual(published.rows);
-    expect(collectionReads).not.toHaveBeenCalled();
+    expect(projected['mcp-calls'].rows).toHaveLength(1);
+    expect(projected['mcp-calls'].rows[0]['mcp-observation']).toBe('event:tool-call');
+    expect(projected['mcp-calls'].metadata['source-kind']).toBe('database-query');
   });
 
   it('reprojects populated unavailable MCP sources before deriving top tools', async () => {
@@ -823,7 +996,7 @@ describe('canonical view sources', () => {
     expect(collectionReads).not.toHaveBeenCalled();
   });
 
-  it('returns requested authoritative sources through the canonical query boundary', async () => {
+  it('queries work items canonically and rejects undeclared report sources', async () => {
     const loaded = await loadCanonicalViewSources(indexedDB, sources, {
       ingest: true,
       sourceNames: ['work-items', 'security-findings']
@@ -837,21 +1010,24 @@ describe('canonical view sources', () => {
 
     expect(projected['work-items']).toMatchObject({
       source: 'work-items',
-      rows: [{ 'work-item-id': 'githubnext/gh-aw-cao:.github/workflows/dashboard.md', 'lifecycle-state': 'blocked' }]
+      rows: [{ 'work-item-id': 'githubnext/gh-cao:.github/workflows/dashboard.md', 'lifecycle-state': 'blocked' }]
     });
     expect(projected['security-findings']).toMatchObject({
       source: 'security-findings',
-      rows: [{ 'smell-observation-id': 'threat-detection:observation-1', 'smell-severity': 'high' }]
+      rows: [],
+      metadata: { availability: 'unavailable', error: expect.stringContaining('No canonical database query') }
     });
     expect(projected).not.toHaveProperty('usage');
     expect(loaded['work-items']).toMatchObject({
       source: 'work-items',
-      rows: [{ 'work-item-id': 'githubnext/gh-aw-cao:.github/workflows/dashboard.md', 'lifecycle-state': 'blocked' }]
+      rows: [{ 'work-item-id': 'githubnext/gh-cao:.github/workflows/dashboard.md', 'lifecycle-state': 'blocked' }]
     });
     expect(loaded['security-findings']).toMatchObject({
       source: 'security-findings',
-      rows: [{ 'smell-observation-id': 'threat-detection:observation-1', 'smell-severity': 'high' }]
+      rows: [],
+      metadata: { availability: 'unavailable' }
     });
+    expect(Object.keys(loaded)).toEqual(['work-items', 'security-findings']);
   });
 
   it('projects failed-run evidence from the active canonical generation', async () => {
@@ -868,20 +1044,20 @@ describe('canonical view sources', () => {
         'error-signature-label': 'Agent process exited unexpectedly',
         'failure-message': 'Build failed',
         'failure-log': '##[error]Build failed',
-        'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-aw-cao/actions/runs/42', label: 'Run 42' },
-        'workflow-source-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-aw-cao/actions/workflows/501' },
+        'run-link': { relation: 'run', href: 'https://github.com/githubnext/gh-cao/actions/runs/42', label: 'Run 42' },
+        'workflow-source-link': { relation: 'workflow', href: 'https://github.com/githubnext/gh-cao/actions/workflows/501' },
         'status-detail': 'Build failed'
       }]
     });
     expect(projected['failed-runs']).toMatchObject({
       source: 'failed-runs',
-      rows: [{ repository: 'gh-aw-cao', run: '42', 'run-attempt': 2, 'run-conclusion': 'failure', 'failure-detail': 'Build failed' }],
+      rows: [{ repository: 'gh-cao', run: '42', 'run-attempt': 2, 'run-conclusion': 'failure', 'failure-detail': 'Build failed' }],
       metadata: { 'source-kind': 'derived', availability: 'available' }
     });
     expect(projected.runs).toMatchObject({
       source: 'runs',
       rows: [{
-        repository: 'gh-aw-cao', run: '42', 'run-attempt': 2,
+        repository: 'gh-cao', run: '42', 'run-attempt': 2,
         'rollout-mode': 'review', engine: 'copilot', 'engine-version': '1.2.3',
         'gh-aw-version': 'v0.89.4',
         'requested-model': 'model-a', 'resolved-model': 'model-b',
@@ -891,31 +1067,19 @@ describe('canonical view sources', () => {
     });
     expect(projected.repositories).toMatchObject({
       source: 'repositories',
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao' }],
       metadata: { 'source-kind': 'database-query', availability: 'available' }
     });
     expect(projected.workflows).toMatchObject({
       source: 'workflows',
       rows: [{
-        organization: 'githubnext', repository: 'gh-aw-cao',
+        organization: 'githubnext', repository: 'gh-cao',
         workflow: '.github/workflows/dashboard.md'
       }],
       metadata: { 'source-kind': 'database-query', availability: 'available' }
     });
-    expect(projected['job-performance']).toMatchObject({
-      source: 'job-performance',
-      rows: [{
-        organization: 'githubnext', repository: 'gh-aw-cao', run: '42',
-        'run-attempt': 2, 'job-id': '99', job: 'build',
-        'job-duration-seconds': 120, runner: 'ubuntu-latest', engine: 'copilot', model: 'model-b'
-      }],
-      metadata
-    });
-    expect(Reflect.get(projected, 'usage')).toEqual({
-      source: 'usage',
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md', run: '42', aic: 17 }],
-      metadata
-    });
+    expect(projected).not.toHaveProperty('job-performance');
+    expect(projected).not.toHaveProperty('usage');
   });
 
   it('projects workflow configuration onto runs when run metadata is absent', async () => {
@@ -950,22 +1114,21 @@ describe('canonical view sources', () => {
     expect(projected.tools.rows).toEqual([
       expect.objectContaining({
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/dashboard.md',
         run: '42',
         'run-attempt': 2,
         event: 'event:tool-call',
-        'event-type': 'tool.call',
+        'event-type': 'mcp.tool_call',
         'event-source': 'mcp',
         'event-summary': 'github.list_issues',
-        'request-count': 7,
         'correlation-id': 'call-1',
-        'safe-output-type': 'create_issue',
-        'github-entity-type': 'issue'
+        'request-bytes': 128,
+        'response-bytes': 256
       })
     ]);
     expect(projected.audits.rows).toEqual([
-      expect.objectContaining({ event: 'event:agent-turn', 'event-source': 'agent', 'event-type': 'agent_turn' })
+      expect.objectContaining({ event: 'event:agent-turn', 'event-source': 'agent', 'event-type': 'user.message' })
     ]);
   });
 
@@ -974,7 +1137,7 @@ describe('canonical view sources', () => {
     const firewallEvent = structuredClone(firewallSources.tools.rows[0]);
     firewallEvent.event = 'event:firewall-blocked';
     firewallEvent['event-source'] = 'firewall';
-    firewallEvent['event-type'] = 'net_blocked';
+    firewallEvent['event-type'] = 'firewall.http_access';
     firewallSources.tools.rows = [];
     firewallSources.domains.rows = [firewallEvent];
     await loadCanonicalViewSources(indexedDB, firewallSources, { ingest: true });
@@ -985,7 +1148,7 @@ describe('canonical view sources', () => {
       expect.objectContaining({
         event: 'event:firewall-blocked',
         'event-source': 'firewall',
-        'event-type': 'firewall.request.blocked',
+        'event-type': 'firewall.http_access',
         'request-count': 7
       })
     ]);
@@ -999,7 +1162,7 @@ describe('canonical view sources', () => {
         run_id: 84,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_name: 'Value worker',
         workflow_path: '.github/workflows/value-worker.md',
         status: 'completed',
@@ -1060,7 +1223,7 @@ describe('canonical view sources', () => {
       kind: 'run',
       run: {
         run_id: 85, run_attempt: 1,
-        organization: 'githubnext', repository: 'githubnext/gh-aw-cao',
+        organization: 'githubnext', repository: 'githubnext/gh-cao',
         workflow_name: 'Eval worker', workflow_path: '.github/workflows/eval-worker.md',
         created_at: '2026-09-09T04:00:00Z',
         evals: [
@@ -1077,7 +1240,7 @@ describe('canonical view sources', () => {
     expect(projected['eval-observations'].rows).toEqual([
       expect.objectContaining({ eval: 'correctness', 'eval-result': 'NO', status: 'fail', run: '85' })
     ]);
-    expect(projected.audits.rows.map((row) => row['event-type'])).toContain('workflow_run_eval');
+    expect(projected.audits.rows.map((row) => row['event-type'])).toContain('eval.result');
     expect(projected.audits.rows.map((row) => row['event-type'])).toContain('workflow_run_eval_unclassified');
   });
 
@@ -1090,7 +1253,7 @@ describe('canonical view sources', () => {
           run_id: 1186001,
           run_attempt: 1,
           organization: 'githubnext',
-          repository: 'githubnext/gh-aw-cao',
+          repository: 'githubnext/gh-cao',
           workflow_name: 'Optimization / Token Optimizer',
           workflow_path: '.github/workflows/optimization-token-optimizer.md',
           status: 'completed',
@@ -1105,9 +1268,9 @@ describe('canonical view sources', () => {
         safe_output: {
           run_id: 1186001,
           type: 'create_issue',
-          url: 'https://github.com/githubnext/gh-aw-cao/issues/11861',
+          url: 'https://github.com/githubnext/gh-cao/issues/11861',
           number: 11861,
-          repo: 'githubnext/gh-aw-cao',
+          repo: 'githubnext/gh-cao',
           timestamp: '2026-09-15T04:02:00Z'
         }
       },
@@ -1117,7 +1280,7 @@ describe('canonical view sources', () => {
         observation: {
           schemaVersion: 1,
           observedAt: '2026-09-15T04:02:00Z',
-          controlRepository: 'githubnext/gh-aw-cao',
+          controlRepository: 'githubnext/gh-cao',
           optimizerRunId: '1186001',
           runAttempt: 1,
           targetRepo: 'octo/example',
@@ -1148,7 +1311,7 @@ describe('canonical view sources', () => {
           schemaVersion: 1,
           lifecycleObservationId: 'token-lifecycle:accepted-1',
           observedAt: '2026-09-16T04:02:00Z',
-          controlRepository: 'githubnext/gh-aw-cao',
+          controlRepository: 'githubnext/gh-cao',
           claimRunId: '1189001',
           claimRunAttempt: 1,
           actor: 'maintainer',
@@ -1169,8 +1332,8 @@ describe('canonical view sources', () => {
           previousRecommendationDisposition: 'unapplied',
           recommendationDisposition: 'applied',
           evidenceState: 'complete',
-          safeOutputId: 'github:issue:githubnext/gh-aw-cao:11861',
-          safeOutputUrl: 'https://github.com/githubnext/gh-aw-cao/issues/11861',
+          safeOutputId: 'github:issue:githubnext/gh-cao:11861',
+          safeOutputUrl: 'https://github.com/githubnext/gh-cao/issues/11861',
           implementationChangeId: 'github:pull-request:octo/example:42',
           implementationPullRequestUrl: 'https://github.com/octo/example/pull/42',
           implementationRunIds: ['1187001'],
@@ -1179,13 +1342,13 @@ describe('canonical view sources', () => {
           implementationCompletedAt: '2026-09-16T04:00:00Z',
           sourceProvenance: {
             kind: 'workflow-dispatch-claim',
-            sourceId: 'github-actions-run:githubnext/gh-aw-cao:1189001:attempt:1',
+            sourceId: 'github-actions-run:githubnext/gh-cao:1189001:attempt:1',
             sourceSchemaRevision: 1,
-            generation: 'github-actions-run:githubnext/gh-aw-cao:1189001:attempt:1',
+            generation: 'github-actions-run:githubnext/gh-cao:1189001:attempt:1',
             completeness: 'complete',
             freshness: 'fresh',
             evidenceLinks: [
-              'https://github.com/githubnext/gh-aw-cao/issues/11861',
+              'https://github.com/githubnext/gh-cao/issues/11861',
               'https://github.com/octo/example/pull/42'
             ]
           }
@@ -1224,11 +1387,11 @@ describe('canonical view sources', () => {
         'recommendation-disposition': 'applied',
         experiment: 'review-context-v1',
         'proposed-savings-aic': 12.5,
-        'safe-output-id': 'github:issue:githubnext/gh-aw-cao:11861',
+        'safe-output-id': 'github:issue:githubnext/gh-cao:11861',
         'implementation-change-id': 'github:pull-request:octo/example:42',
         'implementation-run-ids': ['1187001'],
         'implementation-completed-at': '2026-09-16T04:00:00.000Z',
-        'issue-link': 'https://github.com/githubnext/gh-aw-cao/issues/11861',
+        'issue-link': 'https://github.com/githubnext/gh-cao/issues/11861',
         'pull-request-link': 'https://github.com/octo/example/pull/42'
       })
     ]);
@@ -1261,7 +1424,7 @@ describe('canonical view sources', () => {
     const rows = /** @type {{ rows: Record<string, unknown>[] }} */ (projected.audits).rows;
 
     expect(rows.map((row) => row.event)).toEqual(['event:agent-turn']);
-    expect(rows.map((row) => row['event-type'])).toEqual(['agent_turn']);
+    expect(rows.map((row) => row['event-type'])).toEqual(['user.message']);
   });
 
   it('queries an empty database before fresh data is ingested', async () => {
@@ -1278,7 +1441,7 @@ describe('canonical view sources', () => {
       input.runs.rows = runIds.map((run) => ({
         ...sources.runs.rows[0],
         run,
-        'run-link': { relation: 'run', href: `https://github.com/githubnext/gh-aw-cao/actions/runs/${run}`, label: `Run ${run}` }
+        'run-link': { relation: 'run', href: `https://github.com/githubnext/gh-cao/actions/runs/${run}`, label: `Run ${run}` }
       }));
       input['job-performance'].rows = [];
       input.audits.rows = [];

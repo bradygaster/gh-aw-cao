@@ -8,6 +8,7 @@ import { dashboardViewSourceNames } from './view-filter-contract.js';
 import { validateEnumeratedFilterValue, validateEnumeratedMetadataValue, validateLinkObject, rejectSensitiveStringsInObject, SEMANTIC_FILTER_VALUE_SETS, validateRequiredIdentifier, validateStringField, validateSemanticMetadataLength, validateOptionalStringField, validateNonEmptyStringSequence, isRfc3339Timestamp, validateObjectKeys, createError, isPlainObject, isAggregateFilterLiteral, getValueNodeByKey, getSequenceItemNode } from './validator-common.js';
 import { resolveReusablePageViews } from './validator-state.js';
 import { createDebug } from './debug.js';
+import { validFacetDefinition } from './data/queries/facet.js';
 
 /** @typedef {import('./validator.js').ValidationError} ValidationError */
 
@@ -508,21 +509,22 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
                 argument.field,
                 `${argumentPath}.field`,
                 typeof computed.function !== 'string' ? 'read'
-                  : NUMERIC_COMPUTE_FUNCTIONS.includes(computed.function) ? 'numeric'
+                  : computed.function === 'timestamp' ? 'scalar'
+                    : NUMERIC_COMPUTE_FUNCTIONS.includes(computed.function) ? 'numeric'
                     : ['coalesce', 'dashboard-link', 'link-href'].includes(computed.function) ? 'read' : 'scalar'
               );
-            } else if (hasContext && argument.context !== 'time-end') {
+            } else if (hasContext && (typeof argument.context !== 'string' || !['time-start', 'time-end'].includes(argument.context))) {
               errors.push(createError(
                 ERROR_CODES.nonCanonicalVocabularyOrIdentifier,
-                'computed argument context must be time-end.',
+                'computed argument context must be time-start or time-end.',
                 `${argumentPath}.context`
               ));
             } else if (hasParameter) {
               validateParameterReference(argument, argumentPath, parameters, errors);
-            } else if (hasValue && !['string', 'number', 'boolean'].includes(typeof argument.value)) {
+            } else if (hasValue && argument.value !== null && !['string', 'number', 'boolean'].includes(typeof argument.value)) {
               errors.push(createError(
                 ERROR_CODES.missingOrInvalidRequiredField,
-                'computed argument value must be a string, number, or boolean literal.',
+                'computed argument value must be a string, number, boolean, or null literal.',
                 `${argumentPath}.value`
               ));
             }
@@ -566,6 +568,17 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
           validateStringField(field, `${seriesPath}.carry[${index}]`, true, errors);
           requireField(field, `${seriesPath}.carry[${index}]`);
         });
+      }
+      const pointCarry = definition['point-carry'];
+      if (pointCarry !== undefined) {
+        if (shape !== 'panels' || !Array.isArray(pointCarry) || pointCarry.length === 0 || pointCarry.length > 16) {
+          errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'temporal-series point-carry requires panels and 1 to 16 fields.', `${seriesPath}.point-carry`));
+        } else {
+          pointCarry.forEach((field, index) => {
+            validateStringField(field, `${seriesPath}.point-carry[${index}]`, true, errors);
+            requireField(field, `${seriesPath}.point-carry[${index}]`);
+          });
+        }
       }
       const trend = definition.trend;
       if (trend !== undefined) {
@@ -660,7 +673,7 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
           requireSchemaType(
             value.field,
             `${valuePath}.field`,
-            typeof value.reducer === 'string' && QUERY_NUMERIC_REDUCER_VALUES.includes(value.reducer)
+            value.reducer === 'unique' ? 'read' : typeof value.reducer === 'string' && QUERY_NUMERIC_REDUCER_VALUES.includes(value.reducer)
               ? 'numeric'
               : 'scalar'
           );
@@ -942,6 +955,14 @@ function validateQueryClauses(query, queryNode, path, declared, errors) {
       `${path}.limit`
     ));
   }
+  if (query.facet !== undefined && !validFacetDefinition(query.facet)) {
+    errors.push(createError(ERROR_CODES.missingOrInvalidRequiredField, 'facet requires a field or row/column fields and an output as.', `${path}.facet`));
+  } else if (validFacetDefinition(query.facet)) {
+    for (const field of [query.facet.field, query.facet.row, query.facet.column]) {
+      if (field) requireField(field, `${path}.facet`);
+    }
+    return ['facet-field', 'facet-row', 'facet-column', 'facet-row-index', 'facet-column-index', query.facet.as];
+  }
 
   return fields;
 }
@@ -1170,10 +1191,10 @@ function validateTime(timeNode, time, path, errors) {
   const end = time.end;
 
   if (range !== undefined) {
-    if (typeof range !== 'string' || !/^[1-9][0-9]*(h|d|w)$/.test(range)) {
+    if (typeof range !== 'string' || (range !== 'all' && !/^[1-9][0-9]*(h|d|w)$/.test(range))) {
       errors.push(createError(
         ERROR_CODES.invalidScopeFilterTimeAggregationOrOrderReference,
-        'time.range must match ^[1-9][0-9]*(h|d|w)$.',
+        'time.range must be all or match ^[1-9][0-9]*(h|d|w)$.',
         `${path}.range`
       ));
     }

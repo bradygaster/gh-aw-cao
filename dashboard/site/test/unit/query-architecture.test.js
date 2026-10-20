@@ -8,6 +8,32 @@ import { authoritativeDashboard } from '../authoritative-dashboard.js';
 const read = (path) => readFileSync(resolve(path), 'utf8');
 
 describe('dashboard query architecture', () => {
+  it('declares each event family as a native-table query rather than an implicit combined source', () => {
+    const definitions = /** @type {Array<{
+      name: string, from: string, stores: string[], union?: string[],
+      joins?: Array<{ source: string }>
+    }>} */ (JSON.parse(read('src/data/queries/database.json')));
+    for (const family of ['domains', 'tools', 'skills', 'friction', 'audits', 'issues']) {
+      const definition = definitions.find(({ name }) => name === family);
+      expect(definition, family).toMatchObject({
+        from: `$${family}`, stores: ['runs', family], joins: [{ source: '$runs' }]
+      });
+      expect(definition?.union).toBeUndefined();
+    }
+    expect(definitions.filter(({ from }) => from.startsWith('$')).every(({ from, stores }) => (
+      stores.length === 0 || stores.includes(from.slice(1))
+    ))).toBe(true);
+    expect(read('src/data/queries/database.js')).not.toContain('stores-by-source');
+    expect(definitions.find(({ name }) => name === 'mcp-calls')?.from).toBe('tools');
+    expect(definitions.find(({ name }) => name === 'findings')?.from).toBe('audits');
+    expect(definitions.find(({ name }) => name === 'outcomes')?.from).toBe('issues');
+    expect(definitions.find(({ name }) => name === 'work-items')?.from).toBe('workflows');
+    expect(definitions.find(({ name }) => name === 'detection-observations')?.from).toBe('findings');
+    expect(definitions.find(({ name }) => name === 'safe-output-performance')?.from).toBe('outcomes');
+    expect(JSON.stringify(definitions)).not.toMatch(/\$(?:security-findings|outcomes)/);
+    expect(existsSync(resolve('../report/dashboard-language-sources.mjs'))).toBe(false);
+  });
+
   it('gives agents an explicit database-authoritative query and effect contract', () => {
     const guidance = read('../../AGENTS.md');
 
@@ -35,10 +61,12 @@ describe('dashboard query architecture', () => {
 
     expect(worker).toContain('queryIndexedDatabaseSources(');
     expect(worker).toMatch(/executeDashboardQueries\(\s*executionQueries,\s*\{ \.\.\.databasePayload, \.\.\.nativeSources \},\s*directRequests/);
-    expect(worker.indexOf('compileDashboardViewPayloadQueries(page, pageId'))
-      .toBeLessThan(worker.indexOf('const nativeSources = await queryIndexedDatabaseSources'));
-    expect(worker.indexOf('const nativeSources = await queryIndexedDatabaseSources'))
-      .toBeLessThan(worker.indexOf('const databasePayload = await queryDatabaseSources'));
+    const nativeQuery = worker.indexOf('const nativeSources =');
+    const databaseQuery = worker.indexOf('const databasePayload =');
+    expect(nativeQuery).toBeGreaterThan(-1);
+    expect(databaseQuery).toBeGreaterThan(-1);
+    expect(worker.indexOf('compileDashboardViewPayloadQueries(page, pageId')).toBeLessThan(nativeQuery);
+    expect(nativeQuery).toBeLessThan(databaseQuery);
     expect(worker).toContain('const replacedSources = new Set(viewPayload.replacedSources)');
     expect(worker).not.toContain('data-health.js');
     expect(worker).not.toMatch(/deriveOverviewSources|deriveRepositorySources|deriveRuntimeSources|deriveWorkflowSources/);
@@ -48,10 +76,12 @@ describe('dashboard query architecture', () => {
     expect(databaseQueries.every((/** @type {{ stores?: unknown }} */ query) => Array.isArray(query.stores))).toBe(true);
     expect(startup).toContain('subscribeCanonicalDashboardView(');
     expect(startup).toContain('signal: pageOptions.signal');
-    expect(startup).toContain('bindContinuations(pageId, sources, paginatedSources, pageOptions)');
-    expect(startup).toContain('const sourceName = bindings[alias]?.sourceName');
+    expect(startup).toContain('bindContinuations(pageId, sources, paginatedSources, { sourceNames }, pageOptions)');
+    expect(startup).toContain('scope.sourceNames,\n        dashboardContext,\n        pagination,');
+    expect(startup).toContain('sourceNames: [...new Set(sourceNames)], viewId');
+    expect(startup).not.toContain('const sourceName = bindings[alias]?.sourceName');
     expect(startup).toContain('dashboardContext,\n        pagination,');
-    expect(startup).toContain('viewId: binding?.viewId');
+    expect(startup).toContain('viewId: scope.viewId');
     expect(startup).toContain('routeParameters: pageOptions.routeParameters');
     expect(startup).toContain('queryContext: pageOptions.queryContext');
     expect(presenter).not.toMatch(/filterDashboardSources|filterRowsForView|deriveOverviewSources|deriveRepositorySources|deriveRuntimeSources|deriveWorkflowSources/);
@@ -83,7 +113,7 @@ describe('dashboard query architecture', () => {
       'repositories',
       'workflows',
       'runs',
-      'run-records',
+      'domains', 'tools', 'skills', 'friction', 'audits', 'issues',
       'mcp-calls',
       'findings',
       'detection-observations',
@@ -155,6 +185,7 @@ describe('dashboard query architecture', () => {
     const workerSideModules = new Set([
       'src/data-worker.js',
       'src/data/queries/declarative.js',
+      'src/data/queries/incremental-aggregate.js',
       'src/data/storage/indexeddb.js'
     ]);
     const importers = globSync('src/**/*.js')

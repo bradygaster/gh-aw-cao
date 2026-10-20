@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const debug = vi.hoisted(() => vi.fn());
 vi.mock('../../src/debug.js', () => ({ createDebug: () => debug }));
@@ -38,13 +38,13 @@ const metadata = { 'as-of': '2026-09-09T05:00:00Z', 'artifact-generation': 'gene
 function sourcesWithRuns(count) {
   return {
     repositories: {
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', 'observed-at': metadata['as-of'] }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao', 'observed-at': metadata['as-of'] }],
       metadata
     },
     workflows: {
       rows: [{
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/dashboard.md',
         'workflow-active': 'true',
         'observed-at': metadata['as-of']
@@ -54,7 +54,7 @@ function sourcesWithRuns(count) {
     runs: {
       rows: Array.from({ length: count }, (_, index) => ({
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow: '.github/workflows/dashboard.md',
         run: String(1000 + index),
         'run-attempt': 1,
@@ -76,6 +76,7 @@ function quotaExceededError() {
 }
 
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
   debug.mockClear();
   readCanonicalBatch.mockClear();
   upsertCanonicalBatch.mockClear();
@@ -97,6 +98,7 @@ beforeEach(async () => {
     request.onsuccess = () => resolve(undefined);
     request.onerror = () => reject(request.error);
   });
+  afterEach(() => vi.restoreAllMocks());
 });
 
 describe('canonical ingestion termination', () => {
@@ -190,7 +192,7 @@ describe('canonical ingestion termination', () => {
         yield `${JSON.stringify({
           kind: 'record',
           collection: 'runs',
-          record: { id: `run:${index}` }
+          record: { id: `run:${index}`, startedAt: '2026-10-09T00:00:00Z' }
         })}\n`;
       }
     }
@@ -199,6 +201,7 @@ describe('canonical ingestion termination', () => {
       payloadIdentity: 'a'.repeat(64),
       payloadScope: 'https://example.test/gh-aw-logs-runs/quota.jsonl',
       expectedPhase: 'runs',
+      now: Date.parse('2026-10-10T00:00:00Z'),
       storage,
       deferMaintenance: true
     })).resolves.toMatchObject({ updated: true, committedRecords: 4 });

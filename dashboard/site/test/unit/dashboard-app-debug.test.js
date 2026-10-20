@@ -18,7 +18,6 @@ const startup = vi.hoisted(() => ({
   startDashboardData: vi.fn(async () => {})
 }));
 const tableCapacity = vi.hoisted(() => ({
-  applyTableQuerySafetyLimits: vi.fn((queries) => queries),
   browserTableCapacityDecision: vi.fn(() => ({ rowLimit: 25000 })),
   logTableCapacityDecision: vi.fn()
 }));
@@ -52,7 +51,7 @@ vi.mock("../../src/cancel-command.js", () => ({
 }));
 vi.mock("../../src/data-processor.js", () => dataProcessor);
 vi.mock("../../src/data/startup.js", () => startup);
-vi.mock("../../src/components/refresh-error.js", () => ({ renderRefreshError: vi.fn() }));
+vi.mock("../../src/components/refresh-error.js", () => ({ notifyRefreshError: vi.fn() }));
 vi.mock("../../src/diagnostics.js", () => ({ collectFullDiagnostics: vi.fn() }));
 vi.mock("../../src/dashboard-data-updates.js", () => dashboardDataUpdates);
 vi.mock("../../src/components/cli-actions.js", () => ({
@@ -105,6 +104,23 @@ afterEach(() => {
 });
 
 describe("dashboard app page-chunk debug logging", () => {
+  it("does not start the application merely by importing its shared module", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    try {
+      vi.resetModules();
+      const app = await import("../../src/dashboard-app.js");
+
+      expect(app.startDashboardApp).toBeTypeOf("function");
+      expect(fetch).not.toHaveBeenCalled();
+      expect(startup.startDashboardData).not.toHaveBeenCalled();
+      expect(dataProcessor.subscribeWorkerLoadingProgress).not.toHaveBeenCalled();
+      expect(webmcpRuntime.startDashboardWebMCP).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the request ID when remote startup fails", async () => {
     startup.startDashboardData.mockRejectedValueOnce(
       new remoteDataBackend.DashboardServerError(
@@ -118,7 +134,7 @@ describe("dashboard app page-chunk debug logging", () => {
     );
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js").catch(() => {});
+    await (await import("../../src/dashboard-app.js")).startDashboardApp().catch(() => {});
     await vi.waitFor(() => expect(document.querySelector("#root")?.textContent).toContain(
       "Request ID: 4bf92f3577b34da6a3ce929d0e0e4736"
     ));
@@ -132,16 +148,21 @@ describe("dashboard app page-chunk debug logging", () => {
         return new Response(JSON.stringify(stubDashboardSchema({ id: "overview", chunk: "dashboard-pages/overview.json" })), { status: 200 });
       }
       return new Response(JSON.stringify({
-        page: { id: "overview", views: [{ data: { source: "observations" }, prompt: "auto" }] },
+        page: { id: "overview", views: [{ mark: "table", data: { source: "observations" }, prompt: "auto" }] },
         queries: [{ name: "observations", from: "runs", subject: "Inspect runs" }]
       }), { status: 200 });
     }));
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js");
+    await (await import("../../src/dashboard-app.js")).startDashboardApp();
     await vi.waitFor(() => expect(presenter.renderDashboard.mock.calls.some(
       ([argument]) => argument.document.dashboard.queries?.some((query) => query.name === "observations")
     )).toBe(true));
+    expect(presenter.renderDashboard.mock.calls.find(
+      ([argument]) => argument.document.dashboard.queries?.some((query) => query.name === "observations")
+    )?.[0].document.dashboard.queries).toEqual([
+      { name: "observations", from: "runs", subject: "Inspect runs" }
+    ]);
 
     vi.unstubAllGlobals();
   });
@@ -155,7 +176,7 @@ describe("dashboard app page-chunk debug logging", () => {
     );
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js");
+    await (await import("../../src/dashboard-app.js")).startDashboardApp();
     await vi.waitFor(() => expect(dataProcessor.subscribeWorkerLoadingProgress).toHaveBeenCalled());
 
     expect(debugFn).not.toHaveBeenCalled();
@@ -181,7 +202,7 @@ describe("dashboard app page-chunk debug logging", () => {
     );
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js");
+    await (await import("../../src/dashboard-app.js")).startDashboardApp();
     await vi.waitFor(() => expect(dataProcessor.subscribeWorkerLoadingProgress).toHaveBeenCalled());
 
     const calls = debugFn.mock.calls.filter(([prefix]) => prefix === "[cao:dashboard-app]");
@@ -205,7 +226,7 @@ describe("dashboard app page-chunk debug logging", () => {
     );
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js").catch(() => {});
+    await (await import("../../src/dashboard-app.js")).startDashboardApp().catch(() => {});
     await vi.waitFor(() => {
       const calls = debugFn.mock.calls.filter(([prefix]) => prefix === "[cao:dashboard-app]");
       expect(calls.some(([, payload]) => payload.event === "page-chunk-fetch-outcome" && payload.status === "error")).toBe(true);
@@ -238,7 +259,7 @@ describe("dashboard app page-chunk debug logging", () => {
     );
     vi.resetModules();
 
-    await import("../../src/dashboard-app.js");
+    await (await import("../../src/dashboard-app.js")).startDashboardApp();
     await vi.waitFor(() => expect(dataProcessor.subscribeWorkerLoadingProgress).toHaveBeenCalled());
 
     const calls = debugFn.mock.calls.filter(([prefix]) => prefix === "[cao:dashboard-app]");

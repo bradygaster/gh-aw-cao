@@ -1,6 +1,53 @@
 {
   "queries": [
     {
+      "name": "dashboard-ingestion-health",
+      "subject": "Expose the current collection state for the global ingestion indicator.",
+      "objective": "Distinguish reported ingestion failure or recovery from the age of retained workflow evidence.",
+      "acceptance": "Use the authorized server collection-health classification, not cumulative failures or browser refresh time. Missing or unauthorized health remains unknown and static dashboards do not request this source.",
+      "from": "collection-health",
+      "select": [
+        { "field": "configured" },
+        { "field": "health" }
+      ],
+      "limit": 1
+    },
+    {
+      "name": "dashboard-data-freshness",
+      "subject": "Find the newest workflow activity timestamp in retained canonical data.",
+      "objective": "Warn globally when the ingested workflow evidence has not advanced for 24 hours.",
+      "acceptance": "Use upstream updated-at, falling back to created-at, never browser import or refresh time. Missing or invalid timestamps remain unknown; inactivity alone does not prove an ingestion failure.",
+      "from": "runs",
+      "compute": [
+        { "as": "data-at", "function": "coalesce", "args": [{ "field": "updated-at" }, { "field": "created-at" }] },
+        { "as": "data-at-ms", "function": "timestamp", "args": [{ "field": "data-at" }] }
+      ],
+      "aggregate": {
+        "values": [{ "field": "data-at-ms", "as": "latest-data-at", "reducer": "max" }]
+      }
+    },
+    {
+      "name": "indexing-shards",
+      "subject": "List retained Activity shard import receipts.",
+      "objective": "Inspect which shards were ingested, when, and how many records they committed.",
+      "acceptance": "Show shard scope, phase, import status, import timestamp, counts and payload identity from retained receipts. Import time is not upstream freshness and missing receipts do not prove complete coverage.",
+      "from": "transactions",
+      "filter": {
+        "predicates": [{ "field": "kind", "in": ["ingest-normalized-jsonl", "ingest-jsonl", "ingest-jsonl-failed", "runs", "records"] }]
+      },
+      "select": [
+        { "field": "id" },
+        { "field": "payloadScope", "as": "shard" },
+        { "field": "kind" },
+        { "field": "activity-status", "as": "status" },
+        { "field": "createdAt", "as": "ingested-at" },
+        { "field": "committedRecords", "as": "committed-records" },
+        { "field": "rawRuns", "as": "workflow-runs" },
+        { "field": "payloadHash", "as": "payload-hash" }
+      ],
+      "order-by": [{ "field": "ingested-at", "direction": "desc" }]
+    },
+    {
       "name": "ingestion-queued",
       "subject": "Label the shared collection task queue depth for the administrator queue chart.",
       "objective": "Identify total ready and scheduled collection work, including backfill tasks.",
@@ -110,6 +157,11 @@
       "from": "friction",
       "compute": [
         {
+          "as": "positive-aic",
+          "function": "greater-than",
+          "args": [{ "field": "aic" }, { "value": 0 }]
+        },
+        {
           "as": "repository-coordinate",
           "function": "concat",
           "args": [
@@ -156,7 +208,8 @@
           {
             "field": "aic",
             "as": "friction-aic",
-            "reducer": "sum"
+            "reducer": "sum",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
           },
           {
             "field": "run",
@@ -260,95 +313,70 @@
       ]
     },
     {
-      "name": "indexing-daily-records",
-      "subject": "Aggregate records committed from CAO Activity by ingestion UTC day.",
-      "objective": "Expose the observed daily committed-record totals for ingestion diagnostics.",
-      "acceptance": "Each returned UTC day sums committedRecords from the selected ingestion transaction kinds; absent days or low totals alone do not establish missing source records.",
+      "name": "indexing-shard-dates",
+      "subject": "Read the activity date encoded in each retained transaction's shard filename.",
+      "objective": "Separate source shard dates from ingestion timestamps.",
+      "acceptance": "Keep every transaction and leave absent, invalid, or structural shard dates unknown; never substitute import time.",
       "from": "transactions",
-      "filter": {
-        "predicates": [
-          {
-            "field": "kind",
-            "in": [
-              "ingest-jsonl",
-              "ingest-normalized-jsonl"
-            ]
-          }
-        ]
-      },
       "compute": [
         {
-          "as": "day",
-          "function": "date-day",
-          "args": [
-            {
-              "field": "createdAt"
-            }
-          ]
-        }
-      ],
-      "aggregate": {
-        "by": [
-          "day"
-        ],
-        "values": [
-          {
-            "field": "committedRecords",
-            "as": "records",
-            "reducer": "sum"
-          }
-        ]
-      },
-      "order-by": [
+          "as": "shard-day",
+          "function": "activity-shard-day",
+          "args": [{ "field": "payloadScope" }]
+        },
         {
-          "field": "day",
-          "direction": "asc"
+          "as": "missing-shard-day",
+          "function": "equals-any",
+          "args": [{ "field": "shard-day" }, { "value": null }]
         }
       ]
     },
     {
-      "name": "indexing-daily-workflow-runs",
-      "subject": "Aggregate workflow runs ingested from CAO Activity by UTC day.",
-      "objective": "Expose the observed daily raw-run totals from ingestion transactions.",
-      "acceptance": "Each returned UTC day sums rawRuns from the selected ingestion transaction kinds; transaction volume is not a count of distinct retained runs or proof of source coverage.",
-      "from": "transactions",
+      "name": "indexing-ingestion-runs",
+      "subject": "Show retained ingestion transactions at the activity date encoded in their shard filename.",
+      "objective": "Compare reported run counts by source shard activity date, independently of import time.",
+      "acceptance": "Preserve every dated transaction, including coincident dates, all kinds, and zero counts, without grouping, limits, or page filters. Omit missing or invalid shard dates; never substitute import time. Missing counts use labeled zero-position placeholders, not measured zeroes.",
+      "from": "indexing-shard-dates",
       "filter": {
-        "predicates": [
-          {
-            "field": "kind",
-            "in": [
-              "ingest-jsonl",
-              "ingest-normalized-jsonl"
-            ]
-          }
-        ]
+        "predicates": [{ "field": "missing-shard-day", "equals": false }]
       },
       "compute": [
         {
-          "as": "day",
-          "function": "date-day",
+          "as": "workflow-runs",
+          "function": "coalesce",
+          "args": [{ "field": "rawRuns" }, { "value": 0 }]
+        },
+        {
+          "as": "missing-run-count",
+          "function": "equals-any",
+          "args": [{ "field": "rawRuns" }, { "value": null }]
+        },
+        {
+          "as": "run-count-status",
+          "function": "if",
           "args": [
-            {
-              "field": "createdAt"
-            }
+            { "field": "missing-run-count" },
+            { "value": "Run count unavailable (shown at 0)" },
+            { "value": "Reported run count" }
           ]
         }
       ],
-      "aggregate": {
-        "by": [
-          "day"
-        ],
-        "values": [
-          {
-            "field": "rawRuns",
-            "as": "workflow-runs",
-            "reducer": "sum"
-          }
-        ]
-      },
+      "select": [
+        { "field": "id" },
+        { "field": "kind" },
+        { "field": "createdAt" },
+        { "field": "shard-day" },
+        { "field": "rawRuns" },
+        { "field": "workflow-runs" },
+        { "field": "run-count-status" }
+      ],
       "order-by": [
         {
-          "field": "day",
+          "field": "shard-day",
+          "direction": "asc"
+        },
+        {
+          "field": "id",
           "direction": "asc"
         }
       ]
@@ -455,7 +483,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "workflow runs"
+              "value": "runs"
             }
           ]
         }
@@ -485,7 +513,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "network domains"
+              "value": "domains"
             }
           ]
         }
@@ -515,7 +543,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "tool events"
+              "value": "tools"
             }
           ]
         }
@@ -545,7 +573,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "audit events"
+              "value": "audits"
             }
           ]
         }
@@ -575,7 +603,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "issue events"
+              "value": "issues"
             }
           ]
         }
@@ -605,7 +633,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "operational values"
+              "value": "operationalValues"
             }
           ]
         }
@@ -635,7 +663,7 @@
           "function": "literal",
           "args": [
             {
-              "value": "ingestion transactions"
+              "value": "transactions"
             }
           ]
         }
@@ -713,7 +741,7 @@
       "subject": "Summarize run-level AIC and token usage by agent and model identifiers without treating unavailable telemetry as zero.",
       "objective": "Locate agent and model combinations whose observed per-run AIC or token usage merits checking against individual runs.",
       "acceptance": "Report run counts and native minimum, mean, and maximum values only for reported metrics; inspect underlying runs for per-metric telemetry coverage and context before comparing combinations, and infer neither efficiency nor outcome value from usage alone.",
-      "description": "Observed workflow runs grouped by agent ID and model ID. Each AIC and token statistic uses only runs that reported that metric.",
+      "description": "Observed workflow runs grouped by agent ID and model ID. AIC statistics use only positive-AIC runs; token statistics use runs that reported each token metric.",
       "from": "runs",
       "compute": [
         {
@@ -730,6 +758,11 @@
               "field": "model-id"
             }
           ]
+        },
+        {
+          "as": "positive-aic",
+          "function": "greater-than",
+          "args": [{ "field": "aic-total" }, { "value": 0 }]
         }
       ],
       "aggregate": {
@@ -745,17 +778,20 @@
           {
             "field": "aic-total",
             "as": "minimum-aic-per-run",
-            "reducer": "min"
+            "reducer": "min",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
           },
           {
             "field": "aic-total",
             "as": "average-aic-per-run",
-            "reducer": "mean"
+            "reducer": "mean",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
           },
           {
             "field": "aic-total",
             "as": "maximum-aic-per-run",
-            "reducer": "max"
+            "reducer": "max",
+            "filter": { "predicates": [{ "field": "positive-aic", "equals": true }] }
           },
           {
             "field": "input-tokens",
@@ -1273,20 +1309,170 @@
       }
     },
     {
-      "name": "eval-yes-no-status",
-      "subject": "Select explicit YES/NO eval answers while retaining unknown results only in the underlying evidence collection.",
-      "objective": "Expose explicitly answered eval observations for comparison with their underlying run evidence.",
-      "acceptance": "Return only recorded YES and NO answers; excluded unknowns must not be interpreted as NO, absent evals as YES, or an eval answer as a validated operational outcome.",
+      "name": "eval-status-ledger",
+      "subject": "Inspect every explicitly classified eval answer, including UNKNOWN.",
+      "objective": "Expose retained eval observations with their workflow, run evidence and observation time.",
+      "acceptance": "Keep recorded YES, NO and UNKNOWN answers distinct; unknown or absent evidence must not imply success or failure, and historical answers are not current verdicts or validated operational outcomes.",
       "from": "eval-observations",
+      "compute": [
+        { "as": "_recorded-run-href", "function": "link-href", "args": [{ "field": "evidence-link" }] },
+        { "as": "_eval-run-href", "function": "coalesce", "args": [{ "field": "_recorded-run-href" }, { "field": "evidence-link" }] },
+        { "as": "run-link", "function": "link", "args": [{ "field": "_eval-run-href" }, { "field": "run" }] }
+      ],
       "filter": {
-        "predicates": [{ "field": "eval-result", "in": ["YES", "NO"] }]
+        "predicates": [{ "field": "eval-result", "in": ["YES", "NO", "UNKNOWN"] }]
       }
     },
     {
+      "name": "eval-answer-counts",
+      "subject": "Count recorded YES, NO and UNKNOWN answers for each workflow-scoped eval.",
+      "objective": "Provide complete answer denominators before expanding each eval into three bars.",
+      "acceptance": "Keep canonical eval identities separate and count only explicitly classified observations. Select at most 33 complete eval groups, never truncate an answer group.",
+      "from": "eval-status-ledger",
+      "aggregate": {
+        "by": ["organization", "repository", "workflow", "eval"],
+        "values": [
+          { "field": "eval-result", "as": "answers", "reducer": "count" },
+          { "field": "eval-result", "as": "yes", "reducer": "count", "filter": { "predicates": [{ "field": "eval-result", "equals": "YES" }] } },
+          { "field": "eval-result", "as": "no", "reducer": "count", "filter": { "predicates": [{ "field": "eval-result", "equals": "NO" }] } },
+          { "field": "eval-result", "as": "unknown", "reducer": "count", "filter": { "predicates": [{ "field": "eval-result", "equals": "UNKNOWN" }] } }
+        ]
+      },
+      "order-by": [
+        { "field": "eval", "direction": "asc" },
+        { "field": "organization", "direction": "asc" },
+        { "field": "repository", "direction": "asc" },
+        { "field": "workflow", "direction": "asc" }
+      ],
+      "limit": 33
+    },
+    {
+      "name": "eval-yes-shares",
+      "subject": "Compute the YES share of each eval's recorded answers.",
+      "objective": "Expose recorded YES proportions for comparing answer categories without inferring verified operational outcomes.",
+      "acceptance": "Emit one YES row per retained canonical eval group, including zero YES counts; answer-share is yes / answers across recorded YES, NO and UNKNOWN observations. Do not count absent observations.",
+      "from": "eval-answer-counts",
+      "compute": [
+        { "as": "eval-result", "function": "literal", "args": [{ "value": "YES" }] },
+        { "as": "answer-order", "function": "literal", "args": [{ "value": 0 }] },
+        { "as": "answer-share", "function": "quotient", "args": [{ "field": "yes" }, { "field": "answers" }] }
+      ]
+    },
+    {
+      "name": "eval-no-shares",
+      "subject": "Compute the NO share of each eval's recorded answers.",
+      "objective": "Expose recorded NO proportions for comparing answer categories without treating historical answers as current verdicts.",
+      "acceptance": "Emit one NO row per retained canonical eval group, including zero NO counts; answer-share is no / answers across recorded YES, NO and UNKNOWN observations. Do not count absent observations.",
+      "from": "eval-answer-counts",
+      "compute": [
+        { "as": "eval-result", "function": "literal", "args": [{ "value": "NO" }] },
+        { "as": "answer-order", "function": "literal", "args": [{ "value": 1 }] },
+        { "as": "answer-share", "function": "quotient", "args": [{ "field": "no" }, { "field": "answers" }] }
+      ]
+    },
+    {
+      "name": "eval-unknown-shares",
+      "subject": "Compute the explicit UNKNOWN share of each eval's recorded answers.",
+      "objective": "Expose explicitly recorded UNKNOWN proportions without conflating absent observations with classified uncertainty.",
+      "acceptance": "Emit one UNKNOWN row per retained canonical eval group, including zero UNKNOWN counts; answer-share is unknown / answers across recorded YES, NO and UNKNOWN observations. Missing observations are not UNKNOWN answers.",
+      "from": "eval-answer-counts",
+      "compute": [
+        { "as": "eval-result", "function": "literal", "args": [{ "value": "UNKNOWN" }] },
+        { "as": "answer-order", "function": "literal", "args": [{ "value": 2 }] },
+        { "as": "answer-share", "function": "quotient", "args": [{ "field": "unknown" }, { "field": "answers" }] }
+      ]
+    },
+    {
+      "name": "eval-answer-distribution",
+      "subject": "Compare YES, NO and UNKNOWN percentages within each eval.",
+      "objective": "Show three horizontal bars per eval that together account for all recorded answers.",
+      "acceptance": "Emit all three answer categories, including zero shares; percentages sum to 100 per canonical eval. Missing observations are not UNKNOWN answers. Preserve workflow and repository attribution.",
+      "from": "eval-yes-shares",
+      "union": ["eval-no-shares", "eval-unknown-shares"],
+      "compute": [
+        { "as": "answer-percent", "function": "product", "args": [{ "field": "answer-share" }, { "value": 100 }] },
+        { "as": "eval-label", "function": "concat", "args": [{ "field": "eval" }, { "value": " | " }, { "field": "organization" }, { "value": "/" }, { "field": "repository" }, { "value": ":" }, { "field": "workflow" }] }
+      ],
+      "order-by": [
+        { "field": "eval-label", "direction": "asc" },
+        { "field": "answer-order", "direction": "asc" }
+      ]
+    },
+    {
+      "name": "grader-observed-maxima",
+      "subject": "Find each workflow-scoped grader's maximum retained value in the selected data.",
+      "objective": "Provide an observed normalization denominator without mixing grader identities or claiming a theoretical maximum.",
+      "acceptance": "Group by canonical grader identity, not display name; ignore missing values and preserve zero or negative maxima without substituting a denominator.",
+      "from": "grader-observations",
+      "aggregate": {
+        "by": ["grader-id"],
+        "values": [{ "field": "value", "as": "max-grader-value", "reducer": "max" }]
+      }
+    },
+    {
+      "name": "grader-normalized-observations",
+      "subject": "Normalize each grader observation by that grader's observed maximum.",
+      "objective": "Compare relative grader values over time while preserving native measurements and run provenance.",
+      "acceptance": "Compute value / max-grader-value without clamping or inverting lower-is-better measures; zero or missing denominators produce null, never a fabricated zero or infinity.",
+      "from": "grader-observations",
+      "joins": [
+        {
+          "source": "grader-observed-maxima",
+          "type": "left",
+          "on": [{ "left": "grader-id", "right": "grader-id" }],
+          "fields": [{ "field": "max-grader-value", "as": "max-grader-value" }]
+        }
+      ],
+      "compute": [
+        {
+          "as": "normalized-value",
+          "function": "quotient",
+          "args": [{ "field": "value" }, { "field": "max-grader-value" }]
+        },
+        {
+          "as": "_observation-time",
+          "function": "timestamp",
+          "args": [{ "field": "observed-at" }]
+        },
+        {
+          "as": "_unplottable-value",
+          "function": "equals-any",
+          "args": [{ "field": "normalized-value" }, { "value": null }]
+        },
+        {
+          "as": "_unplottable-time",
+          "function": "equals-any",
+          "args": [{ "field": "_observation-time" }, { "value": null }]
+        },
+        {
+          "as": "grader-series",
+          "function": "concat",
+          "args": [
+            { "field": "organization" }, { "value": "/" }, { "field": "repository" },
+            { "value": " / " }, { "field": "workflow" }, { "value": " / " }, { "field": "grader" }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grader-value-scatter",
+      "subject": "Plot timed grader observations with a defined value-to-observed-maximum ratio.",
+      "objective": "Show relative grader measurements at their recorded observation times.",
+      "acceptance": "Keep each eligible observation and its run link; omit missing ratios or observation times from the plot while retaining those records in the native-value ledger. Ratios are not eval answers or evidence of improvement.",
+      "from": "grader-normalized-observations",
+      "filter": {
+        "predicates": [
+          { "field": "_unplottable-value", "equals": false },
+          { "field": "_unplottable-time", "equals": false }
+        ]
+      },
+      "order-by": [{ "field": "observed-at", "direction": "asc" }]
+    },
+    {
       "name": "grader-status-ledger",
-      "subject": "Report explicit grader pass/fail observations without inferring current state from prior runs.",
-      "objective": "Distinguish explicit per-observation grader pass and fail verdicts from unknown statuses.",
-      "acceptance": "Map only pass/passed to YES and fail/failed to NO, leaving all other statuses unknown; preserve run-level evidence and do not infer current success, causation, or policy authority from a prior verdict.",
+      "subject": "Report grader measurements, units and explicit statuses without confusing them with binary eval answers.",
+      "objective": "Preserve numeric grader evidence and distinguish explicit per-observation pass and fail verdicts from unknown statuses.",
+      "acceptance": "Retain native grader values, units and statuses. Map only pass/passed to YES and fail/failed to NO in the auxiliary verdict field, leaving all other statuses unknown; never infer an eval answer, current success, causation or policy authority from a grader score.",
       "from": "grader-observations",
       "compute": [
         {
@@ -1320,13 +1506,17 @@
     {
       "id": "marketplace",
       "kind": "custom",
+      "intent": "Find campaign packages whose documented purpose fits an operational need.",
+      "subject": "Normalized packages from the configured campaign registries.",
+      "objective": "Select a package for review before considering installation.",
+      "acceptance": "Preserve package source, identity and metadata provenance; distinguish unavailable registry data from no matches. Add commands are copy-only and use no AI; discovery grants no installation or target authority.",
       "title": "Marketplace",
       "navigation-label": "Marketplace",
       "icon": "archive",
       "class-name": "marketplace-page",
       "retain-on-navigation": true,
       "experimental": false,
-      "description": "Find campaign packages to extend your agentic operations.",
+      "description": "Find a campaign package that addresses a specific CAO operational need.",
       "views": [
         {
           "id": "marketplace-packages",
@@ -1382,10 +1572,14 @@
     {
       "id": "marketplace-package",
       "kind": "custom",
+      "intent": "Review one package's provenance, documentation and canonical add command.",
+      "subject": "The package selected by the route and its normalized registry metadata.",
+      "objective": "Make an informed package-selection decision without executing installation.",
+      "acceptance": "Show exact package source, README and metadata; keep add commands copy-only and report unavailable content. Add commands use no AI; package text is untrusted and grants no rollout authority.",
       "title": "Package",
       "icon": "archive",
       "class-name": "marketplace-detail-page",
-      "description": "Review normalized package metadata and copy the canonical CAO add command. Installing packages with cao add or gh aw add does not use AI.",
+      "description": "Verify the selected package's provenance before considering installation.",
       "route": {
         "hash-query-parameter": "package-source",
         "navigation-page": "marketplace",
@@ -1508,19 +1702,32 @@
     {
       "id": "indexing",
       "kind": "custom",
+      "intent": "Determine whether collection, ingestion and retained data are healthy enough for analysis.",
+      "subject": "Server collection health, API usage, ingestion queues, shards and retained transactions.",
+      "objective": "Locate evidence gaps and bottlenecks before trusting dashboard conclusions.",
+      "acceptance": "Show native states, timestamps, counts, sizes and units with backend limitations; preserve failures and partial/unavailable evidence. Empty queues or tables alone do not establish successful collection.",
       "title": "Ingestion",
       "navigation-label": "Ingestion",
       "icon": "database",
       "experimental": false,
-      "description": "Monitor live server-side collection health, GitHub API usage, CAO Activity ingestion, and retained dashboard transactions.",
+      "description": "Determine whether the evidence pipeline supports reliable CAO analysis.",
       "views": [
+        {
+          "id": "ingestion-storage",
+          "title": "Data storage",
+          "objective": "Identify the configured storage engine and location. This source-free element reads deployment configuration, not activity evidence; a database query cannot identify the browser's storage configuration.",
+          "data": { "sources": [] },
+          "mark": "element",
+          "element": "storage-info",
+          "layout": "full"
+        },
         {
           "id": "indexing-database-table-counts",
           "title": "Database table counts",
           "subject": "Compare retained row counts across dashboard database tables.",
           "objective": "Identify missing or unexpectedly sized data tables for ingestion review.",
           "acceptance": "Counts are used as ingestion diagnostics, not as proof of source completeness.",
-          "description": "Rows retained by dashboard database table, including ingestion transactions.",
+          "description": "Rows retained by canonical database table or object-store name, including transactions.",
           "data": {
             "source": "indexing-database-table-counts",
             "query-context": false,
@@ -1541,6 +1748,30 @@
               "type": "quantitative",
               "title": "Rows"
             }
+          }
+        },
+        {
+          "id": "ingested-shards",
+          "title": "Ingested shards",
+          "subject": "Inspect retained Activity shard import receipts.",
+          "objective": "Trace imported shards and investigate stale dashboard evidence.",
+          "acceptance": "Display retained shard paths, kind, status, import times, record counts and hashes. Unknown fields remain unknown and successful imports do not establish upstream freshness.",
+          "description": "Retained shard receipts show the source path, import time, committed records and payload hash. Importing an old shard does not make its workflow evidence current.",
+          "data": { "source": "indexing-shards", "query-context": false },
+          "mark": "list",
+          "list": { "style": "entity-cards", "card": "ingested-shard", "icon": "database" },
+          "layout": "full",
+          "empty-message": "No shard import receipts are available. Shard coverage and freshness are unknown.",
+          "encoding": {
+            "columns": [
+              { "field": "shard", "title": "Shard", "type": "nominal" },
+              { "field": "kind", "title": "Import kind", "type": "nominal" },
+              { "field": "status", "title": "Status", "type": "nominal", "display": "status" },
+              { "field": "ingested-at", "title": "Ingested at", "type": "temporal", "format": "human-friendly-timestamp" },
+              { "field": "committed-records", "title": "Committed records", "type": "quantitative" },
+              { "field": "workflow-runs", "title": "Workflow runs", "type": "quantitative" },
+              { "field": "payload-hash", "title": "Payload hash", "type": "nominal" }
+            ]
           }
         },
         {
@@ -1631,56 +1862,37 @@
           }
         },
         {
-          "id": "indexing-size",
-          "title": "Indexed data over time",
-          "subject": "Track new Activity records retained by the dashboard each day.",
-          "objective": "Spot changes in ingestion volume that may need investigation.",
-          "acceptance": "An apparent gap is checked against ingestion evidence before attributing it to missing source activity.",
-          "description": "New workflow runs and records retained from CAO Activity each day.",
-          "data": {
-            "source": "indexing-daily-records"
-          },
-          "mark": "chart",
-          "chart": "bar",
-          "layout": "full",
-          "empty-message": "No CAO Activity ingestion history has been retained.",
-          "encoding": {
-            "x": {
-              "field": "day",
-              "type": "nominal",
-              "title": "Indexed"
-            },
-            "y": {
-              "field": "records",
-              "type": "quantitative",
-              "title": "New records"
-            }
-          }
-        },
-        {
           "id": "indexing-workflow-runs",
-          "title": "Workflow runs indexed",
-          "subject": "Track new workflow runs retained from Activity each day.",
-          "objective": "Identify days with unexpected changes in indexed run volume.",
-          "acceptance": "Changes are compared with ingestion and source evidence, not interpreted as workflow health alone.",
-          "description": "New workflow runs retained from CAO Activity each day.",
+          "title": "Runs per ingestion",
+          "subject": "Track the reported run count of every retained ingestion entry.",
+          "objective": "Identify changes in run volume by the activity date encoded in each source shard filename, not its import time.",
+          "acceptance": "Every transaction with a valid shard activity date is represented without date bucketing or aggregation; unavailable dates are not replaced by import time and unavailable counts are labeled, not inferred as measured zeroes.",
+          "description": "Entries are positioned by the UTC activity date in the source shard filename, not when imported. Entries without a valid shard date are not plotted. Missing run counts are labeled and shown at 0 as placeholders, not measured zeroes. Reported counts are input runs, not distinct retained runs.",
           "data": {
-            "source": "indexing-daily-workflow-runs"
+            "source": "indexing-ingestion-runs",
+            "query-context": false
           },
           "mark": "chart",
-          "chart": "bar",
+          "chart": "scatter",
+          "scatter": { "cluster": false },
           "layout": "full",
-          "empty-message": "No CAO Activity workflow-run history has been retained.",
+          "empty-message": "No ingestion entries with a valid shard activity date have been retained.",
           "encoding": {
             "x": {
-              "field": "day",
-              "type": "nominal",
-              "title": "Indexed"
+              "field": "shard-day",
+              "type": "temporal",
+              "format": "human-friendly-timestamp",
+              "title": "Shard activity date"
             },
             "y": {
               "field": "workflow-runs",
               "type": "quantitative",
-              "title": "New workflow runs"
+              "title": "Ingested runs"
+            },
+            "color": {
+              "field": "run-count-status",
+              "type": "nominal",
+              "title": "Run count"
             }
           }
         },
@@ -1731,11 +1943,15 @@
     {
       "id": "skills",
       "kind": "custom",
+      "intent": "Determine which skill-usage pattern needs workflow-level investigation.",
+      "subject": "Retained skill invocation observations in the selected scope and horizon.",
+      "objective": "Locate skill-usage evidence for workflow-level investigation.",
+      "acceptance": "Count observed invocations by skill and workflow, retain drill-down identity and disclose coverage. Invocation volume is not proof of skill quality, success or operational value.",
       "title": "Skills",
       "navigation-label": "Skills",
       "icon": "tools",
       "experimental": true,
-      "description": "Analyze observed skill invocations and drill into the workflows that invoked them.",
+      "description": "Identify skill-usage patterns that require workflow-level CAO investigation.",
       "views": [
         {
           "id": "skills-most-invoked",
@@ -1856,7 +2072,12 @@
     {
       "id": "engines-models",
       "kind": "custom",
+      "intent": "Determine which agent-model combination needs cost or reliability investigation.",
+      "subject": "Retained workflow runs with engine, requested/resolved model and usage telemetry.",
+      "objective": "Identify combinations requiring cost or reliability investigation.",
+      "acceptance": "Keep engine/model identity and unknown values explicit; distinguish AIC from raw tokens and preserve token classes, units and time bounds. Do not infer model quality or missing cost from usage volume.",
       "title": "Models & Agents",
+      "description": "Identify the agent-model combination that most requires investigation.",
       "icon": "sparkles-fill",
       "views": [
         {
@@ -2030,10 +2251,14 @@
     {
       "id": "friction",
       "kind": "custom",
+      "intent": "Identify workflows with audit-attributed execution friction worth investigating.",
+      "subject": "Retained gh-aw audit friction observations and attributed cost.",
+      "objective": "Prioritize evidence-backed efficiency improvements.",
+      "acceptance": "Preserve finding type, workflow/run association, cost units and provenance; distinguish audit attribution from verified avoidable spend. Missing audits are not zero friction or proof of efficiency.",
       "title": "Friction",
       "navigation-label": "Friction",
       "icon": "pulse",
-      "description": "Avoidable execution cost attributed by gh aw audit across observed workflow runs.",
+      "description": "Identify audit-attributed execution friction that warrants CAO efficiency work.",
       "views": [
         {
           "id": "friction-by-workflow",
@@ -2148,110 +2373,177 @@
     },
     {
       "id": "operational-value",
-      "kind": "built-in",
-      "page": "operational-value",
+      "kind": "custom",
+      "intent": "Find repositories with operational measurements and distinguish unmeasured work.",
+      "subject": "Repository-linked operational-value evidence, goals and measurement availability.",
+      "objective": "Choose a repository for outcome-measurement investigation.",
+      "acceptance": "Separate measured and unmeasured repositories, preserve native metric identity and latest observation time, and expose coverage. Missing evidence is not zero value; run success is not an outcome measure.",
       "title": "Operational Value",
-      "description": "Computed package-defined operational value for each repository.",
+      "description": "Choose a repository for operational-value measurement investigation.",
       "icon": "graph",
       "class-name": "value-page",
-      "experimental": true,
-      "definition": {
-        "data-state": {
-          "availability": true
-        },
+      "view-mode-control": false,
+      "route": {
+        "tab": "overview",
+        "breadcrumbs": [{ "page": "operational-value" }],
+        "tabs": [
+          { "id": "overview", "label": "Overview", "icon": "graph", "page": "operational-value" }
+        ]
+      },
         "views": [
           {
-            "id": "operational-value-history",
-            "title": "Operational value over time",
-            "subject": "Track retained repository observations by package-defined operational value ID.",
-            "objective": "Identify changes in a value's native measure worth investigating.",
-            "acceptance": "Values are interpreted with their declared units, direction, and maturity; an interim observation is not claimed as a verified outcome.",
-            "description": "Each line tracks one package-defined value ID across retained repository observations.",
-            "data": {
-              "source": "operational-values"
-            },
-            "mark": "chart",
-            "chart": "line",
+            "id": "operational-value-summary",
+            "show-title": false,
+            "data": { "source": "operational-value-overview-summary" },
+            "mark": "list",
+            "list": { "style": "entity-cards", "card": "outcome-evidence-summary", "icon": "graph" },
+            "encoding": { "columns": [{ "field": "summary", "type": "nominal", "title": "Evidence readiness" }] },
             "layout": "full",
-            "empty-message": "No operational-value observations are available.",
-            "encoding": {
-              "x": {
-                "field": "observed-at",
-                "type": "temporal",
-                "format": "human-friendly-timestamp",
-                "time-unit": "day",
-                "title": "Observed"
-              },
-              "y": {
-                "field": "operational-value",
-                "type": "quantitative",
-                "aggregate": "mean",
-                "title": "Operational value"
-              },
-              "color": {
-                "field": "operational-value-definition",
-                "type": "nominal",
-                "title": "Value ID"
+            "empty-message": "Repository evidence is unavailable."
+          },
+          {
+            "id": "operational-value-signals",
+            "title": "Repositories",
+            "subject": "Direction and uncertainty across measured repositories, including standalone workflow outcomes.",
+            "objective": "Find worsening or mixed outcomes, gains and evidence gaps without inspecting every timeline.",
+            "acceptance": "One count per repository, not per report. Keep insufficient evidence visible and native units separate. Retained observations do not imply freshness, complete scope, sustained gains or causality.",
+            "data": { "source": "operational-value-measured-repositories" },
+            "mark": "list",
+            "list": {
+              "style": "entity-cards",
+              "appearance": "grouped",
+              "card": "repository-outcome-signal",
+              "icon": "repo",
+              "drill": {
+                "type": "query", "page": "operational-value-repository", "query": "operational-value-plot-series",
+                "title-field": "repository-coordinate",
+                "arguments": [
+                  { "name": "organization", "field": "organization" },
+                  { "name": "repository", "field": "repository" }
+                ]
               }
+            },
+            "layout": "full",
+            "empty-message": "No repositories have retained primary measurements. See Evidence for coverage.",
+            "encoding": { "columns": [
+              { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
+              { "field": "signal", "type": "nominal", "title": "Observed direction" },
+              { "field": "coverage-summary", "type": "nominal", "title": "Coverage" }
+            ] }
+          },
+          {
+            "id": "operational-value-unmeasured",
+            "disclosure": "supplemental",
+            "disclosure-label": "Repositories without retained measurements",
+            "description": "No retained primary measurements. Missing evidence is not zero value.",
+            "data": { "source": "operational-value-unmeasured-repositories" },
+            "mark": "list",
+            "list": { "style": "entity-cards", "card": "repository-outcome-signal", "icon": "repo" },
+            "layout": "full",
+            "empty-message": "Every inventory repository has retained primary measurements.",
+            "encoding": { "columns": [
+              { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
+              { "field": "evidence-reason", "type": "nominal", "title": "Evidence" }
+            ] }
+          }
+        ]
+    },
+    {
+      "id": "operational-value-evidence",
+      "kind": "custom",
+      "intent": "Inspect measurement coverage, latest native values and declared directions.",
+      "subject": "Retained operational-value observations and measurement definitions.",
+      "objective": "Determine what can honestly be compared before claiming improvement.",
+      "acceptance": "Preserve metric identity, native unit, direction, timestamp and coverage denominator; keep missing values unavailable and unlike metrics separate. Latest observed values do not alone establish causality or attainment.",
+      "title": "Operational Value",
+      "description": "Determine whether operational-value evidence supports a valid comparison.",
+      "icon": "graph",
+      "view-mode-control": false,
+      "route": {
+        "navigation-page": "operational-value",
+        "breadcrumbs": [{ "page": "operational-value" }],
+        "tabs": [
+          { "id": "overview", "label": "Overview", "icon": "graph", "page": "operational-value" }
+        ]
+      },
+      "views": [
+          {
+            "id": "operational-value-coverage",
+            "disclosure": "supplemental",
+            "disclosure-label": "Measurement availability",
+            "subject": "Outcome measurement coverage for inventory and observed repositories.",
+            "objective": "Identify repositories with primary outcome evidence and evidence gaps.",
+            "acceptance": "Include repositories without observations and outcomes without campaigns. Not measured is not zero value. Maturity does not verify impact.",
+            "description": "Inventory and measured repositories are listed, including standalone workflow outcomes. Mature evidence is not necessarily comparable or current. No observations does not establish that a measurement contract is missing.",
+            "data": { "source": "operational-value-repository-coverage" },
+            "mark": "table",
+            "column-summaries": false,
+            "layout": "full",
+            "empty-message": "No inventory or measured repositories are available.",
+            "encoding": {
+              "columns": [
+                { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
+                { "field": "measurement-state", "type": "nominal", "title": "Outcome evidence" },
+                { "field": "measured-goals", "type": "quantitative", "title": "Measured repository goals" },
+                { "field": "mature-goals", "type": "quantitative", "title": "Mature repository goals" }
+              ]
             }
           },
           {
-            "id": "operational-value-observations",
-            "title": "Operational value observations",
-            "description": "Time-ordered computed values with their repository and campaign context.",
-            "data": {
-              "source": "operational-values",
-              "order-by": [
-                {
-                  "field": "observed-at",
-                  "direction": "desc"
-                }
-              ],
-              "limit": 100
-            },
+            "id": "operational-value-latest",
+            "title": "Latest measurements",
+            "subject": "Latest native repository outcomes and movement against comparable retained measurements.",
+            "objective": "Inspect whether measured goals are moving in the intended direction.",
+            "acceptance": "Keep repositories, measures, units and contract versions separate. Show interim results and observation timestamps. Movement is not causal attribution or a pre-adoption baseline comparison.",
+            "description": "Recent change compares complete adjacent periods, not lifetime change since adoption. Native values remain visible when comparison evidence is missing. Two points show observed change, not a sustained trend or verified impact.",
+            "data": { "source": "operational-value-latest" },
             "mark": "table",
+            "column-summaries": false,
             "controls": "interactive",
-            "layout": "full-view",
-            "empty-message": "No operational-value observations are available.",
+            "lazy-list": true,
+            "layout": "full",
+            "empty-message": "No primary outcome measurements are retained.",
+            "encoding": { "columns": [
+              { "field": "repository-coordinate", "type": "nominal", "title": "Repository", "display": "repository-link" },
+              { "field": "value-workflow", "type": "nominal", "title": "Workflow" },
+              { "field": "operational-value-name", "type": "nominal", "title": "Goal measure" },
+              { "field": "operational-value", "type": "quantitative", "title": "Latest value" },
+              { "field": "operational-value-unit", "type": "nominal", "title": "Native unit" },
+              { "field": "native-change", "type": "quantitative", "title": "Recent change" },
+              { "field": "movement", "type": "nominal", "title": "Comparison status" },
+              { "field": "recent-comparison-period", "type": "nominal", "title": "Compared periods" },
+              { "field": "observed-at", "type": "temporal", "format": "human-friendly-timestamp", "title": "Observed" }
+            ] }
+          },
+          {
+            "id": "operational-value-direction-chart",
+            "subject": "Comparable outcome direction by repository.",
+            "objective": "Inspect direction distribution after evaluating measurement readiness.",
+            "acceptance": "Count each repository once, not native values. Omit incomparable summaries; an empty distribution is not neutral. Links open repository history directly.",
+            "disclosure": "supplemental",
+            "disclosure-label": "Comparable outcome distribution",
+            "description": "Only fully comparable repository summaries appear. Comparison blockers remain visible in Overview; no comparable evidence is not a neutral outcome.",
+            "data": { "source": "operational-value-direction-repositories", "limit": 100 },
+            "mark": "chart",
+            "chart": "horizontal-bar",
+            "layout": "full",
+            "empty-message": "No comparable outcome directions are available. Inspect the comparison reasons in Overview.",
             "encoding": {
-              "columns": [
-                {
-                  "field": "observed-at",
-                  "type": "temporal",
-                  "title": "Observed",
-                  "format": "human-friendly-timestamp"
-                },
-                {
-                  "field": "operational-value-definition",
-                  "type": "nominal",
-                  "title": "Value ID"
-                },
-                {
-                  "field": "operational-value",
-                  "type": "quantitative",
-                  "title": "Value"
-                },
-                {
-                  "field": "repository",
-                  "type": "nominal",
-                  "title": "Repository",
-                  "display": "repository-link"
-                },
-                {
-                  "field": "campaign",
-                  "type": "nominal",
-                  "title": "Campaign"
-                }
-              ]
-            },
-            "lazy-list": true
+              "x": { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
+              "y": { "field": "repositories", "type": "quantitative", "title": "Measured repositories" },
+              "color": { "field": "signal", "type": "nominal", "title": "Observed direction" },
+              "href": { "field": "repository-dashboard-link" }
+            }
           }
         ]
-      }
     },
     {
       "id": "maintenance",
       "kind": "custom",
+      "intent": "Identify repositories whose compiler provenance warrants maintenance review.",
+      "subject": "Repository workflow compiler versions and retained update-confidence evidence.",
+      "objective": "Prioritize safe maintenance proposals using known version provenance.",
+      "acceptance": "Distinguish registration, observed version and update confidence; preserve unknown provenance and refresh guidance. Do not infer outdatedness from missing data or execute updates without approval.",
       "title": "Updates",
       "navigation-label": "Updates",
       "navigation-indicator": {
@@ -2263,7 +2555,80 @@
       },
       "icon": "tools",
       "class-name": "maintenance-page",
-      "description": "Review CAO campaign packages and gh-aw compiler versions. Active describes registration only; update confidence is reported separately. If version provenance is unknown, run CAO Activity to refresh inventory, then inspect Indexing diagnostics.",
+      "description": "Identify repositories whose compiler provenance justifies a CAO maintenance proposal.",
+      "route": {
+        "tab": "repositories",
+        "tabs": [
+          { "id": "repositories", "label": "Repositories", "icon": "repo", "page": "maintenance" },
+          { "id": "campaigns", "label": "Campaigns", "icon": "workflow", "page": "maintenance-campaigns" }
+        ]
+      },
+      "views": [
+        {
+          "id": "maintenance-repositories",
+          "title": "Repositories",
+          "description": "Installed and current gh-aw compiler versions observed for each repository. Select a repository to open its GitHub home page.",
+          "data": {
+            "source": "maintenance-repositories"
+          },
+          "mark": "list",
+          "empty-message": "No Agentic Workflow compiler versions were observed.",
+          "encoding": {
+            "columns": [
+              {
+                "field": "repository",
+                "type": "nominal",
+                "title": "Repository"
+              },
+              {
+                "field": "gh-aw-version",
+                "type": "nominal",
+                "title": "Installed"
+              },
+              {
+                "field": "gh-aw-current-version",
+                "type": "nominal",
+                "title": "Latest"
+              },
+              {
+                "field": "upgrade-state",
+                "type": "nominal",
+                "title": "Upgrade",
+                "display": "status"
+              }
+            ]
+          },
+          "layout": "full",
+          "list": {
+            "style": "entity-cards",
+            "card": "maintenance-repository",
+            "icon": "repo",
+            "action": "upgrade-repository",
+            "action-context": ["repository"],
+            "actions": ["add-repository"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "maintenance-campaigns",
+      "kind": "custom",
+      "intent": "Identify installed campaign packages requiring a version and provenance review.",
+      "subject": "Campaign package registrations, versions and update-confidence evidence.",
+      "objective": "Choose evidence-backed campaign maintenance without expanding rollout.",
+      "acceptance": "Keep installed/source version identity and confidence distinct from active registration; report unknown provenance. Updating must preserve campaign ownership and reviewed policy and require explicit operational approval.",
+      "title": "Updates",
+      "description": "Identify campaign packages whose version provenance justifies a CAO maintenance proposal.",
+      "icon": "tools",
+      "class-name": "maintenance-page",
+      "route": {
+        "navigation-page": "maintenance",
+        "tab": "campaigns",
+        "tabs": [
+          { "id": "repositories", "label": "Repositories", "icon": "repo", "page": "maintenance" },
+          { "id": "campaigns", "label": "Campaigns", "icon": "workflow", "page": "maintenance-campaigns" }
+        ]
+      },
       "views": [
         {
           "id": "maintenance-campaigns",
@@ -2310,49 +2675,8 @@
             "style": "entity-cards",
             "card": "maintenance-campaign",
             "icon": "workflow",
-            "action": "update-repository"
-          }
-        },
-        {
-          "id": "maintenance-repositories",
-          "title": "Repositories",
-          "description": "Installed and current gh-aw compiler versions observed for each repository.",
-          "data": {
-            "source": "maintenance-repositories"
-          },
-          "mark": "list",
-          "empty-message": "No Agentic Workflow compiler versions were observed.",
-          "encoding": {
-            "columns": [
-              {
-                "field": "repository",
-                "type": "nominal",
-                "title": "Repository"
-              },
-              {
-                "field": "gh-aw-version",
-                "type": "nominal",
-                "title": "Installed"
-              },
-              {
-                "field": "gh-aw-current-version",
-                "type": "nominal",
-                "title": "Latest"
-              },
-              {
-                "field": "upgrade-state",
-                "type": "nominal",
-                "title": "Upgrade",
-                "display": "status"
-              }
-            ]
-          },
-          "layout": "full",
-          "list": {
-            "style": "entity-cards",
-            "card": "maintenance-repository",
-            "icon": "repo",
-            "action": "upgrade-repository"
+            "action": "update-repository",
+            "action-context": ["campaign"]
           }
         }
       ]
@@ -2360,10 +2684,14 @@
     {
       "id": "experiments",
       "kind": "custom",
+      "intent": "Inspect which workflow runs have recorded experiment assignments.",
+      "subject": "Retained run-linked assignments grouped by workflow and experiment.",
+      "objective": "Assess assignment evidence before designing an experiment comparison.",
+      "acceptance": "Show assignment counts and identities with coverage limits. Audit evidence does not establish campaign milestones or target assignments; counts are not completion percentages or proof of treatment effects.",
       "title": "Experiments",
       "icon": "beaker",
       "experimental": true,
-      "description": "Observed run assignments by workflow and experiment. TODO: audit evidence does not establish campaign milestones or target assignments, so these counts are not completion percentages.",
+      "description": "Assess whether retained experiment assignments are sufficient for a bounded comparison.",
       "views": [
         {
           "id": "experiments-assignment-chart",
@@ -2387,8 +2715,36 @@
           }
         },
         {
+          "id": "experiments-assignments",
+          "title": "Run assignments",
+          "description": "Explicit observed variants for retained runs. Assignments are not experiment outcomes or treatment effects.",
+          "data": {
+            "source": "experiment-assignments",
+            "order-by": [
+              { "field": "workflow", "direction": "asc" },
+              { "field": "assignment-at", "direction": "desc" }
+            ]
+          },
+          "mark": "table",
+          "controls": "interactive",
+          "lazy-list": true,
+          "layout": "full-view",
+          "empty-message": "No experiment assignments were observed.",
+          "encoding": {
+            "columns": [
+              { "field": "experiment", "type": "nominal", "title": "Experiment" },
+              { "field": "variant", "type": "nominal", "title": "Assigned variant" },
+              { "field": "workflow", "type": "nominal", "title": "Workflow" },
+              { "field": "repository", "type": "nominal", "title": "Repository" },
+              { "field": "run", "type": "nominal", "title": "Run" },
+              { "field": "assignment-at", "type": "temporal", "title": "Observed at", "format": "human-friendly-timestamp" },
+              { "field": "assignment-link", "type": "nominal", "title": "Evidence", "format": "workflow-run-url" }
+            ]
+          }
+        },
+        {
           "id": "experiments-definitions",
-          "title": "Experiments",
+          "disclosure": "supplemental",
           "description": "Experiment definitions discovered in run-level audit evidence. Missing campaign progress targets are not inferred.",
           "data": { "source": "experiments" },
           "mark": "table",
@@ -2410,16 +2766,45 @@
     {
       "id": "evals",
       "kind": "custom",
+      "intent": "Inspect retained eval answers by workflow without mistaking history for current verdicts.",
+      "subject": "Timestamped native YES, NO and UNKNOWN eval observations.",
+      "objective": "Locate evaluation evidence and gaps for further investigation.",
+      "acceptance": "Keep eval identity, workflow, observation time and provenance; label only explicit YES/NO answers as such. UNKNOWN remains distinct; absent authoritative current-result pointers, older observations are not current verdicts.",
       "title": "Evals",
       "icon": "check-circle",
       "experimental": true,
-      "description": "Explicit YES/NO results from retained eval observations, grouped by workflow and newest first. UNKNOWN answers remain in the underlying evidence but are not labelled YES/NO. TODO: audit evidence lacks an authoritative current-result pointer per eval; older observations remain visible and must not be read as current verdicts.",
+      "description": "Compare recorded YES, NO and UNKNOWN answer percentages for each eval, then inspect the retained evidence.",
       "views": [
+        {
+          "id": "evals-answer-distribution",
+          "title": "Eval answer distribution",
+          "subject": "Recorded answer percentages for each workflow-scoped eval.",
+          "objective": "Compare the YES, NO and UNKNOWN shares without conflating missing evidence with an unknown answer.",
+          "acceptance": "Show three bars per eval, including zero shares, whose values sum to 100%. Keep workflow identities separate and preserve the evidence ledger.",
+          "description": "Each eval has YES, NO and UNKNOWN bars totaling 100% of its recorded answers. Up to 33 evals are shown, ordered by name; Table view retains all observations. Missing observations are not counted as UNKNOWN.",
+          "data": {
+            "source": "eval-answer-distribution",
+            "order-by": [
+              { "field": "eval-label", "direction": "asc" }
+            ],
+            "limit": 99
+          },
+          "mark": "chart",
+          "chart": "horizontal-bar",
+          "layout": "full",
+          "empty-message": "No eval observations were retained.",
+          "encoding": {
+            "x": { "field": "eval-result", "type": "nominal", "title": "Answer" },
+            "section": { "field": "eval-label", "type": "nominal", "title": "Eval / Repository / Workflow" },
+            "y": { "field": "answer-percent", "type": "quantitative", "title": "Recorded answers", "unit": "percent" },
+            "color": { "field": "eval-result", "type": "nominal", "title": "Answer" }
+          }
+        },
         {
           "id": "evals-statuses",
           "title": "Observed eval answers by workflow",
           "data": {
-            "source": "eval-yes-no-status",
+            "source": "eval-status-ledger",
             "order-by": [
               { "field": "workflow", "direction": "asc" },
               { "field": "observed-at", "direction": "desc" }
@@ -2429,14 +2814,15 @@
           "controls": "interactive",
           "lazy-list": true,
           "layout": "full-view",
-          "empty-message": "No classified YES/NO eval observations were retained.",
+          "empty-message": "No eval observations were retained.",
           "encoding": {
             "columns": [
               { "field": "workflow", "type": "nominal", "title": "Workflow" },
               { "field": "eval", "type": "nominal", "title": "Eval" },
-              { "field": "eval-result", "type": "nominal", "title": "YES / NO" },
+              { "field": "repository", "type": "nominal", "title": "Repository" },
+              { "field": "eval-result", "type": "nominal", "title": "Answer" },
               { "field": "observed-at", "type": "temporal", "title": "Observed", "format": "human-friendly-timestamp" },
-              { "field": "run", "type": "nominal", "title": "Run", "display": "evidence-link" }
+              { "field": "run", "type": "nominal", "title": "Run", "display": "run-link" }
             ]
           }
         }
@@ -2445,11 +2831,35 @@
     {
       "id": "graders",
       "kind": "custom",
+      "intent": "Compare normalized grader values over time and inspect their native evidence.",
+      "subject": "Run-linked grader results and native metric evidence grouped by workflow.",
+      "objective": "Show each grader value relative to its observed maximum while keeping the native-value ledger available for evidence review.",
+      "acceptance": "Plot time against value divided by the maximum for that grader in the selected data; missing values and zero maxima do not produce points. Preserve grader identity, native values/status, units and times; unknown is not pass/fail. Historical observations are not current verdicts or verified gains.",
       "title": "Graders",
       "icon": "checklist",
       "experimental": true,
-      "description": "YES/NO pass/fail results from retained grader observations, grouped by workflow and newest first. Other results are unknown. TODO: audit evidence lacks an authoritative current-result pointer per grader; older observations remain visible.",
+      "description": "Compare grader values over time relative to each grader's observed maximum, then inspect native measurements in the ledger.",
       "views": [
+        {
+          "id": "graders-value-scatter",
+          "title": "Grader values relative to observed maximum",
+          "subject": "Timed grader observations normalized by each grader's maximum in the selected data.",
+          "objective": "Compare relative measurements and follow a point to its producing run.",
+          "acceptance": "Preserve each point's timestamp and value/max ratio without connecting or clamping values; omit missing ratios and zero maxima. Normalization is not an eval answer or proof of improvement.",
+          "description": "Each point is value / maximum observed value for the same grader and workflow. Zero or missing maxima are not plotted. Ratios are not eval answers or proof of improvement.",
+          "data": { "source": "grader-value-scatter" },
+          "mark": "chart",
+          "chart": "scatter",
+          "scatter": { "cluster": false },
+          "layout": "full",
+          "empty-message": "No timed grader values have a nonzero observed maximum. Native observations remain in the ledger below.",
+          "encoding": {
+            "x": { "field": "observed-at", "type": "temporal", "title": "Observed at", "format": "human-friendly-timestamp" },
+            "y": { "field": "normalized-value", "type": "quantitative", "title": "Value / observed maximum" },
+            "color": { "field": "grader-series", "type": "nominal", "title": "Grader" },
+            "href": { "field": "run-link", "type": "nominal" }
+          }
+        },
         {
           "id": "graders-statuses",
           "title": "Observed grader results by workflow",
@@ -2469,7 +2879,10 @@
             "columns": [
               { "field": "workflow", "type": "nominal", "title": "Workflow" },
               { "field": "grader", "type": "nominal", "title": "Grader" },
-              { "field": "verdict", "type": "nominal", "title": "YES / NO" },
+              { "field": "repository", "type": "nominal", "title": "Repository" },
+              { "field": "value", "type": "quantitative", "title": "Value" },
+              { "field": "unit", "type": "nominal", "title": "Unit" },
+              { "field": "status", "type": "nominal", "title": "Status" },
               { "field": "observed-at", "type": "temporal", "title": "Observed", "format": "human-friendly-timestamp" },
               { "field": "run", "type": "nominal", "title": "Run", "display": "run-link" }
             ]
@@ -2480,11 +2893,15 @@
     {
       "id": "configuration",
       "kind": "custom",
+      "intent": "Review checked-in control-repository policy before proposing a configuration change.",
+      "subject": "Entries in the control repository's .github/workflows/cao.json.",
+      "objective": "Understand explicit scope, modes and enablement without inferring broader authority.",
+      "acceptance": "Preserve policy identity and provenance, distinguish missing settings from permission, and fail closed on unavailable policy. Policy edits require explicit reviewed authorization; never expose credentials or silently promote live mode.",
       "title": "Settings",
       "navigation-label": "Settings",
       "icon": "gear",
       "class-name": "configuration-page",
-      "description": "Review and edit the entries in the checked-in .github/workflows/cao.json policy.",
+      "description": "Review checked-in CAO policy before proposing an authorized configuration change.",
       "views": [
         {
           "id": "configuration-policy",

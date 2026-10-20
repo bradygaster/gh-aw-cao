@@ -7,10 +7,13 @@ import { resolveBundledResource } from "./bundled-resources.mjs";
  * @param {{
  *   workingDirectory: string,
  *   repository?: string,
+ *   dataBackend?: 'sqlite' | 'indexeddb',
  *   ghExecutable?: string,
+ *   generateQuery?: typeof import('./query-designer.mjs').generateDashboardQuery,
+ *   enhanceQueryIntent?: typeof import('./query-designer.mjs').enhanceQueryEditorIntent,
  *   approveCliAction: (action: { id: string, command: string, input?: string }) => Promise<boolean>,
  *   executeCliAction: (action: {
- *     id: string, command: string, input?: string,
+ *     id: string, command: string, input?: string, signal?: AbortSignal,
  *     onOutput: (event: { stream: "stdout" | "stderr", data: string }) => void,
  *   }) => Promise<unknown>,
  * }} options
@@ -18,9 +21,12 @@ import { resolveBundledResource } from "./bundled-resources.mjs";
 export async function startLocalDashboardPreview({
   workingDirectory,
   repository,
+  dataBackend = "sqlite",
   executeCliAction,
   approveCliAction,
   ghExecutable = "gh",
+  generateQuery,
+  enhanceQueryIntent,
 }) {
   const localServerPath = await resolveBundledResource("localServer");
   const localServer = await import(pathToFileURL(localServerPath).href);
@@ -46,7 +52,7 @@ export async function startLocalDashboardPreview({
       const sourceSite = siteRoot;
       await cp(sourceSite, stagedSite, {
         recursive: true,
-        filter: (source) => !["node_modules", "dist", "test", "test-results", "scripts"]
+        filter: (source) => !["node_modules", "dist", "test", "test-results", "scripts", ".tmp"]
           .includes(relative(sourceSite, source).split(sep)[0]),
       });
       siteRoot = stagedSite;
@@ -58,6 +64,9 @@ export async function startLocalDashboardPreview({
       repository,
       ghExecutable,
       canvas: true,
+      generateQuery,
+      enhanceQueryIntent,
+      dataBackend,
       executeCliAction,
       approveCliAction,
       host: "127.0.0.1",

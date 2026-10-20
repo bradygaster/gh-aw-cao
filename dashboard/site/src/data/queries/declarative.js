@@ -11,9 +11,10 @@
  * `select` -> `order-by` -> `limit`.
  */
 
-import { PREDICTION_METHODS, tidy } from '../../data-operations.js';
+import { computeRows, PREDICTION_METHODS, tidy } from '../../data-operations.js';
 import { createDebug } from '../../debug.js';
 import { SIMULATION_DAYS, simulationDaysSource } from './simulation-days.js';
+import { validFacetDefinition } from './facet.js';
 
 const debugQuery = createDebug('data:query');
 
@@ -29,19 +30,19 @@ const debugQuery = createDebug('data:query');
  *   description?: string,
  *   from: string,
  *   stores?: string[],
- *   ['stores-by-source']?: Record<string, string[]>,
  *   union?: string[],
  *   time?: { range?: string, start?: string, end?: string },
- *   joins?: Array<{ source: string, type?: 'inner'|'left', on: Array<{ left: string, right: string }>, fields: Array<{ field: string, as: string }> }>,
+ *   joins?: Array<{ source: string, type?: 'inner'|'left'|'inner-many', on: Array<{ left: string, right: string }>, fields: Array<{ field: string, as: string }> }>,
  *   filter?: { predicates?: Array<{ field: string, equals?: unknown, in?: unknown[], includes?: string, gte?: unknown, lt?: unknown, optional?: boolean }>, search?: { fields: string[], query: string } },
  *   compute?: import('../../data-operations.js').ComputedField[],
  *   ['temporal-series']?: import('../../data-operations.js').TemporalSeriesDefinition,
- *   aggregate?: { by?: string[], values: Array<{ field: string, as: string, reducer: 'count'|'distinct-count'|'distinct-list'|'distinct-values'|'sum'|'mean'|'min'|'max', filter?: { predicates: Array<{ field: string, equals?: string|number|boolean, in?: Array<string|number|boolean> }> } }> },
+ *    aggregate?: { by?: string[], values: Array<{ field: string, as: string, reducer: 'count'|'distinct-count'|'distinct-list'|'distinct-values'|'sum'|'mean'|'min'|'max'|'unique'|'median'|'p75'|'p90'|'p95', filter?: { predicates: Array<{ field: string, equals?: string|number|boolean, in?: Array<string|number|boolean> }> } }> },
  *   predict?: import('../../data-operations.js').PredictedField[],
  *   window?: import('../../data-operations.js').WindowField[],
  *   select?: Array<{ field: string, as?: string }>,
  *   ['order-by']?: Array<{ field: string, direction?: 'asc'|'desc' }>,
- *   limit?: number
+ *   limit?: number,
+ *   facet?: import('./facet.js').FacetDefinition
  * }} DashboardQuery
  */
 
@@ -259,9 +260,6 @@ export function createDashboardQueryBudget(options = {}) {
   };
 }
 
-/** Supported join types. */
-export const DASHBOARD_QUERY_JOIN_TYPES = ['inner', 'left'];
-
 /**
  * Indexes declared queries by name, preserving declaration order.
  * @param {unknown} definitions
@@ -345,6 +343,9 @@ export function dashboardQueryDefects(definitions) {
  * @returns {string | undefined}
  */
 function queryStructuralDefect(definition) {
+  if (definition.facet !== undefined && !validFacetDefinition(definition.facet)) {
+    return 'facet requires a field or row/column fields and an output as';
+  }
   if (definition.union !== undefined
       && (!Array.isArray(definition.union) || definition.union.length === 0
         || definition.union.some((source) => typeof source !== 'string'))) {
@@ -368,6 +369,9 @@ function queryStructuralDefect(definition) {
         || typeof series.series !== 'string'
         || (series.shape !== undefined && !['tidy', 'groups', 'panels'].includes(series.shape))
         || (series.link !== undefined && (series.shape !== 'panels' || typeof series.link !== 'string'))
+        || (series['point-carry'] !== undefined && (series.shape !== 'panels'
+          || !Array.isArray(series['point-carry']) || series['point-carry'].length === 0
+          || series['point-carry'].length > 16 || series['point-carry'].some((field) => typeof field !== 'string' || !field)))
         || (series.carry !== undefined && (!Array.isArray(series.carry) || series.carry.length > 16 || series.carry.some((field) => typeof field !== 'string')))
         || (series.trend !== undefined && (series.shape !== 'groups' || !isPlainObject(series.trend) || typeof series.trend.direction !== 'string'))
         || (!Array.isArray(measures) || measures.length > 64)
@@ -453,7 +457,7 @@ function queryStructuralDefect(definition) {
     const outputs = new Set();
     for (const entry of definition.window) {
       if (!isPlainObject(entry) || typeof entry.field !== 'string' || typeof entry.as !== 'string'
-          || (entry.operation !== 'rolling' && entry.operation !== 'change')
+          || !['rolling', 'change', 'previous', 'row-number'].includes(String(entry.operation))
           || !Array.isArray(entry['order-by']) || entry['order-by'].length === 0 || entry['order-by'].length > 8
           || entry['order-by'].some((clause) => !isPlainObject(clause) || typeof clause.field !== 'string'
             || (clause.direction !== undefined && clause.direction !== 'asc' && clause.direction !== 'desc'))
@@ -465,12 +469,15 @@ function queryStructuralDefect(definition) {
               || (entry.alignment !== undefined && !['trailing', 'centered'].includes(String(entry.alignment)))
               || (entry.alignment === 'centered' && Number(entry.frame) % 2 !== 1)
               || entry.mode !== undefined || entry['time-field'] !== undefined || entry.unit !== undefined
-            : entry.frame !== undefined || entry.reducer !== undefined || entry.alignment !== undefined
+            : ['previous', 'row-number'].includes(String(entry.operation))
+              ? entry.frame !== undefined || entry.reducer !== undefined || entry.alignment !== undefined
+                || entry.mode !== undefined || entry['time-field'] !== undefined || entry.unit !== undefined
+              : entry.frame !== undefined || entry.reducer !== undefined || entry.alignment !== undefined
               || (entry.mode !== undefined && !['absolute', 'percentage', 'rate'].includes(String(entry.mode)))
               || (entry.mode === 'rate'
                 ? typeof entry['time-field'] !== 'string' || !['second', 'minute', 'hour', 'day'].includes(String(entry.unit))
                 : entry['time-field'] !== undefined || entry.unit !== undefined))) {
-        return 'window entries require bounded ordered rolling or change definitions';
+        return 'window entries require ordered rolling, change, previous or row-number definitions';
       }
       if (outputs.has(entry.as)) return 'window output names must be unique';
       outputs.add(entry.as);
@@ -584,6 +591,9 @@ export function dashboardQueryOutputFields(definition, fieldsOf) {
   for (const entry of definition.window ?? []) fields.push(entry.as);
   if (definition.select) {
     fields = definition.select.map((field) => field.as ?? field.field);
+  }
+  if (definition.facet) {
+    fields = ['facet-field', 'facet-row', 'facet-column', 'facet-row-index', 'facet-column-index', definition.facet.as];
   }
   return [...new Set(fields)];
 }
@@ -742,6 +752,10 @@ function materializeDashboardQuery(definition, sources, defect, budget) {
     if (unavailable) {
       status = 'unavailable';
       failure = `input source "${unavailable.name}" is unavailable`;
+      const diagnostic = unavailable.source?.metadata?.['query-diagnostic'];
+      if (typeof diagnostic === 'string' && diagnostic.length > 0) {
+        failure += `; upstream diagnostic: ${diagnostic.slice(0, 2048)}`;
+      }
       const upstream = unavailable.source?.metadata?.['query-error'];
       const rootSource = isPlainObject(upstream)
         && upstream.code === 'input-unavailable'
@@ -850,9 +864,21 @@ function lazyValue(consume) {
  */
 function runDashboardQuery(definition, sources, budget) {
   const sourceNames = [definition.from, ...(definition.union ?? [])];
-  const input = sourceNames.flatMap((sourceName) => /** @type {Row[]} */ (sources[sourceName].rows));
+  const operators = compileRowOperators(definition);
+  const materializesRows = Boolean(definition.joins?.length)
+    || operators.some((operator) => operator.op === 'compute');
+  const input = sourceNames.length === 1
+    ? /** @type {Row[]} */ (sources[definition.from].rows)
+    : sourceNames.flatMap((sourceName) => /** @type {Row[]} */ (sources[sourceName].rows));
   enforceLimit(input.length, 'max-input-rows', sourceNames.join(', '));
   let rows = timeQueryStage(definition.name, 'from', input.length, budget, () => {
+    // Joins and computed fields allocate their output rows; copying every
+    // input first only adds a redundant full-row pass, including per scan batch.
+    if (materializesRows) {
+      if (sourceNames.length > 1) budget.spend(input.length);
+      else budget.checkpoint();
+      return input;
+    }
     budget.spend(input.length);
     return input.map((row) => ({ ...row }));
   });
@@ -864,8 +890,17 @@ function runDashboardQuery(definition, sources, budget) {
       joinedRows: joinedRows.length
     });
   }
-  const operators = compileRowOperators(definition);
-  for (const operator of operators) {
+  for (let index = 0; index < operators.length; index++) {
+    const operator = operators[index];
+    const next = operators[index + 1];
+    if (operator.op === 'compute' && next?.op === 'select') {
+      rows = timeQueryStage(definition.name, 'compute-select', rows.length, budget, () => {
+        budget.spend(rows.length);
+        return computeRows(rows, operator, next);
+      });
+      index++;
+      continue;
+    }
     rows = timeQueryStage(
       definition.name,
       queryOperatorStage(operator),
@@ -986,13 +1021,13 @@ export function compileRowOperators(definition) {
   if (definition.select?.length) operators.push({ op: 'select', fields: definition.select });
   if (definition['order-by']?.length) operators.push({ op: 'arrange', by: definition['order-by'] });
   if (typeof definition.limit === 'number') operators.push({ op: 'slice', limit: definition.limit });
+  if (definition.facet) operators.push({ op: 'facet', ...definition.facet });
   return operators;
 }
 
 /**
  * Applies one constrained equality join. The joined source must contain at
- * most one row per join key, so many-to-many expansion is rejected instead of
- * silently multiplying rows.
+ * most one row per join key unless inner-many explicitly requests expansion.
  *
  * @param {Row[]} rows
  * @param {NonNullable<DashboardQuery['joins']>[number]} join
@@ -1004,15 +1039,17 @@ export function compileRowOperators(definition) {
 function applyJoin(rows, join, joinedRows, sourceName, budget) {
   enforceLimit(joinedRows.length, 'max-input-rows', sourceName);
   budget.spend(joinedRows.length);
-  /** @type {Map<string, Row>} */
+  /** @type {Map<string, Row[]>} */
   const byKey = new Map();
   for (const row of joinedRows) {
     const key = joinKey(row, join.on.map((pair) => pair.right));
     if (key === null) continue;
-    if (byKey.has(key)) {
+    if (byKey.has(key) && join.type !== 'inner-many') {
       throw new Error(`joined source "${sourceName}" contains more than one row per join key`);
     }
-    byKey.set(key, row);
+    const matches = byKey.get(key) ?? [];
+    matches.push(row);
+    byKey.set(key, matches);
   }
   const type = join.type ?? 'inner';
   /** @type {Row[]} */
@@ -1020,15 +1057,18 @@ function applyJoin(rows, join, joinedRows, sourceName, budget) {
   for (const row of rows) {
     if (joined.length % CANCELLATION_CHECK_INTERVAL === 0) budget.checkpoint();
     const key = joinKey(row, join.on.map((pair) => pair.left));
-    const match = key === null ? undefined : byKey.get(key);
-    if (!match && type === 'inner') continue;
-    joined.push({
-      ...row,
-      ...Object.fromEntries(join.fields.map((field) => [field.as, match?.[field.field] ?? null]))
-    });
+    const matches = key === null ? undefined : byKey.get(key);
+    if (!matches && type !== 'left') continue;
+    for (const match of matches ?? [undefined]) {
+      enforceLimit(joined.length + 1, 'max-join-rows', sourceName);
+      budget.spend(1);
+      joined.push({
+        ...row,
+        ...Object.fromEntries(join.fields.map((field) => [field.as, match?.[field.field] ?? null]))
+      });
+    }
   }
   enforceLimit(joined.length, 'max-join-rows', sourceName);
-  budget.spend(joined.length);
   return joined;
 }
 
@@ -1117,7 +1157,7 @@ function composedMetadata(name, inputs, rowCount, optionalInputs = new Set()) {
  * @param {string} [unavailableInput]
  * @returns {LogicalSourceInput}
  */
-function unavailableResult(definition, metadata, reason, unavailableInput) {
+export function unavailableResult(definition, metadata, reason, unavailableInput) {
   return {
     source: definition.name,
     rows: [],

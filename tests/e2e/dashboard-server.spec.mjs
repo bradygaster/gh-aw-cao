@@ -13,6 +13,8 @@ import {
   normalizeDashboardPageChunk,
 } from "../../dashboard/site/src/dashboard-chunks.js";
 import { scrollRenderedViewsIntoView } from "./dashboard-deployed-refresh-helpers.mjs";
+import { serverDashboardPageExclusionReason } from "./dashboard-server-page-coverage.mjs";
+import { createDashboardServerQueryBudget } from "./dashboard-server-query-budget.mjs";
 
 const SERVER_LOCAL_ONLY_PAGES = new Map([
   ["configuration", "configuration-policy is provided by the local preview fixture, not the PostgreSQL server"],
@@ -20,6 +22,23 @@ const SERVER_LOCAL_ONLY_PAGES = new Map([
 
 const accessToken = process.env.DASHBOARD_SERVER_ACCESS_TOKEN
   || "0123456789abcdef0123456789abcdef";
+
+const queryBudget = createDashboardServerQueryBudget();
+let captureQueryResponse;
+
+test.beforeEach(async ({ context }) => {
+  captureQueryResponse = undefined;
+  await context.route("**/api/v1/query", async (route) => {
+    const capture = captureQueryResponse;
+    await queryBudget.run(async () => {
+      const response = await route.fetch();
+      capture?.({ ...captureDashboardQueryResponse(response), request: route.request() });
+      await route.fulfill({ response });
+      return response;
+    });
+  });
+  await queryBudget.waitForBudget();
+});
 
 const populatedViews = [
   {
@@ -41,11 +60,12 @@ const populatedViews = [
     heading: "Repositories",
     view: "repositories-activity",
     field: "repository",
-    value: "gh-aw-cao",
+    value: "gh-cao",
   },
 ];
 
 test("deployed shards populate server-backed dashboard views", async ({ context, page }) => {
+  test.setTimeout(240_000);
   await page.goto(`/?access_token=${accessToken}`);
   await expect(page).toHaveURL("http://127.0.0.1:8443/");
   await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "server-http");
@@ -67,21 +87,22 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
   });
   expect(JSON.stringify(healthPayload)).not.toMatch(/redis:\/\/|password|credential/i);
 
-  const query = await context.request.post("/api/v1/query", {
+  const query = await queryBudget.run(() => context.request.post("/api/v1/query", {
     headers,
     data: { sourceNames: ["runs"], queries: [] },
-  });
+  }));
   expect(query.ok()).toBe(true);
   const queryPayload = await query.json();
   expect(queryPayload.sources.runs.rows).toEqual([
     expect.objectContaining({
       run: "424242",
-      repository: "gh-aw-cao",
+      repository: "gh-cao",
       workflow: ".github/workflows/dashboard.md",
     }),
   ]);
 
   for (const expected of populatedViews) {
+    await queryBudget.waitForBudget();
     await page.goto(`/#page-${expected.page}`);
     await expect(page.getByRole("heading", { name: expected.heading, exact: true, level: 1 })).toBeVisible();
     const tableMode = page.getByRole("button", { name: "Table", exact: true });
@@ -107,16 +128,11 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
 
     try {
       const initialQueryResponses = [];
-      const onInitialResponse = (response) => {
-        if (new URL(response.url()).pathname === "/api/v1/query") {
-          initialQueryResponses.push(captureDashboardQueryResponse(response));
-        }
-      };
-      page.on("response", onInitialResponse);
+      captureQueryResponse = (response) => initialQueryResponses.push(response);
       await page.goto(`/?access_token=${accessToken}`);
       await expect(page.locator('meta[name="dashboard-data-backend"]')).toHaveAttribute("content", "server-http");
       await expect(page.locator('[data-page-id="overview"]')).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
-      page.off("response", onInitialResponse);
+      captureQueryResponse = undefined;
       const dashboardResponse = await context.request.get("/dashboard.json");
       expect(dashboardResponse.ok()).toBe(true);
       const dashboard = await dashboardResponse.json();
@@ -132,6 +148,7 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
         pages.push(mergeDashboardPage(definition, normalizeDashboardPageChunk(await chunkResponse.json()).page));
       }
       expect(pages.length).toBeGreaterThan(0);
+      expect(await page.evaluate(() => Reflect.get(globalThis, "__CLI_QUEUE__"))).not.toBe(true);
 
       for (const definition of pages) {
         const localOnlyReason = SERVER_LOCAL_ONLY_PAGES.get(definition.id);
@@ -143,21 +160,23 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
         results.push(result);
         const queryResponses = definition.id === "overview" ? [...initialQueryResponses] : [];
         const browserErrors = [];
-        let remainingTokens = 30;
-        let resetSeconds = 0;
         const onPageError = (error) => browserErrors.push(error.message);
-        const onResponse = (response) => {
-          if (new URL(response.url()).pathname !== "/api/v1/query") return;
-          queryResponses.push(captureDashboardQueryResponse(response));
-          remainingTokens = Math.min(remainingTokens, Number(response.headers()["ratelimit-remaining"] ?? 30));
-          resetSeconds = Math.max(resetSeconds, Number(response.headers()["ratelimit-reset"] ?? 0));
-        };
         page.on("pageerror", onPageError);
-        page.on("response", onResponse);
         try {
+          await queryBudget.waitForBudget();
+          captureQueryResponse = (response) => queryResponses.push(response);
+          const exclusionReason = serverDashboardPageExclusionReason(definition);
           await page.evaluate((hash) => { window.location.hash = hash; },
             dashboardAssessmentPageHash(definition, dashboard));
           const activePage = page.locator(`[data-page-id="${definition.id}"]`);
+          if (exclusionReason) {
+            await expect(page.locator('[data-page-id="overview"]')).toBeVisible();
+            await expect(activePage).toHaveCount(0);
+            await expect(page.locator(".cli-commands-navigation:visible")).toHaveCount(0);
+            result.status = "unsupported";
+            result.reason = exclusionReason;
+            continue;
+          }
           await expect(activePage).toBeVisible({ timeout: 30_000 });
           await expect(activePage).not.toHaveAttribute("data-page-pending", "", { timeout: 30_000 });
           await expect(activePage).not.toHaveAttribute("aria-busy", "true", { timeout: 30_000 });
@@ -190,10 +209,7 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
               if (!rendered.includes(viewId)) result.errors.push(`Missing view: ${viewId}`);
             }
           }
-          for (let index = 0; index < await views.count(); index += 1) {
-            const view = views.nth(index);
-            if (await view.isVisible()) await view.scrollIntoViewIfNeeded().catch(() => {});
-          }
+          await scrollRenderedViewsIntoView(activePage);
           await expect(activePage.locator(visibleBusyViewSelector)).toHaveCount(0, { timeout: 30_000 });
           const failures = await activePage.locator('[aria-label^="Unable to load "]')
             .evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")));
@@ -204,7 +220,7 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
               timeout: 30_000,
             }).toBeGreaterThan(0);
           }
-          for (const { response, body } of queryResponses) {
+          for (const { response, body, request } of queryResponses) {
             result.queries += 1;
             if (!response.ok()) {
               result.errors.push(`Query HTTP ${response.status()}`);
@@ -216,9 +232,9 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
               result.errors.push("Query returned no sources object");
               continue;
             }
-            const request = response.request().postDataJSON();
-            const replaced = new Set(request.replacedSources ?? []);
-            for (const name of [...(request.sourceNames ?? []), ...(request.aliases ?? [])]) {
+            const input = request.postDataJSON();
+            const replaced = new Set(input.replacedSources ?? []);
+            for (const name of [...(input.sourceNames ?? []), ...(input.aliases ?? [])]) {
               if (!replaced.has(name) && !Object.hasOwn(payload.sources, name)) {
                 result.errors.push(`Query did not resolve source: ${name}`);
               }
@@ -228,11 +244,9 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
         } catch (error) {
           result.errors.push(error instanceof Error ? error.message : String(error));
         } finally {
+          await Promise.all(queryResponses.map(({ body }) => body));
+          captureQueryResponse = undefined;
           page.off("pageerror", onPageError);
-          page.off("response", onResponse);
-          if (remainingTokens < 12 && resetSeconds > 0) {
-            await page.waitForTimeout((resetSeconds + 1) * 1000);
-          }
         }
       }
     } catch (error) {
@@ -240,17 +254,18 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
     } finally {
       const passed = results.filter((result) => result.status === "passed").length;
       const skipped = results.filter((result) => result.status === "skipped").length;
+      const unsupported = results.filter((result) => result.status === "unsupported").length;
       const failed = results.some((result) => result.status === "failed");
       const summary = [
         "### Go Postgres dashboard page checks",
         "",
-        `**${blocker || failed ? "FAILED" : "PASSED"}** — ${passed}/${results.length - skipped} server-backed pages passed; ${skipped} local-only page(s) skipped.`,
+        `**${blocker || failed ? "FAILED" : "PASSED"}** — ${passed}/${results.length - skipped - unsupported} server-backed pages passed; ${skipped} local-only page(s) skipped; ${unsupported} capability-gated route(s) verified unavailable.`,
         ...(blocker ? ["", `Setup failed: ${blocker.replaceAll("\n", " ")}`] : []),
         "",
-        "| Page | Status | Queries | Errors |",
+        "| Page | Status | Queries | Errors / scope reason |",
         "|---|---|---:|---|",
         ...results.map((result) =>
-          `| ${result.pageId} | ${result.status.toUpperCase()} | ${result.queries} | ${result.errors.map((error) => error.replaceAll("|", "\\|").replaceAll("\n", " ")).join("; ") || "—"} |`),
+          `| ${result.pageId} | ${result.status.toUpperCase()} | ${result.queries} | ${[...result.errors, ...(result.reason ? [result.reason] : [])].map((error) => error.replaceAll("|", "\\|").replaceAll("\n", " ")).join("; ") || "—"} |`),
         "",
       ].join("\n");
       await writeFile(resolve(outputDirectory, "summary.md"), summary);

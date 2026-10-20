@@ -198,6 +198,7 @@ test("Optimization emits a no-op safe output when no workers are dispatched", ()
 test("every worker uses the standard dispatch envelope and safe mode vocabulary", () => {
   const workerNames = [
     ["uk-ai-advisory-operational-resilience.md", "uk-ai-advisory", "operational-resilience"],
+    ["bug-bash-investigation.md", "bug-bash", "investigation"],
     ["cao-evolution-failures-investigator.md", "cao-evolution", "failures-investigator"],
     ["cao-evolution-compiler-security.md", "cao-evolution", "compiler-security"],
     ["cao-evolution-efficiency.md", "cao-evolution", "efficiency"],
@@ -233,12 +234,10 @@ test("every worker uses the standard dispatch envelope and safe mode vocabulary"
     ["self-care-glossary.md", "self-care", "glossary"],
     ["self-care-open-source-failures.md", "self-care", "open-source-failures"],
     ["self-care-pages-health.md", "self-care", "pages-health"],
-    ["self-care-hosted-health.md", "self-care", "hosted-health"],
     ["self-care-primer-brand-checker.md", "self-care", "primer-brand-checker"],
     ["self-care-reactive-ui-expert.md", "self-care", "reactive-ui-expert"],
     ["self-care-release-blogger.md", "self-care", "release-blogger"],
     ["self-care-server-go-logging.md", "self-care", "server-go-logging"],
-    ["self-care-redis-query-optimization.md", "self-care", "redis-query-optimization"],
     ["self-care-specs-maintainer.md", "self-care", "specs-maintainer"],
   ];
 
@@ -272,7 +271,7 @@ test("every worker uses the standard dispatch envelope and safe mode vocabulary"
     assert.match(source, /SAFE_OUTPUT_REPO:.*safe_output_mode.*'review'.*safe_output_repo.*github\.repository.*target_repo/);
 
     for (const line of source.match(/^\s+target-repo:.*$/gm) || []) {
-      if (name === "optimization-token-optimizer.md") {
+      if (["bug-bash-investigation.md", "optimization-token-optimizer.md"].includes(name)) {
         assert.match(line, /inputs\.safe_output_repo.*github\.repository/);
         assert.doesNotMatch(line, /inputs\.target_repo/);
       } else {

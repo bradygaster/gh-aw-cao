@@ -82,14 +82,14 @@
             "minimum": -2147483648,
             "maximum": 2147483647
         },
+        "facet": {
+            "$ref": "#/$defs/Facet"
+        },
         "stores": {
             "type": "array",
             "items": {
                 "type": "string"
             }
-        },
-        "storesBySource": {
-            "$ref": "#/$defs/RecordArrayString"
         }
     },
     "required": [
@@ -105,7 +105,8 @@
                     "type": "string"
                 },
                 "type": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "inner and left require unique right keys; inner-many explicitly expands all matching rows within query budgets. Missing or blank keys never match."
                 },
                 "on": {
                     "type": "array",
@@ -231,7 +232,8 @@
                     "type": "string"
                 },
                 "reducer": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Includes median, p75, p90 and p95: continuous quantiles over known finite numeric values."
                 },
                 "filter": {
                     "$ref": "#/$defs/Filter"
@@ -366,7 +368,7 @@
                 "as",
                 "order-by"
             ],
-            "description": "One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection."
+            "description": "An ordered rolling, change, previous-value or row-number operation, evaluated after aggregation and before temporal-series projection. previous preserves scalar type; row-number is one-based."
         },
         "SelectedField": {
             "type": "object",
@@ -396,15 +398,26 @@
                 "field"
             ]
         },
-        "RecordArrayString": {
+        "Facet": {
             "type": "object",
-            "properties": {},
-            "unevaluatedProperties": {
-                "type": "array",
-                "items": {
+            "properties": {
+                "field": {
+                    "type": "string"
+                },
+                "row": {
+                    "type": "string"
+                },
+                "column": {
+                    "type": "string"
+                },
+                "as": {
                     "type": "string"
                 }
-            }
+            },
+            "required": [
+                "as"
+            ],
+            "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; as names each panel's ordered row sequence."
         },
         "Predicate": {
             "type": "object",

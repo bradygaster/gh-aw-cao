@@ -70,8 +70,11 @@ test('all run-owned tables share weekly partitions and maintenance coverage', ()
     assert.match(declaration ?? '', /\) PARTITION BY RANGE \(run_at\)$/);
   }
   const maintenance = readFileSync(new URL('../internal/postgresx/partitions.go', import.meta.url), 'utf8');
-  const registered = maintenance.match(/tables := \[\]string\{([^}]+)\}/);
+  const registered = maintenance.match(/var partitionTables = \[\]string\{([^}]+)\}/);
   assert.ok(registered, 'weekly maintenance must declare its partitioned tables');
+  assert.match(maintenance, /tables := partitionTables/);
+  const provisioned = readFileSync(new URL('../internal/postgresx/provisioned.go', import.meta.url), 'utf8');
+  assert.match(provisioned, /range partitionTables/, 'runtime readiness must validate the same partition tables');
   const dropOrder = [...registered[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...dropOrder].sort(), names);
   for (const [child, relationships] of parents) {
@@ -97,18 +100,25 @@ test('TypeSpec Audit storage describes curation without speculative duplicate Ru
   assert.match(contract, /Cleanup precedes size eviction/);
 });
 
+test('grader and eval observations retain distinct definitions and audit provenance', () => {
+  for (const [source, parent, other] of [
+    ['$graderObservations', 'graderId', 'evalId'],
+    ['$evalObservations', 'evalId', 'graderId']
+  ]) {
+    assert.ok(tables.get(source).has(parent));
+    assert.ok(tables.get(source).has('auditId'));
+    assert.equal(tables.get(source).has(other), false);
+  }
+});
+
 test('native table fields cover database projections and joins without speculative columns', () => {
   const defects = [];
   const required = new Map([...tables.keys()].map((source) => [source, new Set(['id'])]));
   required.get('$runs').add('repositoryId'); // Cross-parent canonical integrity.
   for (const definition of definitions) {
-    const sources = definition.from === '$records' ? records : [definition.from];
+    const sources = [definition.from];
     const fields = inputFields(definition);
-    if (definition.from === '$records') {
-      for (const field of fields) {
-        if (!records.some((source) => tables.get(source).has(field))) defects.push(`missing record field ${field}`);
-      }
-    } else if (tables.has(definition.from)) {
+    if (tables.has(definition.from)) {
       for (const field of fields) {
         if (!tables.get(definition.from).has(field)) defects.push(`missing ${definition.from}.${field}`);
       }
@@ -157,6 +167,37 @@ test('generated SQL contains no JSON or serialized document columns', () => {
   assert.doesNotMatch(sql, /\brow_count\b/, 'retained collection counts must be computed, not persisted');
   assert.doesNotMatch(sql, /\bis_skill\b/);
   assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS (?:collection_health|github_quota_usage|simulation_days|marketplace_packages)\b/);
+});
+
+test('CLI command sources are typed runtime projections, never canonical tables', () => {
+  const sql = readFileSync(new URL('../internal/postgresx/schema.sql', import.meta.url), 'utf8');
+  const bindings = readFileSync(new URL('../internal/postgresx/schema.gen.go', import.meta.url), 'utf8');
+  for (const [source, name] of [
+    ['cli-commands', 'cli_commands'],
+    ['cli-command-summary', 'cli_command_summary'],
+    ['cli-command-statuses', 'cli_command_statuses']
+  ]) {
+    assert.ok(bindings.includes(`"${source}": {name: "${name}", runtime: true, canonical: false`));
+    assert.doesNotMatch(sql, new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`));
+  }
+});
+
+test('configured-model resolution facts are optional typed Audit columns', () => {
+  const sql = readFileSync(new URL('../internal/postgresx/schema.sql', import.meta.url), 'utf8');
+  const bindings = readFileSync(new URL('../internal/postgresx/schema.gen.go', import.meta.url), 'utf8');
+  const auditTable = sql.match(/CREATE TABLE IF NOT EXISTS audits \(\n([\s\S]*?)\n\)/);
+  assert.ok(auditTable, 'Audit must have a physical Postgres table');
+  for (const [field, column] of [
+    ['resolutionRole', 'resolution_role'],
+    ['resolutionConfiguredModel', 'resolution_configured_model'],
+    ['resolutionResolvedModel', 'resolution_resolved_model']
+  ]) {
+    assert.ok(tables.get('$audits').has(field), `missing $audits.${field}`);
+    // Nullable without defaults: a failed resolution or absent field stays unknown, never an empty string.
+    assert.match(auditTable[1], new RegExp(`^  ${column} TEXT,$`, 'm'));
+    assert.ok(bindings.includes(`{field: "${field}", name: "${column}", kind: "", sql: "TEXT"}`));
+    assert.ok(definitions.find((definition) => definition.name === 'audits').select.some((selected) => selected.field === field));
+  }
 });
 
 test('generated Postgres contract persists Campaign as a namespace-scoped entity table', () => {

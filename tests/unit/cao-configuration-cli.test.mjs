@@ -104,7 +104,7 @@ function setupExecutor(repositories, repositoryLists = {}, organizations = []) {
   };
 }
 
-test("cao setup creates a private Actions Pages site and verifies its access", () => {
+test("cao setup creates an Actions Pages site without changing its visibility", () => {
   const calls = [];
   let site;
   const execute = (command, arguments_) => {
@@ -112,59 +112,50 @@ test("cao setup creates a private Actions Pages site and verifies its access", (
     calls.push(arguments_);
     const method = arguments_[1] === "-X" ? arguments_[2] : "GET";
     if (method === "GET" && !site) return { status: 1, stderr: "gh: Not Found (HTTP 404)" };
-    if (method === "POST") {
-      site = { build_type: "workflow", public: true };
-    } else if (method === "PUT") {
-      site.public = false;
-    }
+    if (method === "POST") site = { build_type: "workflow", public: true };
     return { status: 0, stdout: JSON.stringify(site), stderr: "" };
   };
-  configureDashboardPages({ repository: "acme/control", visibility: "private", execute });
+  configureDashboardPages({ repository: "acme/control", execute });
   assert.deepEqual(calls, [
     ["api", "repos/acme/control/pages"],
     ["api", "-X", "POST", "-f", "build_type=workflow", "repos/acme/control/pages"],
-    ["api", "-X", "PUT", "-F", "public=false", "repos/acme/control/pages"],
     ["api", "repos/acme/control/pages"],
   ]);
 });
 
-test("cao setup updates an existing Pages site without changing its domain or source branch", () => {
+test("cao setup updates an existing Pages site without changing its domain or visibility", () => {
   const calls = [];
-  let site = { build_type: "legacy", public: true, cname: "reports.example.org" };
+  let site = { build_type: "legacy", public: false, cname: "reports.example.org" };
   const execute = (_, arguments_) => {
     calls.push(arguments_);
-    if (arguments_[2] === "PUT") {
-      if (arguments_[4] === "public=false") site = { ...site, public: false };
-      if (arguments_[4] === "build_type=workflow") site = { ...site, build_type: "workflow" };
+    if (arguments_[2] === "PUT" && arguments_[4] === "build_type=workflow") {
+      site = { ...site, build_type: "workflow" };
     }
     return { status: 0, stdout: JSON.stringify(site), stderr: "" };
   };
-  configureDashboardPages({ repository: "acme/control", visibility: "private", execute });
-  assert.deepEqual(calls.slice(1, 3), [
-    ["api", "-X", "PUT", "-F", "public=false", "repos/acme/control/pages"],
-    ["api", "-X", "PUT", "-f", "build_type=workflow", "repos/acme/control/pages"],
-  ]);
-  assert.equal(site.cname, "reports.example.org");
+  configureDashboardPages({ repository: "acme/control", execute });
+  assert.deepEqual(calls[1], ["api", "-X", "PUT", "-f", "build_type=workflow", "repos/acme/control/pages"]);
+  assert.equal(calls.some((arguments_) => arguments_.some((value) => value.startsWith("public="))), false);
+  assert.deepEqual(site, { build_type: "workflow", public: false, cname: "reports.example.org" });
 });
 
-test("cao setup leaves an existing restricted Actions Pages site unchanged", () => {
+test("cao setup leaves an existing Actions Pages site unchanged", () => {
   const calls = [];
   const execute = (_, arguments_) => {
     calls.push(arguments_);
-    return { status: 0, stdout: '{"build_type":"workflow","public":false}' };
+    return { status: 0, stdout: '{"build_type":"workflow","public":true}' };
   };
-  configureDashboardPages({ repository: "acme/control", visibility: "private", execute });
+  configureDashboardPages({ repository: "acme/control", execute });
   assert.deepEqual(calls, [
     ["api", "repos/acme/control/pages"],
     ["api", "repos/acme/control/pages"],
   ]);
 });
 
-test("cao setup fails closed on denied Pages access or unsupported private Pages", () => {
+test("cao setup fails on denied Pages access or an unverified Actions source", () => {
   assert.throws(
     () => configureDashboardPages({
       repository: "acme/control",
-      visibility: "private",
       execute: () => ({ status: 1, stderr: "gh: Forbidden (HTTP 403)" }),
     }),
     /Unable to inspect dashboard Pages site/,
@@ -172,35 +163,81 @@ test("cao setup fails closed on denied Pages access or unsupported private Pages
   assert.throws(
     () => configureDashboardPages({
       repository: "acme/control",
-      visibility: "private",
       execute: (_, arguments_) => arguments_[2] === "PUT"
-        ? { status: 1, stderr: "gh: Validation Failed (HTTP 422)" }
-        : { status: 0, stdout: '{"build_type":"workflow","public":true}' },
-    }),
-    /Unable to restrict dashboard Pages access/,
-  );
-  assert.throws(
-    () => configureDashboardPages({
-      repository: "acme/control",
-      visibility: "private",
-      execute: () => ({ status: 0, stdout: '{"build_type":"workflow","public":true}' }),
+        ? { status: 0, stdout: "{}" }
+        : { status: 0, stdout: '{"build_type":"legacy","public":true}' },
     }),
     /could not be verified/,
   );
 });
 
-test("cao setup configures public Pages without requesting private access", () => {
+function publicPagesSetup({ existing, confirm }) {
   const calls = [];
-  let site;
-  const execute = (_, arguments_) => {
+  let site = existing;
+  const inspect = setupExecutor({
+    "acme/control": { nameWithOwner: "acme/control", visibility: "PRIVATE" },
+  });
+  const execute = (command, arguments_) => {
+    if (arguments_[0] !== "api") return inspect(command, arguments_);
     calls.push(arguments_);
-    if (!site && arguments_[1] !== "-X") return { status: 1, stderr: "gh: Not Found (HTTP 404)" };
-    if (arguments_[2] === "POST") site = { build_type: "workflow", public: true };
-    return { status: 0, stdout: JSON.stringify(site) };
+    const method = arguments_[1] === "-X" ? arguments_[2] : "GET";
+    if (method === "GET") {
+      return site ? { status: 0, stdout: JSON.stringify(site) } : { status: 1, stderr: "gh: Not Found (HTTP 404)" };
+    }
+    if (method === "POST") site = { build_type: "workflow", public: true, html_url: "https://acme.github.io/control/" };
+    if (method === "DELETE") site = undefined;
+    return { status: 0, stdout: JSON.stringify(site ?? {}) };
   };
-  configureDashboardPages({ repository: "acme/control", visibility: "public", execute });
-  assert.equal(calls.some((arguments_) => arguments_.includes("public=false")), false);
-});
+  return { calls, execute, prompt: scriptedSetupPrompt({ repositories: "", profile: "github-app", confirm }) };
+}
+
+for (const [description, existing, confirm] of [
+  ["continues with a public dashboard after consent", undefined, true],
+  ["removes the public site it created when declined", undefined, [true, false]],
+  ["leaves an existing public site when declined", { build_type: "workflow", public: true }, [true, false]],
+]) {
+  test(`cao setup warns about public Pages and ${description}`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cao-setup-public-pages-"));
+    const policyPath = path.join(root, "cao.json");
+    const original = JSON.stringify({
+      version: 1,
+      "control-plane": {
+        scope: { "allowed-owners": ["acme"], "allowed-repositories": ["acme/control"] },
+        campaigns: {},
+      },
+    });
+    await writeFile(policyPath, original);
+    const answers = Array.isArray(confirm) ? [...confirm] : undefined;
+    const { calls, execute, prompt } = publicPagesSetup({ existing, confirm });
+    if (answers) prompt.confirm = async () => answers.shift() ?? false;
+    let authenticated = false;
+    try {
+      const result = await setupCaoControlPlane({
+        policyPath,
+        prompt,
+        execute,
+        setupAuthentication: () => {
+          authenticated = true;
+          return { command: "setup-auth" };
+        },
+      });
+      assert.ok(prompt.notes.some((note) => /Warning: the dashboard Pages site for acme\/control is public/.test(note)));
+      const deleted = calls.some((arguments_) => arguments_.includes("DELETE"));
+      if (confirm === true) {
+        assert.equal(result.dashboardPages, "public");
+        assert.equal(authenticated, true);
+        assert.equal(deleted, false);
+      } else {
+        assert.deepEqual(result, { command: "setup", cancelled: true, reason: "public-pages-declined" });
+        assert.equal(authenticated, false);
+        assert.equal(deleted, existing === undefined);
+        assert.equal(await readFile(policyPath, "utf8"), original);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("cao init writes the minimal control-plane policy scoped to the current repository", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cao-init-"));
@@ -216,7 +253,7 @@ test("cao init writes the minimal control-plane policy scoped to the current rep
     });
     const policy = JSON.parse(await readFile(policyPath, "utf8"));
     assert.deepEqual(policy, {
-      $schema: "https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/.github/workflows/shared/cao.schema.json",
+      $schema: "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json",
       version: 1,
       "gh-aw-version": "v0.89.17",
       "control-plane": {
@@ -225,7 +262,15 @@ test("cao init writes the minimal control-plane policy scoped to the current rep
           registries: [{
             id: "official",
             name: "Official CAO catalog",
-            repository: "githubnext/gh-aw-cao",
+            repository: "githubnext/gh-cao",
+            ref: "main",
+            auth: { type: "none" },
+          }, {
+            id: "agentics",
+            name: "Agentics workflows",
+            repository: "githubnext/agentics",
+            path: "workflows",
+            format: "workflows",
             ref: "main",
             auth: { type: "none" },
           }],
@@ -321,10 +366,12 @@ test("cao setup offers owner-scoped PATs for a multi-owner repository scope", as
       repositories: ["acme/control", "acme/service", "octo/library"],
       profile: "token",
       authentication: { command: "setup-auth", profile: "token" },
+      dashboardPages: "private",
       campaigns: [],
     });
     assert.deepEqual(prompt.selections[0].choices.map(({ value }) => value), [
       "enterprise-app",
+      "approved-app",
       "token",
     ]);
     assert.equal(prompt.notes.some((line) => line.includes("Campaigns: none")), true);
@@ -367,7 +414,8 @@ test("cao setup offers organization Apps for one-owner private scope", async () 
 
     assert.equal(prompt.selections[0].choices.some(({ value }) => value === "workflow-token"), false);
     assert.equal(prompt.selections[0].choices[0].value, "github-app");
-    assert.equal(prompt.selections[0].choices[1].value, "token");
+    assert.equal(prompt.selections[0].choices[1].value, "approved-app");
+    assert.equal(prompt.selections[0].choices[2].value, "token");
     assert.equal(authenticationCalls[0][0], "github-app");
     assert.deepEqual(authenticationCalls[0][1].slice(0, 2), ["--repo", "acme/control"]);
     assert.equal(authenticationCalls[0][1][2], "--policy");
@@ -626,43 +674,6 @@ test("cao setup cancellation leaves policy and credentials unchanged", async () 
       },
     });
 
-    test("cao setup leaves policy unchanged if Pages access cannot be restricted", async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), "cao-setup-pages-"));
-      const policyPath = path.join(root, "cao.json");
-      const original = JSON.stringify({
-        version: 1,
-        "control-plane": {
-          scope: { "allowed-owners": ["acme"], "allowed-repositories": ["acme/control"] },
-          campaigns: {},
-        },
-      });
-      await writeFile(policyPath, original);
-      const inspect = setupExecutor({
-        "acme/control": { nameWithOwner: "acme/control", visibility: "PRIVATE" },
-      });
-      try {
-        await assert.rejects(
-          setupCaoControlPlane({
-            policyPath,
-            prompt: scriptedSetupPrompt({ repositories: "", profile: "github-app" }),
-            execute(command, arguments_) {
-              if (arguments_[0] === "api") {
-                return arguments_[2] === "PUT"
-                  ? { status: 1, stderr: "gh: Validation Failed (HTTP 422)" }
-                  : { status: 0, stdout: '{"build_type":"workflow","public":true}' };
-              }
-              return inspect(command, arguments_);
-            },
-            setupAuthentication: () => ({ command: "setup-auth" }),
-          }),
-          /Unable to restrict dashboard Pages access/,
-        );
-        assert.equal(await readFile(policyPath, "utf8"), original);
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
-    });
-
     assert.deepEqual(result, { command: "setup", cancelled: true });
     assert.equal(await readFile(policyPath, "utf8"), original);
   } finally {
@@ -714,6 +725,26 @@ test("cao setup-auth delegates private GitHub App setup options", () => {
     { stdio: "inherit" },
   ]]);
   assert.deepEqual(result, { command: "setup-auth", profile: "github-app" });
+});
+
+test("cao setup-auth delegates hosted CLI App setup options", () => {
+  const calls = [];
+  const result = setupCaoAuthentication("hosted-cli", ["--repo", "acme/control", "--dry-run"], {
+    execute(command, arguments_, options) {
+      calls.push([command, arguments_, options]);
+      return { status: 0 };
+    },
+  });
+  assert.deepEqual(calls, [[
+    process.execPath,
+    [path.join(".github", "workflows", "shared", "setup-hosted-cli-app.mjs"), "--repo", "acme/control", "--dry-run"],
+    { stdio: "inherit" },
+  ]]);
+  assert.deepEqual(result, { command: "setup-auth", profile: "hosted-cli" });
+  assert.throws(
+    () => setupCaoAuthentication("hosted-cli", [], { execute: () => ({ status: 1 }) }),
+    /Hosted CLI App setup failed/,
+  );
 });
 
 test("cao setup-auth configures separate read and write fine-grained tokens through stdin", () => {
@@ -802,23 +833,23 @@ test("fine-grained token setup formats a concise completion summary", () => {
       { owner: "github", role: "read", secret: "GH_AW_GITHUB_READ_PAT_GITHUB" },
       { owner: "githubnext", role: "write", secret: "GH_AW_GITHUB_WRITE_PAT_GITHUBNEXT" },
     ],
-    repo: "githubnext/gh-aw-cao",
+    repo: "githubnext/gh-cao",
     repositories: {
       read: {
-        "githubnext/gh-aw-cao": "GH_AW_GITHUB_READ_PAT_GITHUBNEXT",
+        "githubnext/gh-cao": "GH_AW_GITHUB_READ_PAT_GITHUBNEXT",
         "github/gh-aw": "GH_AW_GITHUB_READ_PAT_GITHUB",
       },
       write: {
-        "githubnext/gh-aw-cao": "GH_AW_GITHUB_WRITE_PAT_GITHUBNEXT",
+        "githubnext/gh-cao": "GH_AW_GITHUB_WRITE_PAT_GITHUBNEXT",
       },
     },
   });
 
-  assert.match(summary, /^✓ Fine-grained PAT authentication configured for githubnext\/gh-aw-cao\./);
+  assert.match(summary, /^✓ Fine-grained PAT authentication configured for githubnext\/gh-cao\./);
   assert.match(summary, /Read scope: 2 repositories across githubnext, github/);
-  assert.match(summary, /Write scope: githubnext\/gh-aw-cao/);
+  assert.match(summary, /Write scope: githubnext\/gh-cao/);
   assert.match(summary, /Authentication mode: pat/);
-  assert.match(summary, /run \.\/cao\.sh validate/);
+  assert.match(summary, /publish policy changes, then run gh workflow run cao-validate\.yml/);
   assert.doesNotMatch(summary, /^\{/);
 });
 
@@ -1139,7 +1170,7 @@ test("cao setup-auth previews enterprise App credential configuration without Gi
 test("cao setup-auth rejects the workflow token as a setup profile", () => {
   assert.throws(
     () => setupCaoAuthentication("workflow-token"),
-    /requires github-app, enterprise-app, or token/,
+    /requires github-app, enterprise-app, hosted-cli, or token/,
   );
 });
 
@@ -1198,7 +1229,7 @@ test("live mode checks setup credentials and suggests setup only in CI when inco
   };
   const options = { execute, environment: { CI: "true" }, writeWarning: (message) => warnings.push(message) };
   checkLiveWriteAuthentication(options);
-  assert.match(warnings[0], /run \.\/cao\.sh setup/);
+  assert.match(warnings[0], /run gh cao setup/);
   assert.equal(calls.filter((args) => args.includes("--paginate")).length, 2);
 
   warnings.length = 0;
@@ -1381,6 +1412,24 @@ test("cao add installs a campaign and merges its declaration safely", async () =
       },
     }));
     await mkdir(path.dirname(policyPath), { recursive: true });
+    await writeFile(path.join(path.dirname(policyPath), "agentic-auto-upgrade.yml"), [
+      "# This file was automatically generated by pkg/workflow/auto_update_workflow.go (v0.89.17). DO NOT EDIT.",
+      "jobs:",
+      "  upgrade:",
+      "    steps:",
+      "      - uses: github/gh-aw-actions/setup-cli@v0.89.17",
+      "      - uses: github/gh-aw-actions/setup@v0.89.17",
+      "",
+    ].join("\n"));
+    const ghAwActionsSha = "1234567890abcdef1234567890abcdef12345678";
+    const setupActionDirectory = path.join(root, ".github", "actions", "setup-gh-aw");
+    await mkdir(setupActionDirectory, { recursive: true });
+    await writeFile(path.join(setupActionDirectory, "action.yml"), [
+      "runs:",
+      "  steps:",
+      `    - uses: github/gh-aw-actions/setup-cli@${ghAwActionsSha} # v0.89.17`,
+      "",
+    ].join("\n"));
     await writeFile(policyPath, `${JSON.stringify({
       version: 1,
       "gh-aw-version": "v0.89.17",
@@ -1404,7 +1453,7 @@ test("cao add installs a campaign and merges its declaration safely", async () =
     }, null, 2)}\n`);
     process.chdir(root);
     const result = await addCaoCampaign(
-      "githubnext/gh-aw-cao/dependabot@feature/config",
+      "githubnext/gh-cao/dependabot@feature/config",
       ["--force", "--no-security-scanner"],
       {
         policyPath,
@@ -1418,7 +1467,7 @@ test("cao add installs a campaign and merges its declaration safely", async () =
     assert.deepEqual(calls, [
       [
         "gh",
-        ["aw", "add", "githubnext/gh-aw-cao/dependabot@feature/config", "--force", "--no-security-scanner"],
+        ["aw", "add", "githubnext/gh-cao/dependabot@feature/config", "--force", "--no-security-scanner"],
       ],
       [
         process.execPath,
@@ -1437,6 +1486,9 @@ test("cao add installs a campaign and merges its declaration safely", async () =
         },
       },
     });
+    const autoUpgrade = await readFile(path.join(path.dirname(policyPath), "agentic-auto-upgrade.yml"), "utf8");
+    assert.ok(autoUpgrade.includes(`github/gh-aw-actions/setup-cli@${ghAwActionsSha} # v0.89.17`));
+    assert.ok(autoUpgrade.includes(`github/gh-aw-actions/setup@${ghAwActionsSha} # v0.89.17`));
     assert.equal(result.orchestrator, "dependabot");
   } finally {
     process.chdir(previousDirectory);
@@ -1508,7 +1560,7 @@ test("cao add without a policy initializes it for the current repository before 
       workers: { "release-train-updater": "dependabot-release-train-updater" },
     }));
     process.chdir(root);
-    await addCaoCampaign("githubnext/gh-aw-cao/dependabot@v1", [], {
+    await addCaoCampaign("githubnext/gh-cao/dependabot@v1", [], {
       policyPath,
       execute(command, arguments_) {
         calls.push([command, arguments_]);
@@ -1532,7 +1584,15 @@ test("cao add without a policy initializes it for the current repository before 
         registries: [{
           id: "official",
           name: "Official CAO catalog",
-          repository: "githubnext/gh-aw-cao",
+          repository: "githubnext/gh-cao",
+          ref: "main",
+          auth: { type: "none" },
+        }, {
+          id: "agentics",
+          name: "Agentics workflows",
+          repository: "githubnext/agentics",
+          path: "workflows",
+          format: "workflows",
           ref: "main",
           auth: { type: "none" },
         }],
@@ -1553,7 +1613,7 @@ test("cao add leaves policy untouched when gh aw add fails", async () => {
   await writeFile(policyPath, '{"version":1}\n');
   try {
     await assert.rejects(
-      addCaoCampaign("githubnext/gh-aw-cao/dependabot@v1", [], {
+      addCaoCampaign("githubnext/gh-cao/dependabot@v1", [], {
         policyPath,
         execute: () => ({ status: 1, stdout: "", stderr: "installation failed" }),
       }),
@@ -1568,7 +1628,7 @@ test("cao add leaves policy untouched when gh aw add fails", async () => {
 test("cao add rejects the root package before modifying gh-aw records", async () => {
   const calls = [];
   await assert.rejects(
-    addCaoCampaign("githubnext/gh-aw-cao@v1", [], {
+    addCaoCampaign("githubnext/gh-cao@v1", [], {
       execute(command, arguments_) {
         calls.push([command, arguments_]);
         return versionResult;
@@ -1591,15 +1651,15 @@ test("cao update upgrades gh-aw, updates installed campaigns, and merges declara
     await mkdir(campaignRecords, { recursive: true });
     await writeFile(path.join(campaignRecords, "root.json"), JSON.stringify({
       schemaVersion: 1,
-      package: "githubnext/gh-aw-cao",
-      source: "githubnext/gh-aw-cao@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      package: "githubnext/gh-cao",
+      source: "githubnext/gh-cao@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       resolvedCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       files: [],
     }));
     await writeFile(path.join(campaignRecords, "dependabot.json"), JSON.stringify({
       schemaVersion: 1,
-      package: "githubnext/gh-aw-cao/dependabot",
-      source: "githubnext/gh-aw-cao/dependabot@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      package: "githubnext/gh-cao/dependabot",
+      source: "githubnext/gh-cao/dependabot@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       resolvedCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       files: [
         { destination: ".github/workflows/cao-activity.yml", sha256: "old" },
@@ -1617,7 +1677,7 @@ test("cao update upgrades gh-aw, updates installed campaigns, and merges declara
     }
     await writeFile(
       path.join(root, ".github", "workflows", "dependabot.md"),
-      "---\nsource: githubnext/gh-aw-cao/dependabot@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n---\n\n# Dependabot\n",
+      "---\nsource: githubnext/gh-cao/dependabot@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n---\n\n# Dependabot\n",
     );
     await writeFile(path.join(declarationDirectory, "cao.json"), JSON.stringify({
       campaign: "dependabot",
@@ -1661,20 +1721,20 @@ test("cao update upgrades gh-aw, updates installed campaigns, and merges declara
           };
         }
         if (command === "gh" && arguments_[0] === "api") {
-          if (arguments_[1] === "/repos/githubnext/gh-aw-cao/commits/v0.0.2") {
+          if (arguments_[1] === "/repos/githubnext/gh-cao/commits/v0.0.2") {
             return { status: 0, stdout: "1234567890abcdef1234567890abcdef12345678\n", stderr: "" };
           }
-          if (arguments_[1] === "/repos/githubnext/gh-aw-cao/releases/tags/v0.0.1") {
+          if (arguments_[1] === "/repos/githubnext/gh-cao/releases/tags/v0.0.1") {
             return { status: 0, stdout: "v0.0.1\n", stderr: "" };
           }
           return { status: 0, stdout: "v0.0.1\n", stderr: "" };
         }
         if (command === "gh" && arguments_[0] === "aw" && arguments_[1] === "update"
-          && arguments_[2] === "https://github.com/githubnext/gh-aw-cao") {
+          && arguments_[2] === "https://github.com/githubnext/gh-cao") {
           writeFileSync(path.join(campaignRecords, "root.json"), JSON.stringify({
             schemaVersion: 1,
-            package: "githubnext/gh-aw-cao",
-            source: "githubnext/gh-aw-cao@v0.0.2",
+            package: "githubnext/gh-cao",
+            source: "githubnext/gh-cao@v0.0.2",
             resolvedCommit: "1234567890abcdef1234567890abcdef12345678",
             files: [
               { destination: ".github/workflows/cao-activity.yml", sha256: "old" },
@@ -1690,22 +1750,22 @@ test("cao update upgrades gh-aw, updates installed campaigns, and merges declara
       ["gh", ["aw", "version"]],
       ["bash", ["-c", "curl --fail --silent --show-error --location https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash -s -- \"$1\"", "cao-gh-aw-install", "v0.89.17"]],
       ["gh", ["aw", "version"]],
-      ["gh", ["api", "--paginate", "/repos/githubnext/gh-aw-cao/tags", "--jq", ".[] | select(.commit.sha == \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\") | .name"]],
-      ["gh", ["api", "/repos/githubnext/gh-aw-cao/releases/tags/v0.0.1", "--jq", "select(.draft == false and .prerelease == false) | .tag_name"]],
-      ["gh", ["aw", "update", "https://github.com/githubnext/gh-aw-cao", "--force"]],
+      ["gh", ["api", "--paginate", "/repos/githubnext/gh-cao/tags", "--jq", ".[] | select(.commit.sha == \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\") | .name"]],
+      ["gh", ["api", "/repos/githubnext/gh-cao/releases/tags/v0.0.1", "--jq", "select(.draft == false and .prerelease == false) | .tag_name"]],
+      ["gh", ["aw", "update", "https://github.com/githubnext/gh-cao", "--force"]],
       [process.execPath, [path.join(".github", "workflows", "shared", "materialize-cao.mjs"), "materialize", "root"]],
-      ["gh", ["aw", "update", "https://github.com/githubnext/gh-aw-cao/dependabot", "--force"]],
+      ["gh", ["aw", "update", "https://github.com/githubnext/gh-cao/dependabot", "--force"]],
       [process.execPath, [path.join(".github", "workflows", "shared", "materialize-cao.mjs"), "materialize", "dependabot"]],
     ]);
     assert.deepEqual(result.campaigns, [
-      "githubnext/gh-aw-cao",
-      "githubnext/gh-aw-cao/dependabot",
+      "githubnext/gh-cao",
+      "githubnext/gh-cao/dependabot",
     ]);
     assert.deepEqual(result.declarations, ["dependabot"]);
     assert.equal(result["gh-aw"].updated, true);
     assert.match(
       await readFile(path.join(root, ".github", "workflows", "dependabot.md"), "utf8"),
-      /source: githubnext\/gh-aw-cao\/dependabot@v0\.0\.1/,
+      /source: githubnext\/gh-cao\/dependabot@v0\.0\.1/,
     );
     assert.deepEqual(policy["control-plane"].campaigns.dependabot, {
       mode: "live",
@@ -1735,8 +1795,8 @@ test("cao update uses current package records and validates the release commit",
     await mkdir(packageRecords, { recursive: true });
     await writeFile(path.join(packageRecords, "root.json"), JSON.stringify({
       schemaVersion: 1,
-      package: "githubnext/gh-aw-cao",
-      source: "githubnext/gh-aw-cao@v1",
+      package: "githubnext/gh-cao",
+      source: "githubnext/gh-cao@v1",
       resolvedCommit: "not-a-commit",
       files: [],
     }));
@@ -1766,8 +1826,8 @@ test("cao update rejects legacy campaign records without immutable provenance", 
   try {
     await mkdir(campaignRecords, { recursive: true });
     await writeFile(path.join(campaignRecords, "root.json"), JSON.stringify({
-      campaign: "githubnext/gh-aw-cao",
-      source: `githubnext/gh-aw-cao@${installedCommit}`,
+      campaign: "githubnext/gh-cao",
+      source: `githubnext/gh-cao@${installedCommit}`,
       files: [],
     }));
     await mkdir(path.dirname(policyPath), { recursive: true });
@@ -1797,8 +1857,8 @@ test("cao update advances a prerelease without forwarding its CAO flag", async (
     await mkdir(packageRecords, { recursive: true });
     await writeFile(path.join(packageRecords, "root.json"), JSON.stringify({
       schemaVersion: 1,
-      package: "githubnext/gh-aw-cao",
-      source: "githubnext/gh-aw-cao@v0.0.2-rc.1",
+      package: "githubnext/gh-cao",
+      source: "githubnext/gh-cao@v0.0.2-rc.1",
       resolvedCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       files: [],
     }));
@@ -1812,13 +1872,13 @@ test("cao update advances a prerelease without forwarding its CAO flag", async (
       execute(command, arguments_) {
         calls.push([command, arguments_]);
         if (arguments_[0] === "aw" && arguments_[1] === "version") return versionResult;
-        if (arguments_[2] === "/repos/githubnext/gh-aw-cao/releases?per_page=100") {
+        if (arguments_[2] === "/repos/githubnext/gh-cao/releases?per_page=100") {
           return { status: 0, stdout: "v0.0.2-rc.1\nv0.0.2-rc.2\nv1.0.0-rc.1\n", stderr: "" };
         }
         if (arguments_[0] === "aw" && arguments_[1] === "update") {
           preparedSource = JSON.parse(readFileSync(path.join(packageRecords, "root.json"), "utf8")).source;
         }
-        if (arguments_[1] === "/repos/githubnext/gh-aw-cao/commits/v0.0.2-rc.1") {
+        if (arguments_[1] === "/repos/githubnext/gh-cao/commits/v0.0.2-rc.1") {
           return { status: 0, stdout: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n", stderr: "" };
         }
         return { status: 0, stdout: "", stderr: "" };
@@ -1827,9 +1887,9 @@ test("cao update advances a prerelease without forwarding its CAO flag", async (
 
     assert.deepEqual(calls.find(([, arguments_]) => arguments_[0] === "aw" && arguments_[1] === "update"), [
       "gh",
-      ["aw", "update", "https://github.com/githubnext/gh-aw-cao", "--force"],
+      ["aw", "update", "https://github.com/githubnext/gh-cao", "--force"],
     ]);
-    assert.equal(preparedSource, "githubnext/gh-aw-cao@v0.0.2-rc.2");
+    assert.equal(preparedSource, "githubnext/gh-cao@v0.0.2-rc.2");
   } finally {
     process.chdir(previousDirectory);
     await rm(root, { recursive: true, force: true });

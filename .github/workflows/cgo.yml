@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - .github/workflows/cgo.yml
+      - internal/dashboardquery/**
+      - go.mod
+      - go.sum
       - server/**
       - "!server/**/*.md"
   push:
     branches: [main]
     paths:
       - .github/workflows/cgo.yml
+      - internal/dashboardquery/**
+      - go.mod
+      - go.sum
       - dashboard/site/**
       - server/**
       - scripts/test-dashboard-backfill.sh
@@ -38,10 +44,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: 1.27.1
+          go-version: 1.27.2
           cache: false
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - name: Check formatting
         working-directory: server
         run: golangci-lint fmt --diff
@@ -50,6 +56,12 @@ jobs:
         run: golangci-lint run ./...
       - name: Unit tests
         run: go -C server test ./...
+      - name: Check shared local query engine
+        working-directory: internal/dashboardquery
+        run: |
+          golangci-lint fmt --diff
+          golangci-lint run ./...
+          go test ./...
 
   server-backfill:
     name: Postgres backfill and OpenObserve integration
@@ -62,7 +74,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: 1.27.1
+          go-version: 1.27.2
           cache: false
       - name: Run isolated backfill services and integration tests
         run: bash scripts/test-dashboard-backfill.sh
@@ -134,7 +146,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: 1.27.1
+          go-version: 1.27.2
           cache: false
       - name: Run rate-limit stress harness with profiling
         working-directory: server
@@ -232,7 +244,7 @@ jobs:
           cache: npm
       - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
         with:
-          go-version: 1.27.1
+          go-version: 1.27.2
           cache: false
       - name: Install dependencies
         run: |
@@ -255,7 +267,7 @@ jobs:
         env:
           DASHBOARD_SERVER_COMMAND: >-
             ${{ github.workspace }}/.tmp/cao-dashboard serve
-            --source ${{ github.workspace }}/server/testdata/deployed-subset
+            --source "$DASHBOARD_SERVER_SOURCE"
             --access-token ${{ env.DASHBOARD_SERVER_ACCESS_TOKEN }}
             --site ${{ github.workspace }}/dashboard/site/dist
             --dashboard-queries ${{ github.workspace }}/dashboard/site/dashboard.json

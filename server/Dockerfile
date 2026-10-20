@@ -25,19 +25,26 @@ RUN printf '%s' "${CAO_PROFILE}" | grep -Eq '^cao(\.[a-z0-9-]+)?\.json$' \
       npm --prefix dashboard/site run build -- dist "${policy}"; \
     fi
 
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS server-build
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS server-build
 
 ARG VERSION=dev
 ARG REVISION=unknown
 WORKDIR /workspace/server
 COPY server/go.mod server/go.sum ./
+COPY internal/dashboardquery/go.mod internal/dashboardquery/go.sum /workspace/internal/dashboardquery/
 RUN go mod download
 COPY server/ ./
+COPY internal/dashboardquery/ /workspace/internal/dashboardquery/
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
     -o /out/cao-dashboard \
     ./cmd/cao-dashboard
+RUN CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
+    -o /out/cao-functions \
+    ./cmd/cao-functions
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS dashboard-runtime
 
@@ -49,7 +56,7 @@ LABEL org.opencontainers.image.title="Central Agentic Ops dashboard server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      org.opencontainers.image.source="https://github.com/githubnext/gh-aw-cao"
+      org.opencontainers.image.source="https://github.com/githubnext/gh-cao"
 
 # Keep Alpine packages and CA roots current on rebuilds.
 # hadolint ignore=DL3018
@@ -68,7 +75,7 @@ COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/src/a
 COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/src/agent/queries.generated.json /app/agent/queries.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/src/agent/mcp-contract.json /app/agent/mcp-contract.json
 COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.json /app/.github/workflows/cao.json
-COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.coolify.json /app/.github/workflows/cao.coolify.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.azure.json /app/.github/workflows/cao.azure.json
 
 WORKDIR /app
 USER 65532:65532
@@ -80,6 +87,46 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["serve-hosted", "--listen", "0.0.0.0:8080", "--site", "/app/site", "--dashboard-queries", "/app/agent/queries.json", "--database-queries", "/app/queries/database.json"]
 
+FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS azure-functions-runtime
+
+# hadolint ignore=DL3018
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates \
+    && addgroup -S -g 65532 cao \
+    && adduser -S -D -H -u 65532 -G cao cao \
+    && mkdir -p /app/site /app/.github/workflows \
+    && chown -R cao:cao /app
+
+COPY --from=server-build --chown=cao:cao /out/cao-functions /app/cao-functions
+COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/dist/ /app/site/
+COPY --from=dashboard-build --chown=cao:cao /workspace/dashboard/site/src/data/queries/database.json /app/queries/database.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.json /app/.github/workflows/cao.json
+COPY --from=dashboard-build --chown=cao:cao /workspace/.github/workflows/cao.azure.json /app/.github/workflows/cao.azure.json
+
+ENV FUNCTIONS_CUSTOMHANDLER_HOST=0.0.0.0 \
+    FUNCTIONS_CUSTOMHANDLER_PORT=8080 \
+    CAO_DATABASE_QUERIES=/app/queries/database.json
+WORKDIR /app
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/app/cao-functions"]
+
+FROM dashboard-runtime AS azure-ingest-runtime
+
+ARG CAO_INGEST_SOURCE
+RUN test -n "${CAO_INGEST_SOURCE}"
+COPY --chown=cao:cao ${CAO_INGEST_SOURCE}/ /data/
+
+ENTRYPOINT ["/app/cao-dashboard"]
+CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
+
+FROM dashboard-runtime AS azure-empty-ingest-runtime
+
+COPY --chown=cao:cao server/azure/empty-data/ /data/
+
+ENTRYPOINT ["/app/cao-dashboard"]
+CMD ["ingest", "--source", "/data", "--database-queries", "/app/queries/database.json"]
+
 FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS collector-runtime
 
 SHELL ["/bin/ash", "-o", "pipefail", "-c"]
@@ -87,14 +134,14 @@ SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 ARG VERSION=dev
 ARG REVISION=unknown
 ARG CREATED=unknown
-ARG GH_AW_VERSION=v0.91.5
+ARG GH_AW_VERSION=v0.92.6
 ARG TARGETARCH
 LABEL org.opencontainers.image.title="Central Agentic Ops collector" \
       org.opencontainers.image.description="Hosted CAO collection worker and backfill runtime" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      org.opencontainers.image.source="https://github.com/githubnext/gh-aw-cao"
+      org.opencontainers.image.source="https://github.com/githubnext/gh-cao"
 
 # Keep Alpine packages, CA roots, and the GitHub CLI current on rebuilds.
 # hadolint ignore=DL3018
@@ -104,8 +151,8 @@ RUN apk upgrade --no-cache \
     && adduser -S -D -H -u 65532 -G cao cao \
     && mkdir -p /app/catalog /app/evidence /app/.local/share/gh/extensions/gh-aw \
     && case "${TARGETARCH}" in \
-      amd64) checksum="814a0efbee964ee2acb286bf9b3cbaa133d47699a2a57cbeb3ea4040a7f3b099" ;; \
-      arm64) checksum="9767cbbfcd0f3c6cf68e5aff94a7efcfda911c7e865604434da391181c62e94d" ;; \
+      amd64) checksum="1888d9faa40e102cbaa784ecb2e646c0e81ac3f1003d1cb3460d3a23908d4938" ;; \
+      arm64) checksum="2bc9a5e212cab7fb02efa91ea362a27c381b1760af37f0effa3e5b3c5e8a6393" ;; \
       *) echo "Unsupported collector architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && wget -q -O /usr/local/bin/gh-aw \
@@ -138,5 +185,24 @@ USER 65532:65532
 VOLUME ["/app/evidence"]
 ENTRYPOINT ["/app/cao-dashboard"]
 CMD ["collect", "--database-queries", "/app/queries/database.json"]
+
+# Export only this target with BuildKit --output for a reviewed executor release.
+FROM server-build AS hosted-cli-relay-build
+ARG TARGETARCH
+ARG REVISION
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+WORKDIR /out
+RUN printf '%s' "${REVISION}" | grep -Eq '^[0-9a-f]{40}$' \
+    && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go -C /workspace/server build \
+    -trimpath -buildvcs=false -ldflags="-s -w" \
+    -o /out/cao-cli-relay ./cmd/cao-cli-relay \
+    && sha256sum cao-cli-relay > cao-cli-relay.sha256 \
+    && printf '{"source":"https://github.com/githubnext/gh-cao","revision":"%s","platform":"linux/%s","sha256":"%s"}\n' \
+      "${REVISION}" "${TARGETARCH}" "$(cut -d ' ' -f1 cao-cli-relay.sha256)" > cao-cli-relay.json
+
+FROM scratch AS hosted-cli-relay-artifact
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay /cao-cli-relay
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay.sha256 /cao-cli-relay.sha256
+COPY --from=hosted-cli-relay-build /out/cao-cli-relay.json /cao-cli-relay.json
 
 FROM dashboard-runtime AS final

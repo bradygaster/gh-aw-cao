@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/model"
 )
 
 func scratchDirectory(t *testing.T) string {
@@ -50,6 +50,17 @@ func TestValidateManifestVerifiesHashesAndRunShard(t *testing.T) {
 		t.Fatalf("hash mismatch accepted: %v", err)
 	}
 }
+
+func TestAzureEmptyDatasetManifest(t *testing.T) {
+	manifest, runs, records, err := ValidateManifest("../../azure/empty-data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest) != 1 || len(runs) != 1 || runs[0] != "gh-aw-logs-runs/empty.jsonl" || len(records) != 0 {
+		t.Fatalf("unexpected empty dataset contract: manifest=%v runs=%v records=%v", manifest, runs, records)
+	}
+}
+
 func TestValidateManifestFailsClosed(t *testing.T) {
 	for _, name := range []string{"../escape", "/absolute", "gh-aw-logs-shards/raw.jsonl", "inventory-sources.json"} {
 		directory := scratchDirectory(t)
@@ -65,6 +76,7 @@ func TestInventoryAdapterHasDeterministicNativeIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if source != "$workflows" || row["id"] != "workflow:octo%2Fapi%3A.github%2Fworkflows%2Fbuild.md" || row["repositoryId"] != "repository:octo%2Fapi" || row["state"] != "active" {
 		t.Fatalf("normalization differs from declared inventory identity: %#v", row)
 	}
@@ -78,5 +90,13 @@ func TestInventoryAdapterHasDeterministicNativeIdentities(t *testing.T) {
 	if source != "$campaigns" || row["id"] != "campaign:dashboard-sources:maintenance" ||
 		row["slug"] != "maintenance" || row["name"] != "Maintenance" {
 		t.Fatalf("campaign inventory does not map to canonical Postgres rows: %#v", row)
+	}
+}
+
+func TestInventoryAdapterRejectsReportProjections(t *testing.T) {
+	for _, name := range []string{"work-items", "security-findings", "outcomes", "mcp-calls"} {
+		if _, _, err := inventoryRow(name, model.Row{"id": "supplied-report-row"}); err == nil {
+			t.Fatalf("report projection %q admitted as canonical inventory", name)
+		}
 	}
 }

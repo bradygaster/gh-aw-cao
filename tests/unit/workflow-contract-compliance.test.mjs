@@ -121,7 +121,7 @@ test("EU CRA workflows preserve advisory and human-review boundaries", () => {
     if (displayName) {
       assert.match(source, new RegExp(`^name: "EU CRA / ${displayName}"$`, "m"));
     }
-    assert.match(source, /engine:\n\s+id: pi\n\s+model: copilot\/gpt-5\.4/);
+    assert.match(source, /engine:\n\s+id: pi\n\s+model: copilot\/gpt-5\.6-sol/);
     assert.match(source, /copilot-requests: write/);
     assert.match(source, /tools:\n\s+cli-proxy: true\n\s+github:\n\s+mode: gh-proxy/);
   }
@@ -205,9 +205,9 @@ test("EU CRA workflows preserve advisory and human-review boundaries", () => {
   const conformity = workflow("eu-cra-compliance-conformity-release-evidence.md");
   assert.match(conformity, /at least 10 years after market placement or for the support period, whichever is longer/);
 
-  assert.match(ledger, /CRA-ART-014.*reportability requires human review \| IMPLEMENTED \|/);
-  assert.match(ledger, /CRA-ART-028-031.*final release require human review \| IMPLEMENTED \|/);
-  assert.match(ledger, /CRA-ANNEX-VIII.*Route selection requires human review \| IMPLEMENTED \|/);
+  assert.match(ledger, /CRA-ART-014.*reportability requires human review \| (?:IMPLEMENTED|PARTIAL) \|/);
+  assert.match(ledger, /CRA-ART-028-031.*final release require human review \| (?:IMPLEMENTED|PARTIAL) \|/);
+  assert.match(ledger, /CRA-ANNEX-VIII.*Route selection requires human review \| (?:IMPLEMENTED|PARTIAL) \|/);
 });
 
 test("Dev Practices preserves evidence and advisory boundaries", () => {

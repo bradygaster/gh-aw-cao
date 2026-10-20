@@ -20,10 +20,10 @@ import (
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
-	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/telemetry"
 )
 
 const testAccessToken = "0123456789abcdef0123456789abcdef"
@@ -205,7 +205,7 @@ func TestHostedProxyHeadersAreTrustedOnlyOnLoopbackBoundary(t *testing.T) {
 	}
 }
 
-func TestCoolifyProxyCIDRsFailClosed(t *testing.T) {
+func TestHostedProxyCIDRsFailClosed(t *testing.T) {
 	prefixes, err := parseTrustedProxyPrefixes("10.42.0.0/24,fd00:42::/64")
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func TestExternallyHostedHandlerRequiresActiveLifecycle(t *testing.T) {
 	profile.Listener = HostListenerExternal
 	app, err := New(t.Context(), redisx.NewStore(client, "external-test"), Config{
 		Database:    database,
-		HostProfile: profile, SiteDirectory: t.TempDir(),
+		HostProfile: profile, SiteDirectory: hostedTestSite(t),
 		Proxy:       ProxyPolicy{AllowedHosts: []string{"dashboard.example.com"}, RequireHTTPS: true},
 		GitHubOAuth: validOAuthConfig("https://github.test"),
 		CORS:        CORSPolicy{AllowedOrigins: []string{"https://tools.example.com"}},
@@ -850,6 +850,9 @@ func TestStaticIndexInjectsBackendMeta(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `<meta name="dashboard-data-backend" content="server-http">`) {
 		t.Fatalf("backend meta was not injected: %s", response.Body.String())
 	}
+	if !strings.Contains(response.Body.String(), `<meta name="dashboard-storage-backend" content="postgres">`) {
+		t.Fatal("PostgreSQL storage meta was not injected")
+	}
 }
 
 func TestCapabilityTokenProtectsStaticAssetsAndAPI(t *testing.T) {
@@ -895,8 +898,11 @@ func TestCapabilityTokenProtectsStaticAssetsAndAPI(t *testing.T) {
 	if bootstrap.Code != http.StatusOK {
 		t.Fatalf("bootstrap returned %d: %s", bootstrap.Code, bootstrap.Body.String())
 	}
-	if len(bootstrap.Result().Cookies()) != 0 {
-		t.Fatal("bootstrap must not place the bearer capability in a cookie")
+	cookies := bootstrap.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "cao_github_local" ||
+		cookies[0].Value == testAccessToken || !cookies[0].HttpOnly ||
+		cookies[0].Path != "/api/v1/github/" {
+		t.Fatal("bootstrap must issue only a distinct, HttpOnly, read-only resource cookie")
 	}
 	if !strings.Contains(bootstrap.Body.String(), `localStorage.setItem("cao-dashboard-access-token"`) {
 		t.Fatalf("bootstrap did not initialize origin-scoped storage: %s", bootstrap.Body.String())

@@ -8,7 +8,8 @@ import { formatAggregateValue, formatRelativeTime, formatString } from '../view-
 import { errorMessage, formatCount, titleCase } from './count-formatters.js';
 import { renderCellDisplay } from './cell-display.js';
 import { resolveCardStatus } from './card-status.js';
-import { listChartSeries, pieChartEntries, renderChartLegend, renderPieChartLayout, renderPieLegend, renderChartWidget } from './chart-elements.js';
+import { listChartSeries, pieChartEntries, renderChartLegend, renderPieChartLayout, renderPieLegend, renderChartWidget, renderLayeredChartWidget } from './chart-elements.js';
+import { hasIndependentLayerY, hasTemporalLayerX, resolveChartLayers } from '../chart-layer-specification.js';
 import { externalAnchorAttrs, findFirstLink, findLink, renderExternalLink, renderLinkedValue, renderOutcomeLink, renderWorkflowRunLink } from './link-content.js';
 import { createEntityAwareCellRenderer } from './linked-text.js';
 import { renderTableRegion } from './table-region.js';
@@ -22,6 +23,8 @@ import { effect, onCleanup, state } from '../reactive.js';
 import { createFactoryScope } from './factory-elements.js';
 import { createDebug } from '../debug.js';
 import { assertActionLevel, normalizeAction, actionPresentation, constrainPrompt } from '../action-model.js';
+import { chartFacet, facetPresentationEncoding, MAX_CHART_FACETS } from '../chart-facet.js';
+import { formatString as formatFacetValue } from '../view-formatters.js';
 
 /** @type {Record<string, 'organization-link'|'repository-link'|'workflow-link'>} */
 const ENTITY_LINK_FIELDS = {
@@ -91,6 +94,7 @@ function resolveGithubEntityLink(row, field, fallbackLabel) {
  *   sourceName: string,
  *   rows: Array<Record<string, unknown>>,
  *   metadata: import('../presenter.js').SourceMetadata,
+ *   sourceTruncated?: boolean,
  *   contextDetails: string[],
  *   headingTag: 'h2'|'h3'|'h4',
  *   rowLimit?: number,
@@ -127,6 +131,7 @@ export function supportsIncrementalChartContinuation(view) {
   return isPlainObject(view)
     && view.mark === 'chart'
     && view.chart === 'swimlane'
+    && !chartFacet(view)
     && !(isPlainObject(view.encoding) && isPlainObject(view.encoding.weight));
 }
 
@@ -170,13 +175,12 @@ function resolveCardListEmptyMessage(metadata, view) {
  *   cards: HTMLElement[],
  *   listClassName: string,
  *   listAttrs?: Record<string, unknown>,
- *   footer?: HTMLElement[],
- *   sectionDescription?: boolean
+ *   footer?: HTMLElement[]
  * }} options
  * @returns {HTMLElement}
  */
 function renderCardListSection(options) {
-  const { pageId, title, view, metadata, contextDetails, headingTag, listAction, cards, listClassName, listAttrs = {}, footer = [], sectionDescription = false } = options;
+  const { pageId, title, view, metadata, contextDetails, headingTag, listAction, cards, listClassName, listAttrs = {}, footer = [] } = options;
   const emptyMessage = resolveCardListEmptyMessage(metadata, view);
   return renderPageSection(
     pageId,
@@ -194,8 +198,7 @@ function renderCardListSection(options) {
         : h('p', { className: 'document-list-empty' }, emptyMessage),
       ...footer
     ],
-    headingTag,
-    sectionDescription ? view.description : undefined
+    headingTag
   );
 }
 
@@ -264,9 +267,20 @@ function renderListView(context) {
   const actions = tableActions(view);
   const preparedRows = prepareTableRows(rows, columns, view.data);
   const icon = isPlainObject(view.list) && typeof view.list.icon === 'string' ? view.list.icon : 'dash';
-  const listAction = isPlainObject(view.list) && typeof view.list.action === 'string'
-    ? renderDeclaredCliAction(view.list.action)
-    : null;
+  const listActions = isPlainObject(view.list) ? [
+    ...(typeof view.list.action === 'string' ? [view.list.action] : []),
+    ...(Array.isArray(view.list.actions) ? view.list.actions : [])
+  ].map((id) => renderDeclaredCliAction(id, {}, id === view.list.action && Array.isArray(view.list['action-context']) ? {
+    rows,
+    fields: view.list['action-context'],
+    available: metadata.availability === 'available'
+      && ['complete', 'partial'].includes(metadata.completeness)
+      && !context.sourceTruncated && !context.continuation,
+    warning: metadata.completeness === 'partial'
+      ? 'Inventory evidence is partial. Only the repositories or campaigns listed in these commands will be targeted; unobserved targets are not included.'
+      : undefined
+  } : undefined)).filter(Boolean) : [];
+  const listAction = listActions.length ? h('span', { className: 'document-list-actions' }, ...listActions) : null;
   const renderValue = createEntityAwareCellRenderer(
     ENTITY_LINK_FIELDS,
     findLink,
@@ -416,8 +430,7 @@ function renderEntityCardListView(options) {
           octicon('arrow-right')
         )
       )]
-      : [],
-    sectionDescription: true
+      : []
   });
 }
 
@@ -738,7 +751,6 @@ function renderIssueListView(options) {
     cards,
     listClassName: 'document-list issue-list',
     listAttrs: { 'data-custom-view-mark': 'list' },
-    sectionDescription: true
   });
 }
 
@@ -883,7 +895,7 @@ function renderTableView(context) {
   let renderedRowCount = bodyRows.length;
   const continuation = replayableContinuation(context.continuation);
 
-  const interactive = view.controls !== 'static';
+  const interactive = view.controls !== 'static' && view.controls !== 'filter-only';
   const staticEmptyMessage = typeof view['empty-message'] === 'string' ? view['empty-message'] : 'No rows available.';
   // A table can render zero rows either because the source truly has no data, or
   // because the dashboard-wide time-window filter is narrowing an otherwise
@@ -906,7 +918,8 @@ function renderTableView(context) {
         }
       }
     : undefined;
-  const tableRegion = renderTableRegion({
+  const cardTemplate = isPlainObject(view.encoding) && typeof view.encoding.card === 'string' ? view.encoding.card : undefined;
+  const tableRegion = cardTemplate ? null : renderTableRegion({
     tableClassName: 'custom-table',
     tableRole: tree ? 'treegrid' : undefined,
     regionClassName: interactive ? undefined : 'table-region-static',
@@ -973,12 +986,12 @@ function renderTableView(context) {
       : undefined,
     sortable: interactive
   });
-  const mobileCardList = view.layout === 'full-view' && view['lazy-list'] === true
+  const mobileCardList = cardTemplate || (view.layout === 'full-view' && view['lazy-list'] === true)
     ? renderMobileTableCardList({ ...context, continuation }, columns, tableRows, renderCellValue, effectiveRowLimit)
     : null;
   return renderPageSection(pageId, title, [
     ...renderViewSectionChrome(metadata, contextDetails).filter((node) => node instanceof HTMLElement),
-    tableRegion,
+    ...(tableRegion ? [tableRegion] : []),
     ...(mobileCardList ? [mobileCardList] : [])
   ], headingTag, view.description);
 }
@@ -1004,7 +1017,7 @@ function renderMobileTableCardList(context, columns, rows, renderValue, rowLimit
   const initialRows = availableRows.slice(0, pageSize);
   const columnFields = new Set(columns.map((column) => column.field));
   /** @type {{ icon: string, title: TableField, subtitle?: TableField, labels: TableField[], details: TableField[], 'detail-labels'?: string, metrics?: TableField[], drill?: Record<string, unknown> }} */
-  const definition = Object.values(cardTemplates)
+  const definition = (typeof view.encoding?.card === 'string' ? cardTemplates[view.encoding.card] : undefined) ?? Object.values(cardTemplates)
     .filter((template) => columnFields.has(template.title.field))
     .toSorted((left, right) => (
       [...right.labels, ...right.details].filter((field) => columnFields.has(field.field)).length
@@ -1065,7 +1078,7 @@ function renderMobileTableCardList(context, columns, rows, renderValue, rowLimit
   ...renderEntityCardItems(initialRows, { pageId, title, renderValue, toText, definition: visibleDefinition, drill }),
   ...(boundary ? [boundary] : []));
   const region = h('div', {
-    className: 'mobile-table-card-list',
+    className: `mobile-table-card-list${typeof view.encoding?.card === 'string' ? ' table-card-list' : ''}`,
     'data-mobile-card-list': '',
     role: 'region',
     'aria-label': `${title}: card list`
@@ -1265,8 +1278,105 @@ function renderStatusDetail(row, view, toText) {
 }
 
 /** @param {DataViewContext} context */
-function renderChartView(context) {
+function renderFacetedChartView(context) {
+  const { pageId, title, view, rows, metadata, contextDetails, headingTag } = context;
+  const facet = chartFacet(view);
+  if (!facet) throw new TypeError('A faceted chart requires a facet declaration.');
+  const unavailable = metadata.availability === 'unavailable';
+  const invalid = rows.length > MAX_CHART_FACETS
+    || rows.some((row) => !Array.isArray(row['facet-rows'])
+      || !row['facet-rows'].every(isPlainObject)
+      || !Object.hasOwn(row, 'facet-field') || !Object.hasOwn(row, 'facet-row') || !Object.hasOwn(row, 'facet-column')
+      || !Number.isSafeInteger(row['facet-row-index']) || Number(row['facet-row-index']) < 0 || Number(row['facet-row-index']) >= MAX_CHART_FACETS
+      || !Number.isSafeInteger(row['facet-column-index']) || Number(row['facet-column-index']) < 0 || Number(row['facet-column-index']) >= MAX_CHART_FACETS);
+  const grid = h('div', {
+    className: `chart-facet-grid${facet.field ? ' chart-facet-wrap' : ' chart-facet-matrix'}`,
+    role: 'group',
+    'aria-label': `${title} facets`,
+    style: `--chart-facet-columns: ${view.columns ?? Math.max(rows.length, 1)}`
+  });
+  if (invalid) debugChart({ event: 'facet-payload-rejected', panelCount: rows.length });
+  if (unavailable || invalid || rows.length === 0) {
+    grid.append(h('p', { role: 'status', className: 'document-list-empty' },
+      unavailable || invalid ? 'Data is unavailable for this faceted visualization.' : 'No data is available for this visualization.'));
+  } else {
+    rows.forEach((row, index) => {
+      const labels = Object.entries(facet).map(([channel, definition]) => {
+        const value = row[`facet-${channel}`];
+        return `${definition.title ?? titleCase(String(definition.field))}: ${value == null ? 'Unknown' : formatFacetValue(value, definition.format)}`;
+      });
+      const label = labels.join(' · ');
+      const content = renderChartView({
+        ...context,
+        pageId: `${pageId}-facet-${index}`,
+        title: label,
+        rows: /** @type {Array<Record<string, unknown>>} */ (row['facet-rows']),
+        contextDetails: [],
+        continuation: undefined,
+        view: {
+          ...view,
+          facet: undefined,
+          columns: undefined,
+          description: undefined,
+          layout: undefined,
+          data: {},
+          encoding: facetPresentationEncoding(isPlainObject(view.encoding) ? view.encoding : {})
+        }
+      }, true);
+      grid.append(h('figure', {
+        className: 'chart-facet-panel',
+        'aria-label': label,
+        style: facet.field ? undefined : `--chart-facet-row: ${Number(row['facet-row-index']) + 1}; --chart-facet-column: ${Number(row['facet-column-index']) + 1}`
+      }, h('figcaption', { className: 'chart-facet-header' }, label), content));
+    });
+  }
+  const section = renderPageSection(pageId, title, [
+    ...(view.description ? [h('p', { className: 'view-description' }, view.description)] : []),
+    ...renderViewSectionChrome(metadata, contextDetails),
+    grid
+  ], headingTag);
+  section.classList.add('chart-view', 'chart-view-faceted');
+  return section;
+}
+
+/** @param {DataViewContext} context @param {boolean} [facetPanel] */
+function renderChartView(context, facetPanel = false) {
+  if (chartFacet(context.view)) return renderFacetedChartView(context);
   const { pageId, title, view, rows, metadata, contextDetails, headingTag, buildChartPoints, prepareChartPoints, continuation } = context;
+  if (view.layer !== undefined) {
+    const definitions = resolveChartLayers(view);
+    const availableRows = metadata.availability === 'unavailable' || metadata.availability === 'empty' ? [] : rows;
+    const layers = definitions.map((definition) => {
+      const { encoding } = definition;
+      const x = isPlainObject(encoding.x) ? encoding.x : null;
+      const y = isPlainObject(encoding.y) ? encoding.y : null;
+      const color = isPlainObject(encoding.color) ? encoding.color : null;
+      const href = isPlainObject(encoding.href) ? encoding.href : null;
+      const label = y ? fieldTitle(y) : definition.chart;
+      const points = availableRows.map((row, index) => ({
+        key: `${pageId}-${view.id}-${definition.path}-${index}`,
+        x: definition.chart === 'rule' ? '' : x ? formatString(row[x.field], x.format) : '',
+        y: y && typeof row[y.field] === 'number' && Number.isFinite(row[y.field])
+          ? /** @type {number} */ (row[y.field]) : null,
+        color: color ? context.toText(row[color.field]) : label,
+        link: href ? findLink(row, href.field) : null
+      }));
+      return { chart: definition.chart, points, label, unit: y ? fieldUnit(y, context.units ?? {}) : null };
+    });
+    const temporal = definitions.some(hasTemporalLayerX);
+    const chartContent = [
+      renderChartLegend(listChartSeries(layers.flatMap((layer) => layer.points)), 'layer'),
+      metadata.availability === 'unavailable'
+        ? h('div', { className: 'chart-widget layer-chart-widget', role: 'status' }, 'Data is unavailable for this view.')
+        : renderLayeredChartWidget(layers, temporal, hasIndependentLayerY(view))
+    ];
+    if (facetPanel) return h('div', { className: 'chart-facet-content chart-view-layer' }, ...chartContent);
+    const section = renderPageSection(pageId, title, [
+      ...renderViewSectionChrome(metadata, contextDetails), ...chartContent
+    ], headingTag, view.description);
+    section.classList.add('chart-view', 'chart-view-layer');
+    return section;
+  }
   const encoding = isPlainObject(view.encoding) ? view.encoding : null;
   const x = isPlainObject(encoding?.x) && typeof encoding.x.field === 'string' ? encoding.x : null;
   const yDefinitions = (Array.isArray(encoding?.y) ? encoding.y : [encoding?.y])
@@ -1282,8 +1392,21 @@ function renderChartView(context) {
   const chartType = typeof view.chart === 'string' ? view.chart : x?.type === 'temporal' ? 'line' : 'bar';
   const value = chartType === 'heatmap' ? color : y;
   const series = chartType === 'heatmap' ? y : color;
-  /** @param {Array<Record<string, unknown>>} chartRows */
+  /** @param {Array<Record<string, unknown>>} chartRows @returns {ChartPoint[]} */
   const pointsForRows = (chartRows) => {
+    if (chartType === 'treemap') {
+      return chartRows.map((row, index) => {
+        const value = y ? row[y.field] : null;
+        return {
+          key: `${pageId}-${title}-${index}`,
+          x: x ? formatString(row[x.field], x.format) : 'unknown',
+          y: value == null ? null : typeof value === 'number' ? value : Number.NaN,
+          color: color ? formatString(row[color.field], color.format) : null,
+          section: chartSection ? formatString(row[chartSection.field], chartSection.format) : null,
+          link: href ? findLink(row, href.field) : null
+        };
+      });
+    }
     if (chartType === 'line' && yDefinitions.length > 1) {
       const points = yDefinitions.flatMap((definition) => (weight
         ? buildChartPoints(pageId, title, chartRows, x, definition, null, href?.field ?? null, weight)
@@ -1293,14 +1416,14 @@ function renderChartView(context) {
         key: `${point.key}-${definition.field}`,
         color: fieldTitle(definition)
       })));
-      return prepareChartPoints(points, x, y, null, view.data);
+      return facetPanel ? points : prepareChartPoints(points, x, y, null, view.data);
     }
     const chartPoints = chartSection
       ? buildChartPoints(pageId, title, chartRows, x, value, series, href?.field ?? null, weight, chartSection)
       : weight
         ? buildChartPoints(pageId, title, chartRows, x, value, series, href?.field ?? null, weight)
         : buildChartPoints(pageId, title, chartRows, x, value, series, href?.field ?? null);
-    return chartSection
+    return facetPanel ? chartPoints : chartSection
       ? prepareChartPoints(chartPoints, x, value, series, view.data, chartSection)
       : prepareChartPoints(chartPoints, x, value, series, view.data);
   };
@@ -1321,7 +1444,11 @@ function renderChartView(context) {
       value ? fieldUnit(value, context.units ?? {}) : null,
       isPlainObject(view.data) && isPlainObject(view.data.time) ? view.data.time : null,
       reference?.field ?? null,
-      pieCategoryLabelFormatter(x)
+      pieCategoryLabelFormatter(x),
+      null,
+      chartType === 'treemap' && isPlainObject(view.treemap) ? view.treemap : {},
+      null,
+      chartType === 'scatter' && isPlainObject(view.scatter) ? view.scatter : {}
     );
     const chartLegend = (color || yDefinitions.length > 1) && !['heatmap', 'pie', 'swimlane'].includes(chartType)
       ? renderChartLegend(chartSeries, chartType)
@@ -1343,7 +1470,7 @@ function renderChartView(context) {
     };
   };
 
-  const clustering = chartType === 'scatter' && points.length > MAX_RENDERED_SCATTER_POINTS
+  const clustering = chartType === 'scatter' && view.scatter?.cluster !== false && points.length > MAX_RENDERED_SCATTER_POINTS
     ? processScatterPoints(points.flatMap(({ key, x: pointX, y: pointY, color: pointColor, link }) => pointY == null ? [] : [{
         key,
         x: pointX,
@@ -1362,16 +1489,15 @@ function renderChartView(context) {
         `Clustering ${formatCount(points.length)} scatter points…`
       )
     : null;
-  const section = renderPageSection(
+  const content = [
+    ...(description ? [description] : []),
+    ...(!facetPanel ? renderViewSectionChrome(metadata, contextDetails) : []),
+    ...(pending ? [/** @type {HTMLElement} */ (visualization)] : initial?.chartContent ?? [])
+  ];
+  const section = facetPanel ? h('div', { className: 'chart-facet-content' }, ...content) : renderPageSection(
     pageId,
     title,
-    [
-      ...(description ? [description] : []),
-      ...renderViewSectionChrome(metadata, contextDetails),
-      ...(pending
-        ? [/** @type {HTMLElement} */ (visualization)]
-        : initial?.chartContent ?? [])
-    ],
+    content,
     headingTag
   );
   if (pending) {
@@ -1401,14 +1527,14 @@ function renderChartView(context) {
       visualization?.replaceWith(...rendered);
       clusteringEffect.stop();
     }, { signal: clusteringScope.signal });
-  } else if (chartType === 'pie') {
+  } else if (chartType === 'pie' && view.layout !== 'full') {
     section.append(
       h('div', { className: 'pie-chart-card' }, ...Array.from(section.children))
     );
   } else if (view.layout === 'horizontal') {
     const children = Array.from(section.children);
     /** @param {Element} element */
-    const isCopy = (element) => element.matches('h3, h4, .view-description, .view-source, .view-metadata, .view-context, .view-description-tooltip');
+    const isCopy = (element) => element.matches('h3, h4, .view-description, .view-source, .view-metadata, .view-context');
     const firstVisualization = children.findIndex((element) => !isCopy(element));
     const copy = firstVisualization === -1 ? children : children.slice(0, firstVisualization);
     const visualization = firstVisualization === -1 ? [] : children.slice(firstVisualization);
@@ -1428,7 +1554,7 @@ function renderChartView(context) {
       });
     }
   }
-  section.classList.add('chart-view', `chart-view-${chartType}`);
+  if (!facetPanel) section.classList.add('chart-view', `chart-view-${chartType}`);
   if (supportsIncrementalChartContinuation(view) && continuation?.token && !pending) {
     const maximumRows = chartRowLimit(view);
     const initialRows = Number.isFinite(maximumRows)

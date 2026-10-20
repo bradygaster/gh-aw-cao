@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational/memory"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/operational/memory"
 )
 
 type focusedDoctorStore struct {
@@ -81,6 +81,18 @@ func TestOperationalMemoryDoctorDoesNotInventHealthyDisconnectedState(t *testing
 	check := d.checkOperational(t.Context())
 	if check.Status != StatusFail || !strings.Contains(check.Remedy, "owning process") {
 		t.Fatalf("disconnected memory diagnostics appeared healthy: %+v", check)
+	}
+}
+
+func TestClassifyOperationalHealthReady(t *testing.T) {
+	if status := classifyOperationalHealth(true); status != StatusPass {
+		t.Fatalf("ready state classified as %q, want %q", status, StatusPass)
+	}
+}
+
+func TestClassifyOperationalHealthNotReady(t *testing.T) {
+	if status := classifyOperationalHealth(false); status != StatusFail {
+		t.Fatalf("not-ready state classified as %q, want %q", status, StatusFail)
 	}
 }
 

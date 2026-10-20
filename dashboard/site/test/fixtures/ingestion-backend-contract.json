@@ -1,10 +1,11 @@
 {
   "page": "indexing",
+  "scatter": { "view": "indexing-workflow-runs", "cluster": false, "regressionEntries": 2101, "timeField": "shard-day", "timeTitle": "Shard activity date" },
   "staticSources": [
     "indexing-database-table-counts",
-    "indexing-daily-records",
-    "indexing-daily-workflow-runs",
-    "indexing-transactions"
+    "indexing-ingestion-runs",
+    "indexing-transactions",
+    "indexing-shards"
   ],
   "hostedSources": ["ingestion-queue-sizes", "ingestion-health", "github-api-usage"],
   "hostedViews": ["ingestion-queue-sizes", "ingestion-health-status", "github-api-usage"],

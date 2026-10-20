@@ -48,26 +48,6 @@ export function renderSectionHeading({
 }
 
 /**
- * Renders a panel `<header>` containing an id-anchored heading and an
- * optional descriptive paragraph. Shared by the campaign summary,
- * campaign utilization, unavailable-trend, and value-history panels, which
- * all pair one `aria-labelledby` heading with plain descriptive copy.
- * @param {string} headingId
- * @param {string} heading
- * @param {string} [description]
- * @param {{ className?: string }} [options]
- * @returns {HTMLElement}
- */
-export function renderPanelHeader(headingId, heading, description, options = {}) {
-  return h(
-    'header',
-    options.className ? { className: options.className } : null,
-    h('h3', { id: headingId }, heading),
-    description ? h('p', null, description) : null
-  );
-}
-
-/**
  * Renders a `<tr>` of `<th scope="col">` header cells from plain label
  * strings. Shared by the campaign summary table and the workflow
  * operational-grader observation table, which both build a single header
@@ -582,19 +562,6 @@ export function renderSearchInput(label, value = '') {
 }
 
 /**
- * Renders the shared `<details><summary>label</summary>...body</details>`
- * disclosure pattern used by evidence menus, raw-policy panels, and
- * value-report evidence sections to hide secondary content behind a toggle.
- * @param {string} className
- * @param {string} summaryLabel
- * @param {...Node} body
- * @returns {HTMLElement}
- */
-export function renderDisclosure(className, summaryLabel, ...body) {
-  return h('details', { className }, h('summary', null, summaryLabel), ...body);
-}
-
-/**
  * Renders the shared `<summary>` label plus "Show details" hint span pair
  * used by disclosure summaries whose hint text swaps to "Hide details" via
  * the `[open] .*-hint::after` CSS rule in `styles.js`. Shared by the campaign
@@ -717,26 +684,6 @@ export function renderLegendList(className, items, swatchClassName, renderConten
 }
 
 /**
- * Derives up to `maxParts` uppercase initials from a name-like value, used
- * for small circular avatar labels. Splits on whitespace, slashes,
- * underscores, and hyphens (so `dependency-automation` yields `DA` and a
- * plain `reviewer` yields `R` with `maxParts: 1`), and falls back to `?`
- * for empty, missing, or placeholder values. Shared by the work-item card's
- * owner avatar and the work-item timeline lane's actor avatar, which
- * otherwise duplicated the same splitting and fallback logic under
- * different names.
- * @param {string | null | undefined} value
- * @param {{ maxParts?: number, placeholder?: string }} [options]
- * @returns {string}
- */
-export function nameInitials(value, options = {}) {
-  const { maxParts = 2, placeholder = 'Unassigned' } = options;
-  if (!value || value === placeholder) return '?';
-  const parts = value.split(/[\s/_-]+/).filter(Boolean);
-  return parts.slice(0, maxParts).map((part) => part[0]?.toUpperCase()).join('') || '?';
-}
-
-/**
  * Renders a `<span>` (or another element tag) wrapping a single octicon,
  * used by the attention-domain cards, readiness-verdict hero, signal-list
  * rows, metric/document/issue cards, factory stations, the filter search
@@ -812,12 +759,17 @@ export function syncToggleButtonState(toggle, expanded, { expandedLabel, collaps
  * `open` attribute on runtimes without `HTMLDialogElement.showModal`/`close`
  * support. Shared by the table intent-action prompt preview and the
  * work-item mobile detail sheet, which both otherwise duplicated the same
- * feature-detection branches.
+ * feature-detection branches. Contains clicks so dialogs nested in clickable
+ * cards cannot activate their owning row.
  * @param {{ className: string, ariaLabel: string, onFallbackClose?: () => void }} options
  * @returns {{ dialog: HTMLDialogElement, open: () => void, close: () => void }}
  */
 export function createModalDialog({ className, ariaLabel, onFallbackClose }) {
-  const dialog = /** @type {HTMLDialogElement} */ (h('dialog', { className, 'aria-label': ariaLabel }));
+  const dialog = /** @type {HTMLDialogElement} */ (h('dialog', {
+    className,
+    'aria-label': ariaLabel,
+    onClick: (/** @type {MouseEvent} */ event) => event.stopPropagation()
+  }));
   const open = () => {
     if (typeof dialog.showModal === 'function') {
       dialog.showModal();
@@ -834,36 +786,6 @@ export function createModalDialog({ className, ariaLabel, onFallbackClose }) {
     }
   };
   return { dialog, open, close };
-}
-
-/**
- * Wires a toggle button to expand/collapse a companion panel, keeping the
- * button's `aria-expanded` attribute and the panel's expanded CSS class in
- * sync. Shared by the work-item mobile filter sheet, the settings sheet, and
- * the notifications advanced-filter panel.
- *
- * The returned `close` helper collapses the panel and returns focus to the
- * toggle button, consolidating the identical teardown that the mobile filter
- * sheet and the settings sheet otherwise duplicated as separate
- * `closeMobileSheet`/`closeSettings` functions.
- * @param {HTMLElement} toggle
- * @param {HTMLElement} panel
- * @param {{ expandedClass: string, onExpand?: (expanded: boolean) => void }} options
- * @returns {{ setExpanded: (expanded: boolean) => void, close: () => void }}
- */
-export function createExpandableToggle(toggle, panel, { expandedClass, onExpand }) {
-  /** @param {boolean} expanded */
-  const setExpanded = (expanded) => {
-    toggle.setAttribute('aria-expanded', String(expanded));
-    panel.classList.toggle(expandedClass, expanded);
-    if (onExpand) onExpand(expanded);
-  };
-  const close = () => {
-    setExpanded(false);
-    if (toggle instanceof HTMLElement) toggle.focus();
-  };
-  setExpanded(false);
-  return { setExpanded, close };
 }
 
 /**

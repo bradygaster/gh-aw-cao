@@ -24,25 +24,25 @@ The current measure contract is:
 ```
 
 For the normative computation model, see the
-[Computations Specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/computations.md).
+[Computations Specification](https://github.com/githubnext/gh-cao/blob/main/specs/computations.md).
 
 ## Run it
 
 ```bash
-./cao.sh download
-./cao.sh computation runtime-health
+gh cao download
+gh cao computation runtime-health
 ```
 
 Evaluate one Campaign:
 
 ```bash
-./cao.sh computation runtime-health --campaign dependabot
+gh cao computation runtime-health --campaign dependabot
 ```
 
 Include bounded diagnostic evidence for one Campaign:
 
 ```bash
-./cao.sh computation runtime-health --campaign dependabot --diagnose
+gh cao computation runtime-health --campaign dependabot --diagnose
 ```
 
 `--diagnose` requires `--campaign`. Use `--database FILE` and

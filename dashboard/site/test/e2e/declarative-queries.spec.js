@@ -8,6 +8,12 @@ const siteRoot = fileURLToPath(new URL('../..', import.meta.url));
 const databaseName = 'gh-aw-cao-dashboard-data';
 const generation = 'query-scenarios';
 const asOf = '2026-09-09T05:00:00Z';
+const fixtureTimeOffset = Date.now() - Date.parse(asOf);
+/** @template T @param {T} value @returns {T} */
+const currentFixtureDates = (value) => JSON.parse(JSON.stringify(value).replace(
+  /2026-09-(?:08|09)T\d{2}:\d{2}:\d{2}Z/g,
+  (instant) => new Date(Date.parse(instant) + fixtureTimeOffset).toISOString()
+));
 
 /**
  * @param {{ repository: string, workflow: string }} workflow
@@ -28,8 +34,8 @@ const workflowRun = (workflow, run, conclusion, startedAt, event = 'schedule') =
   'started-at': startedAt
 });
 
-const dashboardWorkflow = { repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md' };
-const doctorWorkflow = { repository: 'gh-aw-cao', workflow: '.github/workflows/doctor.md' };
+const dashboardWorkflow = { repository: 'gh-cao', workflow: '.github/workflows/dashboard.md' };
+const doctorWorkflow = { repository: 'gh-cao', workflow: '.github/workflows/doctor.md' };
 const auditWorkflow = { repository: 'control-plane', workflow: '.github/workflows/audit.md' };
 const idleWorkflow = { repository: 'control-plane', workflow: '.github/workflows/idle.md' };
 
@@ -40,7 +46,7 @@ const idleWorkflow = { repository: 'control-plane', workflow: '.github/workflows
  */
 function queryScenarioSources() {
   const metadata = { 'as-of': asOf, 'artifact-generation': generation };
-  return {
+  return currentFixtureDates({
     campaigns: {
       rows: [{
         campaign: 'dashboard',
@@ -53,7 +59,7 @@ function queryScenarioSources() {
     },
     repositories: {
       rows: [
-        { organization: 'githubnext', repository: 'gh-aw-cao', 'observed-at': asOf },
+        { organization: 'githubnext', repository: 'gh-cao', 'observed-at': asOf },
         { organization: 'githubnext', repository: 'control-plane', 'observed-at': asOf }
       ],
       metadata
@@ -84,7 +90,7 @@ function queryScenarioSources() {
       rows: [
         {
           organization: 'githubnext',
-          repository: 'gh-aw-cao',
+          repository: 'gh-cao',
           workflow: dashboardWorkflow.workflow,
           run: '1001',
           'run-attempt': 1,
@@ -102,7 +108,7 @@ function queryScenarioSources() {
         },
         {
           organization: 'githubnext',
-          repository: 'gh-aw-cao',
+          repository: 'gh-cao',
           workflow: dashboardWorkflow.workflow,
           run: '1002',
           'run-attempt': 1,
@@ -121,62 +127,34 @@ function queryScenarioSources() {
       ],
       metadata
     },
-    'security-findings': {
+    audits: {
       rows: [
         {
           organization: 'githubnext',
-          repository: 'gh-aw-cao',
+          repository: 'gh-cao',
           workflow: dashboardWorkflow.workflow,
           run: '1002',
-          'smell-observation-id': 'threat-detection:1002',
-          'smell-id': 'threat-detection-secret-leak',
-          'smell-name': 'Secret leak detected',
-          'smell-severity': 'high',
+          'run-attempt': 1, event: 'threat-detection:1002', 'event-source': 'audit',
+          'event-type': 'audit.finding', code: 'secret_leak_detected',
+          'event-summary': 'Secret leak detected', 'event-status': 'high',
+          'event-timestamp': '2026-09-09T02:05:00Z',
           'observed-at': '2026-09-09T02:05:00Z'
         },
         {
           organization: 'githubnext',
-          repository: 'gh-aw-cao',
+          repository: 'gh-cao',
           workflow: dashboardWorkflow.workflow,
           run: '1003',
-          'smell-observation-id': 'threat-detection:1003',
-          'smell-id': 'threat-detection-network-egress',
-          'smell-name': 'Unexpected egress',
-          'smell-severity': 'medium',
+          'run-attempt': 1, event: 'threat-detection:1003', 'event-source': 'audit',
+          'event-type': 'audit.finding', code: 'unexpected_egress',
+          'event-summary': 'Unexpected egress', 'event-status': 'medium',
+          'event-timestamp': '2026-09-09T03:05:00Z',
           'observed-at': '2026-09-09T03:05:00Z'
         }
       ],
       metadata
-    },
-    usage: { rows: [], metadata },
-    'operational-values': { rows: [], metadata },
-    outcomes: {
-      rows: [
-        {
-          'safe-output': 'issue-1', 'safe-output-kind': 'create-issue', 'outcome-title': 'Older issue',
-          'outcome-status': 'open', 'outcome-state': 'accepted', workflow: 'daily.md', repository: 'gh-aw-cao',
-          'rollout-mode': 'review', run: '1001', 'published-at': '2026-09-08T01:00:00Z',
-          'observed-at': '2026-09-08T02:00:00Z', 'external-link': { href: 'https://example.com/issues/1' },
-          'run-link': { href: 'https://example.com/runs/1001' }
-        },
-        {
-          'safe-output': 'issue-2', 'safe-output-kind': 'create-issue', 'outcome-title': 'Newest issue',
-          'outcome-status': 'closed', 'outcome-state': 'completed', workflow: 'daily.md', repository: 'gh-aw-cao',
-          'rollout-mode': 'live', run: '1002', 'published-at': '2026-09-09T01:00:00Z',
-          'observed-at': '2026-09-09T02:00:00Z', 'external-link': { href: 'https://example.com/issues/2' },
-          'run-link': { href: 'https://example.com/runs/1002' }
-        },
-        {
-          'safe-output': 'pr-1', 'safe-output-kind': 'create-pull-request', 'outcome-title': 'Pull request',
-          'outcome-status': 'open', 'outcome-state': 'pending', workflow: 'release.md', repository: 'gh-aw-cao',
-          'rollout-mode': 'review', run: '1003', 'published-at': '2026-09-08T03:00:00Z',
-          'observed-at': '2026-09-08T04:00:00Z', 'external-link': { href: 'https://example.com/pulls/1' },
-          'run-link': { href: 'https://example.com/runs/1003' }
-        }
-      ],
-      metadata
     }
-  };
+  });
 }
 
 test.beforeEach(async ({ context, page }) => {
@@ -379,13 +357,13 @@ test('scenario 1: projects, renames, orders, and limits a single source', async 
   }], ['recent-runs']);
 
   expect(payload['recent-runs'].rows).toEqual([
-    { 'run-id': '1005', outcome: 'success', 'started-at': '2026-09-09T04:30:00Z' },
-    { 'run-id': '1004', outcome: 'success', 'started-at': '2026-09-09T04:00:00Z' }
+    { 'run-id': '1005', outcome: 'success', 'started-at': currentFixtureDates('2026-09-09T04:30:00Z') },
+    { 'run-id': '1004', outcome: 'success', 'started-at': currentFixtureDates('2026-09-09T04:00:00Z') }
   ]);
   expect(payload['recent-runs'].metadata).toMatchObject({
     'source-kind': 'derived',
     'query-name': 'recent-runs',
-    'as-of': asOf,
+    'as-of': currentFixtureDates(asOf),
     availability: 'available'
   });
 });
@@ -397,7 +375,7 @@ test('scenario 2: filters with the declarative predicate vocabulary', async ({ p
     filter: {
       predicates: [
         { field: 'run-conclusion', equals: 'failure' },
-        { field: 'repository', in: ['gh-aw-cao'] },
+        { field: 'repository', in: ['gh-cao'] },
         { field: 'workflow', includes: 'dashboard' }
       ]
     },
@@ -413,7 +391,7 @@ test('scenario 3: aggregates with grouped, deterministic reducers', async ({ pag
 
   expect(payload['run-totals'].rows).toEqual(expect.arrayContaining([
     expect.objectContaining({
-      repository: 'gh-aw-cao',
+      repository: 'gh-cao',
       workflow: '.github/workflows/dashboard.md',
       runs: 3,
       'latest-run': 1003
@@ -431,14 +409,14 @@ test('the authored basic table queries return the populated canonical database r
   const payload = await loadThroughWorker(page, dashboard.dashboard.queries, requested);
 
   expect(payload['repository-activity'].rows.map((row) => row.repository)).toEqual([
-    'githubnext/gh-aw-cao',
+    'githubnext/gh-cao',
     'githubnext/control-plane'
   ]);
   expect(payload['workflow-inventory'].rows.map((row) => [row.repository, row.workflow])).toEqual([
     ['githubnext/control-plane', '.github/workflows/audit.md'],
     ['githubnext/control-plane', '.github/workflows/idle.md'],
-    ['githubnext/gh-aw-cao', '.github/workflows/dashboard.md'],
-    ['githubnext/gh-aw-cao', '.github/workflows/doctor.md']
+    ['githubnext/gh-cao', '.github/workflows/dashboard.md'],
+    ['githubnext/gh-cao', '.github/workflows/doctor.md']
   ]);
   expect(payload['workflow-inventory'].rows.map((row) => row['workflow-label'])).toEqual(
     payload['workflow-inventory'].rows.map((row) => `${row.repository}:${row.workflow}`)
@@ -457,7 +435,7 @@ test('the authored friction page reads only its canonical worker projections', a
   expect(Object.keys(payload).sort()).toEqual([...requested].sort());
   expect(payload['friction-by-workflow'].rows).toEqual([
     expect.objectContaining({
-      'repository-coordinate': 'githubnext/gh-aw-cao',
+      'repository-coordinate': 'githubnext/gh-cao',
       workflow: dashboardWorkflow.workflow,
       'friction-aic': 1.5,
       runs: 2
@@ -544,13 +522,13 @@ test('scenario 6: computes allowlisted fields with null and divide-by-zero handl
       workflow: '.github/workflows/dashboard.md',
       'total-runs': 3,
       'failure-rate': 2 / 3,
-      label: 'gh-aw-cao/.github/workflows/dashboard.md'
+      label: 'gh-cao/.github/workflows/dashboard.md'
     },
     {
       workflow: '.github/workflows/doctor.md',
       'total-runs': 1,
       'failure-rate': 0,
-      label: 'gh-aw-cao/.github/workflows/doctor.md'
+      label: 'gh-cao/.github/workflows/doctor.md'
     },
     {
       workflow: '.github/workflows/idle.md',
@@ -582,22 +560,22 @@ test('scenario 7: a derived source composes another derived source', async ({ pa
 
   expect(payload['repository-run-totals'].rows).toEqual([
     { repository: 'control-plane', runs: 1, workflows: 2 },
-    { repository: 'gh-aw-cao', runs: 4, workflows: 2 }
+    { repository: 'gh-cao', runs: 4, workflows: 2 }
   ]);
 });
 
 test('scenario 8: dependency resolution returns only the requested derived projection', async ({ page }) => {
   const payload = await loadThroughWorker(page, [runTotals, failureTotals, {
     name: 'finding-inventory',
-    from: 'security-findings',
-    select: [{ field: 'smell-id' }, { field: 'smell-severity', as: 'severity' }],
-    'order-by': [{ field: 'smell-id', direction: 'asc' }]
+    from: 'findings',
+    select: [{ field: 'code' }, { field: 'finding-severity', as: 'severity' }],
+    'order-by': [{ field: 'code', direction: 'asc' }]
   }], ['finding-inventory']);
 
   expect(Object.keys(payload)).toEqual(['finding-inventory']);
   expect(payload['finding-inventory'].rows).toEqual([
-    { 'smell-id': 'threat-detection-network-egress', severity: 'medium' },
-    { 'smell-id': 'threat-detection-secret-leak', severity: 'high' }
+    { code: 'secret_leak_detected', severity: 'high' },
+    { code: 'unexpected_egress', severity: 'medium' }
   ]);
 });
 

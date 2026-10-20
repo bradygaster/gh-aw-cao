@@ -84,7 +84,7 @@ test("activity workflow caches gh-aw logs and their SQLite projection", async ()
   assert.match(notifyFailureJob, /CAO_ACTIVITY_PLAN_FAILED[\s\S]*?CAO_ACTIVITY_COLLECTION_FAILED[\s\S]*?CAO_ACTIVITY_INDEX_FAILED[\s\S]*?CAO_ACTIVITY_CACHE_FAILED/);
   assert.doesNotMatch(workflow, /reconcile-dispatch|CAO_DISPATCH_RECONCILIATION_FAILED/);
   assert.match(notifyFailureJob, /Assign this issue to an agent/);
-  assert.match(notifyFailureJob, /GITHUB_WORKFLOW_SHA[\s\S]*?githubnext\/gh-aw-cao\/blob\/main\/skills\/debug-cao\/SKILL\.md/);
+  assert.match(notifyFailureJob, /GITHUB_WORKFLOW_SHA[\s\S]*?githubnext\/gh-cao\/blob\/main\/skills\/debug-cao\/SKILL\.md/);
   assert.doesNotMatch(cacheJob, /actions\/checkout@|activity-app-token|gh aw logs|ingest-jsonl/);
   assert.match(
     workflow,
@@ -109,6 +109,8 @@ test("activity workflow caches gh-aw logs and their SQLite projection", async ()
   assert.match(collector, /jq -r '\.allowed_repositories\[\]\?'/);
   assert.match(collector, /--repo "\$target_repository"/);
   assert.match(collector, /--cached-jsonl "\$\{shard_prefix\}\*"/);
+  assert.match(collector, /detail_window_days="\$\{REPORT_DETAIL_WINDOW_DAYS:-7\}"/);
+  assert.match(collector, /--retention-days "\$detail_window_days"/);
   assert.match(collector, /REPORT_DEFER_ISSUE_STATUS/);
   assert.doesNotMatch(
     indexJob,
@@ -143,11 +145,12 @@ test("activity workflow caches gh-aw logs and their SQLite projection", async ()
   assert.doesNotMatch(workflow, /Skip scheduled run|steps\.freshness/);
   assert.match(workflow, /ACTIVITY_DATABASE: \$\{\{ runner\.temp \}\}\/cao-activity\/gh-aw-logs\.sqlite/);
   assert.doesNotMatch(workflow, /Install SQLite|apt-get install.*sqlite3/);
-  assert.match(workflow, /REPORT_RUN_LIMIT: "10000"/);
-  assert.match(workflow, /REPORT_LOG_TIMEOUT: "15"/);
+  const collection = parse(workflow).jobs.collect.steps.find((step) => step.name === "Download owner-scoped agentic workflow logs");
+  assert.equal(collection.env.REPORT_RUN_LIMIT, "${{ inputs.fast == true && '10' || '10000' }}");
+  assert.equal(collection.env.REPORT_LOG_TIMEOUT, "${{ inputs.fast == true && '5' || '10' }}");
   assert.match(
     workflow,
-    /ingest-jsonl[\s\S]*?--retention-days 30[\s\S]*?--run-retention-days 30[\s\S]*?doctor[\s\S]*?--ttl-days 30[\s\S]*?--run-ttl-days 30/,
+    /ingest-jsonl[\s\S]*?--retention-days 7[\s\S]*?--run-retention-days 30[\s\S]*?doctor[\s\S]*?--ttl-days 7[\s\S]*?--run-ttl-days 30/,
   );
   assert.doesNotMatch(
     workflow,

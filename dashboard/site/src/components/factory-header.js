@@ -1,8 +1,9 @@
 import { h } from '../dom.js';
 import { effect, render } from '../reactive.js';
-import { browserFirstLoad, showBrowserFirstLoad } from '../browser-first-load.js';
+import { browserFirstLoad } from '../browser-first-load.js';
 import { renderFactoryElement } from './factory-elements.js';
 import { renderFactoryRhythm } from './factory-rhythm.js';
+import { renderDashboardIngestionStatus } from './refresh-error.js';
 import { createDebug } from '../debug.js';
 
 /** @typedef {{ rows: () => Record<string, unknown>[], pending: () => boolean, unavailable: () => boolean }} SourceBinding */
@@ -16,8 +17,9 @@ const debugFactoryHeader = createDebug('factory-header');
  * @param {HeaderScope} scope
  * @param {Record<string, string>} roleNames
  * @param {boolean} [showFirstLoad]
+ * @param {boolean} [showDataStatus]
  */
-export function renderFactoryHeader(sources, scope, roleNames, showFirstLoad = false) {
+export function renderFactoryHeader(sources, scope, roleNames, showFirstLoad = false, showDataStatus = false) {
   debugFactoryHeader({
     event: 'composed',
     presentationSource: roleNames.presentation,
@@ -46,7 +48,7 @@ export function renderFactoryHeader(sources, scope, roleNames, showFirstLoad = f
       ? ''
       : hasHeading
       ? candidate
-      : 'Your campaign status is unavailable.';
+      : 'Your factory status is unavailable.';
   }, { signal: scope.signal });
 
   render(summary, () => {
@@ -55,9 +57,9 @@ export function renderFactoryHeader(sources, scope, roleNames, showFirstLoad = f
     const pending = presentation.pending();
     const candidate = presentation.rows()[0]?.summary;
     const text = initialStatus === 'loading'
-      ? 'We are preparing the first activity snapshot in this browser. Campaign status will appear when the import is complete.'
+      ? 'We are preparing the first activity snapshot in this browser. Factory status will appear when the import is complete.'
       : initialStatus === 'failed'
-      ? 'Campaign status is not available yet. Open the import screen to retry.'
+      ? 'Factory status is not available yet.'
       : typeof candidate === 'string' ? candidate : '';
     summary.hidden = initialStatus === 'inactive' && (pending || !text);
     if (!pending) debugFactoryHeader({ event: 'summary-settled', hasSummary: Boolean(text) });
@@ -65,20 +67,15 @@ export function renderFactoryHeader(sources, scope, roleNames, showFirstLoad = f
   }, { signal: scope.signal });
 
   const rhythm = renderFactoryRhythm(sources[roleNames.rhythm], scope);
-  const details = h('button', {
-    type: 'button',
-    className: 'first-load-details',
-    onClick: showBrowserFirstLoad
-  }, 'Show import progress');
   const header = h(
     'header',
     { className: 'factory-intro' },
-    h('div', { className: 'factory-intro-copy' }, heading, summary, details),
+    h('div', { className: 'factory-intro-copy' }, heading, summary,
+      showDataStatus ? renderDashboardIngestionStatus(scope.signal) : null),
     rhythm
   );
   effect(() => {
     const initialStatus = firstLoadStatus();
-    details.hidden = initialStatus === 'inactive';
     rhythm.hidden = initialStatus !== 'inactive';
     header.classList.toggle('factory-intro-importing', initialStatus !== 'inactive');
   }, { signal: scope.signal });
@@ -106,7 +103,8 @@ export function renderFactoryHeaderElement(context) {
     HEADER_DEFAULT_SOURCES,
     (roleNames) => Object.values(roleNames),
     (sources, scope, roleNames) => renderFactoryHeader(
-      sources, scope, roleNames, context.elementConfig?.['browser-first-load'] === true
+      sources, scope, roleNames, context.elementConfig?.['browser-first-load'] === true,
+      context.elementConfig?.['data-status'] === true
     )
   );
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -24,6 +24,7 @@ import {
 import {
   installSqliteIndexedDB,
 } from "../../dashboard/site/src/data/storage/sqlite-indexeddb.js";
+import { CLI_QUEUE_SOURCES } from "../../dashboard/site/src/data/cli-queue.js";
 import { loadDashboardSourceSync } from "../../dashboard/report/bundle-dashboards.mjs";
 import {
   listQueries,
@@ -267,13 +268,13 @@ function dashboardQueries() {
       ([key, item]) => [key, resolveContext(item)],
     ));
   };
-  // Ingestion receipts describe each backend's own writes, so their values are
-  // intentionally backend-local rather than cross-backend query results.
+  // Ingestion receipts and local command queues are backend-local state,
+  // not shared canonical evidence for cross-backend comparisons.
   const candidates = resolveContext(document.dashboard.queries).filter(
     (query) => unparameterized.has(query.name),
   );
   const excluded = new Set(candidates
-    .filter((query) => query.from === "transactions")
+    .filter((query) => query.from === "transactions" || CLI_QUEUE_SOURCES.has(query.from))
     .map((query) => query.name));
   const inputs = (query) => [
     query.from,
@@ -533,6 +534,13 @@ async function executePostgresBackend(
 ) {
   const binary = process.env.DASHBOARD_SERVER_BINARY;
   if (!binary) throw new Error("DASHBOARD_SERVER_BINARY is required");
+  const namespace = `query-parity-${process.pid}`;
+  execFileSync(binary, [
+    "database", "bootstrap", "--store", "canonical", "--namespace", namespace,
+  ], {
+    stdio: "inherit",
+    env: { ...process.env, CAO_DATABASE_ADMIN_URL: process.env.CAO_POSTGRES_URL },
+  });
   const marketplacePolicyPath = join(artifactDirectory, "cao.json");
   await writeFile(marketplacePolicyPath, JSON.stringify({
     version: 1,
@@ -552,7 +560,7 @@ async function executePostgresBackend(
     "--mcp-enabled",
     "--database-queries", databaseQueriesPath,
     "--redis-url", process.env.REDIS_URL ?? "redis://127.0.0.1:6379/0",
-    "--redis-namespace", `query-parity-${process.pid}`,
+    "--redis-namespace", namespace,
   ], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, CAO_MARKETPLACE_POLICY_PATH: marketplacePolicyPath },

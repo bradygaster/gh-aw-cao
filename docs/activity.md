@@ -15,8 +15,8 @@ this collector.
 
 Read this page when changing Activity collection, cache publication, or workflow
 registry enrichment. Continue to the
-[Activity specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/activity.md),
-then the [dashboard data specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-data.md)
+[Activity specification](https://github.com/githubnext/gh-cao/blob/main/specs/activity.md),
+then the [dashboard data specification](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md)
 and the implementation under `activity/`.
 
 ## How Activity works
@@ -54,9 +54,10 @@ Activity uses the `central-agentic-ops-activity` concurrency group with
 by the next scheduled trigger; GitHub Actions queues at most one pending
 refresh behind it.
 
-Runs collect a rolling 30-day window and recent artifact detail. The canonical
-stores preserve every run summary available in the collected JSONL while
-expiring detailed run-owned records after 30 days.
+Runs collect a rolling 30-day window and recent artifact detail. The Activity
+SQLite projection retains Run and Operational Value records for 30 days by
+default while expiring run-linked detail after seven days. Historical archives
+can override these windows explicitly.
 
 ## Cache contract
 
@@ -101,5 +102,5 @@ restoring this snapshot, so they can query the normalized database directly.
 ## Installation
 
 `activity/aw.yml` installs the Activity and maintenance workflows plus the
-shared JSONL parser. The root CAO campaign installs Activity and the dashboard
-ingestion runtime automatically.
+shared JSONL parser. The installer-managed CAO root package installs
+Activity and the dashboard ingestion runtime automatically.

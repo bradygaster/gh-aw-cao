@@ -16,14 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/collect"
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
-	"github.com/githubnext/gh-aw-cao/server/internal/simulator"
-	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/collect"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/simulator"
+	"github.com/githubnext/gh-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/testutil"
 )
 
 const backfillDatabaseQueries = "../../../dashboard/site/src/data/queries/database.json"
@@ -34,9 +35,12 @@ func TestPostgresBackfillIntegration(t *testing.T) {
 		(os.Getenv("CAO_POSTGRES_URL") == "" && os.Getenv("POSTGRES_URL") == "")) {
 		t.Skip("set Postgres/Redis endpoints or run npm run test:integration:dashboard-backfill")
 	}
-	for _, name := range []string{"CAO_POSTGRES_URL", "REDIS_URL", "CAO_BACKFILL_OPENOBSERVE_URL",
-		"CAO_LOCAL_OTEL_EMAIL", "CAO_LOCAL_OTEL_PASSWORD",
-		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS"} {
+	required := []string{"CAO_POSTGRES_URL", "REDIS_URL"}
+	if os.Getenv("CAO_BACKFILL_SKIP_OPENOBSERVE") != "1" {
+		required = append(required, "CAO_BACKFILL_OPENOBSERVE_URL", "CAO_LOCAL_OTEL_EMAIL", "CAO_LOCAL_OTEL_PASSWORD",
+			"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS")
+	}
+	for _, name := range required {
 		if export && os.Getenv(name) == "" {
 			t.Fatalf("%s is required when backfill integration is enabled", name)
 		}
@@ -58,10 +62,8 @@ func TestPostgresBackfillIntegration(t *testing.T) {
 	if err := store.Ping(ctx); err != nil {
 		t.Fatal("local Redis is unavailable")
 	}
-	lake := collect.Lake{Directory: t.TempDir()}
-	if err := os.CopyFS(lake.Directory, os.DirFS("../../testdata/deployed-subset")); err != nil {
-		t.Fatal(err)
-	}
+	directory, _ := testutil.RecentSnapshot(t, "../../testdata/deployed-subset")
+	lake := collect.Lake{Directory: directory}
 	enrollment := collect.Enrollment{Metadata: store, Leases: store}
 	github, api, proxy, _ := syntheticGitHub(t, simulator.Scenario{
 		Name: "backfill-replay", Repositories: 1,
@@ -246,6 +248,9 @@ func TestPostgresBackfillIntegration(t *testing.T) {
 	})
 	if export {
 		t.Run("OpenObserve receives correlated traces and backfill metrics", func(t *testing.T) {
+			if flush == nil {
+				t.Skip("OpenObserve image pull was rate-limited; core backfill assertions still ran")
+			}
 			flush(t)
 			assertBackfillTelemetry(t, ctx, service, queryTrace, started)
 		})
@@ -333,8 +338,8 @@ func assertBackfillRows(t *testing.T, result queryResponse) {
 		}
 	}
 	run := result.Sources["backfill-runs"].Rows[0]
-	if run["id"] != "run:424242" || run["repositoryId"] != "repository:githubnext/gh-aw-cao" ||
-		run["workflowId"] != "workflow:githubnext/gh-aw-cao:dashboard" {
+	if run["id"] != "run:424242" || run["repositoryId"] != "repository:githubnext/gh-cao" ||
+		run["workflowId"] != "workflow:githubnext/gh-cao:dashboard" {
 		t.Fatalf("backfill lost canonical run relationships: %+v", run)
 	}
 }

@@ -8,21 +8,22 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/doctor"
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	debuglogger "github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational/postgres"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
-	"github.com/githubnext/gh-aw-cao/server/internal/server"
-	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/doctor"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	debuglogger "github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/operational/postgres"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/server"
+	"github.com/githubnext/gh-cao/server/internal/telemetry"
 )
 
 // version is the standardized service.version resource attribute reported by
@@ -119,9 +120,9 @@ func newPostgresStore(ctx context.Context, flagValue, namespace string) (*postgr
 		return nil, err
 	}
 	commandLog.Printf("postgres endpoint resolved source=%s", source)
-	store, err := postgresx.NewWithNamespace(ctx, endpoint, namespace)
+	store, err := postgresx.OpenWithNamespace(ctx, endpoint, namespace)
 	if err != nil {
-		return nil, errors.New("postgres is unavailable")
+		return nil, fmt.Errorf("open provisioned postgres storage: %w", err)
 	}
 	return store, nil
 }
@@ -354,6 +355,10 @@ func newRootCommand() *cobra.Command {
 		newServeHostedCommand(),
 		newIngestCommand(),
 		newCollectCommand(),
+		newExecuteCLICommand(),
+		newHostedCLICommand(),
+		newAuditCommand(),
+		newDatabaseCommand(),
 		newBackfillCommand(),
 		newDoctorCommand(),
 		newTelemetrySmokeCommand(),
@@ -372,6 +377,32 @@ func run(arguments []string) error {
 		commandLog.Printf("running subcommand=%s", target.Name())
 	}
 	return root.Execute()
+}
+
+// doctorBackendSource identifies which input selected the operational backend
+// the doctor diagnoses. It is useful for diagnosing misconfiguration without
+// logging any policy path or endpoint.
+type doctorBackendSource string
+
+const (
+	doctorBackendSourcePolicy  doctorBackendSource = "policy"
+	doctorBackendSourceRedis   doctorBackendSource = "redis"
+	doctorBackendSourceDefault doctorBackendSource = "default"
+)
+
+// resolveDoctorBackendSource applies the doctor's backend precedence: a
+// reviewed operational policy (selected explicitly or through a policy path
+// variable) wins, then an explicit Redis URL flag or CAO_REDIS_URL, then the
+// default Postgres-backed diagnosis.
+func resolveDoctorBackendSource(policySelected bool, policyPath, marketplacePolicyPath string, redisFlagChanged bool, redisEnv string) doctorBackendSource {
+	switch {
+	case policySelected || strings.TrimSpace(policyPath) != "" || strings.TrimSpace(marketplacePolicyPath) != "":
+		return doctorBackendSourcePolicy
+	case redisFlagChanged || strings.TrimSpace(redisEnv) != "":
+		return doctorBackendSourceRedis
+	default:
+		return doctorBackendSourceDefault
+	}
 }
 
 // newDoctorCommand builds the read-only diagnostic check-up subcommand.
@@ -420,11 +451,12 @@ func newDoctorCommand() *cobra.Command {
 		if selectionErr != nil {
 			return selectionErr
 		}
-		hasPolicy := selected ||
-			strings.TrimSpace(os.Getenv("CAO_POLICY_PATH")) != "" ||
-			strings.TrimSpace(os.Getenv("CAO_MARKETPLACE_POLICY_PATH")) != ""
-		switch {
-		case hasPolicy:
+		backendSource := resolveDoctorBackendSource(
+			selected, os.Getenv("CAO_POLICY_PATH"), os.Getenv("CAO_MARKETPLACE_POLICY_PATH"),
+			cmd.Flags().Changed("redis-url"), os.Getenv("CAO_REDIS_URL"))
+		commandLog.Printf("doctor resolved backend source=%s", backendSource)
+		switch backendSource {
+		case doctorBackendSourcePolicy:
 			settings, provider, selectionErr := server.NewOperationalDiagnosticsFromEnv(ctx)
 			if selectionErr != nil && settings.Backend == "" {
 				return selectionErr
@@ -445,7 +477,7 @@ func newDoctorCommand() *cobra.Command {
 					check.RedisStore = server.NewRedisProviderDiagnostics(redisStore)
 				}
 			}
-		case cmd.Flags().Changed("redis-url") || strings.TrimSpace(os.Getenv("CAO_REDIS_URL")) != "":
+		case doctorBackendSourceRedis:
 			check.Backend = "redis"
 			maxRedisBytes, err := server.RedisMaxBytesFromEnv(0)
 			if err != nil {
@@ -562,8 +594,21 @@ func newServeHostedCommand() *cobra.Command {
 	agentCatalog := cmd.Flags().String("agent-catalog", "../dashboard/site/src/agent/catalog.generated.json", "materialized read-only agent catalog")
 	mcpContract := cmd.Flags().String("mcp-contract", "../dashboard/site/src/agent/mcp-contract.json", "shared MCP tool contract")
 	mcpEnabled := cmd.Flags().Bool("mcp-enabled", false, "serve the read-only MCP endpoint at /mcp")
+	experimental := cmd.Flags().Bool("experimental", false, "enable experimental server features")
+	hostedCLIActions := cmd.Flags().Bool("hosted-cli-actions", false,
+		"accept CLI action commands from authorized administrators into the hosted queue drained by execute-cli")
+	cliActionsCatalog := cmd.Flags().String("cli-actions-catalog", "../dashboard/site/dashboard.json",
+		"dashboard document declaring the CLI actions accepted by --hosted-cli-actions")
+	hostedCLISQLite := cmd.Flags().String("hosted-cli-sqlite", "",
+		"local debugging only: SQLite file holding the hosted CLI queue and audit table, shared with execute-cli --sqlite; requires --experimental, --hosted-cli-actions, and a loopback --listen")
 	cmd.RunE = func(*cobra.Command, []string) error {
-		commandLog.Printf("serve-hosted flags parsed tls=%s", resolveHostedTLSMode(*cert))
+		if *hostedCLIActions && !*experimental {
+			return errors.New("--hosted-cli-actions requires --experimental")
+		}
+		if *hostedCLISQLite != "" && !*hostedCLIActions {
+			return errors.New("--hosted-cli-sqlite requires --hosted-cli-actions")
+		}
+		commandLog.Printf("serve-hosted flags parsed tls=%s hosted_cli_actions=%t", resolveHostedTLSMode(*cert), *hostedCLIActions)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		closeTelemetry, err := setupTelemetry(ctx, version, telemetry.Setup)
@@ -579,6 +624,23 @@ func newServeHostedCommand() *cobra.Command {
 		)
 		if err != nil {
 			return err
+		}
+		if *hostedCLIActions {
+			config, err := server.HostedCLIConfigFromEnv(*cliActionsCatalog)
+			if err != nil {
+				return err
+			}
+			if *hostedCLISQLite != "" {
+				debugStore, err := server.OpenHostedCLISQLite(ctx, *hostedCLISQLite)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = debugStore.Close() }()
+				config.DebugStore = debugStore
+			}
+			if err := app.EnableHostedCLIActions(ctx, config); err != nil {
+				return err
+			}
 		}
 		return app.Serve(ctx)
 	}
@@ -621,13 +683,20 @@ func (e actionsEnvironment) present() string {
 func newServeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "serve dashboard data and operational state from Postgres",
+		Short: "serve dashboard data locally from SQLite, with explicit Postgres support",
 	}
 	redisURL := cmd.Flags().String("redis-url", defaultRedisURL, "explicitly opt in to Redis operational state instead of Postgres")
-	postgresURL := cmd.Flags().String("postgres-url", "", "Postgres dashboard entity store URL; defaults to CAO_POSTGRES_URL")
+	postgresURL := cmd.Flags().String("postgres-url", "", "opt in to Postgres dashboard storage; an empty value uses CAO_POSTGRES_URL")
+	sqlitePath := cmd.Flags().String("sqlite", defaultSQLitePath, "local SQLite snapshot cache; download deployed data if missing")
+	dataURLDefault := strings.TrimSpace(os.Getenv("DASHBOARD_DATA_URL"))
+	if dataURLDefault == "" {
+		dataURLDefault = defaultSQLiteDataURL
+	}
+	downloadURL := cmd.Flags().String("download-sqlite", "", "refresh the SQLite cache from a Pages site even if it exists; optional URL defaults to DASHBOARD_DATA_URL or CAO Pages")
+	cmd.Flags().Lookup("download-sqlite").NoOptDefVal = dataURLDefault
 	redisNamespace, namespaceErr := registerRedisNamespaceFlag(cmd, "Redis key and index namespace")
 	siteDirectory := cmd.Flags().String("site", "../dashboard/site/dist", "built dashboard site directory")
-	listen := cmd.Flags().String("listen", "127.0.0.1:8443", "HTTPS listen address")
+	listen := cmd.Flags().String("listen", "127.0.0.1:8443", "loopback HTTP listen address; HTTPS when --cert and --key are set")
 	cert := cmd.Flags().String("cert", "", "optional TLS certificate PEM file")
 	key := cmd.Flags().String("key", "", "optional TLS private key PEM file")
 	accessToken := cmd.Flags().String("access-token", "", "dashboard access token (generated when omitted)")
@@ -637,7 +706,19 @@ func newServeCommand() *cobra.Command {
 	agentCatalog := cmd.Flags().String("agent-catalog", "../dashboard/site/src/agent/catalog.generated.json", "materialized read-only agent catalog")
 	mcpContract := cmd.Flags().String("mcp-contract", "../dashboard/site/src/agent/mcp-contract.json", "shared MCP tool contract")
 	mcpEnabled := cmd.Flags().Bool("mcp-enabled", false, "serve the read-only MCP endpoint at /mcp")
-	cmd.RunE = func(*cobra.Command, []string) error {
+	cmd.MarkFlagsMutuallyExclusive("sqlite", "postgres-url")
+	cmd.MarkFlagsMutuallyExclusive("sqlite", "redis-url")
+	cmd.MarkFlagsMutuallyExclusive("sqlite", "source")
+	cmd.MarkFlagsMutuallyExclusive("download-sqlite", "postgres-url")
+	cmd.MarkFlagsMutuallyExclusive("download-sqlite", "redis-url")
+	cmd.MarkFlagsMutuallyExclusive("download-sqlite", "source")
+	cmd.Args = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 && cmd.Flags().Changed("download-sqlite") && *downloadURL == dataURLDefault {
+			return nil
+		}
+		return cobra.NoArgs(cmd, args)
+	}
+	cmd.RunE = func(_ *cobra.Command, args []string) error {
 		if namespaceErr != nil {
 			return namespaceErr
 		}
@@ -648,17 +729,102 @@ func newServeCommand() *cobra.Command {
 		if selected {
 			return errors.New("reviewed operational-store selection requires serve-hosted or an external OAuth host; local bearer serve cannot override it")
 		}
-		if _, _, err := resolvePostgresEndpoint(*postgresURL, os.Getenv("CAO_POSTGRES_URL")); err != nil {
-			return err
+		downloadSnapshot := cmd.Flags().Changed("download-sqlite")
+		snapshotURL := dataURLDefault
+		if downloadSnapshot {
+			snapshotURL = *downloadURL
+		}
+		if len(args) == 1 {
+			snapshotURL = args[0]
+		}
+		localSQLite := !cmd.Flags().Changed("postgres-url") &&
+			!cmd.Flags().Changed("redis-url") && !cmd.Flags().Changed("source")
+		snapshotPath := strings.TrimSpace(*sqlitePath)
+		if localSQLite {
+			if snapshotPath == "" {
+				return errors.New("--sqlite requires a local snapshot cache path")
+			}
+			if err := server.ValidateListen(*listen, *cert, *key); err != nil {
+				return err
+			}
+			if !downloadSnapshot {
+				_, err := os.Lstat(snapshotPath)
+				if errors.Is(err, os.ErrNotExist) {
+					downloadSnapshot = true
+				} else if err != nil {
+					return fmt.Errorf("inspect local SQLite cache: %w", err)
+				}
+			}
+			if downloadSnapshot {
+				if _, err := sqliteManifestURLs(snapshotURL); err != nil {
+					return err
+				}
+			}
+		} else {
+			if _, _, err := resolvePostgresEndpoint(*postgresURL, os.Getenv("CAO_POSTGRES_URL")); err != nil {
+				return err
+			}
 		}
 		commandLog.Printf("serve flags parsed tls=%t source_ingestion=%t", *cert != "", *source != "")
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		closeTelemetry, err := setupTelemetry(ctx, version, telemetry.Setup)
 		if err != nil {
 			return err
 		}
 		defer closeTelemetry()
+		configure := func() (server.Config, error) {
+			definitions, err := server.ParseDashboardQueries(*dashboardQueries)
+			if err != nil {
+				return server.Config{}, err
+			}
+			actionsEnv := resolveActionsEnvironment(os.Getenv)
+			commandLog.Printf("serve resolved actions environment %s", actionsEnv.present())
+			return server.Config{
+				Listen:               *listen,
+				SiteDirectory:        *siteDirectory,
+				CertFile:             *cert,
+				KeyFile:              *key,
+				AccessToken:          *accessToken,
+				SourceDirectory:      *source,
+				DatabaseQueriesPath:  *databaseQueries,
+				DashboardQueries:     definitions,
+				DashboardQueriesPath: *dashboardQueries,
+				AgentCatalogPath:     *agentCatalog,
+				MCPContractPath:      *mcpContract,
+				MCPEnabled:           *mcpEnabled,
+				BuildRevision:        revision,
+				GitHubActionsToken:   actionsEnv.Token,
+				GitHubActionsActor:   actionsEnv.Actor,
+				ActionsRepository:    actionsEnv.Repository,
+				GitHubAPIURL:         actionsEnv.APIURL,
+				Logger:               log.New(os.Stderr, "cao-dashboard: ", log.LstdFlags),
+			}, nil
+		}
+		if localSQLite {
+			config, err := configure()
+			if err != nil {
+				return err
+			}
+			if downloadSnapshot {
+				if info, err := os.Stat(config.SiteDirectory); err != nil || !info.IsDir() {
+					return errors.New("build the dashboard before downloading: npm --prefix dashboard/site run build (from the repository root), or select an existing build with --site")
+				}
+				if _, err := os.Stat(filepath.Join(config.SiteDirectory, "index.html")); err != nil {
+					return errors.New("--site must contain the built dashboard index.html")
+				}
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Downloading and verifying the deployed SQLite snapshot...")
+				if err := downloadSQLite(ctx, snapshotURL, snapshotPath); err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "SQLite snapshot ready.")
+			}
+			app, err := server.NewLocalSQLiteApp(ctx, snapshotPath, config)
+			if err != nil {
+				return err
+			}
+			return app.Serve(ctx)
+		}
 		var store operational.Store
 		if cmd.Flags().Changed("redis-url") {
 			store, err = newRedisStore(*redisURL, *redisNamespace)
@@ -672,7 +838,7 @@ func newServeCommand() *cobra.Command {
 				return configErr
 			}
 			namespace, _ := resolveNamespaceDefault(os.Getenv("CAO_OPERATIONAL_NAMESPACE"), *redisNamespace)
-			store, err = postgres.New(ctx, dsn, namespace, config)
+			store, err = postgres.Open(ctx, dsn, namespace, config)
 		}
 		if err != nil {
 			return err
@@ -683,33 +849,12 @@ func newServeCommand() *cobra.Command {
 			return err
 		}
 		defer func() { _ = database.Close() }()
-		definitions, err := server.ParseDashboardQueries(*dashboardQueries)
+		config, err := configure()
 		if err != nil {
 			return err
 		}
-		actionsEnv := resolveActionsEnvironment(os.Getenv)
-		commandLog.Printf("serve resolved actions environment %s", actionsEnv.present())
-		app, err := server.New(ctx, store, server.Config{
-			Database:             database,
-			Listen:               *listen,
-			SiteDirectory:        *siteDirectory,
-			CertFile:             *cert,
-			KeyFile:              *key,
-			AccessToken:          *accessToken,
-			SourceDirectory:      *source,
-			DatabaseQueriesPath:  *databaseQueries,
-			DashboardQueries:     definitions,
-			DashboardQueriesPath: *dashboardQueries,
-			AgentCatalogPath:     *agentCatalog,
-			MCPContractPath:      *mcpContract,
-			MCPEnabled:           *mcpEnabled,
-			BuildRevision:        revision,
-			GitHubActionsToken:   actionsEnv.Token,
-			GitHubActionsActor:   actionsEnv.Actor,
-			ActionsRepository:    actionsEnv.Repository,
-			GitHubAPIURL:         actionsEnv.APIURL,
-			Logger:               log.New(os.Stderr, "cao-dashboard: ", log.LstdFlags),
-		})
+		config.Database = database
+		app, err := server.New(ctx, store, config)
 		if err != nil {
 			return err
 		}
@@ -789,6 +934,57 @@ func classifyWorkerStop(runErr, ctxErr error) (workerStopReason, bool) {
 // newCollectCommand builds the collection worker role subcommand. It is the
 // same binary as the server, started with a different role, so collection
 // scales independently without a second deployment artifact.
+// newExecuteCLICommand drains the hosted CLI action queue. Each command runs
+// with a single-use, repository-scoped GitHub App installation token that is
+// revoked as soon as the command exits.
+func newExecuteCLICommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "execute-cli",
+		Short: "execute queued hosted CLI actions with single-use GitHub App tokens",
+	}
+	owner := cmd.Flags().String("owner", "", "executor lease owner; defaults to the hostname")
+	acknowledgeRecovery := cmd.Flags().Bool("acknowledge-recovery", false,
+		"resume claiming after commands interrupted by a previous executor were marked failed")
+	prefetch := cmd.Flags().Int("prefetch", 2, "queued commands whose tokens are minted ahead of execution; 0 disables")
+	maxPooled := cmd.Flags().Int("max-pooled-tokens", 8, "unused pre-minted tokens held at once; 0 disables pooling")
+	sqlitePath := cmd.Flags().String("sqlite", "",
+		"local debugging only: SQLite file shared with serve-hosted --hosted-cli-sqlite instead of the operational store")
+	cmd.RunE = func(*cobra.Command, []string) error {
+		if *prefetch < 0 || *maxPooled < 0 {
+			return errors.New("--prefetch and --max-pooled-tokens must not be negative")
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		closeTelemetry, err := setupTelemetry(ctx, version, telemetry.Setup)
+		if err != nil {
+			return err
+		}
+		defer closeTelemetry()
+		name, _, err := resolveConsumerName(*owner, os.Hostname)
+		if err != nil {
+			return err
+		}
+		executor, err := server.NewHostedCLIExecutorFromEnv(ctx, server.HostedCLIExecutorOptions{
+			Owner:               fmt.Sprintf("%s/%d", name, os.Getpid()),
+			AcknowledgeRecovery: *acknowledgeRecovery,
+			Prefetch:            *prefetch,
+			MaxPooledTokens:     *maxPooled,
+			SQLitePath:          *sqlitePath,
+			Logger:              log.New(os.Stderr, "cao-dashboard: ", log.LstdFlags),
+		})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = executor.Close() }()
+		runErr := executor.Run(ctx)
+		if runErr != nil && ctx.Err() != nil && errors.Is(runErr, context.Canceled) {
+			return nil
+		}
+		return runErr
+	}
+	return cmd
+}
+
 func newCollectCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect",

@@ -10,7 +10,9 @@ import {
   readDashboardDataSpecification,
 } from "./dashboard-agent-tools.mjs";
 import { executeDashboardCommand } from "./cli-actions.mjs";
+import { approveDashboardCommand } from "./approval.mjs";
 import { startLocalDashboardPreview } from "./local-preview.mjs";
+import { enhanceQueryEditorIntent, generateDashboardQuery } from "./query-designer.mjs";
 
 /**
  * @param {{
@@ -24,9 +26,7 @@ export function createDashboardExtension({
   workingDirectory = process.cwd(),
   startPreview = startLocalDashboardPreview,
   executeCommand = executeDashboardCommand,
-  approveCommand = async () => {
-    throw new Error("Trusted host approval is required before executing a CAO CLI action.");
-  },
+  approveCommand = approveDashboardCommand,
 } = {}) {
   /** @type {Map<string, ReturnType<typeof startLocalDashboardPreview>>} */
   const previews = new Map();
@@ -157,7 +157,9 @@ export function createDashboardExtension({
       onUserPromptSubmitted: async (input) => {
         dashboardWorkingDirectory = input.workingDirectory;
       },
-      onSessionEnd: closePreviews,
+      onSessionEnd: async ({ reason }) => {
+        if (reason === "user_exit") await closePreviews();
+      },
     },
     canvases: [
       createCanvas({
@@ -174,6 +176,11 @@ export function createDashboardExtension({
               maxLength: 200,
               description:
                 "Optional GitHub repository in OWNER/REPOSITORY format. Defaults to the current repository.",
+            },
+            dataBackend: {
+              type: "string",
+              enum: ["sqlite", "indexeddb"],
+              description: "Local data backend. Defaults to server-side SQLite.",
             },
           },
           additionalProperties: false,
@@ -194,6 +201,10 @@ export function createDashboardExtension({
                 workingDirectory: previewWorkingDirectory,
                 repository: input && typeof input === "object" && !Array.isArray(input)
                   && typeof input.repository === "string" ? input.repository : undefined,
+                generateQuery: generateDashboardQuery,
+                enhanceQueryIntent: enhanceQueryEditorIntent,
+                dataBackend: input && typeof input === "object" && !Array.isArray(input)
+                  && (input.dataBackend === "sqlite" || input.dataBackend === "indexeddb") ? input.dataBackend : undefined,
                 approveCliAction: async ({ command, input: commandInput }) => {
                   if (stopping) throw new Error("The CAO dashboard extension is shutting down.");
                   const approved = await approveCommand(Object.freeze({
@@ -204,13 +215,14 @@ export function createDashboardExtension({
                   if (stopping) throw new Error("The CAO dashboard extension is shutting down.");
                   return approved === true;
                 },
-                executeCliAction: ({ command, input: commandInput, onOutput }) =>
+                executeCliAction: ({ command, input: commandInput, onOutput, signal }) =>
                   executeCommand({
                     command,
                     input: commandInput,
                     workingDirectory: previewWorkingDirectory,
                     githubToken: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN,
                     onOutput,
+                    signal,
                   }),
               });
               previews.set(context.instanceId, pending);

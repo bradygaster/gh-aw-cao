@@ -21,19 +21,29 @@ Queries run in each viewer's browser, in a web worker over a local IndexedDB dat
 | Requirement | Details |
 | --- | --- |
 | Control repository | A private repository that runs CAO. GitHub Enterprise is not required. |
-| GitHub Actions | Enabled for the repository. You need GitHub-hosted `ubuntu-latest` runners or compatible self-hosted runners, and enough minutes for an Activity run about every 15 minutes. |
+| GitHub Actions | Enabled for the repository. You need GitHub-hosted `ubuntu-latest` runners or compatible self-hosted runners, and enough minutes for an hourly Activity run. |
 | Actions cache | Stores the Activity snapshot (`cao-activity-v5-*`) and the built dashboard (`central-agentic-ops-dashboard`). If the cache is evicted, the dashboard uses the latest successful Activity artifact instead. For more information, see [Cache contract](activity.md#cache-contract). |
 | Actions artifacts | Stores the `cao-activity-index` and `central-agentic-ops-dashboard` artifacts. The dashboard artifact is kept for one day. |
 | GitHub Pages | The publishing source must be **GitHub Actions**. To make the site private, you need a plan that supports access control for Pages, such as GitHub Enterprise Cloud. Otherwise, the site is public. |
 | `github-pages` environment | Created automatically by GitHub Pages. You can protect it with required reviewers. |
 | Browser | A current browser that supports web workers, IndexedDB, and JavaScript modules. The browser downloads and indexes the data on first load. |
 
-The dashboard build and deploy jobs don't need any additional secrets. The build job uses the automatic `github.token` with `actions: read` and `contents: read` permissions. The deploy job uses OpenID Connect (OIDC) with `pages: write` and `id-token: write` permissions.
+The dashboard build, Pages artifact, and deploy jobs don't need additional
+secrets. The build job uses the automatic `github.token` with `actions: read`
+and `contents: read` permissions. A separate job packages and uploads the Pages
+artifact before the deploy job uses OpenID Connect (OIDC) with `pages: write`
+and `id-token: write` permissions.
 
 > [!NOTE]
 > Don't create a `REPORT_PAGES_TOKEN` secret. The current dashboard doesn't use it.
 
-The deploy job relies on the standard Pages actions to report configuration and deployment errors; it does not separately verify Pages visibility with the Actions token. The Configure Pages step sets `ignore-if-missing: true`, but the pinned action does not currently support that input, so it can still fail when Pages settings are unavailable. Confirm the publishing source and intended access boundary in **Settings > Pages** before deployment.
+The Pages artifact and deploy jobs rely on the standard Pages actions to report
+configuration and deployment errors; they do not separately verify Pages
+visibility with the Actions token. The Configure Pages step sets
+`ignore-if-missing: true`, but the pinned action does not currently support
+that input, so it can still fail when Pages settings are unavailable. Confirm
+the publishing source and intended access boundary in **Settings > Pages**
+before deployment.
 
 ## Choosing a credential profile
 
@@ -53,16 +63,19 @@ For more information, see [Configure authentication](authentication.md).
 
 ## Deploying the dashboard
 
-1. Install the dashboard. You can install the root campaign, which includes the dashboard, or install only the Activity and dashboard campaigns. Unpinned package coordinates resolve the latest release automatically.
+1. Install the dashboard. The supported CAO installer includes it through the
+   explicit root package. Advanced users can install only the Activity
+   and dashboard components; unpinned package coordinates resolve the latest
+   release automatically.
 
    ```bash
-   gh aw add githubnext/gh-aw-cao/activity
-   gh aw add githubnext/gh-aw-cao/dashboard
+   gh aw add githubnext/gh-cao/activity
+   gh aw add githubnext/gh-cao/dashboard
    ```
 
 1. Review, commit, and push the installed files. These include `.github/workflows/cao-activity.yml`, `.github/workflows/cao-dashboard.yml`, and the `activity/` and `dashboard/` directories.
 1. Configure your cross-repository credential profile. Follow the procedure for [GitHub Apps](deployment-actions-github-app.md#deploying-the-dashboard) or for [fine-grained PATs](deployment-actions-pat.md#deploying-the-dashboard).
-1. Run `./cao.sh setup` in the control repository to configure GitHub Pages with GitHub Actions as its source. For a private repository it also restricts access to repository readers; this requires a plan that supports private Pages and permission to manage Pages settings. Setup fails rather than leaving a public site eligible for deployment if access cannot be restricted. If setup was already completed, confirm the Pages source and visibility in **Settings > Pages**.
+1. Run `gh cao setup` in the control repository to configure GitHub Pages with GitHub Actions as its source. For a private repository it also restricts access to repository readers; this requires a plan that supports private Pages and permission to manage Pages settings. Setup fails rather than leaving a public site eligible for deployment if access cannot be restricted. If setup was already completed, confirm the Pages source and visibility in **Settings > Pages**.
 
 1. Optionally, protect the `github-pages` environment. For more information, see [Managing environments for deployment](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment) in the GitHub documentation.
 1. Run the Activity workflow.
@@ -78,21 +91,30 @@ To learn how to read the dashboard, see [Dashboard](dashboard.md) and [Overview]
 
 ### Keeping the site up to date
 
-The CAO Dashboard workflow runs when you push changes to any of these paths on the default branch:
+The CAO Activity workflow runs when you push changes to any of these paths on the default branch:
 
 - `.github/workflows/cao.json`
 - `.github/workflows/cao-dashboard.yml`
 - `*/dashboard.json`
 - `dashboard/**`
 
-The workflow has no schedule. Every successful default-branch Activity run triggers a Dashboard build, so the published site follows the Activity refresh cadence without a second manual dispatch.
+Dashboard has no push trigger or schedule. Every successful default-branch
+Activity run triggers one Dashboard build, so a relevant push produces one
+collection-and-publication sequence without a duplicate deployment.
+
+Failed or cancelled Activity runs produce skipped Dashboard runs rather than publishing an invalid snapshot. If every Activity-triggered Dashboard run is skipped, inspect the upstream Activity run first. A confirmed API capacity limit is recoverable: Activity indexes retained and downloaded runs, marks the affected repository coverage as partial, and skips further issue-status and operational-value API work. Authentication, visibility, and invalid-data failures still block publication.
+
+An automatically triggered Dashboard build restores the exact triggering
+Activity run and attempt's cache, falling back only to that run's artifact.
+It cannot silently publish a different run's older snapshot. Manual dispatch can
+still rebuild from the last cached snapshot without collecting fresh evidence.
 
 ## Configuration reference
 
 | Setting | Location | Default | Description |
 | --- | --- | --- | --- |
 | `control-plane.campaigns.dashboard.deploy` | `.github/workflows/cao.json` | `true` | A boolean. When `false`, the workflow still builds and caches the dashboard artifact but doesn't deploy it to Pages. |
-| Activity schedule | `.github/workflows/cao-activity.yml` | About every 15 minutes | Controls how fresh the evidence is. Change it in the campaign source and run `gh aw update`. Don't edit the installed lock file. |
+| Activity schedule | `.github/workflows/cao-activity.yml` | Hourly | Controls how fresh the evidence is. Change it in the campaign source and run `gh aw update`. Don't edit the installed lock file. |
 | Activity retention | Ingestion steps in `cao-activity.yml` and `cao-dashboard.yml` | 30 days | Limits the size of the payload that browsers download. For more information, see [Update and retain browser data](dashboard-data-model.md#update-and-retain-browser-data). |
 | Pages visibility | Repository Pages settings | Depends on your plan | Controls who can read the site. |
 
@@ -119,8 +141,9 @@ This option has no server, so there's no server-side OpenTelemetry endpoint to c
 
 - **Exact source.** The site is built from the exact workflow commit (`github.workflow_sha`). It publishes only the payload files listed in the manifest.
 - **Complete payloads.** Every payload file is hash-verified before the browser loads it. If the payload is incomplete, the build fails instead of publishing partial data.
-- **No long-lived credentials.** The build and deploy jobs don't hold long-lived credentials. The deploy job uses OIDC.
-- **One deployment at a time.** A newer dashboard run cancels an older run that is still in progress.
+- **No long-lived credentials.** The build, Pages artifact, and deploy jobs
+  don't hold long-lived credentials. The deploy job uses OIDC.
+- **One deployment at a time.** A running dashboard build finishes publishing its snapshot without being cancelled by newer triggers. GitHub Actions keeps at most one pending eligible build, replacing it when a newer eligible run arrives. Ineligible triggers use separate concurrency groups and cannot displace that pending build.
 - **Safe failures.** If a build or deployment fails, the previously deployed site stays in place.
 
 ## What this deployment does not guarantee

@@ -7,7 +7,7 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
 export const definition = {
   schemaVersion: 3,
   slug: "dependabot-update-planner",
-  repository: "githubnext/gh-aw-cao",
+  repository: "githubnext/gh-cao",
   workflowName: "Dependabot / Update Planner",
   sourcePath: ".github/workflows/dependabot-update-planner.md",
   adoption: {
@@ -21,6 +21,7 @@ export const definition = {
   },
   evidence: {
     key: "dependabot-security-risk",
+    measurementKind: "snapshot",
     repositories: ["github/gh-aw"],
     opportunity: "A Dependabot security alert in an authorized target repository that was open at the immutable observation cutoff.",
     filters: [

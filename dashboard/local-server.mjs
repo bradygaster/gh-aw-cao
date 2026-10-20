@@ -16,11 +16,11 @@ import {
 } from "node:fs/promises";
 import { createReadStream, createWriteStream, watch } from "node:fs";
 import { isIP } from "node:net";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import { cliActionTemplateFields, renderCliActionCommand } from "./site/src/cli-action-template.js";
 import {
   basename,
   dirname,
@@ -35,7 +35,19 @@ import { fileURLToPath } from "node:url";
 import { createGzip, gzipSync } from "node:zlib";
 import { bundleDashboardFiles, loadDashboardSource } from "./report/bundle-dashboards.mjs";
 import { buildDashboardPageChunkPath, splitDashboardDocument } from "./site/src/dashboard-chunks.js";
-import { maximumCliActionInputCharacters, maximumCliActionRequestBytes } from "./cli-action-contract.mjs";
+import { assertQueryEditorAuthoring, assertQueryEditorEnhancement, assertQueryEditorIntent, maximumQueryEditorRequestBytes } from "./query-editor-contract.mjs";
+import queryEditorDocument from "./site/canvas-query-editor.json" with { type: "json" };
+import { InvalidCustomViewDocumentError, loadLocalCustomViews, materializeLocalCustomView, saveLocalCustomView } from "./local-custom-views.mjs";
+import { composeDashboardDocuments } from "./report/compose-dashboard-documents.mjs";
+import { startLocalSqliteBackend } from "./local-sqlite-backend.mjs";
+import { createLocalGitHubService } from "./local-github-service.mjs";
+import { lookupDialogOptions } from "./dialog-selector.mjs";
+import { executeDashboardCommand } from "./cli-actions.mjs";
+import { createCliActionQueue } from "./cli-action-queue.mjs";
+import { createCliActionApi } from "./cli-action-api.mjs";
+import { cliActionTemplateContext, cliActionTemplateFields, validateCliActionUrl } from "./site/src/cli-action-template.js";
+import { createCliActionAdmission } from "./cli-action-quota.mjs";
+import { compilerVersionOverrides, refreshCanonicalCompilerRelease, refreshDashboardCompilerRelease, refreshDashboardCompilerVersions } from "./local-release-metadata.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const executeFile = promisify(execFile);
@@ -219,15 +231,16 @@ async function downloadDashboardData(destination, repository, ghExecutable, work
   const options = { cwd: workingDirectory };
   const repositoryPath = repository || "{owner}/{repo}";
   let defaultBranch;
+  let controlRepository;
   let runId;
   try {
     const repositoryResult = await executeFile(ghExecutable, [
       "api",
       `repos/${repositoryPath}`,
       "--jq",
-      ".default_branch",
+      "[.default_branch, .full_name] | @tsv",
     ], options);
-    defaultBranch = repositoryResult.stdout.trim();
+    [defaultBranch, controlRepository] = repositoryResult.stdout.trim().split("\t");
     const result = await executeFile(ghExecutable, [
       "api",
       `repos/${repositoryPath}/actions/artifacts?name=${dataArtifactName}&per_page=100`,
@@ -270,6 +283,16 @@ async function downloadDashboardData(destination, repository, ghExecutable, work
     await executeFile(ghExecutable, arguments_, options);
   } catch {
     throw new Error(`Unable to download ${dataArtifactName} from workflow run ${runId}.`);
+  }
+  try {
+    const result = await executeFile(ghExecutable, [
+      "api", "repos/github/gh-aw/releases/latest", "--jq", ".tag_name",
+    ], options);
+    const latestGhAwVersion = result.stdout.trim();
+    refreshDashboardCompilerRelease({}, latestGhAwVersion);
+    return { latestGhAwVersion, repository: controlRepository };
+  } catch {
+    throw new Error("Unable to refresh the latest stable gh-aw release. Check GitHub CLI authentication and try again.");
   }
 }
 
@@ -332,13 +355,17 @@ function redactJsonSecrets(source) {
   return JSON.stringify(redact(JSON.parse(source)), null, 2);
 }
 
-async function redactJsonlSecretsFile(sourcePath, destinationPath) {
+async function redactJsonlSecretsFile(sourcePath, destinationPath, latestGhAwVersion, compilerVersions) {
   const decoder = new TextDecoder();
   const hash = createHash("sha256");
   let pending = "";
-  const redactLine = (line) => line.trim()
-    ? JSON.stringify(JSON.parse(redactJsonSecrets(line)))
-    : "";
+  const redactLine = (line) => {
+    if (!line.trim()) return "";
+    const value = JSON.parse(redactJsonSecrets(line));
+    return JSON.stringify(latestGhAwVersion
+      ? refreshCanonicalCompilerRelease(value, latestGhAwVersion, compilerVersions)
+      : value);
+  };
   const emit = (stream, content) => {
     hash.update(content);
     stream.push(content);
@@ -602,11 +629,22 @@ function readWebsocketFrames(buffer) {
  *   siteRoot?: string,
  *   catalogRoot?: string | null,
  *   repository?: string,
+ *   caoUrl?: string,
  *   ghExecutable?: string,
- *   downloadData?: (destination: string, repository?: string, ghExecutable?: string, workingDirectory?: string) => Promise<void>,
+ *   downloadData?: (destination: string, repository?: string, ghExecutable?: string, workingDirectory?: string) => Promise<void | { latestGhAwVersion?: string, repository?: string }>,
  *   canvas?: boolean,
- *   executeCliAction?: (action: { id: string, command: string, input?: string, onOutput: (event: { stream: 'stdout'|'stderr', data: string }) => void }) => Promise<unknown>,
+ *   admin?: boolean,
+ *   generateQuery?: (intent: import('./query-editor-contract.mjs').QueryEditorIntent, options: { signal: AbortSignal }) => Promise<{ document: string }>,
+ *   enhanceQueryIntent?: (request: import('./query-editor-contract.mjs').QueryEditorEnhancement, options: { signal: AbortSignal }) => Promise<import('./query-editor-contract.mjs').QueryEditorAuthoring>,
+ *   dataBackend?: 'sqlite' | 'indexeddb',
+ *   executeCliAction?: (action: { id: string, command: string, input?: string, signal?: AbortSignal, onOutput: (event: { stream: 'stdout'|'stderr', data: string }) => void }) => Promise<unknown>,
  *   approveCliAction?: (action: { id: string, command: string, input?: string }) => Promise<boolean>,
+ *   cliQueuePath?: string,
+ *   cliQueueConcurrency?: number,
+ *   cliQueueTimeoutMs?: number,
+ *   cliQueueAcknowledgeRecovery?: boolean,
+ *   cliQueueAdmission?: (command: object) => Promise<{ concurrency: number, reason?: string }>,
+ *   lookupSelector?: typeof lookupDialogOptions,
  *   traceFile?: string,
  *   traceOutput?: (message: string) => void,
  *   requestOutput?: (message: string) => void,
@@ -620,11 +658,22 @@ export async function startDashboardServer({
   siteRoot = join(scriptDirectory, "site"),
   catalogRoot = defaultCatalogRoot,
   repository,
+  caoUrl = process.env.CAO_DASHBOARD_URL,
   ghExecutable = "gh",
   downloadData = downloadDashboardData,
   canvas = false,
+  admin = false,
+  dataBackend = "sqlite",
   executeCliAction,
   approveCliAction,
+  cliQueuePath,
+  cliQueueConcurrency = 4,
+  cliQueueTimeoutMs = 15 * 60 * 1000,
+  cliQueueAcknowledgeRecovery = false,
+  cliQueueAdmission,
+  lookupSelector = lookupDialogOptions,
+  generateQuery,
+  enhanceQueryIntent,
   allowMissingOrigin = false,
   traceFile,
   traceOutput = console.log,
@@ -634,13 +683,46 @@ export async function startDashboardServer({
   host = "127.0.0.1",
   port = 4173,
 } = {}) {
+  if (!["sqlite", "indexeddb"].includes(dataBackend)) {
+    throw new Error("Dashboard data backend must be sqlite or indexeddb.");
+  }
+  if (admin && (canvas || !isLoopbackHost(host))) {
+    throw new Error("Admin mode requires a loopback host and cannot be combined with canvas mode.");
+  }
+  if (admin) {
+    executeCliAction ??= (invocation) => executeDashboardCommand({
+      ...invocation, workingDirectory, ghExecutable,
+    });
+  }
+  let terminalBundle;
+  let environmentDefaultsBundle;
+  if (admin || canvas) {
+    const { build } = createRequire(new URL("./site/package.json", import.meta.url))("esbuild");
+    const result = await build({
+      entryPoints: [join(scriptDirectory, "site/src/components/cli-terminal-runtime.js")],
+      bundle: true, write: false, platform: "browser", format: "esm",
+      target: "es2023", minify: true, loader: { ".css": "text" },
+    });
+    terminalBundle = result.outputFiles[0].text;
+  }
   if (canvas && typeof executeCliAction !== "function") {
     throw new Error("Canvas mode requires a CLI action executor.");
   }
   if (canvas && typeof approveCliAction !== "function") {
     throw new Error("Canvas mode requires trusted CLI action approval.");
   }
+  let queryEditorValidationBundle;
+  if (canvas && typeof generateQuery === "function") {
+    const { build } = createRequire(new URL("./site/package.json", import.meta.url))("esbuild");
+    const result = await build({
+      entryPoints: [join(scriptDirectory, "site/src/data/query-editor.js")],
+      bundle: true, write: false, platform: "browser", format: "esm",
+      target: "es2023", minify: true,
+    });
+    queryEditorValidationBundle = result.outputFiles[0].text;
+  }
   const resolvedWorkingDirectory = await realpath(workingDirectory);
+  if (caoUrl !== undefined) caoUrl = validateCliActionUrl(caoUrl);
   const resolvedTraceFile = traceFile ? resolve(resolvedWorkingDirectory, traceFile) : null;
   if (resolvedTraceFile && !isWithin(resolvedWorkingDirectory, resolvedTraceFile)) {
     throw new Error("Dashboard trace file must remain within the workspace.");
@@ -671,10 +753,30 @@ export async function startDashboardServer({
   let inventorySourcesContent;
   let repositoryMemoryDirectory;
   const splitSourceContent = new Map();
+  let sqliteBackend;
+  const githubService = createLocalGitHubService({
+    databasePath: join(temporaryDirectory, "github-resources.sqlite"),
+    token: async () => (await executeFile(ghExecutable, ["auth", "token", "--hostname", "github.com"], {
+      cwd: resolvedWorkingDirectory, timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true,
+    })).stdout.trim(),
+  });
   try {
-    await downloadData(dashboardDataDirectory, repository, ghExecutable, resolvedWorkingDirectory);
+    const downloaded = await downloadData(dashboardDataDirectory, repository, ghExecutable, resolvedWorkingDirectory);
+    repository ??= downloaded?.repository;
+    const prepareSources = async (content) => {
+      let sources = JSON.parse(redactJsonSecrets(content));
+      if (downloaded?.latestGhAwVersion) sources = refreshDashboardCompilerRelease(sources, downloaded.latestGhAwVersion);
+      if (canvas) sources = await refreshDashboardCompilerVersions(sources, {
+        request: (path) => githubService.request(path), output,
+      });
+      return JSON.stringify(sources);
+    };
     const canonicalDataDirectory = await findCanonicalDashboardData(dashboardDataDirectory);
     if (canonicalDataDirectory) {
+      inventorySourcesContent = await prepareSources(
+        await readFile(join(canonicalDataDirectory, "inventory-sources.json"), "utf8"),
+      );
+      const compilerVersions = canvas ? compilerVersionOverrides(JSON.parse(inventorySourcesContent)) : undefined;
       const payloadHashes = {};
       for (const shardDirectoryName of ["gh-aw-logs-runs", "gh-aw-logs-records"]) {
         const shardDirectory = join(canonicalDataDirectory, shardDirectoryName);
@@ -682,22 +784,21 @@ export async function startDashboardServer({
           if (!entry.isFile() || !/^[A-Za-z0-9._-]+\.jsonl$/.test(entry.name)) continue;
           const outputPath = join(temporaryDirectory, shardDirectoryName, entry.name);
           await mkdir(dirname(outputPath), { recursive: true });
-          const hash = await redactJsonlSecretsFile(join(shardDirectory, entry.name), outputPath);
+          const hash = await redactJsonlSecretsFile(
+            join(shardDirectory, entry.name), outputPath, downloaded?.latestGhAwVersion, compilerVersions,
+          );
           const publishedName = `${shardDirectoryName}/${entry.name}`;
           dashboardDataShards.set(`/${publishedName}`, outputPath);
           payloadHashes[publishedName] = hash;
         }
       }
       payloadHashesContent = JSON.stringify(payloadHashes);
-      inventorySourcesContent = redactJsonSecrets(
-        await readFile(join(canonicalDataDirectory, "inventory-sources.json"), "utf8"),
-      );
       const memoryDirectory = await realpath(join(canonicalDataDirectory, "memory")).catch(() => undefined);
       repositoryMemoryDirectory = memoryDirectory && isWithin(canonicalDataDirectory, memoryDirectory)
         ? memoryDirectory
         : undefined;
     } else {
-      sourcesContent = redactJsonSecrets(
+      sourcesContent = await prepareSources(
         await readFile(join(dashboardDataDirectory, "sources.json"), "utf8"),
       );
       const parsedSources = JSON.parse(sourcesContent);
@@ -710,6 +811,7 @@ export async function startDashboardServer({
       sourceManifestContent = JSON.stringify({ version: 1, sources: [...splitSourceContent.keys()] });
     }
   } catch (error) {
+    await githubService.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
     throw error;
   }
@@ -719,6 +821,7 @@ export async function startDashboardServer({
   const socketPath = `${routePrefix}${socketEndpoint}`;
   const watchers = new Map();
   let dashboardContent = "";
+  let cliTemplateContext = {};
   /** @type {Map<string, string>} */
   let dashboardPageChunkContent = new Map();
   let signature = "";
@@ -726,7 +829,14 @@ export async function startDashboardServer({
   let refreshPromise = Promise.resolve();
   let refreshRetryCount = 0;
   let closed = false;
-  let cliActionInProgress = false;
+  let cliQueue;
+  let cliAdmission;
+  /** @type {AbortController | null} */
+  let queryGeneration = null;
+  /** @type {Promise<{ document: string } | import('./query-editor-contract.mjs').QueryEditorAuthoring> | null} */
+  let queryGenerationPending = null;
+  /** @type {Promise<{ id: string, path: string }> | null} */
+  let customViewSavePending = null;
 
   const broadcastDashboard = (traceId) => {
     output("Broadcasting dashboard preview update.", { socketCount: sockets.size });
@@ -747,7 +857,8 @@ export async function startDashboardServer({
     const dashboardSources = await Promise.all(
       [baseDashboardPath, ...campaignPaths].map((source) => loadDashboardSource(source)),
     );
-    const editableDashboardPaths = dashboardSources.flatMap(({ sourcePaths }) => sourcePaths);
+    const localViews = canvas ? await loadLocalCustomViews(resolvedWorkingDirectory) : [];
+    const editableDashboardPaths = [...dashboardSources.flatMap(({ sourcePaths }) => sourcePaths), ...localViews.map((view) => view.path)];
     const nextSignature = await sourceSignature(editableDashboardPaths);
     if (nextSignature === signature) {
       if (notify && forceNotify) broadcastDashboard(traceId);
@@ -755,8 +866,38 @@ export async function startDashboardServer({
     }
 
     await bundleDashboardFiles(bundledDashboardPath, campaignPaths, baseDashboardPath);
-    const dashboardDocument = JSON.parse(await readFile(bundledDashboardPath, "utf8"));
+    const additions = localViews.map(({ id, document }) => materializeLocalCustomView(document, id));
+    let dashboardDocument = composeDashboardDocuments(JSON.parse(await readFile(bundledDashboardPath, "utf8")), additions);
+    for (const addition of additions) {
+      if (addition.dashboard["card-templates"]?.length) {
+        (dashboardDocument.dashboard["card-templates"] ??= []).push(...addition.dashboard["card-templates"]);
+      }
+      if (addition.dashboard.units) Object.assign(dashboardDocument.dashboard.units ??= {}, addition.dashboard.units);
+    }
     if (repository) dashboardDocument.dashboard.repository = repository;
+    const needsCaoUrl = (dashboardDocument.dashboard["cli-actions"] ?? []).some((action) =>
+      cliActionTemplateFields(action.command, { includeContext: true }).includes("cao-url"));
+    if ((canvas || admin) && needsCaoUrl && caoUrl === undefined && downloadData === downloadDashboardData) {
+      try {
+        const result = await executeFile(ghExecutable, [
+          "api", `repos/${repository || "{owner}/{repo}"}/pages`, "--jq", ".html_url",
+        ], { cwd: resolvedWorkingDirectory, timeout: 10_000, maxBuffer: 16 * 1024 });
+        caoUrl = validateCliActionUrl(result.stdout.trim());
+      } catch {
+        output("CAO command backlinks are unavailable. Set --cao-url or CAO_DASHBOARD_URL to the public dashboard URL.");
+      }
+    }
+    cliTemplateContext = cliActionTemplateContext({
+      repository: dashboardDocument.dashboard.repository,
+      githubUrlBase: dashboardDocument.dashboard["github-url-base"],
+      caoUrl,
+    });
+    if (canvas && typeof generateQuery === "function") {
+      if (dashboardDocument.dashboard.pages.some((page) => page.id === "query-editor")) {
+        throw new Error("The query-editor page ID is reserved for canvas authoring.");
+      }
+      dashboardDocument = composeDashboardDocuments(dashboardDocument, [queryEditorDocument]);
+    }
     const splitDashboard = splitDashboardDocument({
       languageVersion: dashboardDocument["language-version"],
       dashboard: dashboardDocument.dashboard,
@@ -831,9 +972,22 @@ export async function startDashboardServer({
 
   try {
     const initialCampaignPaths = await rebuild(false);
+    if (dataBackend === "sqlite") {
+      sqliteBackend = await startLocalSqliteBackend({
+        databasePath: join(temporaryDirectory, "dashboard.sqlite"),
+        sourcesContent: inventorySourcesContent ?? sourcesContent,
+        shards: [...dashboardDataShards].map(([name, path]) => ({
+          path,
+          hash: JSON.parse(payloadHashesContent)[name.slice(1)],
+          phase: name.startsWith("/gh-aw-logs-runs/") ? "runs" : "records",
+        })),
+      });
+    }
     await refreshWatchers(initialCampaignPaths);
   } catch (error) {
     for (const watcher of watchers.values()) watcher.close();
+    await sqliteBackend?.close();
+    await githubService.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
     throw error;
   }
@@ -855,6 +1009,40 @@ export async function startDashboardServer({
       return false;
     }
   };
+  try {
+    if ((canvas || admin) && typeof executeCliAction === "function") {
+      const queuePath = await canonicalPath(cliQueuePath ?? join(resolvedWorkingDirectory, ".cao", "cli-actions.sqlite"));
+      if (!isWithin(resolvedWorkingDirectory, queuePath)) {
+        throw new Error("CLI queue database must remain within the workspace.");
+      }
+      cliAdmission = cliQueueAdmission ? null : createCliActionAdmission({
+        workingDirectory: resolvedWorkingDirectory, ghExecutable, maxConcurrency: cliQueueConcurrency,
+      });
+      cliQueue = await createCliActionQueue({
+        filename: queuePath,
+        maxConcurrency: cliQueueConcurrency,
+        timeoutMs: cliQueueTimeoutMs,
+        acknowledgeRecovery: cliQueueAcknowledgeRecovery,
+        admission: cliQueueAdmission ?? cliAdmission.admission,
+        execute: ({ actionId, command, input, signal, onOutput }) => executeCliAction({
+          id: actionId, command, ...(input === undefined ? {} : { input }), signal, onOutput,
+        }),
+      });
+    }
+  } catch (error) {
+    await cliAdmission?.close();
+    for (const watcher of watchers.values()) watcher.close();
+    await sqliteBackend?.close();
+    await githubService.close();
+    await rm(temporaryDirectory, { recursive: true, force: true });
+    throw error;
+  }
+  const handleCliAction = createCliActionApi({
+    queue: cliQueue, getDashboard: () => JSON.parse(dashboardContent),
+    getTemplateContext: () => cliTemplateContext,
+    approve: (invocation) => admin ? Promise.resolve(true) : approveCliAction(invocation),
+    isAllowedOrigin, readJsonRequest, sendJson,
+  });
   const server = createServer(async (request, response) => {
     const requestStarted = performance.now();
     let requestPath = "<outside-preview>";
@@ -883,12 +1071,13 @@ export async function startDashboardServer({
       }
       if ((pathname === "/" || pathname === "/index.html")
           && !url.searchParams.has("local-preview")) {
-        url.searchParams.set("local-preview", canvas ? "canvas" : "enabled");
+        url.searchParams.set("local-preview", canvas ? "canvas" : admin ? "admin" : "enabled");
         response.writeHead(302, { Location: `${routePrefix}/${url.search}`, "Content-Type": "text/html; charset=utf-8" }).end();
         return;
       }
-      if (pathname === "/__cli_action") {
-        if (!canvas || typeof executeCliAction !== "function") {
+      if (pathname === "/__query_designer" || pathname === "/__query_designer/enhance") {
+        const enhance = pathname.endsWith("/enhance");
+        if (!canvas || (enhance ? typeof enhanceQueryIntent !== "function" : typeof generateQuery !== "function")) {
           response.writeHead(404).end("Not found\n");
           return;
         }
@@ -901,130 +1090,207 @@ export async function startDashboardServer({
           response.writeHead(403).end("Forbidden\n");
           return;
         }
-        let payload;
+        let intent;
         try {
-          payload = await readJsonRequest(request, maximumCliActionRequestBytes);
+          intent = await readJsonRequest(request, maximumQueryEditorRequestBytes);
+          if (enhance) assertQueryEditorEnhancement(intent);
+          else assertQueryEditorIntent(intent);
         } catch (error) {
           sendJson(response, error?.code === "REQUEST_TOO_LARGE" ? 413 : 400, {
-            error: error?.code === "REQUEST_TOO_LARGE" ? "CLI action request is too large." : "Invalid CLI action request.",
+            error: error instanceof Error ? error.message : "Invalid query designer request.",
           });
           return;
         }
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)
-            || Object.keys(payload).some((key) => !["id", "arguments", "values", "input"].includes(key))
-            || typeof payload.id !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(payload.id)
-            || (payload.arguments !== undefined
-              && (!payload.arguments || typeof payload.arguments !== "object" || Array.isArray(payload.arguments)))
-            || (payload.values !== undefined
-              && (!payload.values || typeof payload.values !== "object" || Array.isArray(payload.values)))
-            || (payload.input !== undefined
-              && (typeof payload.input !== "string" || payload.input.length === 0
-                || payload.input.length > maximumCliActionInputCharacters))) {
-          sendJson(response, 400, { error: "Invalid CLI action identifier." });
+        if (queryGeneration) {
+          sendJson(response, 409, { error: "Another query is being generated. Cancel it or wait before retrying." });
           return;
         }
-        const dashboard = JSON.parse(dashboardContent);
-        const action = dashboard.dashboard?.["cli-actions"]?.find((candidate) => candidate?.id === payload.id);
-        if (!action || typeof action.command !== "string") {
-          sendJson(response, 404, { error: "CLI action is not declared by this dashboard." });
-          return;
-        }
-        if (action["copy-only"] === true) {
-          sendJson(response, 403, { error: "CLI action is copy-only." });
-          return;
-        }
-        const declaredArguments = Array.isArray(action.arguments) ? action.arguments : [];
-        const suppliedArguments = payload.arguments ?? {};
-        const templateFields = cliActionTemplateFields(action.command);
-        const suppliedValues = payload.values ?? {};
-        if (Object.keys(suppliedArguments).some((id) =>
-          !declaredArguments.some((argument) => argument?.id === id)
-          || typeof suppliedArguments[id] !== "boolean")) {
-          sendJson(response, 400, { error: "Invalid CLI action arguments." });
-          return;
-        }
-        if (Object.keys(suppliedValues).some((field) => !templateFields.includes(field))
-            || templateFields.some((field) => typeof suppliedValues[field] !== "string")) {
-          sendJson(response, 400, { error: "Invalid CLI action template values." });
-          return;
-        }
-        let renderedCommand;
+        const controller = new AbortController();
+        queryGeneration = controller;
+        const cancel = () => controller.abort();
+        response.once("close", cancel);
+        const timeout = setTimeout(cancel, 120000);
         try {
-          renderedCommand = renderCliActionCommand(action.command, suppliedValues);
+          queryGenerationPending = enhance
+            ? enhanceQueryIntent(intent, { signal: controller.signal })
+            : generateQuery(intent, { signal: controller.signal });
+          const result = await queryGenerationPending;
+          controller.signal.throwIfAborted();
+          if (enhance) assertQueryEditorAuthoring(result);
+          if (!response.destroyed && !closed) sendJson(response, 200, result);
         } catch (error) {
-          sendJson(response, 400, {
-            error: error instanceof Error ? error.message : "Invalid CLI action template values.",
-          });
-          return;
-        }
-        const command = [
-          renderedCommand,
-          ...declaredArguments
-            .filter((argument) => (
-              suppliedArguments[argument.id] ?? argument.default === true
-            ))
-            .map((argument) => argument.flag),
-        ].join(" ");
-        const acceptsPromptInput = command === "gh agent-task create --from-file -";
-        if ((payload.input !== undefined) !== acceptsPromptInput) {
-          sendJson(response, 400, { error: "CLI action input is not valid for this command." });
-          return;
-        }
-        if (closed || response.destroyed) return;
-        if (cliActionInProgress) {
-          sendJson(response, 409, { error: "Another CLI action is awaiting approval or running." });
-          return;
-        }
-        const invocation = Object.freeze({
-          id: action.id,
-          command,
-          ...(payload.input === undefined ? {} : { input: payload.input }),
-        });
-        cliActionInProgress = true;
-        try {
-          let approved;
-          try {
-            approved = await approveCliAction(invocation);
-          } catch (error) {
-            if (!closed && !response.destroyed) {
-              sendJson(response, 503, {
-                error: error instanceof Error ? error.message : "Trusted CLI action approval is unavailable.",
-              });
-            }
-            return;
-          }
-          if (closed || response.destroyed) return;
-          if (approved !== true) {
-            sendJson(response, 403, { error: "CLI action was not approved by the trusted host." });
-            return;
-          }
-          response.writeHead(200, {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/x-ndjson; charset=utf-8",
-          });
-          const emit = (event) => {
-            if (!response.destroyed && !response.writableEnded) {
-              response.write(`${JSON.stringify(event)}\n`);
-            }
-          };
-          try {
-            const result = await executeCliAction({
-              ...invocation,
-              onOutput: ({ stream, data }) => emit({ type: "output", stream, data }),
-            });
-            emit({ type: "complete", result });
-          } catch (error) {
-            emit({
-              type: "error",
-              error: error instanceof Error ? error.message : "CLI action could not be executed.",
+          output("Query designer request failed.", { errorName: error instanceof Error ? error.name : "unknown" });
+          if (!response.destroyed && !closed) {
+            sendJson(response, controller.signal.aborted ? 408 : 503, {
+              error: controller.signal.aborted ? "Query generation timed out or was cancelled."
+                : "Query generation failed. Check Copilot authentication and try again.",
             });
           }
-          response.end();
         } finally {
-          cliActionInProgress = false;
+          clearTimeout(timeout);
+          response.removeListener("close", cancel);
+          queryGeneration = null;
+          queryGenerationPending = null;
         }
         return;
       }
+      if (pathname === "/__custom_views") {
+        if (!canvas || typeof generateQuery !== "function") {
+          response.writeHead(404).end("Not found\n");
+          return;
+        }
+        if (request.method !== "POST") {
+          response.writeHead(405, { Allow: "POST" }).end();
+          return;
+        }
+        if (!isAllowedOrigin(request.headers.origin)
+            || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+          response.writeHead(403).end("Forbidden\n");
+          return;
+        }
+        let draft;
+        try {
+          draft = await readJsonRequest(request, maximumQueryEditorRequestBytes);
+          if (!draft || typeof draft !== "object" || Array.isArray(draft)
+              || Object.keys(draft).length !== 1 || typeof draft.document !== "string") {
+            throw new Error("Save a complete Dashboard Language document; paths and identifiers are assigned by CAO.");
+          }
+        } catch (error) {
+          sendJson(response, error?.code === "REQUEST_TOO_LARGE" ? 413 : 400, { error: error instanceof Error ? error.message : "Invalid custom view request." });
+          return;
+        }
+        if (customViewSavePending) {
+          sendJson(response, 409, { error: "Another custom view is being saved. Wait before retrying." });
+          return;
+        }
+        try {
+          customViewSavePending = (async () => {
+            const saved = await saveLocalCustomView(resolvedWorkingDirectory, draft.document);
+            const paths = await rebuild(false);
+            await refreshWatchers(paths);
+            return saved;
+          })();
+          const saved = await customViewSavePending;
+          if (!response.destroyed && !closed) sendJson(response, 201, { ...saved, dashboard: JSON.parse(dashboardContent) });
+        } catch (error) {
+          output("Custom view save failed.", { errorName: error instanceof Error ? error.name : "unknown" });
+          if (!response.destroyed && !closed) {
+            sendJson(response, error instanceof InvalidCustomViewDocumentError ? 400 : 503, {
+              error: error instanceof InvalidCustomViewDocumentError ? error.message
+                : "Could not save or load the custom view. Check workspace storage and try again.",
+            });
+          }
+        } finally {
+          customViewSavePending = null;
+        }
+        return;
+      }
+      if (pathname.startsWith("/api/v1/github/")) {
+        if (request.method !== "GET") {
+          response.writeHead(405, { Allow: "GET" }).end();
+          return;
+        }
+        if ((request.headers.origin && !isAllowedOrigin(request.headers.origin))
+            || request.headers["sec-fetch-site"] === "cross-site") {
+          sendJson(response, 403, { error: "Forbidden." });
+          return;
+        }
+        const result = await githubService.request(pathname, request.headers["if-none-match"]);
+        for (const [name, value] of Object.entries(result.headers)) response.setHeader(name, value);
+        if (result.status === 304) response.writeHead(304).end();
+        else {
+          response.writeHead(result.status, { "Content-Type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify(result.body));
+        }
+        return;
+      }
+      if (sqliteBackend && pathname.startsWith("/api/")) {
+        const memoryMatch = pathname.match(/^\/api\/v1\/memory\/([a-z0-9][a-z0-9._-]{0,99})(\/content)?$/);
+        const operation = {
+          "/api/v1/query": "query",
+          "/api/v1/refresh": "refresh",
+          "/api/v1/diagnostics": "diagnostics",
+          "/api/v1/events": "events",
+        }[pathname] ?? (memoryMatch ? "memory" : undefined);
+        if (!operation) {
+          sendJson(response, 404, { error: "Dashboard API endpoint not found." });
+          return;
+        }
+        const method = ["query", "refresh"].includes(operation) ? "POST" : "GET";
+        if (request.method !== method) {
+          response.writeHead(405, { Allow: method }).end();
+          return;
+        }
+        if (method === "POST" && (!isAllowedOrigin(request.headers.origin)
+            || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json"))) {
+          sendJson(response, 403, { error: "Forbidden." });
+          return;
+        }
+        if (operation === "events") {
+          response.writeHead(200, {
+            "Cache-Control": "no-store",
+            "Content-Type": "text/event-stream",
+          });
+          response.write(`data: ${JSON.stringify(sqliteBackend.status)}\n\n`);
+          const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 15_000);
+          response.once("close", () => clearInterval(heartbeat));
+          return;
+        }
+        try {
+          const payload = operation === "query" ? await readJsonRequest(request, 4 * 1024 * 1024)
+            : operation === "memory" ? {
+              action: memoryMatch[2] ? "content" : "list",
+              campaign: memoryMatch[1],
+              path: url.searchParams.get("path"),
+              memoryRoot: `http://${expectedAuthority}${routePrefix}/memory/`,
+            } : undefined;
+          sendJson(response, 200, await sqliteBackend.request(operation, payload));
+        } catch (error) {
+          output("SQLite dashboard request failed.", errorMetadata(error));
+          sendJson(response, error.code === "REQUEST_TOO_LARGE" ? 413
+            : error instanceof SyntaxError ? 400 : error.statusCode ?? 500, {
+            error: error.message,
+            code: error.code ?? "",
+            queryId: error.queryId ?? "",
+            boundary: error.boundary ?? "",
+          });
+        }
+        return;
+      }
+      if (pathname === "/__dialog_selector") {
+        if (!canvas && !admin) { response.writeHead(404).end("Not found\n"); return; }
+        if (request.method !== "POST") { response.writeHead(405, { Allow: "POST" }).end(); return; }
+        if (!isAllowedOrigin(request.headers.origin)
+          || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+          response.writeHead(403).end("Forbidden\n"); return;
+        }
+        let payload;
+        try { payload = await readJsonRequest(request, 4096); }
+        catch { sendJson(response, 400, { error: "Invalid selector request." }); return; }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)
+          || Object.keys(payload).some((key) => !["id", "text"].includes(key))
+          || typeof payload.id !== "string" || typeof payload.text !== "string"
+          || payload.text.trim().length < 2 || payload.text.length > 200 || /[\u0000-\u001f]/.test(payload.text)) {
+          sendJson(response, 400, { error: "Invalid selector request." }); return;
+        }
+        const action = JSON.parse(dashboardContent).dashboard?.["cli-actions"]?.find((candidate) => candidate.id === payload.id);
+        if (!action?.selector || action["copy-only"] === true) {
+          sendJson(response, 404, { error: "Dialog selector is not declared by this dashboard." }); return;
+        }
+        const lifetime = new AbortController();
+        response.once("close", () => lifetime.abort());
+        try {
+          const options = await lookupSelector(action, payload.text, {
+            workingDirectory: resolvedWorkingDirectory, ghExecutable, signal: lifetime.signal,
+          });
+          if (!response.destroyed) sendJson(response, 200, { options });
+        } catch (error) {
+          output("Dialog selector lookup failed.", errorMetadata(error));
+          if (!response.destroyed) sendJson(response, 502, { error: "Repository search failed. Check GitHub CLI authentication and try again." });
+        }
+        return;
+      }
+      if (await handleCliAction(request, response, pathname, url)) return;
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.writeHead(405, { Allow: "GET, HEAD" }).end();
         return;
@@ -1065,6 +1331,14 @@ export async function startDashboardServer({
       }
       if (dashboardPageChunkContent.has(pathname)) {
         sendContent(request, response, contentTypes.get(".json"), dashboardPageChunkContent.get(pathname));
+        return;
+      }
+      if (pathname === "/src/data/query-editor.js" && queryEditorValidationBundle) {
+        sendContent(request, response, contentTypes.get(".js"), queryEditorValidationBundle);
+        return;
+      }
+      if (pathname === "/src/components/cli-terminal-runtime.js" && terminalBundle) {
+        sendContent(request, response, contentTypes.get(".js"), terminalBundle);
         return;
       }
       if (pathname === "/sources/manifest.json") {
@@ -1144,7 +1418,30 @@ export async function startDashboardServer({
 
       let content;
       if (pathname === "/dashboard.json") content = dashboardContent;
-      else content = browserSafeFileContent(canonicalFilePath, await readFile(canonicalFilePath));
+      else if (pathname === "/src/environment-defaults.js") {
+        environmentDefaultsBundle ??= createRequire(new URL("./site/package.json", import.meta.url))("esbuild").build({
+          entryPoints: [join(scriptDirectory, "site/src/environment-defaults.js")],
+          bundle: true, write: false, platform: "browser", format: "esm", target: "es2023", minify: true,
+        }).then((result) => result.outputFiles[0].text);
+        content = await environmentDefaultsBundle;
+      } else content = browserSafeFileContent(canonicalFilePath, await readFile(canonicalFilePath));
+      if ((cliQueue || admin) && extension === ".html") {
+        const capabilityScript = `<script>${cliQueue ? "globalThis.__CLI_QUEUE__ = true; globalThis.__LOCAL_CLI_QUEUE__ = true;" : ""}${admin ? "globalThis.__DASHBOARD_ADMIN__ = true;" : ""}</script>`;
+        content = /<head(\s[^>]*)?>/i.test(String(content))
+          ? String(content).replace(/<head(\s[^>]*)?>/i, (head) => `${head}\n${capabilityScript}`)
+          : `${capabilityScript}\n${content}`;
+      }
+      if (extension === ".html") {
+        content = String(content).replace(/<head(\s[^>]*)?>/i, (head) => `${head}
+<meta name="dashboard-github-api-base" content="${routePrefix}/">${caoUrl === undefined ? "" : `
+<meta name="cao-url" content="${caoUrl}">`}`);
+      }
+      if (sqliteBackend && extension === ".html") {
+        content = String(content).replace(/<head(\s[^>]*)?>/i, (head) => `${head}
+<meta name="dashboard-data-backend" content="server-http">
+<meta name="dashboard-storage-backend" content="sqlite">
+<meta name="dashboard-api-base" content="${routePrefix}/">`);
+      }
       sendContent(request, response, contentTypes.get(extension), content);
     } catch (error) {
       output(`Dashboard request failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1223,7 +1520,7 @@ export async function startDashboardServer({
         if (isLoopbackHost(address.address)) {
           localhostAuthority = `localhost:${address.port}`;
         }
-        if (process.env.CODESPACES === "true" && process.env.CODESPACE_NAME
+        if (!admin && process.env.CODESPACES === "true" && process.env.CODESPACE_NAME
             && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN) {
           codespaceAuthority = `${process.env.CODESPACE_NAME}-${address.port}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`;
         }
@@ -1243,6 +1540,10 @@ export async function startDashboardServer({
     });
   } catch (error) {
     for (const watcher of watchers.values()) watcher.close();
+    await cliQueue?.close();
+    await cliAdmission?.close();
+    await sqliteBackend?.close();
+    await githubService.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
     throw error;
   }
@@ -1252,6 +1553,8 @@ export async function startDashboardServer({
     async close() {
       if (closed) return;
       closed = true;
+      const queueShutdown = cliQueue?.close();
+      queryGeneration?.abort();
       output("Stopping dashboard server.");
       clearTimeout(refreshTimer);
       for (const watcher of watchers.values()) watcher.close();
@@ -1259,7 +1562,13 @@ export async function startDashboardServer({
       const shutdown = new Promise((accept, reject) => server.close((error) => error ? reject(error) : accept()));
       server.closeAllConnections();
       await shutdown;
+      await queueShutdown;
+      await cliAdmission?.close();
+      if (queryGenerationPending) await Promise.allSettled([queryGenerationPending]);
+      if (customViewSavePending) await Promise.allSettled([customViewSavePending]);
       await refreshPromise;
+      await sqliteBackend?.close();
+      await githubService.close();
       await rm(temporaryDirectory, { recursive: true, force: true });
       trace.record("server", "server.stopped");
       await trace.flush();
@@ -1340,12 +1649,26 @@ export async function runGoDashboardServer({
   }
 }
 
-function parseArguments(arguments_) {
+export function parseDashboardServerArguments(arguments_) {
   const options = {};
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (argument === "--help") return { help: true };
     if (argument === "--canvas") options.canvas = true;
+    else if (argument === "--admin") options.admin = true;
+    else if (argument === "--acknowledge-command-recovery") options.cliQueueAcknowledgeRecovery = true;
+    else if (argument === "--command-concurrency") {
+      options.cliQueueConcurrency = Number(arguments_[index += 1]);
+      if (!Number.isInteger(options.cliQueueConcurrency) || options.cliQueueConcurrency < 1 || options.cliQueueConcurrency > 32) {
+        throw new Error("--command-concurrency must be an integer from 1 through 32");
+      }
+    }
+    else if (argument === "--data-backend") {
+      options.dataBackend = arguments_[index += 1];
+      if (!["sqlite", "indexeddb", "postgres"].includes(options.dataBackend)) {
+        throw new Error("--data-backend must be sqlite, indexeddb, or postgres");
+      }
+    }
     else if (argument === "--replace-existing") options.replaceExisting = true;
     else if (argument === "--trace-file") {
       options.traceFile = arguments_[index += 1];
@@ -1362,6 +1685,11 @@ function parseArguments(arguments_) {
         throw new Error("--repo must be an OWNER/REPOSITORY name");
       }
     }
+    else if (argument === "--cao-url") {
+      const value = arguments_[index += 1];
+      if (!value) throw new Error("--cao-url requires a value");
+      options.caoUrl = validateCliActionUrl(value);
+    }
     else if (["--operational-store", "--policy", "--site", "--cert", "--key"].includes(argument)) {
       const value = arguments_[index += 1];
       if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`);
@@ -1376,15 +1704,21 @@ function parseArguments(arguments_) {
     }
     else throw new Error(`unknown argument: ${argument}`);
   }
-  if (options.operationalStore) {
+  if (options.operationalStore || options.dataBackend === "postgres") {
+    options.operationalStore ??= "postgres";
     if (!["redis", "memory", "postgres"].includes(options.operationalStore)) {
       throw new Error("--operational-store must be redis, memory, or postgres");
     }
     for (const [flag, value] of [
       ["--canvas", options.canvas],
+      ["--admin", options.admin],
+      ["--command-concurrency", options.cliQueueConcurrency],
+      ["--acknowledge-command-recovery", options.cliQueueAcknowledgeRecovery],
       ["--replace-existing", options.replaceExisting],
       ["--trace-file", options.traceFile],
       ["--repo", options.repository],
+      ["--cao-url", options.caoUrl],
+      ["--data-backend", options.dataBackend !== "postgres" ? options.dataBackend : undefined],
     ]) {
       if (value) throw new Error(`${flag} cannot be used with --operational-store`);
     }
@@ -1392,9 +1726,18 @@ function parseArguments(arguments_) {
       throw new Error("--cert and --key must be provided together");
     }
   } else if (options.policyPath || options.siteRoot || options.certFile || options.keyFile) {
-    throw new Error("--policy, --site, --cert, and --key require --operational-store redis|memory|postgres");
+    throw new Error("--policy, --site, --cert, and --key require --data-backend postgres or --operational-store redis|memory|postgres");
   }
   if (!options.host) options.host = "127.0.0.1";
+  if (options.admin && (options.canvas || !isLoopbackHost(options.host))) {
+    throw new Error("--admin requires a loopback host and cannot be combined with --canvas");
+  }
+  if (options.cliQueueConcurrency && !options.admin && !options.canvas) {
+    throw new Error("--command-concurrency requires --admin or --canvas");
+  }
+  if (options.cliQueueAcknowledgeRecovery && !options.admin && !options.canvas) {
+    throw new Error("--acknowledge-command-recovery requires --admin or --canvas");
+  }
   const port = options.port ?? (options.canvas ? 0 : 4173);
   const minimumPort = options.canvas ? 0 : 1;
   if (!Number.isInteger(port) || port < minimumPort || port > 65535) {
@@ -1409,9 +1752,13 @@ function parseArguments(arguments_) {
 }
 
 async function main() {
-  const options = parseArguments(process.argv.slice(2));
+  const options = parseDashboardServerArguments(process.argv.slice(2));
   if (options.help) {
-    console.log("usage: local-server.mjs [--canvas] [--replace-existing] [--trace-file PATH] [--repo OWNER/REPOSITORY] [--host HOST] [--port PORT]");
+    console.log("usage: local-server.mjs [--canvas | --admin] [--command-concurrency N] [--data-backend sqlite|indexeddb] [--replace-existing] [--trace-file PATH] [--repo OWNER/REPOSITORY] [--cao-url HTTPS_URL] [--host HOST] [--port PORT]");
+    console.log("--admin enables explicitly confirmed dashboard CLI actions using local GitHub CLI credentials (loopback only).");
+    console.log("--acknowledge-command-recovery resumes queued work after the operator has verified interrupted subprocesses are terminated.");
+    console.log("Data backend defaults to SQLite; use --data-backend indexeddb for browser IndexedDB.");
+    console.log("       local-server.mjs --data-backend postgres [--operational-store redis|memory|postgres] [--policy PATH] [--site PATH] [--cert PATH --key PATH] [--host HOST] [--port PORT]");
     console.log("       local-server.mjs --operational-store redis|memory|postgres [--policy PATH] [--site PATH] [--cert PATH --key PATH] [--host HOST] [--port PORT]");
     console.log("Go mode requires a matching reviewed host policy, PostgreSQL, a built site, and hosted OAuth/HTTPS configuration.");
     return;

@@ -9,6 +9,16 @@ describe('dashboard data operations', () => {
     { repository: 'charlie', status: 'open', score: 6 }
   ];
 
+  it('converts timestamp text to epoch milliseconds deterministically, including pre-epoch fractions', () => {
+    const inputs = [
+      '2026-09-24T10:00:00Z', '1969-12-31T23:59:59.999Z',
+      '2026-09-24T11:00:00.123+01:00', 'invalid', null, 123, 'now', '2026-02-30T00:00:00Z'
+    ];
+    expect(tidy(inputs.map(at => ({ at })), [{
+      op: 'compute', values: [{ as: 'milliseconds', function: 'timestamp', args: [{ field: 'at' }] }]
+    }]).map(row => row.milliseconds)).toEqual([1790244000000, -1, 1790244000123, null, null, null, null, null]);
+  });
+
   it('filters and arranges rows using serializable operators', () => {
     expect(tidy(rows, [
       { op: 'filter', predicates: [{ field: 'status', equals: 'open' }] },
@@ -17,6 +27,28 @@ describe('dashboard data operations', () => {
       { repository: 'bravo', status: 'open', score: 2 },
       { repository: 'charlie', status: 'open', score: 6 }
     ]);
+  });
+
+  it.each([
+    ['2026-09-23-0000-0123456789abcdef.jsonl', '2026-09-23'],
+    ['gh-aw-logs-runs/2026-09-23-0001-0123456789abcdef.jsonl', '2026-09-23'],
+    ['https://example.test/cao/gh-aw-logs-records/2024-02-29-10000-ABCDEF0123456789.jsonl?download=1#shard', '2024-02-29'],
+    ['gh-aw-logs-runs/0000-00-00-0000-0123456789abcdef.jsonl', null],
+    ['gh-aw-logs-runs/2026-02-29-0000-0123456789abcdef.jsonl', null],
+    ['gh-aw-logs-runs/2026-02-30-0000-0123456789abcdef.jsonl', null],
+    ['gh-aw-logs-runs/2026-13-01-0000-0123456789abcdef.jsonl', null],
+    ['gh-aw-logs-runs/logs-0123456789abcdef.jsonl', null],
+    ['https://example.test/2026-09-23-0000-0123456789abcdef.jsonl/other.jsonl', null],
+    ['https://example.test/other.jsonl?path=2026-09-23-0000-0123456789abcdef.jsonl', null],
+    ['https://example.test/other.jsonl?path=/2026-09-23-0000-0123456789abcdef.jsonl', null],
+    ['not-2026-09-23-0000-0123456789abcdef.jsonl', null],
+    [null, null],
+    [undefined, null],
+    [123, null]
+  ])('extracts only a valid normalized shard activity date from %s', (path, expected) => {
+    expect(tidy([{ path }], [{
+      op: 'compute', values: [{ as: 'day', function: 'activity-shard-day', args: [{ field: 'path' }] }]
+    }])[0].day).toBe(expected);
   });
 
   it('normalizes suffixes and positive integers through declarative computes', () => {
@@ -143,6 +175,30 @@ describe('dashboard data operations', () => {
         { label: 'Sun', date: '2026-09-13', current: 0, previous: 0, reached: false }
       ]
     });
+  });
+
+  it.each([
+    [true, true],
+    [false, false],
+    ['success', true],
+    ['failure', false],
+    [null, false]
+  ])('uses %s as a calendar point inclusion selector', (selector, included) => {
+    const result = tidy([{}], [{
+      op: 'compute',
+      values: [{
+        as: 'point',
+        function: 'calendar-week-point',
+        args: [
+          { value: '2026-09-07T08:00:00Z' },
+          { value: '2026-09-09T12:00:00Z' },
+          { value: selector }
+        ]
+      }]
+    }]);
+    expect(JSON.parse(String(result[0]?.point))).toEqual([
+      Date.parse('2026-09-07T08:00:00Z'), Date.parse('2026-09-09T12:00:00Z'), included
+    ]);
   });
 
   it('supports text search, alternatives, limits, and the worker request shape', () => {
@@ -281,6 +337,27 @@ describe('dashboard data operations', () => {
         { x: '2026-09-02T00:00:00Z', y: 0.8, color: 'worker.md', key: 'primary:repository-readiness:3' }
       ]
     });
+  });
+
+  it('retains per-point scalar metadata without splitting panels or inventing missing fields', () => {
+    const result = tidy([
+      { at: '2026-09-01', repo: 'r', value: 0, evaluator: 'known', maturity: 'matured', optional: null },
+      { at: '2026-09-02', repo: 'r', value: 2, maturity: 'interim' }
+    ], [{
+      op: 'temporal-series', time: 'at', series: 'repo', shape: 'panels',
+      'point-carry': ['evaluator', 'maturity', 'optional'],
+      measures: [{ field: 'value', kind: 'primary' }]
+    }]);
+    expect(result).toHaveLength(1);
+    expect(result[0].series).toMatchObject([{ points: [
+      { y: 0, metadata: { evaluator: 'known', maturity: 'matured', optional: null } },
+      { y: 2, metadata: { maturity: 'interim' } }
+    ] }]);
+    expect(JSON.stringify(result)).not.toContain('"evaluator":null');
+    expect(() => tidy([{ at: '2026-09-01', repo: 'r', value: 1, nested: {} }], [{
+      op: 'temporal-series', time: 'at', series: 'repo', shape: 'panels',
+      'point-carry': ['nested'], measures: [{ field: 'value', kind: 'primary' }]
+    }])).toThrow('scalar fields');
   });
 
   it.each(['groups', 'panels'])('orders temporal %s without splitting a renamed metric', (shape) => {

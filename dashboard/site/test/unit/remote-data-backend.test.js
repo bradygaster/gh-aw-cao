@@ -18,6 +18,38 @@ afterEach(() => {
 });
 
 describe("remote dashboard data backend", () => {
+  it("keeps a throttled view pending and returns its data after the server cooldown", async () => {
+    vi.useFakeTimers();
+    let queries = 0;
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).endsWith("/api/v1/query") && queries++ === 0) {
+        return new Response(JSON.stringify({ error: "rate limit exceeded" }), {
+          status: 429,
+          headers: { "Retry-After": "1" },
+        });
+      }
+      return new Response(JSON.stringify({
+        revision: 4,
+        sources: { runs: { source: "runs", rows: [], metadata: {} } },
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const pending = queryRemoteDashboard(["runs"], { pages: [], queries: [] });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(queries).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({
+        revision: 4,
+        sources: { runs: { rows: [] } },
+      });
+      expect(queries).toBe(2);
+    } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a coded query limit and failing query ID", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: 'Query "campaign-repository-coverage" needs more retained data.',
@@ -65,6 +97,23 @@ describe("remote dashboard data backend", () => {
     meta.content = "server-http";
     document.head.append(meta);
     expect(usesRemoteDataBackend(document)).toBe(true);
+  });
+
+  it("keeps canvas API requests inside the server-injected capability path", async () => {
+    const meta = document.createElement("meta");
+    meta.name = "dashboard-api-base";
+    meta.content = "/preview-capability/";
+    document.head.append(meta);
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      sources: { repositories: { source: "repositories", rows: [], metadata: {} } },
+    }), { headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await queryRemoteDashboard(["repositories"], { pages: [] });
+    expect(fetchMock).toHaveBeenCalled();
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(new URL(url).pathname).toMatch(/^\/preview-capability\/api\/v1\//);
+      expect(init.headers["Content-Type"]).toBe("application/json");
+    }
   });
 
   it("removes static dashboard workers and caches in remote mode", async () => {

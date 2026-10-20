@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { authoritativeDashboard } from '../authoritative-dashboard.js';
+import maintenanceNavigationContract from '../fixtures/maintenance-navigation-contract.json' with { type: 'json' };
+import { processDataRequest } from '../../src/data-worker.js';
+import { compileDashboardViewPayloadQueries } from '../../src/data/queries/view-payload-compiler.js';
 
 const queryCanonicalDatabaseDiagnostics = vi.hoisted(() => vi.fn().mockResolvedValue({
   schemaVersion: 13,
@@ -26,11 +29,15 @@ const queryCanonicalDatabaseDiagnostics = vi.hoisted(() => vi.fn().mockResolvedV
     issues: []
   }
 }));
-vi.mock('../../src/data-processor.js', () => ({ queryCanonicalDatabaseDiagnostics }));
+vi.mock('../../src/data-processor.js', async () => ({
+  ...await vi.importActual('../../src/data-processor.js'),
+  queryCanonicalDatabaseDiagnostics
+}));
 
 import { renderConfigurationView } from '../../src/components/configuration-view.js';
+import { renderDataView } from '../../src/components/data-view.js';
 import { setDeclaredCliActions } from '../../src/components/cli-actions.js';
-import { renderUiElement } from '../../src/components/ui-elements.js';
+import { renderUiElementAsync } from '../../src/components/ui-elements.js';
 import { setAutomaticDashboardDataUpdatesEnabled } from '../../src/dashboard-data-updates.js';
 import { fullDebugUrl, isDebugEnabled } from '../../src/debug.js';
 
@@ -64,6 +71,55 @@ function context(row) {
 }
 
 describe('Configuration dashboard view', () => {
+  it('resolves repository home drills through the worker view-payload boundary and fails closed without evidence', () => {
+    const dashboard = authoritativeDashboard.dashboard;
+    const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'maintenance');
+    const payload = compileDashboardViewPayloadQueries(page, page.id, {
+      viewId: 'maintenance-repositories', sourceNames: ['maintenance-repositories'], queries: dashboard.queries
+    });
+    expect(payload.aliases).toHaveLength(1);
+    for (const available of [true, false]) {
+      const results = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (processDataRequest({
+        operation: 'execute-dashboard-queries',
+        queries: payload.queries,
+        sourceNames: payload.aliases,
+        sources: available ? {
+          workflows: { source: 'workflows', rows: maintenanceNavigationContract['repository-workflows'], metadata }
+        } : {}
+      }));
+      const result = results[payload.aliases[0]];
+      expect(result.metadata.availability).toBe(available ? 'available' : 'unavailable');
+      if (available) {
+        expect(result.rows).toHaveLength(maintenanceNavigationContract['repository-homes'].length);
+        expect(result.rows).toMatchObject(maintenanceNavigationContract['repository-homes']);
+        vi.stubGlobal('__CLI_QUEUE__', true);
+        setDeclaredCliActions(dashboard['cli-actions']);
+        try {
+          const view = page.views[0];
+          const rendered = renderDataView('list', {
+            pageId: page.id, title: view.title, view,
+            sourceName: view.data.source, rows: result.rows,
+            cardTemplates: Object.fromEntries(dashboard['card-templates'].map(
+              (/** @type {{ id: string }} */ template) => [template.id, template]
+            )),
+            metadata: result.metadata, contextDetails: [], headingTag: 'h3',
+            prepareTableRows: (rows) => rows, buildChartPoints: () => [],
+            prepareChartPoints: () => [], toText: String
+          });
+          const cards = [...(rendered?.querySelectorAll('.entity-card-list-card') ?? [])];
+          expect(cards).toHaveLength(maintenanceNavigationContract['repository-homes'].length);
+          expect(cards.map((card) => card.querySelectorAll('.entity-card-list-actions .cli-action-trigger').length))
+            .toEqual([0, 1, 1, 1]);
+        } finally {
+          setDeclaredCliActions([]);
+          vi.unstubAllGlobals();
+        }
+      } else {
+        expect(result.rows).toEqual([]);
+      }
+    }
+  });
+
   it('disables hourly data downloads when Periodic Background Sync is unsupported', () => {
     localStorage.clear();
     const rendered = renderConfigurationView(context({
@@ -250,22 +306,37 @@ describe('Configuration dashboard view', () => {
 
   it('separates CAO package and compiler maintenance inventory', () => {
     const dashboard = authoritativeDashboard.dashboard;
+    expect(dashboard['cli-actions'].find((/** @type {{ id: string }} */ action) =>
+      action.id === 'upgrade-target-repository')?.label).toBe('Upgrade');
     const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'maintenance');
+    const campaigns = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'maintenance-campaigns');
+    const views = [...campaigns.views, ...page.views];
     const manageNavigation = dashboard.navigation.find((/** @type {{ label?: string }} */ candidate) => candidate.label === 'Maintenance');
 
     expect(page.title).toBe('Updates');
-    expect(page.description).toContain('Active describes registration only');
-    expect(page.description).toContain('run CAO Activity to refresh inventory');
+    expect(page.route).toEqual({ tab: 'repositories', tabs: maintenanceNavigationContract.tabs });
+    expect(campaigns.route).toEqual({
+      'navigation-page': 'maintenance', tab: 'campaigns', tabs: maintenanceNavigationContract.tabs
+    });
+    expect(page.views).toHaveLength(1);
+    expect(campaigns.views).toHaveLength(1);
+    expect([page.views[0].data.source, campaigns.views[0].data.source])
+      .toEqual(maintenanceNavigationContract.sources);
+    expect(manageNavigation.pages).toContain('maintenance');
+    expect(manageNavigation.pages).not.toContain('maintenance-campaigns');
+    expect(page.description).toBe('Identify repositories whose compiler provenance justifies a CAO maintenance proposal.');
+    expect(page.acceptance).toContain('registration');
+    expect(page.acceptance).toContain('refresh guidance');
     expect(page['filter-bar']).toBeUndefined();
-    expect(page.views.map((/** @type {{ data: { source: string } }} */ view) => view.data.source))
+    expect(views.map((/** @type {{ data: { source: string } }} */ view) => view.data.source))
       .toEqual(['campaigns', 'maintenance-repositories']);
-    expect(page.views.map((/** @type {{ mark: string }} */ view) => view.mark)).toEqual(['list', 'list']);
-    expect(page.views.map((/** @type {{ list: { style: string, card: string } }} */ view) => view.list))
+    expect(views.map((/** @type {{ mark: string }} */ view) => view.mark)).toEqual(['list', 'list']);
+    expect(views.map((/** @type {{ list: { style: string, card: string } }} */ view) => view.list))
       .toEqual([
-        { style: 'entity-cards', card: 'maintenance-campaign', icon: 'workflow', action: 'update-repository' },
-        { style: 'entity-cards', card: 'maintenance-repository', icon: 'repo', action: 'upgrade-repository' }
+        { style: 'entity-cards', card: 'maintenance-campaign', icon: 'workflow', ...maintenanceNavigationContract['campaign-update'] },
+        { style: 'entity-cards', card: 'maintenance-repository', icon: 'repo', ...maintenanceNavigationContract['repository-upgrade'], actions: ['add-repository'] }
       ]);
-    expect(page.views[0].encoding.columns.map((/** @type {{ field: string }} */ column) => column.field))
+    expect(views[0].encoding.columns.map((/** @type {{ field: string }} */ column) => column.field))
       .toEqual([
         'campaign-name',
         'campaign-version',
@@ -273,16 +344,16 @@ describe('Configuration dashboard view', () => {
         'campaign-update-state',
         'campaign-registration'
       ]);
-    expect(page.views[1].encoding.columns.map((/** @type {{ field: string }} */ column) => column.field))
+    expect(views[1].encoding.columns.map((/** @type {{ field: string }} */ column) => column.field))
       .toEqual([
         'repository',
         'gh-aw-version',
         'gh-aw-current-version',
         'upgrade-state'
       ]);
-    expect(page.views.map((/** @type {{ title?: string }} */ view) => view.title))
+    expect(views.map((/** @type {{ title?: string }} */ view) => view.title))
       .toEqual(['CAO packages', 'Repositories']);
-    expect(page.views.some((/** @type {{ disclosure?: string }} */ view) => view.disclosure !== undefined)).toBe(false);
+    expect(views.some((/** @type {{ disclosure?: string }} */ view) => view.disclosure !== undefined)).toBe(false);
     const templates = new Map(dashboard['card-templates'].map((/** @type {{ id: string }} */ template) => [template.id, template]));
     expect(templates.get('maintenance-campaign')['detail-labels']).toBe('visible');
     expect(templates.get('maintenance-campaign').details).toContainEqual({
@@ -291,6 +362,7 @@ describe('Configuration dashboard view', () => {
       display: 'status'
     });
     expect(templates.get('maintenance-repository')['detail-labels']).toBe('visible');
+    expect(templates.get('maintenance-repository').drill).toEqual(maintenanceNavigationContract['repository-drill']);
     expect(templates.get('maintenance-campaign').actions).toEqual([
       {
         action: 'disable-campaign',
@@ -320,13 +392,19 @@ describe('Configuration dashboard view', () => {
         when: { field: 'registration', equals: 'false' }
       }
     ]);
-    expect(templates.get('maintenance-repository').actions).toEqual([{
-      action: 'upgrade-target-repository',
-      context: ['repository']
-    }]);
+    expect(templates.get('maintenance-repository').actions).toEqual([
+      maintenanceNavigationContract['repository-upgrade-action']
+    ]);
+    const compilerVersions = dashboard.pages.find((/** @type {{ id: string }} */ candidate) =>
+      candidate.id === 'repository-settings').views[0];
+    expect(compilerVersions.encoding.actions[0].when)
+      .toEqual(maintenanceNavigationContract['repository-upgrade-action'].when);
     expect(dashboard['cli-actions']
       .find((/** @type {{ id: string }} */ action) => action.id === 'update-campaign')
-      .command).toBe('./cao.sh update {{campaign}}');
+      .command).toMatch(/^gh aw update https:\/\/github\.com\/githubnext\/gh-cao\/\{\{campaign\}\} --repo \{\{cao-repository\}\} --pr-message '/);
+    expect(dashboard['cli-actions']
+      .find((/** @type {{ id: string }} */ action) => action.id === 'update-repository')
+      .command).toMatch(/^gh aw update https:\/\/github\.com\/githubnext\/gh-cao\/\{\{campaign\}\} --repo \{\{cao-repository\}\} --pr-message '/);
     expect(dashboard['cli-actions']
       .find((/** @type {{ id: string }} */ action) => action.id === 'update-campaign')
       .label).toBe('Update');
@@ -337,11 +415,11 @@ describe('Configuration dashboard view', () => {
     expect(manageNavigation.pages).toContain('maintenance');
   });
 
-  it('wires the Settings view to a supported UI element', () => {
+  it('wires the Settings view to a supported UI element', async () => {
     const dashboard = authoritativeDashboard.dashboard;
     const page = dashboard.pages.find((/** @type {{ id: string }} */ candidate) => candidate.id === 'configuration');
     const [view] = page.views;
-    const rendered = renderUiElement(view.element, {
+    const rendered = await renderUiElementAsync(view.element, {
       ...context({ document: { version: 1 }, raw: '', diagnostics: [] }),
       title: view.title,
       description: view.description,
@@ -529,6 +607,29 @@ describe('Configuration dashboard view', () => {
     resetButton.click();
     expect(rendered.querySelector('.configuration-edit-status')?.textContent).toBe('No changes');
     expect(/** @type {HTMLInputElement | null} */ (rendered.querySelector('#configuration-control-plane-defaults-max-repositories'))?.value).toBe('7');
+  });
+
+  it('keeps the edited control node and focus while the draft changes', () => {
+    const rendered = renderConfigurationView(context({
+      document: { version: 1, 'control-plane': { defaults: { 'max-repositories': 7 } } },
+      raw: '',
+      diagnostics: []
+    }));
+    if (!rendered) throw new Error('configuration view did not render');
+    document.body.append(rendered);
+
+    const selector = '#configuration-control-plane-defaults-max-repositories';
+    const input = /** @type {HTMLInputElement | null} */ (rendered.querySelector(selector));
+    if (!(input instanceof HTMLInputElement)) throw new Error('number setting did not render');
+    input.focus();
+    input.value = '12';
+    input.dispatchEvent(new Event('input'));
+
+    expect(rendered.querySelector('.configuration-edit-status')?.textContent).toBe('Modified locally');
+    expect(rendered.querySelector(selector)).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('12');
+    rendered.remove();
   });
 
   it('stops reacting to draft edits once the editor is detached from the document', () => {

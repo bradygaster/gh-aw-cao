@@ -9,9 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
-	"mime"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -29,20 +30,27 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/githubapp"
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/marketplace"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/repositorymemory"
-	"github.com/githubnext/gh-aw-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/audit"
+	"github.com/githubnext/gh-cao/server/internal/dashboardstore"
+	"github.com/githubnext/gh-cao/server/internal/githubapp"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/marketplace"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/repositorymemory"
+	"github.com/githubnext/gh-cao/server/internal/sqlitex"
+	"github.com/githubnext/gh-cao/server/internal/telemetry"
 )
 
 var serverLog = logger.New("cao:server")
+
+var localAccessBootstrap = template.Must(template.New("local-access-bootstrap").Parse(
+	`<script>localStorage.setItem("cao-dashboard-access-token",{{.}});const u=new URL(location.href);u.searchParams.delete("access_token");history.replaceState(null,"",u.pathname+u.search+u.hash);</script>`,
+))
 
 type Config struct {
 	Listen                 string
@@ -59,7 +67,7 @@ type Config struct {
 	CORS                 CORSPolicy
 	GitHubOAuth          *GitHubOAuthConfig
 	DatabaseQueriesPath  string
-	Database             *postgresx.Store
+	Database             dashboardstore.Store
 	DashboardQueries     []query.Definition
 	DashboardQueriesPath string
 	AgentCatalogPath     string
@@ -77,6 +85,9 @@ type Config struct {
 	WebhookSecret        string
 	AdminUsers           []string
 	Logger               *log.Logger
+	// Audit records security audit events for administrator and hosted CLI
+	// operations; nil disables them (local mode and tests).
+	Audit *audit.Logger
 	// RateLimits overrides inbound request rate limits; the zero value keeps
 	// the production defaults.
 	RateLimits RateLimitConfig
@@ -89,8 +100,8 @@ type Config struct {
 type App struct {
 	services         operational.OperationalServices
 	ownedOperational operational.Store
-	database         *postgresx.Store
-	ownedDatabase    *postgresx.Store
+	database         dashboardstore.Store
+	ownedDatabase    dashboardstore.Store
 	closeDatabase    sync.Once
 	closeError       error
 	databaseQueries  []query.Definition
@@ -118,19 +129,29 @@ type App struct {
 	cacheOnce        sync.Once
 	cacheMetrics     *queryCacheTelemetry
 	cacheError       error
+	githubResources  githubResourceCache
+	hostedCLI        *hostedCLI
 }
 
 func New(ctx context.Context, store operational.Store, config Config) (*App, error) {
 	if err := operational.CheckStore(store); err != nil {
 		return nil, fmt.Errorf("operational storage is required: %w", err)
 	}
-	if config.Database == nil {
-		return nil, errors.New("dashboard Postgres database is required")
+	postgresDatabase, isPostgres := config.Database.(*postgresx.Store)
+	sqliteDatabase, localSQLite := config.Database.(*sqlitex.Store)
+	if config.Database == nil || isPostgres && postgresDatabase == nil || localSQLite && sqliteDatabase == nil {
+		return nil, errors.New("dashboard database is required")
 	}
-	databaseQueries := []query.Definition{{
-		Name: "$records", From: "$domains",
-		Union: []string{"$tools", "$skills", "$friction", "$audits", "$issues"},
-	}}
+	if localSQLite {
+		if err := validateLocalSQLiteConfig(config); err != nil {
+			return nil, err
+		}
+		config.QueryCache.Disabled = true
+	}
+	if !isPostgres && (config.Collector != nil || config.SourceDirectory != "") {
+		return nil, errors.New("server ingestion and collection require PostgreSQL; local SQLite serves an existing snapshot")
+	}
+	var databaseQueries []query.Definition
 	if config.DatabaseQueriesPath != "" {
 		content, err := os.ReadFile(config.DatabaseQueriesPath)
 		if err != nil {
@@ -141,7 +162,6 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 			return nil, err
 		}
 		databaseQueries = append(databaseQueries, parsed...)
-		databaseQueries = append(databaseQueries, rawSourceDefinitions(parsed)...)
 	}
 	if err := validateHostProfile(store, &config); err != nil {
 		return nil, err
@@ -149,13 +169,16 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	services := store.OperationalServices()
 	capabilities := store.Capabilities()
 	requirements := operational.Requirements{
-		SingleProcess: (config.HostProfile.SingleProcess && config.SingleReplicaConfirmed) || config.HostProfile.IsolateProcessNamespace,
+		SingleProcess: localSQLite || (config.HostProfile.SingleProcess && config.SingleReplicaConfirmed) || config.HostProfile.IsolateProcessNamespace,
 		AllowVolatile: config.AllowVolatile || config.HostProfile.IsolateProcessNamespace,
 		OAuth:         config.HostProfile.Authentication == HostAuthenticationOAuth,
 		Collection:    config.Collector != nil,
 	}
 	if err := operational.ValidateOperationalServices(capabilities, services, requirements); err != nil {
 		return nil, fmt.Errorf("operational services: %w", err)
+	}
+	if services.Audit != nil && !config.Audit.Durable() {
+		config.Audit = config.Audit.WithStore(services.Audit)
 	}
 	if capabilities.Collection.Persistence == operational.PersistenceVolatile &&
 		capabilities.Collection.Scope != operational.ScopeUnsupported {
@@ -198,6 +221,11 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	if err != nil || !info.IsDir() {
 		return nil, errors.New("site directory must exist and contain the built dashboard")
 	}
+	if profile.Authentication == HostAuthenticationOAuth {
+		if err := validateHostedSite(config.SiteDirectory); err != nil {
+			return nil, err
+		}
+	}
 	if config.Logger == nil {
 		config.Logger = log.Default()
 	}
@@ -212,6 +240,9 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 			}
 		}
 		oauth = newGitHubOAuth(oauthConfig, services.Sessions, services.SessionInvalidator, services.Revocations)
+		if oauthConfig.LocalDevelopmentUser != "" {
+			config.Logger.Printf("single-user local OAuth development mode enabled; organization membership authorization is disabled")
+		}
 	} else {
 		accessToken = strings.TrimSpace(config.AccessToken)
 		if accessToken == "" {
@@ -231,7 +262,7 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		return nil, err
 	}
 	if config.Collector != nil {
-		collector, err := NewCollector(ctx, store, config.Database, *config.Collector, config.DatabaseQueriesPath)
+		collector, err := NewCollector(ctx, store, postgresDatabase, *config.Collector, config.DatabaseQueriesPath)
 		if err != nil {
 			return nil, fmt.Errorf("configure collection: %w", err)
 		}
@@ -251,7 +282,7 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	}
 	if reconciler == nil && config.SourceDirectory != "" {
 		reconciler = DirectoryReconciler{
-			Store: config.Database, SourceDirectory: config.SourceDirectory,
+			Store: postgresDatabase, SourceDirectory: config.SourceDirectory,
 			DatabaseQueriesPath: config.DatabaseQueriesPath,
 		}
 	}
@@ -284,6 +315,9 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		webhookSecret: []byte(config.WebhookSecret), actionsToken: actionsToken, actionsActor: actionsActor,
 		quota: quota, drain: make(chan struct{}),
 	}
+	if resources, ok := config.Database.(githubResourceStore); ok {
+		app.githubResources.store = resources
+	}
 	if os.Getenv("CAO_SERVER_LOGS_ENABLED") == "true" {
 		app.logs = logger.EnableBuffer()
 	}
@@ -295,29 +329,6 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		app.mcp = handler
 	}
 	return app, nil
-}
-
-func rawSourceDefinitions(definitions []query.Definition) []query.Definition {
-	var recordQuery *query.Definition
-	declared := make(map[string]bool, len(definitions))
-	for i := range definitions {
-		declared[definitions[i].Name] = true
-		if definitions[i].Name == "run-records" {
-			recordQuery = &definitions[i]
-		}
-	}
-	result := make([]query.Definition, 0, 9)
-	if recordQuery != nil {
-		for _, name := range []string{"domains", "tools", "skills", "friction", "audits", "issues"} {
-			if declared[name] {
-				continue
-			}
-			derived := *recordQuery
-			derived.Name, derived.From = name, "$"+name
-			result = append(result, derived)
-		}
-	}
-	return result
 }
 
 //nolint:contextcheck // Startup validation has no request context.
@@ -357,7 +368,12 @@ func (a *App) start(startupCtx, runtimeCtx context.Context) error {
 	}
 	serverLog.Printf("starting service initial_ingestion=%t", a.config.SourceDirectory != "")
 	if a.config.SourceDirectory != "" {
-		result, err := ingest.Run(startupCtx, a.database, a.config.SourceDirectory, ingest.Options{DatabaseQueriesPath: a.config.DatabaseQueriesPath})
+		database, ok := a.database.(*postgresx.Store)
+		if !ok {
+			cancel()
+			return errors.New("initial ingestion requires PostgreSQL")
+		}
+		result, err := ingest.Run(startupCtx, database, a.config.SourceDirectory, ingest.Options{DatabaseQueriesPath: a.config.DatabaseQueriesPath})
 		if err != nil {
 			cancel()
 			return fmt.Errorf("initial ingestion failed: %w", err)
@@ -671,6 +687,9 @@ func (a *App) Handler() http.Handler {
 	}
 	register("GET /api/v1/ingestion/health", a.collectionStatus)
 	register("GET /api/v1/github-quota/usage", a.gitHubQuotaUsage)
+	register("GET /api/v1/github/repos/{owner}/{repo}", a.gitHubRepositoryResource)
+	register("GET /api/v1/github/repos/{owner}/{repo}/releases/latest", a.gitHubReleaseResource)
+	a.registerHostedCLIRoutes(register)
 	mux.HandleFunc("/", a.static)
 	handler := a.preAuthRateLimit(a.cors(a.requireAccess(a.rateLimit(mux))))
 	switch a.config.HostProfile.Listener {
@@ -781,7 +800,7 @@ func (a *App) requireAccess(next http.Handler) http.Handler {
 			if (request.Method == http.MethodGet || request.Method == http.MethodHead) &&
 				constantTimeTokenEqual(request.URL.Query().Get("access_token"), a.accessToken) {
 				a.logAuthBranch("access.local_capability_accepted")
-				a.serveIndex(response, a.accessToken)
+				a.serveIndex(response, request, a.accessToken)
 				return
 			}
 			a.logAuthBranch("access.local_static_allowed")
@@ -828,7 +847,14 @@ func validLocalRequestHost(value string) bool {
 
 func (a *App) authorized(request *http.Request) bool {
 	token, ok := bearerToken(request)
-	return ok && constantTimeTokenEqual(token, a.accessToken)
+	if ok && constantTimeTokenEqual(token, a.accessToken) {
+		return true
+	}
+	if request.Method != http.MethodGet || !strings.HasPrefix(request.URL.Path, "/api/v1/github/") {
+		return false
+	}
+	cookie, err := request.Cookie("cao_github_local")
+	return err == nil && a.accessToken != "" && constantTimeTokenEqual(cookie.Value, a.githubLocalResourceSession())
 }
 
 type githubActionsActorContextKey struct{}
@@ -878,6 +904,11 @@ func (a *App) requireGitHubAccess(next http.Handler) http.Handler {
 		if !validProxyRequest(request, a.proxyPolicy()) {
 			a.logAuthBranch("access.proxy_rejected")
 			http.Error(response, "invalid forwarded request host", http.StatusMisdirectedRequest)
+			return
+		}
+		if !a.oauth.validLocalDevelopmentRequest(request) {
+			a.logAuthBranch("access.local_development_boundary_rejected")
+			writeError(response, http.StatusForbidden, "Local development OAuth requires a direct loopback HTTPS request")
 			return
 		}
 		if publicServiceEndpoint(request.URL.Path) ||
@@ -961,7 +992,7 @@ func (a *App) requireGitHubAccess(next http.Handler) http.Handler {
 		a.logAuthBranch("access.authorized")
 		request = request.WithContext(context.WithValue(request.Context(), oauthSessionContextKey{}, session))
 		if request.URL.Path == "/mcp" && a.mcp != nil && !a.adminAuthorized(request) {
-			writeError(response, http.StatusForbidden, "administrator access is required")
+			a.writeAdminDenied(response, request, "administrator access is required")
 			return
 		}
 		next.ServeHTTP(response, request)
@@ -998,14 +1029,51 @@ func (a *App) adminAuthorizedContext(ctx context.Context) bool {
 		a.logAuthBranch("admin.session_missing")
 		return false
 	}
+	if !a.adminListed(session) {
+		a.logAuthBranch("admin.denied")
+		return false
+	}
+	if !a.oauth.adminAssured(session, time.Now().UTC()) {
+		a.logAuthBranch("admin.step_up_required")
+		return false
+	}
+	a.logAuthBranch("admin.allowed")
+	return true
+}
+
+func (a *App) adminListed(session oauthSession) bool {
 	for _, login := range a.config.AdminUsers {
 		if strings.EqualFold(strings.TrimSpace(login), session.Login) {
-			a.logAuthBranch("admin.allowed")
 			return true
 		}
 	}
-	a.logAuthBranch("admin.denied")
 	return false
+}
+
+// writeAdminDenied distinguishes a configured administrator whose step-up
+// lapsed (401, re-authenticate) from a non-administrator (403).
+func (a *App) writeAdminDenied(response http.ResponseWriter, request *http.Request, message string) {
+	if a.oauth != nil {
+		session, ok := request.Context().Value(oauthSessionContextKey{}).(oauthSession)
+		reason := "not_admin"
+		if ok && a.adminListed(session) {
+			reason = "step_up_required"
+		}
+		_ = a.config.Audit.Record(request.Context(), "admin.denied", audit.Denied,
+			slog.String("actor", session.Login), slog.String("reason", reason),
+			slog.String("method", request.Method), slog.String("path", request.URL.Path))
+		if reason == "step_up_required" {
+			maxAge := int(a.oauth.adminReauthenticationMaxAge() / time.Second)
+			response.Header().Set("WWW-Authenticate", fmt.Sprintf(`CAO-Step-Up realm="admin", max_age=%d`, maxAge))
+			writeErrorPayload(response, http.StatusUnauthorized, map[string]string{
+				"error":          "Sign in again with two-factor authentication or single sign-on to perform administrator actions.",
+				"code":           "admin_step_up_required",
+				"reauthenticate": "/auth/login",
+			})
+			return
+		}
+	}
+	writeError(response, http.StatusForbidden, message)
 }
 
 func constantTimeTokenEqual(candidate, expected string) bool {
@@ -1119,9 +1187,9 @@ Server commit SHA: %s
 
 ## Agent documentation
 
-- CAO agent resources: https://githubnext.github.io/gh-aw-cao/agent/llms.txt
-- Published dashboard agent guide: https://githubnext.github.io/gh-aw-cao/cao/llms.txt
-- Agent analysis and MCP setup: https://githubnext.github.io/gh-aw-cao/agent-analysis/
+- CAO agent resources: https://githubnext.github.io/gh-cao/agent/llms.txt
+- Published dashboard agent guide: https://githubnext.github.io/gh-cao/cao/llms.txt
+- Agent analysis and MCP setup: https://githubnext.github.io/gh-cao/agent-analysis/
 
 ## Configure MCP
 
@@ -1134,7 +1202,7 @@ Other hosted clients must run in GitHub Actions on the authorized repository's d
 send a repository-scoped GITHUB_TOKEN as a bearer token and an Actions OIDC token
 in X-GitHub-OIDC-Token (audience https://cao.githubnext.com).
 See the agent analysis guide and server setup documentation:
-https://github.com/githubnext/gh-aw-cao/blob/main/server/README.md#local-mcp-endpoint
+https://github.com/githubnext/gh-cao/blob/main/server/README.md#local-mcp-endpoint
 Never put credentials in a URL or in source control.
 `, revision)
 }
@@ -1460,6 +1528,9 @@ func (loader *databaseLoader) ExecuteSQLPlan(definitions []query.Definition, req
 }
 
 func (loader *databaseLoader) runtimeSource(ctx context.Context, name string, definitions []query.Definition) (model.Source, error) {
+	if name == "cli-commands" || name == "cli-command-summary" || name == "cli-command-statuses" {
+		return unavailableSource(name), nil
+	}
 	if name == simulationDaysSourceName {
 		return simulationDaysSource(), nil
 	}
@@ -1504,7 +1575,8 @@ func (loader *databaseLoader) runtimeSource(ctx context.Context, name string, de
 // RuntimeQuerySourceNames lists sources resolved by the server rather than
 // stored as Postgres dashboard entities.
 func RuntimeQuerySourceNames() []string {
-	return []string{collectionHealthSourceName, gitHubQuotaUsageSourceName, marketplace.SourceName, simulationDaysSourceName}
+	return []string{collectionHealthSourceName, gitHubQuotaUsageSourceName, marketplace.SourceName, simulationDaysSourceName,
+		"cli-commands", "cli-command-summary", "cli-command-statuses"}
 }
 
 func unavailableSource(name string) model.Source {
@@ -1587,9 +1659,13 @@ func ResolveQueryContext(definitions []query.Definition, evaluatedAt string) {
 			definitions[definitionIndex].Compute[computedIndex].Args = slices.Clone(definitions[definitionIndex].Compute[computedIndex].Args)
 			for argumentIndex := range definitions[definitionIndex].Compute[computedIndex].Args {
 				argument := &definitions[definitionIndex].Compute[computedIndex].Args[argumentIndex]
-				if argument.Context == "time-end" {
+				switch argument.Context {
+				case "time-end":
 					argument.Context = ""
 					argument.Value = evaluatedAt
+				case "time-start":
+					argument.Context = ""
+					argument.Value = nil
 				}
 			}
 		}
@@ -1605,49 +1681,80 @@ func (a *App) static(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	clean := filepath.Clean(strings.TrimPrefix(request.URL.Path, "/"))
-	if clean == "." {
+	clean := strings.TrimPrefix(request.URL.Path, "/")
+	if clean == "" {
 		clean = "index.html"
 	}
-	path := filepath.Join(a.config.SiteDirectory, clean)
-	relative, err := filepath.Rel(a.config.SiteDirectory, path)
-	if err != nil || strings.HasPrefix(relative, "..") {
+	if !filepath.IsLocal(clean) {
 		http.NotFound(response, request)
 		return
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		path = filepath.Join(a.config.SiteDirectory, "index.html")
-	}
-	if filepath.Base(path) == "index.html" {
-		a.serveIndex(response, "")
+	root, err := os.OpenRoot(a.config.SiteDirectory)
+	if err != nil {
+		http.NotFound(response, request)
 		return
 	}
-	if contentType := mime.TypeByExtension(filepath.Ext(path)); contentType != "" {
-		response.Header().Set("Content-Type", contentType)
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			a.serveIndex(response, request, "")
+		} else {
+			http.NotFound(response, request)
+		}
+		return
 	}
-	http.ServeFile(response, request, path)
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		http.NotFound(response, request)
+		return
+	}
+	if info.IsDir() || filepath.Base(clean) == "index.html" {
+		a.serveIndex(response, request, "")
+		return
+	}
+	http.ServeContent(response, request, info.Name(), info.ModTime(), file)
 }
 
-func (a *App) serveIndex(response http.ResponseWriter, accessToken string) {
-	path := filepath.Join(a.config.SiteDirectory, "index.html")
-	// #nosec G304,G703 -- path is constrained to the configured site directory.
-	content, err := os.ReadFile(path)
+func (a *App) serveIndex(response http.ResponseWriter, request *http.Request, accessToken string) {
+	root, err := os.OpenRoot(a.config.SiteDirectory)
+	if err != nil {
+		http.Error(response, "not found", http.StatusNotFound)
+		return
+	}
+	defer func() { _ = root.Close() }()
+	content, err := root.ReadFile("index.html")
 	if err != nil {
 		http.Error(response, "not found", http.StatusNotFound)
 		return
 	}
 	html := string(content)
-	injections := `<meta name="dashboard-data-backend" content="server-http">`
+	storageBackend := "postgres"
+	if _, local := a.database.(*sqlitex.Store); local {
+		storageBackend = "sqlite"
+	}
+	injections := `<meta name="dashboard-data-backend" content="server-http"><meta name="dashboard-storage-backend" content="` + storageBackend + `">`
 	if a.oauth != nil {
 		injections += `<meta name="cao-auth-mode" content="github">`
+		if a.adminAuthorized(request) {
+			injections += `<script>globalThis.__DASHBOARD_ADMIN__ = true;</script>`
+		}
+		if a.hostedCLI != nil {
+			injections += `<script>globalThis.__CLI_QUEUE__ = true;</script>`
+		}
 		injections += `<script>const m=document.cookie.match(/(?:^|;\s*)cao_csrf=([^;]+)/);if(m){const c=decodeURIComponent(m[1]);const f=window.fetch.bind(window);window.fetch=(i,n={})=>{const u=typeof i==="string"?i:i.url;if(u&&new URL(u,location.href).origin===location.origin){const h=new Headers(n.headers||{});if(!h.has("X-CSRF-Token"))h.set("X-CSRF-Token",c);n={...n,headers:h};}return f(i,n);};}</script>`
 	} else if accessToken != "" {
-		token, _ := json.Marshal(accessToken)
-		injections += fmt.Sprintf(
-			`<script>localStorage.setItem("cao-dashboard-access-token",%s);const u=new URL(location.href);u.searchParams.delete("access_token");history.replaceState(null,"",u.pathname+u.search+u.hash);</script>`,
-			token,
-		)
+		http.SetCookie(response, &http.Cookie{
+			Name: "cao_github_local", Value: a.githubLocalResourceSession(), Path: "/api/v1/github/",
+			HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
+		})
+		var bootstrap strings.Builder
+		if err := localAccessBootstrap.Execute(&bootstrap, accessToken); err != nil {
+			writeError(response, http.StatusInternalServerError, "dashboard bootstrap is unavailable")
+			return
+		}
+		injections += bootstrap.String()
 	}
 	if index := strings.Index(strings.ToLower(html), "</head>"); index >= 0 {
 		html = html[:index] + injections + html[index:]

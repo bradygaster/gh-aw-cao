@@ -7,6 +7,8 @@ import { createDebug } from '../../debug.js';
 import { viewBackendAvailable } from '../../view-availability.js';
 import { resolveDashboardQuerySources } from './declarative.js';
 import { dashboardViewSourceNames as getViewSources, viewFilterControls, viewFilterSourceNames } from '../../view-filter-contract.js';
+import { chartFacet } from '../../chart-facet.js';
+import { compileChartFacetQuery } from './chart-facet-compiler.js';
 
 const debugViewPayloadCompiler = createDebug('view-payload-compiler');
 
@@ -44,7 +46,7 @@ export function dashboardViewAliasName(pageId, view, viewIndex, sourceName, sour
 /**
  * @param {unknown} page
  * @param {string} pageId
- * @param {{ routeParameters?: Record<string, string>, queryContext?: GlobalQueryContext, evaluatedAt?: string, queries?: unknown, views?: unknown, viewId?: string, sourceNames?: Iterable<string>, backend?: import('../../view-availability.js').DashboardDataBackend, partial?: boolean }} [options]
+ * @param {{ routeParameters?: Record<string, string>, queryContext?: GlobalQueryContext, evaluatedAt?: string, queries?: unknown, views?: unknown, viewId?: string, viewIds?: Iterable<string>, sourceNames?: Iterable<string>, backend?: import('../../view-availability.js').DashboardDataBackend, partial?: boolean }} [options]
  * @returns {{ aliases: string[], queries: Array<Record<string, unknown>>, replacedSources: string[] }}
  */
 export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
@@ -54,10 +56,13 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
     ...(options.queryContext?.formValues ?? {})
   };
   const views = Array.isArray(payload.views) ? payload.views : [];
+  const viewMode = payload['query-binding'] === 'page' ? undefined : options.queryContext?.viewMode;
+  const selectedViewIds = options.viewIds ? new Set(options.viewIds) : null;
   const activeViews = views.filter((view, index) => {
     if (options.backend && !viewBackendAvailable(view, options.backend)) return false;
+    if (selectedViewIds && (!isPlainObject(view) || !selectedViewIds.has(String(view.id ?? `view-${index + 1}`)))) return false;
     if (options.viewId) return isPlainObject(view) && (view.id ?? `view-${index + 1}`) === options.viewId;
-    return !options.queryContext?.viewMode || viewMatchesMode(view, options.queryContext.viewMode);
+    return !viewMode || viewMatchesMode(view, viewMode);
   });
   const requestedSources = options.sourceNames ? new Set(options.sourceNames) : null;
   const relevantSources = activeViews.flatMap((view) => getViewSources(view)
@@ -85,12 +90,16 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
   /** @type {Array<Record<string, unknown>>} */
   const queries = [];
   const replacedSources = new Set();
+  const unaliasedSources = new Set();
+  /** @type {Map<string, { replacesSource: boolean, dependencies: Array<Record<string, unknown>>, query: Record<string, unknown> }>} */
+  const scopedGraphs = new Map();
 
   views.forEach((view, viewIndex) => {
     if (options.backend && !viewBackendAvailable(view, options.backend)) return;
+    if (selectedViewIds && (!isPlainObject(view) || !selectedViewIds.has(String(view.id ?? `view-${viewIndex + 1}`)))) return;
     if (options.viewId && (!isPlainObject(view)
       || (view.id ?? `view-${viewIndex + 1}`) !== options.viewId)) return;
-    if (!options.viewId && options.queryContext?.viewMode && !viewMatchesMode(view, options.queryContext.viewMode)) return;
+    if (!options.viewId && viewMode && !viewMatchesMode(view, viewMode)) return;
     const sources = getViewSources(view);
     if (sources.length === 0) return;
     const viewData = isPlainObject(view) && isPlainObject(view.data)
@@ -126,10 +135,20 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
         ...compileRoutePredicates(routeField, routeValue),
         ...localPredicates
       ];
-      if (usesNativeSource(view, sourceName, predicates, useQueryContext ? options.queryContext : undefined, resolvedQueries)) return;
+      if (usesNativeSource(view, sourceName, predicates, useQueryContext ? options.queryContext : undefined, resolvedQueries)) {
+        unaliasedSources.add(sourceName);
+        return;
+      }
       const alias = dashboardViewAliasName(pageId, view, viewIndex, sourceName, sourceIndex);
       aliases.push(alias);
-      const compiled = compileAliasedQuery(querySource, alias, predicates, useQueryContext && !isOptions ? options.queryContext?.search : undefined, useQueryContext && !isOptions ? options.queryContext?.orderBy : undefined, options.evaluatedAt, resolvedQueries, isOptions);
+      const search = useQueryContext && !isOptions ? options.queryContext?.search : undefined;
+      const orderBy = useQueryContext && !isOptions ? options.queryContext?.orderBy : undefined;
+      const graphKey = JSON.stringify([querySource, predicates, search, orderBy, isOptions]);
+      const shared = scopedGraphs.get(graphKey);
+      const compiled = shared
+        ? { ...shared, dependencies: [], query: { ...shared.query, name: alias } }
+        : compileAliasedQuery(querySource, alias, predicates, search, orderBy, options.evaluatedAt, resolvedQueries, isOptions);
+      if (!shared) scopedGraphs.set(graphKey, { ...compiled, query: { ...compiled.query } });
       /** @type {Record<string, unknown>} */
       const query = compiled.query;
       if (isPlainObject(view) && view.mark === 'element' && Number.isSafeInteger(viewData?.limit)) {
@@ -138,11 +157,32 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
           typeof query.limit === 'number' ? query.limit : Infinity
         );
       }
-      queries.push(...compiled.dependencies, query);
+      if (isPlainObject(view) && view.mark === 'chart' && chartFacet(view) && !isOptions) {
+        const facetView = view.chart === 'treemap' && useQueryContext && options.queryContext?.orderBy?.length
+          ? { ...view, data: { ...viewData, 'order-by': options.queryContext.orderBy } }
+          : view;
+        queries.push(...compiled.dependencies, ...compileChartFacetQuery(facetView, query));
+      } else if (isPlainObject(view) && view.mark === 'chart' && view.chart === 'treemap' && !isOptions) {
+        // Treemaps consume ready-to-render rows, never presenter-side ordering or limiting.
+        const inputName = `${alias}:input`;
+        const limit = Number(viewData?.limit);
+        const order = useQueryContext && options.queryContext?.orderBy?.length
+          ? options.queryContext.orderBy
+          : viewData?.['order-by'];
+        queries.push(...compiled.dependencies, { ...query, name: inputName }, {
+          name: alias,
+          from: inputName,
+          ...(Array.isArray(order) ? { 'order-by': order } : {}),
+          ...(Number.isSafeInteger(limit) && limit > 0 ? { limit } : {})
+        });
+      } else {
+        queries.push(...compiled.dependencies, query);
+      }
       if (compiled.replacesSource || querySource !== sourceName) replacedSources.add(sourceName);
     });
   });
 
+  for (const source of unaliasedSources) replacedSources.delete(source);
   debugViewPayloadCompiler({
     event: 'compiled',
     pageId,
@@ -154,6 +194,27 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
   });
 
   return { aliases, queries, replacedSources: [...replacedSources] };
+}
+
+/**
+ * @param {unknown} page
+ * @param {{ views?: unknown, viewId?: string, sourceNames: string[], backend?: import('../../view-availability.js').DashboardDataBackend }} options
+ */
+export function dashboardPartialViewSources(page, options) {
+  const payload = pagePayload(page, options.views);
+  if (!options.viewId && payload['query-binding'] !== 'page') return [];
+  if (options.viewId && options.sourceNames.length !== 1) return [];
+  return (payload.views ?? []).flatMap((view, index) => {
+    if (options.backend && !viewBackendAvailable(view, options.backend)) return [];
+    if (!isPlainObject(view) || !isPlainObject(view.data)) return [];
+    const viewId = typeof view.id === 'string' ? view.id : `view-${index + 1}`;
+    if (options.viewId && options.viewId !== viewId) return [];
+    const source = view.data.source;
+    const partialSource = view.data['partial-source'];
+    return typeof source === 'string' && options.sourceNames.includes(source)
+      && getViewSources(view).length === 1 && typeof partialSource === 'string'
+      ? [{ viewId, source, partialSource }] : [];
+  });
 }
 
 /** @param {unknown} form */
@@ -228,12 +289,13 @@ export function resolveDashboardQueryParameters(definitions, values) {
  * @param {unknown} definitions
  */
 function usesNativeSource(view, sourceName, predicates, queryContext, definitions) {
+  if (isPlainObject(view) && chartFacet(view)) return false;
   const declared = Array.isArray(definitions)
     && definitions.some((definition) => isPlainObject(definition) && definition.name === sourceName);
   const data = isPlainObject(view) && isPlainObject(view.data) ? view.data : null;
-  if (declared && isPlainObject(view) && view.mark !== 'element' && data?.['query-context'] === false && predicates.length === 0
+  if (declared && isPlainObject(view) && view.mark !== 'element' && view.controls !== 'filter-only' && view.chart !== 'treemap' && data?.['query-context'] === false && predicates.length === 0
       && !(queryContext?.search?.query.trim()) && !(queryContext?.orderBy?.length)
-      && !hasRelativeQueryTime(sourceName, definitions)) return true;
+      && !requiresContextualQuery(sourceName, definitions)) return true;
   return isPlainObject(view)
     && view.mark === 'list'
     && view['lazy-list'] !== true
@@ -244,7 +306,7 @@ function usesNativeSource(view, sourceName, predicates, queryContext, definition
 }
 
 /** @param {string} name @param {unknown} definitions */
-function hasRelativeQueryTime(name, definitions) {
+function requiresContextualQuery(name, definitions) {
   const byName = new Map(Array.isArray(definitions)
     ? definitions.filter(isPlainObject).map((definition) => [definition.name, definition])
     : []);
@@ -257,6 +319,7 @@ function hasRelativeQueryTime(name, definitions) {
     const definition = byName.get(current);
     if (!definition) continue;
     if (isPlainObject(definition.time) && typeof definition.time.range === 'string') return true;
+    if (Array.isArray(definition.parameters) && definition.parameters.length > 0) return true;
     pending.push(...[
       definition.from,
       ...(Array.isArray(definition.union) ? definition.union : []),
@@ -361,7 +424,7 @@ function compileAliasedQuery(sourceName, alias, predicates, search, orderBy, eva
       'order-by': undefined,
       limit: undefined,
       ...(rootPredicates.length > 0 ? { filter: { predicates: rootPredicates } } : { filter: undefined })
-    }, queryTimeEnd(rootPredicates) ?? evaluatedAt);
+    }, queryTimeEnd(rootPredicates) ?? evaluatedAt, queryTimeStart(rootPredicates));
     const outputPredicates = predicates.filter((predicate) => (
       predicate.field !== '@time' && (hasWindow || postQueryFields.has(predicate.field))
     ));
@@ -424,7 +487,7 @@ function compileAliasedQuery(sourceName, alias, predicates, search, orderBy, eva
     evaluatedAt
   );
   const executableSourceQuery = sourceQuery
-    ? resolveQueryContext(sourceQuery, queryTimeEnd(combinedPredicates) ?? evaluatedAt)
+    ? resolveQueryContext(sourceQuery, queryTimeEnd(combinedPredicates) ?? evaluatedAt, queryTimeStart(combinedPredicates))
     : undefined;
   const runtimeSearch = search && search.query.trim() && search.fields.length > 0
     ? { fields: search.fields, query: search.query.trim() }
@@ -473,6 +536,7 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
   const structuralSources = new Set(['campaigns', 'repositories', 'workflows']);
   const rootComputedName = `${alias}:root`;
   const temporalPredicates = predicates.filter((predicate) => predicate.field === '@time');
+  const analysisEnd = queryTimeEnd(temporalPredicates) ?? evaluatedAt;
   /** @type {Array<Record<string, unknown>>} */
   const dependencies = [];
   /** @type {Map<string, string>} */
@@ -493,10 +557,12 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
   /**
    * @param {string} name
    * @param {Array<Record<string, unknown>>} outputPredicates
+   * @param {Array<Record<string, unknown>>} inheritedTime
+   * @param {boolean} retainedHistory
    * @returns {string}
    */
-  const compile = (name, outputPredicates) => {
-    const key = JSON.stringify([name, outputPredicates]);
+  const compile = (name, outputPredicates, inheritedTime = temporalPredicates, retainedHistory = false) => {
+    const key = JSON.stringify([name, outputPredicates, inheritedTime, retainedHistory]);
     const existing = compiled.get(key);
     if (existing) return existing;
     const definition = byName.get(name);
@@ -507,13 +573,18 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
     const scoped = allocateName(name);
     compiled.set(key, scoped);
     const from = definition.from;
+    const inputTime = isPlainObject(definition.time) && definition.time.range === 'all'
+      ? applyQueryTime(inheritedTime, definition.time, analysisEnd)
+      : inheritedTime;
+    const includeHistory = retainedHistory || (isPlainObject(definition.time) && definition.time.range === 'all');
     // Option queries scope their input rows before projecting distinct values.
     const inputScoped = scopeInput && name === sourceName;
-    const inputPredicates = inputScoped ? outputPredicates : predicatesBeforeQuery(definition, outputPredicates);
+    const inputPredicates = (inputScoped ? outputPredicates : predicatesBeforeQuery(definition, outputPredicates))
+      .filter((predicate) => !includeHistory || predicate.field !== '@time');
     const retainedPredicates = inputScoped ? [] : outputPredicates;
     /** @param {string} source @param {number} inputIndex */
     const compileInput = (source, inputIndex) => {
-      if (byName.has(source)) return compile(source, inputPredicates);
+      if (byName.has(source)) return compile(source, inputPredicates, inputTime, includeHistory);
       if (inputPredicates.length === 0) return source;
       const inputName = `${scoped}:input-${inputIndex + 1}`;
       dependencies.push({
@@ -530,7 +601,7 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
     const compiledJoins = Array.isArray(definition.joins)
       ? definition.joins.map((join) => (
           isPlainObject(join) && typeof join.source === 'string'
-            ? { ...join, source: compile(join.source, []) }
+            ? { ...join, source: compile(join.source, joinKeyPredicates(join, inputPredicates), inputTime, includeHistory) }
             : join
         ))
       : undefined;
@@ -540,12 +611,12 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
       ? declaredFilter.predicates.filter(isPlainObject)
       : [];
     const requestPredicates = !byName.has(from) && !structuralSources.has(from)
-      ? temporalPredicates
+      ? inputTime
       : [];
     const combinedPredicates = applyQueryTime(
       [...declaredPredicates, ...requestPredicates],
       definition.time,
-      evaluatedAt
+      queryTimeEnd(inputTime) ?? analysisEnd
     );
     const filter = {
       ...declaredFilter,
@@ -558,7 +629,8 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
       ...(compiledUnion ? { union: compiledUnion } : {}),
       ...(compiledJoins ? { joins: compiledJoins } : {}),
       ...(Object.keys(filter).length > 0 ? { filter } : { filter: undefined })
-    }, queryTimeEnd(combinedPredicates) ?? evaluatedAt);
+    }, queryTimeEnd(combinedPredicates) ?? queryTimeEnd(inputTime) ?? analysisEnd,
+    queryTimeStart(combinedPredicates) ?? queryTimeStart(inputTime));
     dependencies.push(query);
     if (retainedPredicates.length > 0) {
       dependencies.push({
@@ -597,13 +669,18 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
  */
 function predicatesBeforeQuery(definition, predicates) {
   if (definition.limit !== undefined
-      || (Array.isArray(definition.window) && definition.window.length > 0)
       || definition['temporal-series']
-      || (Array.isArray(definition.predict) && definition.predict.length > 0)
-      || (Array.isArray(definition.joins) && definition.joins.length > 0)) return [];
-  const computed = new Set(Array.isArray(definition.compute)
-    ? definition.compute.filter(isPlainObject).map((value) => value.as)
+      || definition.facet
+      || (Array.isArray(definition.predict) && definition.predict.length > 0)) return [];
+  const computed = new Set(['compute', 'window'].flatMap((clause) => (
+    Array.isArray(definition[clause]) ? definition[clause].filter(isPlainObject).map((value) => value.as) : []
+  )));
+  const joined = new Set(Array.isArray(definition.joins)
+    ? definition.joins.filter(isPlainObject).flatMap((join) => (
+        Array.isArray(join.fields) ? join.fields.filter(isPlainObject).map((value) => value.as ?? value.field) : []
+      ))
     : []);
+  const windows = Array.isArray(definition.window) ? definition.window.filter(isPlainObject) : [];
   const groups = isPlainObject(definition.aggregate)
     ? new Set(Array.isArray(definition.aggregate.by) ? definition.aggregate.by : [])
     : null;
@@ -612,8 +689,28 @@ function predicatesBeforeQuery(definition, predicates) {
     : null;
   return predicates.flatMap((predicate) => {
     const field = selected ? selected.get(predicate.field) : predicate.field;
-    if (typeof field !== 'string' || computed.has(field) || (groups && !groups.has(field))) return [];
+    if (typeof field !== 'string' || computed.has(field) || joined.has(field)
+        || (groups && !groups.has(field))
+        || windows.some((window) => !Array.isArray(window.groupby) || !window.groupby.includes(field))) return [];
     return [{ ...predicate, field }];
+  });
+}
+
+/**
+ * Only mandatory equality on a preserved left key can narrow a join's right
+ * input. Other right-side evidence (including cross-run baselines) stays intact.
+ * @param {Record<string, unknown>} join
+ * @param {Array<Record<string, unknown>>} predicates
+ */
+function joinKeyPredicates(join, predicates) {
+  if (!Array.isArray(join.on)) return [];
+  const keys = join.on;
+  return predicates.flatMap((predicate) => {
+    if (predicate.optional || !Object.hasOwn(predicate, 'equals')) return [];
+    const key = keys.find((pair) => isPlainObject(pair) && pair.left === predicate.field);
+    return isPlainObject(key) && typeof key.right === 'string'
+      ? [{ ...predicate, field: key.right }]
+      : [];
   });
 }
 
@@ -621,6 +718,9 @@ function predicatesBeforeQuery(definition, predicates) {
 function applyQueryTime(predicates, time, evaluatedAt) {
   if (!isPlainObject(time) || typeof time.range !== 'string') return predicates;
   const end = queryTimeEnd(predicates) ?? evaluatedAt;
+  if (time.range === 'all') {
+    return predicates.filter((predicate) => predicate.field !== '@time');
+  }
   const match = /^([1-9][0-9]*)(h|d|w)$/.exec(time.range);
   if (!end || !match) return predicates;
   const unitHours = { h: 1, d: 24, w: 168 }[match[2]];
@@ -640,8 +740,14 @@ function queryTimeEnd(predicates) {
   return typeof end === 'string' ? end : undefined;
 }
 
-/** @param {Record<string, unknown>} query @param {string | undefined} timeEnd */
-function resolveQueryContext(query, timeEnd) {
+/** @param {Array<Record<string, unknown>>} predicates */
+function queryTimeStart(predicates) {
+  const start = predicates.findLast((predicate) => predicate.field === '@time' && typeof predicate.gte === 'string')?.gte;
+  return typeof start === 'string' ? start : undefined;
+}
+
+/** @param {Record<string, unknown>} query @param {string | undefined} timeEnd @param {string | undefined} [timeStart] */
+function resolveQueryContext(query, timeEnd, timeStart) {
   if (!Array.isArray(query.compute)) return query;
   return {
     ...query,
@@ -652,6 +758,8 @@ function resolveQueryContext(query, timeEnd) {
           args: computed.args.map((argument) => (
             isPlainObject(argument) && argument.context === 'time-end'
               ? { value: timeEnd ?? '' }
+              : isPlainObject(argument) && argument.context === 'time-start'
+                ? { value: timeStart ?? '' }
               : argument
           ))
         })
@@ -788,6 +896,7 @@ function pagePayload(page, reusableViews) {
     builtInDefinition?.views ?? (Array.isArray(configured.views) ? configured.views : [])
   );
   return {
+    'query-binding': configured['query-binding'],
     views: views.map((view) => typeof view === 'string' ? viewsById.get(view) ?? view : view),
     route: isPlainObject(configured.route) ? configured.route : null,
     form: isPlainObject(configured.form) ? configured.form : null

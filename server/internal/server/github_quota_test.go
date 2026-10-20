@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/githubquota"
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
-	"github.com/githubnext/gh-aw-cao/server/internal/redisx"
+	"github.com/githubnext/gh-cao/server/internal/githubquota"
+	"github.com/githubnext/gh-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/redisx"
 )
 
 type usageQuotaStore struct {
@@ -62,7 +62,7 @@ func TestGitHubQuotaUsageRequiresHostedAdministrator(t *testing.T) {
 	}
 
 	request = httptest.NewRequestWithContext(
-		context.WithValue(t.Context(), oauthSessionContextKey{}, oauthSession{Login: "operator"}),
+		context.WithValue(t.Context(), oauthSessionContextKey{}, assuredSession("operator")),
 		http.MethodGet, "/api/v1/github-quota/usage", nil,
 	)
 	response = httptest.NewRecorder()

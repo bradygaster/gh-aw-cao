@@ -4,33 +4,197 @@ import test from 'node:test';
 
 const bicep = await readFile(new URL('../../server/azure/main.bicep', import.meta.url), 'utf8');
 const collector = await readFile(new URL('../../server/azure/collector.bicep', import.meta.url), 'utf8');
+const functionRoles = await readFile(new URL('../../server/azure/function-roles.bicep', import.meta.url), 'utf8');
 const generated = JSON.parse(await readFile(new URL('../../server/azure/main.json', import.meta.url), 'utf8'));
+const resources = Object.values(generated.resources);
+const profile = JSON.parse(await readFile(new URL('../../.github/workflows/cao.azure.json', import.meta.url), 'utf8'));
+const network = await readFile(new URL('../../server/azure/network.bicep', import.meta.url), 'utf8');
+const ingestion = await readFile(new URL('../../server/azure/ingestion.bicep', import.meta.url), 'utf8');
+const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
+const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
 
-test('Azure shares one positive Redis memory budget across dashboard and collection roles', () => {
-  for (const source of [bicep, collector]) {
-    assert.match(source, /@minValue\(1\)\s*@description\('[^']*'\)\s*param redisMaxBytes int = 200000000/);
-    assert.match(source, /name:\s*'CAO_REDIS_MAX_BYTES'\s+value:\s*string\(redisMaxBytes\)/);
+test('Documented bootstrap supplies required inputs and explicit reviewed retention', () => {
+  const command = deploymentDocs.match(/```bash\n(\s*az deployment group create[\s\S]*?)```/)?.[1];
+  assert.ok(command, 'expected the documented bootstrap command');
+  const supplied = new Set([...command.matchAll(/^\s+(\w+)=/gm)].map((match) => match[1]));
+  for (const secret of ['githubClientSecret', 'sessionSecret', 'postgresAdministratorPassword']) {
+    supplied.add(secret);
   }
-  assert.match(bicep, /redisMaxBytes:\s*redisMaxBytes/);
-  assert.equal(generated.parameters.redisMaxBytes.defaultValue, 200000000);
-  assert.equal(generated.parameters.redisMaxBytes.minValue, 1);
-  const collection = generated.resources.find((resource) => resource.type === 'Microsoft.Resources/deployments' && resource.name === 'collection-workers');
-  assert.equal(collection.properties.parameters.redisMaxBytes.value, "[parameters('redisMaxBytes')]");
-  assert.equal(collection.properties.template.parameters.redisMaxBytes.defaultValue, 200000000);
-  assert.equal(collection.properties.template.parameters.redisMaxBytes.minValue, 1);
+  assert.equal(supplied.has('postgresRunRetentionDays'), true);
+  const missing = Object.entries(generated.parameters)
+    .filter(([name, parameter]) => !supplied.has(name)
+      && !Object.hasOwn(parameter, 'defaultValue'))
+    .map(([name]) => name);
+  assert.deepEqual(missing, [], 'the bootstrap must supply every parameter without a default');
 });
 
-test('Azure dashboard Bicep uses module-free Redis with TLS app settings', () => {
-  assert.match(bicep, /Experimental Azure Functions deployment baseline/);
-  assert.match(bicep, /Review and validate tenant-specific security, compliance, networking/);
-  assert.match(bicep, /Microsoft\.Cache\/redisEnterprise@/);
-  assert.doesNotMatch(bicep, /modules:\s*\[/);
-  assert.match(bicep, /param redisSkuName string = 'Balanced_B0'/);
-  assert.match(bicep, /clientProtocol:\s*'Encrypted'/);
-  assert.match(bicep, /publicNetworkAccess:\s*'Disabled'/);
-  assert.match(bicep, /CAO_REDIS_URL/);
-  assert.match(bicep, /@Microsoft\.KeyVault\(SecretUri=/);
-  assert.match(bicep, /CAO_DASHBOARD_HOSTING[\s\S]*azure-functions/);
+test('Azure ingress defaults to public main site behind GitHub sign-in with default-deny SCM', () => {
+  assert.equal(generated.parameters.functionPublicNetworkAccess.defaultValue, 'Enabled');
+  assert.deepEqual(generated.parameters.functionPublicNetworkAccess.allowedValues, ['Disabled', 'Enabled']);
+  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.type, 'string');
+  assert.equal(generated.parameters.functionAccessRestrictionsDefaultAction.defaultValue, 'Allow');
+  assert.deepEqual(generated.parameters.functionAccessRestrictionsDefaultAction.allowedValues, ['Allow', 'Deny']);
+  assert.deepEqual(generated.parameters.functionAccessRestrictions.defaultValue, []);
+  assert.deepEqual(generated.parameters.functionScmAccessRestrictions.defaultValue, []);
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.type, 'bool');
+  assert.equal(generated.parameters.functionScmAccessRestrictionsUseMain.defaultValue, false);
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
+  assert.equal(app.properties.siteConfig.ipSecurityRestrictionsDefaultAction, "[parameters('functionAccessRestrictionsDefaultAction')]");
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictionsUseMain, "[parameters('functionScmAccessRestrictionsUseMain')]");
+  assert.equal(app.properties.siteConfig.scmIpSecurityRestrictions, "[parameters('functionScmAccessRestrictions')]");
+  assert.equal(app.properties.siteConfig.ipSecurityRestrictions, "[parameters('functionAccessRestrictions')]");
+});
+
+test('Documented public-main opt-in uses Allow with no custom rules and independent default-deny SCM', () => {
+  const example = deploymentDocs.match(/#### Explicit public-main access with independently restricted SCM[\s\S]*?```json\n([\s\S]*?)```/)?.[1];
+  assert.ok(example, 'expected a generic public-main parameter example');
+  const parameters = JSON.parse(example);
+  assert.deepEqual(parameters.functionPublicNetworkAccess, { value: 'Enabled' });
+  assert.deepEqual(parameters.functionAccessRestrictionsDefaultAction, { value: 'Allow' });
+  assert.deepEqual(parameters.functionAccessRestrictions, { value: [] });
+  assert.deepEqual(parameters.functionScmAccessRestrictionsUseMain, { value: false });
+  assert.deepEqual(parameters.functionScmAccessRestrictions.value, [{
+    name: 'approved-admin-network',
+    ipAddress: '192.0.2.0/24',
+    action: 'Allow',
+    priority: 100,
+  }]);
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  const config = app.properties.siteConfig;
+  for (const [property, parameter] of [
+    ['ipSecurityRestrictionsDefaultAction', 'functionAccessRestrictionsDefaultAction'],
+    ['ipSecurityRestrictions', 'functionAccessRestrictions'],
+    ['scmIpSecurityRestrictions', 'functionScmAccessRestrictions'],
+    ['scmIpSecurityRestrictionsUseMain', 'functionScmAccessRestrictionsUseMain'],
+  ]) {
+    assert.equal(config[property], `[parameters('${parameter}')]`);
+    assert.equal(Object.hasOwn(parameters, parameter), true);
+  }
+  assert.equal(app.properties.publicNetworkAccess, "[parameters('functionPublicNetworkAccess')]");
+  assert.equal(config.scmIpSecurityRestrictionsDefaultAction, 'Deny');
+  assert.equal(JSON.stringify(generated).split("[parameters('functionAccessRestrictionsDefaultAction')]").length - 1, 1,
+    'the opt-in default action must be wired only to the main site');
+  assert.equal(app.properties.httpsOnly, true);
+  assert.equal(config.minTlsVersion, '1.2');
+  assert.equal(config.ftpsState, 'Disabled');
+});
+
+test('Every Azure role explicitly preserves the run window for linked evidence', () => {
+  for (const source of [bicep, ingestion, collector]) {
+    assert.match(source, /name:\s*'CAO_POSTGRES_LINKED_RETENTION_DAYS'\s+value:\s*string\(postgresRunRetentionDays\)/);
+  }
+  const app = resources.find((resource) => resource.type === 'Microsoft.Web/sites');
+  for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+    assert.ok(app.properties.siteConfig.appSettings.includes(`createObject('name', '${setting}', 'value', string(parameters('postgresRunRetentionDays')))`));
+  }
+  let checkedContainers = 0;
+  for (const name of ['snapshot-ingestion', 'collection-workers']) {
+    const module = resources.find((resource) => resource.name === name);
+    assert.equal(module.properties.parameters.postgresRunRetentionDays.value, "[parameters('postgresRunRetentionDays')]");
+    const template = module.properties.template;
+    const workers = Object.values(template.resources).filter((resource) =>
+      ['Microsoft.App/jobs', 'Microsoft.App/containerApps'].includes(resource.type));
+    assert.equal(workers.length, name === 'snapshot-ingestion' ? 1 : 2);
+    for (const worker of workers) {
+      for (const container of worker.properties.template.containers) {
+        const environment = Array.isArray(container.env) ? container.env : template.variables.collectionEnvironment;
+        if (!Array.isArray(container.env)) {
+          assert.equal(container.env, "[variables('collectionEnvironment')]");
+        }
+        for (const setting of ['CAO_POSTGRES_RUN_RETENTION_DAYS', 'CAO_POSTGRES_LINKED_RETENTION_DAYS']) {
+          assert.deepEqual(environment.filter((entry) => entry.name === setting), [{
+            name: setting,
+            value: "[string(parameters('postgresRunRetentionDays'))]",
+          }], `${container.name} must preserve ${setting}`);
+        }
+        checkedContainers++;
+      }
+    }
+  }
+  assert.equal(checkedContainers, 3, 'ingestion, collector and backfill must each receive retention settings');
+});
+
+test('Azure selects PostgreSQL operational storage without Redis', () => {
+  assert.equal(profile.extends, 'cao.json');
+  assert.deepEqual(profile['control-plane'].web.host, {
+    target: { module: 'azure-functions' },
+    'operational-store': { backend: 'postgres' },
+  });
+  assert.doesNotMatch(bicep, /Microsoft\.Cache|CAO_REDIS_URL|redisEnterprise|redisConnectionString/i);
+  assert.doesNotMatch(collector, /redis-streams|cao-redis|CAO_REDIS_URL/i);
+  assert.match(bicep, /name:\s*'CAO_POLICY_PATH'\s+value:\s*'\.github\/workflows\/cao\.azure\.json'/);
+  assert.match(collector, /name:\s*'CAO_POLICY_PATH'\s+value:\s*'\/app\/\.github\/workflows\/cao\.azure\.json'/);
+});
+
+  test('Azure baseline provisions one shared telemetry pair and private PostgreSQL', () => {
+    const count = (type) => resources.filter((resource) => resource.type === type).length;
+    assert.equal(count('Microsoft.Insights/components'), 1);
+    assert.equal(count('Microsoft.OperationalInsights/workspaces'), 1);
+    assert.equal(count('Microsoft.Storage/storageAccounts'), 1);
+    assert.equal(count('Microsoft.App/managedEnvironments'), 1);
+    assert.match(bicep, /WorkspaceResourceId:\s*workspace\.id/);
+    assert.match(bicep, /workspaceId:\s*workspace\.id/);
+    assert.match(bicep, /virtualNetworkSubnetId:\s*network\.outputs\.functionSubnetId/);
+    assert.match(bicep, /infrastructureSubnetId:\s*network\.outputs\.containerSubnetId/);
+    assert.match(bicep, /sslmode=verify-full/);
+    assert.match(network, /Microsoft\.DBforPostgreSQL\/flexibleServers@/);
+    assert.match(network, /publicNetworkAccess:\s*'Disabled'/);
+    assert.match(network, /Microsoft\.Network\/privateDnsZones@/);
+    assert.match(network, /backupRetentionDays:\s*7/);
+    assert.doesNotMatch(network, /githubClient|sessionSecret|Microsoft\.Web\/sites@/);
+    assert.doesNotMatch(collector, /resource environment '[^']+' = \{/);
+  });
+
+  test('Private ingestion and collection pull ACR images with managed identity', () => {
+    assert.match(ingestion, /triggerType:\s*'Manual'/);
+    assert.match(ingestion, /registries:\s*\[/);
+    assert.match(ingestion, /server:\s*registry\.properties\.loginServer/);
+    assert.match(ingestion, /identity:\s*identity\.id/);
+    assert.match(ingestion, /keyVaultUrl:.*secrets\/\$\{postgresUrlSecretName\}/);
+    assert.match(ingestion, /'--redis-namespace'\s+canonicalNamespace/);
+    assert.match(ingestion, /param canonicalNamespace string = 'azure-dashboard'/);
+    assert.match(ingestion, /dependsOn:\s*\[roles\]/);
+    assert.equal((collector.match(/registries:\s*registries/g) ?? []).length, 2);
+    assert.equal((collector.match(/dependsOn:\s*\[roles\]/g) ?? []).length, 2);
+    assert.equal((collector.match(/'--database-queries', '\/app\/queries\/database.json'/g) ?? []).length, 2);
+    assert.match(collector, /name:\s*'CAO_COLLECT_CATALOG_ROOT'\s+value:\s*'\/app\/catalog'/);
+    assert.match(collector, /name:\s*'CAO_POSTGRES_RUN_RETENTION_DAYS'/);
+  });
+
+  test('Azure image inputs are explicit and default Docker target remains hosted dashboard', () => {
+    const stages = dockerfile.split('\n').filter((line) => line.startsWith('FROM '));
+    assert.equal(stages.at(-1), 'FROM dashboard-runtime AS final');
+    assert.doesNotMatch(dockerfile, /cao\.mjs download/);
+    assert.match(dockerfile, /ARG CAO_INGEST_SOURCE\nRUN test -n "\$\{CAO_INGEST_SOURCE\}"/);
+    assert.match(dockerfile, /COPY --chown=cao:cao \$\{CAO_INGEST_SOURCE\}\/ \/data\//);
+    assert.match(dockerfile, /FROM dashboard-runtime AS azure-empty-ingest-runtime/);
+    assert.match(dockerfile, /COPY --chown=cao:cao server\/azure\/empty-data\/ \/data\//);
+  });
+test('Azure shares PostgreSQL and operational budgets across dashboard and collection roles', () => {
+  for (const source of [bicep, collector]) {
+    assert.match(source, /name:\s*'CAO_POSTGRES_URL'\s+secretRef:|'CAO_POSTGRES_URL'[\s\S]*?secrets\/\$\{postgresUrlSecretName\}/);
+    assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_BYTES/);
+    assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_VALUE_BYTES/);
+    assert.match(source, /CAO_OPERATIONAL_CACHE_MAX_ENTRIES/);
+    assert.match(source, /CAO_OPERATIONAL_PROTECTED_MAX_BYTES/);
+    assert.match(source, /CAO_OPERATIONAL_PROTECTED_MAX_ENTRIES/);
+  }
+  assert.equal(generated.parameters.operationalCacheMaxBytes.defaultValue, 33554432);
+  assert.equal(generated.parameters.operationalCacheMaxValueBytes.defaultValue, 4194304);
+  assert.equal(generated.parameters.operationalCacheMaxEntries.defaultValue, 1024);
+  assert.equal(generated.parameters.operationalProtectedMaxBytes.defaultValue, 134217728);
+  assert.equal(generated.parameters.operationalProtectedMaxEntries.defaultValue, 200000);
+  assert.ok(!('redisMaxBytes' in generated.parameters));
+});
+
+test('Azure collection uses fixed PostgreSQL-backed workers', () => {
+  assert.match(collector, /param workerReplicas int = 1/);
+  assert.match(collector, /minReplicas:\s*workerReplicas/);
+  assert.match(collector, /maxReplicas:\s*workerReplicas/);
+  assert.doesNotMatch(collector, /rules:\s*\[/);
+  assert.doesNotMatch(collector, /taskStreamKey|streamKey|consumerGroup/);
 });
 
 test('Azure dashboard Bicep does not output secrets or PAT-based configuration', () => {
@@ -38,7 +202,7 @@ test('Azure dashboard Bicep does not output secrets or PAT-based configuration',
   assert.ok(outputLines.length > 0, 'expected deterministic non-secret outputs');
   for (const line of outputLines) {
     const [, name] = line.trim().split(/\s+/);
-    assert.doesNotMatch(name, /secret|token|connection|redis_url|accessKey|primaryKey/i);
+    assert.doesNotMatch(name, /secret|token|connection|accessKey|primaryKey/i);
   }
   assert.doesNotMatch(bicep, /CAO_GITHUB_PAT|GITHUB_PAT|PERSONAL_ACCESS_TOKEN/i);
   assert.match(bicep, /OAuth authorization-code flow/);
@@ -53,18 +217,111 @@ test('Azure dashboard Bicep keeps secret-bearing settings in Key Vault', () => {
   assert.match(bicep, /param previousSessionSecret string = ''/);
   assert.match(bicep, /name:\s*'cao-session-secret-previous'/);
   assert.match(bicep, /identity:\s*{\s*type:\s*'SystemAssigned'/);
-  assert.match(bicep, /Key Vault Secrets User/);
+  assert.match(functionRoles, /Key Vault Secrets User/);
 
-  for (const setting of ['AzureWebJobsStorage', 'CAO_REDIS_URL', 'CAO_GITHUB_CLIENT_SECRET', 'CAO_SESSION_SECRET']) {
+  for (const setting of ['CAO_POSTGRES_URL', 'CAO_GITHUB_CLIENT_SECRET', 'CAO_SESSION_SECRET']) {
     const pattern = new RegExp(`name:\\s*'${setting}'[\\s\\S]*?value:\\s*'@Microsoft\\.KeyVault\\(SecretUri=`);
     assert.match(bicep, pattern, `${setting} must use a Key Vault reference`);
   }
+  assert.match(bicep, /name:\s*'AzureWebJobsStorage__accountName'/);
+  assert.match(bicep, /name:\s*'AzureWebJobsStorage__credential'\s+value:\s*'managedidentity'/);
+  assert.match(bicep, /allowSharedKeyAccess:\s*false/);
+  assert.match(functionRoles, /Storage Blob Data Owner/);
+  assert.match(functionRoles, /Storage Queue Data Contributor/);
+  assert.match(functionRoles, /Storage Table Data Contributor/);
+  assert.match(functionRoles, /AcrPull/);
+  assert.match(
+    functionRoles,
+    /guid\(storage\.id,\s*functionPrincipalId,\s*'Storage Blob Data Owner'\)/,
+    'storage role assignment IDs must change when the Function App managed identity is replaced',
+  );
+  assert.match(
+    functionRoles,
+    /guid\(keyVault\.id,\s*functionPrincipalId,\s*'Key Vault Secrets User'\)/,
+    'Key Vault role assignment IDs must change when the Function App managed identity is replaced',
+  );
+  assert.match(
+    functionRoles,
+    /guid\(registry\.id,\s*functionPrincipalId,\s*'AcrPull'\)/,
+    'registry role assignment IDs must change when the Function App managed identity is replaced',
+  );
   assert.doesNotMatch(bicep, /secretUriWithVersion/, 'Key Vault references must follow the current secret version for rotation');
 
   assert.match(bicep, /httpsOnly:\s*true/);
+  assert.match(bicep, /kind:\s*'functionapp,linux,container'/);
+  assert.match(bicep, /linuxFxVersion:\s*'DOCKER\|\$\{registry\.properties\.loginServer\}/);
+  assert.match(bicep, /acrUseManagedIdentityCreds:\s*true/);
+  assert.match(bicep, /name:\s*'FUNCTIONS_WORKER_RUNTIME'\s+value:\s*'custom'/);
+  assert.match(bicep, /name:\s*'WEBSITES_PORT'\s+value:\s*'8080'/);
+  assert.match(bicep, /name:\s*'WEBSITES_ENABLE_APP_SERVICE_STORAGE'\s+value:\s*'false'/);
+  assert.match(bicep, /name:\s*'CAO_DATABASE_QUERIES'\s+value:\s*'\/app\/queries\/database\.json'/);
+  assert.match(bicep, /name:\s*'CAO_GITHUB_ALLOWED_USERS'\s+value:\s*join\(githubAllowedUsers,\s*','\)/);
   assert.match(bicep, /alwaysOn:\s*true/);
   assert.match(bicep, /minimumElasticInstanceCount:\s*1/);
   assert.match(bicep, /ftpsState:\s*'Disabled'/);
   assert.match(bicep, /allowBlobPublicAccess:\s*false/);
   assert.match(bicep, /supportsHttpsTrafficOnly:\s*true/);
+});
+
+test('Azure redeployment can keep an existing subnet NSG without forcing one on other deployments', () => {
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.type, 'string');
+  assert.equal(generated.parameters.subnetNetworkSecurityGroupId.defaultValue, '');
+  assert.match(bicep, /subnetNetworkSecurityGroupId: subnetNetworkSecurityGroupId/);
+  assert.match(network, /param subnetNetworkSecurityGroupId string = ''/);
+  assert.equal(network.match(/properties: union\(subnetNetworkSecurityGroup, \{/g)?.length, 3,
+    'every subnet must carry the optional NSG');
+});
+
+test('Azure database and URL secret names are parameters whose defaults preserve existing deployments', () => {
+  assert.equal(generated.parameters.postgresDatabaseName.defaultValue, 'cao');
+  assert.equal(generated.parameters.postgresUrlSecretName.defaultValue, 'cao-postgres-url');
+  assert.match(network, /param postgresDatabaseName string = 'cao'/);
+  assert.match(network, /parent: postgres\s+name: postgresDatabaseName/);
+  assert.match(bicep, /postgresDatabaseName: postgresDatabaseName/);
+  assert.match(bicep, /parent: keyVault\s+name: postgresUrlSecretName/);
+  assert.match(bicep, /name:\s*'CAO_POSTGRES_URL'\s+value:\s*'@Microsoft\.KeyVault\(SecretUri=\$\{keyVault\.properties\.vaultUri\}secrets\/\$\{postgresUrlSecretName\}\)'/);
+  for (const source of [ingestion, collector]) {
+    assert.match(source, /param postgresUrlSecretName string = 'cao-postgres-url'/);
+    assert.match(source, /keyVaultUrl: '\$\{[^}]+\}secrets\/\$\{postgresUrlSecretName\}'/);
+  }
+  for (const source of [bicep, network, ingestion, collector]) {
+    assert.doesNotMatch(source, /secrets\/cao-postgres-url|name: 'cao'\s*$/m, 'Key Vault and database names must come from parameters');
+  }
+  for (const name of ['snapshot-ingestion', 'collection-workers']) {
+    const module = resources.find((resource) => resource.name === name);
+    assert.equal(module.properties.parameters.postgresUrlSecretName.value, "[parameters('postgresUrlSecretName')]");
+  }
+  assert.match(deploymentDocs, /### Moving to a new database/);
+});
+
+test('Azure ingestion idempotently bootstraps both stores before ingesting', () => {
+  const module = resources.find((resource) => resource.name === 'snapshot-ingestion');
+  const job = Object.values(module.properties.template.resources).find((resource) => resource.type === 'Microsoft.App/jobs');
+  const template = module.properties.template;
+  const [canonical, operational] = job.properties.template.initContainers;
+  assert.deepEqual(job.properties.template.initContainers.map((container) => container.name),
+    ['bootstrap-canonical', 'bootstrap-operational']);
+  for (const [container, store, namespace] of [
+    [canonical, 'canonical', "[parameters('canonicalNamespace')]"],
+    [operational, 'operational', "[parameters('operationalNamespace')]"],
+  ]) {
+    assert.equal(container.image, "[parameters('ingestionImage')]");
+    assert.deepEqual(container.command, ['/app/cao-dashboard']);
+    assert.deepEqual(container.args, ['database', 'bootstrap', '--store', store, '--namespace', namespace]);
+    assert.match(String(container.env), /variables\('adminEnvironment'\)/);
+  }
+  assert.deepEqual(template.variables.adminEnvironment, [{ name: 'CAO_DATABASE_ADMIN_URL', secretRef: 'cao-postgres-url' }]);
+  assert.match(String(canonical.env), /variables\('retentionEnvironment'\)/);
+  assert.deepEqual(template.variables.retentionEnvironment.map((entry) => entry.value),
+    ["[string(parameters('postgresRunRetentionDays'))]", "[string(parameters('postgresRunRetentionDays'))]"]);
+  for (const setting of ['CacheMaxBytes', 'CacheMaxValueBytes', 'CacheMaxEntries', 'ProtectedMaxBytes', 'ProtectedMaxEntries']) {
+    assert.match(String(operational.env), new RegExp(`parameters\\('operational${setting}'\\)`));
+    assert.equal(module.properties.parameters[`operational${setting}`].value, `[parameters('operational${setting}')]`);
+  }
+  assert.equal(module.properties.parameters.canonicalNamespace.value, 'azure-dashboard');
+  assert.equal(module.properties.parameters.operationalNamespace.value, 'azure-dashboard-operational');
+  assert.ok(!job.properties.template.containers[0].env.some((entry) => entry.name === 'CAO_DATABASE_ADMIN_URL'),
+    'the ingest container itself does not receive the bootstrap-only setting');
+  assert.match(deploymentDocs, /database bootstrap --store canonical/);
+  assert.match(deploymentDocs, /database bootstrap --store operational/);
 });

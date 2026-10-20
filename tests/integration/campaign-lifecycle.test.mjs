@@ -14,8 +14,8 @@ import test from "node:test";
 import { retryTransientCampaignInstall } from "../helpers/campaign-install-retry.mjs";
 
 const campaignSource = process.env.CENTRAL_AGENTIC_OPS_CAMPAIGN_SOURCE
-  || "githubnext/gh-aw-cao@main";
-const campaignUpdateSource = "https://github.com/githubnext/gh-aw-cao";
+  || "githubnext/gh-cao@main";
+const campaignUpdateSource = "https://github.com/githubnext/gh-cao";
 // Public read-only identity for the disposable consumer's `origin`. It must
 // differ from the catalog because gh aw refuses to add workflows into their
 // own source repository; the consumer is never pushed.
@@ -27,7 +27,8 @@ const controlRuntimeFiles = [
   ".github/workflows/shared/policy.mjs",
   ".github/workflows/shared/setup-github-apps.mjs",
 ];
-const excludedControlPlaneSkillFiles = [
+const controlPlaneSkillFiles = [
+  ".github/skills/agentic-workflows/SKILL.md",
   ".github/skills/add-cao-campaign/SKILL.md",
   ".github/skills/analyze-cao/SKILL.md",
   ".github/skills/cao-cli/SKILL.md",
@@ -82,6 +83,7 @@ const activityExpectedFiles = [
   "activity/commands/setup-auth.mjs",
   "activity/commands/update.mjs",
   "activity/collect-logs.sh",
+  "activity/collect-workflow-logs.mjs",
   "activity/computations/intelligence-contracts.mjs",
   "activity/computations/intelligence.mjs",
   "activity/computations/index.mjs",
@@ -161,7 +163,6 @@ const selfCareExpectedFiles = [
   ".github/workflows/self-care-pages-health.md",
   ".github/workflows/self-care-primer-brand-checker.md",
   ".github/workflows/self-care-reactive-ui-expert.md",
-  ".github/workflows/self-care-redis-query-optimization.md",
   ".github/workflows/self-care-release-blogger.md",
   ".github/workflows/self-care-server-go-logging.md",
   ".github/workflows/self-care-specs-maintainer.md",
@@ -218,7 +219,7 @@ function runUpdate(args, cwd) {
 
 async function installCampaign(source) {
   const packageName = source.slice(0, source.lastIndexOf("@"));
-  const campaign = packageName === "githubnext/gh-aw-cao"
+  const campaign = packageName === "githubnext/gh-cao"
     ? "root"
     : packageName.split("/").at(-1);
   return retryTransientCampaignInstall(() => {
@@ -251,7 +252,7 @@ async function installCampaign(source) {
 function assertInstalledBootstrap(repository, ghAwVersion, controlRepository) {
   const policy = ".github/workflows/cao.json";
   const control = ".github/workflows/shared/control.mjs";
-  run("./cao.sh", ["--help"], repository);
+  run(process.execPath, ["activity/cao.mjs", "--help"], repository);
   for (const bundle of ["activity", "dashboard"]) {
     run(process.execPath, [".github/workflows/shared/materialize-cao.mjs", "verify", bundle], repository);
   }
@@ -283,8 +284,8 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
     for (const relativePath of controlRuntimeFiles) {
       assert.ok(existsSync(join(consumer, relativePath)), `root campaign omitted control file ${relativePath}`);
     }
-    for (const relativePath of excludedControlPlaneSkillFiles) {
-      assert.equal(existsSync(join(consumer, relativePath)), false, `root campaign retained project skill ${relativePath}`);
+    for (const relativePath of controlPlaneSkillFiles) {
+      assert.ok(existsSync(join(consumer, relativePath)), `root campaign omitted declared skill ${relativePath}`);
     }
     const policyPath = join(consumer, ".github", "workflows", "cao.json");
     const ghAwVersion = run("bash", ["-c", "gh aw version 2>&1"], consumer)
@@ -295,6 +296,12 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
     assert.equal(controlRepository, consumerRepository);
     assert.equal(initializedPolicy.version, 1);
     assert.equal(initializedPolicy["gh-aw-version"], ghAwVersion);
+    const officialRepository = initializedPolicy["control-plane"]?.marketplace?.registries?.[0]?.repository;
+    assert.match(officialRepository, /^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/);
+    // Published extensions can predate a catalog rename; require the same live repository identity.
+    assert.equal(run("gh", [
+      "api", "--hostname", "github.com", `repos/${officialRepository}`, "--jq", ".full_name",
+    ], consumer).trim(), "githubnext/gh-cao");
     assert.deepEqual(initializedPolicy["control-plane"], {
       scope: {
         "allowed-owners": [controlRepository.split("/")[0]],
@@ -304,7 +311,15 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
         registries: [{
           id: "official",
           name: "Official CAO catalog",
-          repository: "githubnext/gh-aw-cao",
+          repository: officialRepository,
+          ref: "main",
+          auth: { type: "none" },
+        }, {
+          id: "agentics",
+          name: "Agentics workflows",
+          repository: "githubnext/agentics",
+          path: "workflows",
+          format: "workflows",
           ref: "main",
           auth: { type: "none" },
         }],
@@ -313,7 +328,7 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
     });
     assertInstalledBootstrap(consumer, ghAwVersion, controlRepository);
 
-    run("git", ["add", ".github", "activity", "dashboard", "cao.sh"], consumer);
+    run("git", ["add", ".github", "activity", "dashboard"], consumer);
     run("git", [
       "-c", "user.name=CAO installer test",
       "-c", "user.email=cao-installer-test@example.invalid",
@@ -343,6 +358,12 @@ test("root campaign bootstraps an empty CAO and preserves resources during workf
     assert.deepEqual(
       JSON.parse(readFileSync(join(consumer, ".github", "workflows", "aw.json"), "utf8")).auto_upgrade.options,
       ["--pre-releases"],
+    );
+    // The root campaign installs deterministic workflows; compiler-generated
+    // helpers are only materialized when an agentic workflow is compiled.
+    assert.deepEqual(
+      readdirSync(join(consumer, ".github", "workflows")).filter((name) => name.endsWith(".lock.yml")),
+      [],
     );
     for (const relativePath of activityExpectedFiles) {
       assert.ok(existsSync(join(consumer, relativePath)), `root campaign omitted activity file ${relativePath}`);
@@ -565,10 +586,12 @@ test("root CAO installation materializes the dashboard campaign contract", { tim
     assert.doesNotMatch(dashboardWorkflow, /actions\/github-script@(?![0-9a-f]{40}\b)/);
     assert.match(dashboardWorkflow, /Standalone Pages deployment:[\s\S]*?Dashboard artifact assembly completed/);
     assert.doesNotMatch(dashboardWorkflow, /schedule:/);
-    assert.match(dashboardWorkflow, /push:[\s\S]*?dashboard\/\*\*[\s\S]*?\.github\/workflows\/cao\.json/);
-    assert.match(dashboardWorkflow, /"\*\/dashboard\.json"/);
+    assert.match(dashboardWorkflow, /workflow_run:[\s\S]*?workflows:[\s\S]*?- CAO Activity[\s\S]*?types:[\s\S]*?- completed/);
+    assert.doesNotMatch(dashboardWorkflow, /^  push:/m);
     assert.doesNotMatch(dashboardWorkflow, /\.github\/aw\/(?:dashboard|dashboards)/);
-    assert.match(dashboardWorkflow, /github\.ref_name == github\.event\.repository\.default_branch/);
+    assert.match(dashboardWorkflow, /github\.event\.workflow_run\.conclusion == 'success'/);
+    assert.match(dashboardWorkflow, /github\.event\.workflow_run\.head_branch == github\.event\.repository\.default_branch/);
+    assert.match(dashboardWorkflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
 
     const dashboardSite = join(consumer, "dashboard", "site");
     const dashboardOutput = join(consumer, "dashboard-output");

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/prepare-terminal.mjs",
     "build": "node ./scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . && node ./scripts/lint-octicons.mjs && npm run validate:dashboards",
@@ -19,7 +20,12 @@
     "source-map-js": "$source-map-js"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
     "esbuild": "^0.28.2",
+    "node-pty": "^1.1.0",
+    "strip-ansi": "^7.2.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
@@ -32,7 +38,6 @@
     "jsdom": "^26.1.0",
     "lighthouse": "^13.4.1",
     "puppeteer-core": "^25.10.0",
-    "rollup": "^4.63.5",
     "source-map-js": "file:packages/source-map-compat",
     "typescript": "^5.9.2",
     "vitest": "^5.0.0"

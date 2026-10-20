@@ -21,6 +21,7 @@ These are the default product destinations. They are custom pages composed from 
 | --- | --- | --- | --- |
 | `overview` | Overview | `factory-header`, `factory-floor`, `link-button-list` | Summarizes campaign health, repository coverage, weekly rhythm, and campaign shortcuts. |
 | `configuration` | Settings | `configuration-policy` | Presents checked-in control policy and its editable settings surface. |
+| `governance` | Governance | `environment-defaults` | Visible only in local `--admin` mode or to authorized hosted administrators; loads, previews, and explicitly approves gh-aw compiler default variables through authorized local CLI actions. |
 
 ## Built-in pages
 
@@ -72,16 +73,47 @@ parsing run exclusively in the data worker, including for hosted memory files.
 
 | Chart | Purpose |
 | --- | --- |
-| `area` | Show quantitative change over an ordered or temporal axis, optionally stacked by color. |
+| `area` | Show quantitative change over an ordinal or bucketed temporal axis, optionally stacking non-negative contributions by categorical color. |
 | `bar` | Compare quantitative values across categories. |
-| `dot` | Compare compact point values across categories. |
-| `heatmap` | Show intensity across two categorical or temporal dimensions. |
-| `histogram` | Show the distribution of a quantitative field. |
+| `dot` | Show exact quantitative observations over time without connecting points; optionally encode horizontal quantitative reference lines. |
+| `heatmap` | Show aggregated quantitative intensity across two categorical axes, with at most 100 cells and 12 categories per axis. |
+| `histogram` | Show the distribution of quantitative samples using automatic bins after aggregation, ordering, and limiting; categorical `x` identifies each sample. |
 | `horizontal-bar` | Compare up to 100 labeled quantitative values with labels on the left and bars aligned on the right. |
-| `line` | Show change across an ordered or temporal axis. |
+| `line` | Show quantitative change over a bucketed temporal axis, using categorical color series or two to eight quantitative `y` fields. |
 | `pie` | Show a bounded part-to-whole composition. |
-| `scatter` | Show relationships between two quantitative fields. |
-| `swimlane` | Show events or intervals across categorical lanes and time. |
+| `scatter` | Show exact quantitative observations at proportional timestamp positions without connecting points; `x` is temporal, not quantitative. |
+| `swimlane` | Show observations over unbucketed time in categorical lanes, optionally weighted by observation count; contiguous observations may be coalesced without connecting gaps. |
+| `treemap` | Show up to 100 rectangles with area proportional to positive finite values, optionally nested by one categorical group; use Vega-style squarify, binary, or slice-dice layouts. See [Treemap authoring](dashboard-language.md#show-a-treemap). |
+
+Dot, line, and scatter charts require temporal `x`; heatmaps require categorical
+`x` and `y`. Heatmaps, horizontal bars, and treemaps must declare `data.limit`
+no greater than 100. Charts present graphics and legends, not row-level evidence
+tables. Prefer horizontal bars for labeled rankings, pies for meaningful
+part-to-whole composition, and treemaps for positive proportional contributions.
+An average or rate is not an additive contribution merely because it is numeric.
+
+## Chart composition and layout
+
+These features compose existing charts; they are not additional chart types or
+a general Vega/Vega-Lite interpreter.
+
+| Feature | Purpose and supported boundary |
+| --- | --- |
+| `facet` | Repeat a chart over categorical subsets using one field or a row/column matrix. The worker partitions globally ordered and limited rows into at most 64 observed panels, each with independent scales. Single-field facets may wrap with view `columns` from 1 to 64. See [Faceted charts](dashboard-language-specification.md#faceted-charts-small-multiples). |
+| `layer` | Overlay `area`, `bar`, `line`, `dot`, or layer-only `rule` marks over one already-shaped query source. Encodings inherit by channel and later leaves paint above earlier leaves. Supports at most eight leaves and four nesting levels; declare `layer` instead of top-level `chart`. |
+| `resolve` | Select shared or independent quantitative y scales within a layered chart using `resolve.scale.y`. Independent x/color scales and facet-wide shared scales are not supported. |
+| View `layout` | Request `full`, `full-view`, `half`, `third`, or `horizontal` placement. Hints may collapse responsively while preserving reading and focus order; they are not fixed dimensions. |
+| Page section `layout` | Group views using `full`, `wide`, `narrow`, or `horizontal`. Horizontal sections wrap adjacent view boxes. Sections reference every page view exactly once in declaration order; do not add a section solely to frame a chart. |
+
+Layer aggregation, time bucketing, ordering, and limits belong in
+`dashboard.queries`, not individual layers. A layered chart may also declare a
+top-level facet; each panel's layers share that panel's source. Facet panels are
+chart graphics inside one view, not nested views. All active charts retain
+abort-scoped worker query subscriptions and preserve explicit empty, partial,
+and unavailable evidence states.
+
+See [Custom pages](dashboard-language-specification.md#syntax-and-view-classes)
+for the complete layer, encoding, layout, and validation contracts.
 
 ## Named UI elements
 
@@ -96,12 +128,16 @@ Named elements own specialized DOM, accessibility, interaction, local state, and
 | `problem-detail` | Presents one campaign runtime problem with its failure evidence, scope, environment, and repair action. |
 | `entity-route` | Allocates a route-selected entity title and native GitHub link. |
 | `configuration-policy` | Presents and edits checked-in CAO policy. |
+| `environment-defaults` | Edits the full gh-aw defaults YAML through declared `gh aw env` actions, with scope selection, dry-run preview, explicit approval, and private temporary-file transport; does not query activity evidence or grant rollout authority. |
 | `measure-history` | Presents reusable grouped temporal-measure history from declarative query results. |
 | `factory-header` | Presents campaign status, retained-output context, work in motion, and weekly rhythm. |
 | `factory-floor` | Presents linked repository, run, dispatch, and value stations. |
 | `all-campaign-memory` | Browses every campaign repository-memory branch in place without route navigation. |
 | `link-button-list` | Presents one source as an inset grouped list of Octicon navigation rows with disclosure chevrons. |
 | `markdown` | Presents retained Markdown from a declared source field with safe repository-relative links. |
+| `query-editor` | Authors ephemeral query-and-view previews through tool-free Copilot SDK sessions; available only in SDK-enabled canvases. |
+| `command-terminal` | Replays and follows durable local CLI output by command ID, with explicit Cancel and Retry actions through the data worker; detachment never cancels execution. |
+| `storage-info` | Identifies the configured dashboard storage engine and location without querying activity evidence; supports browser IndexedDB, local-server SQLite, server PostgreSQL, and unknown configuration. |
 
 ## Testing standard
 

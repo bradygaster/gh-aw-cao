@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { browserFirstLoad, showBrowserFirstLoad } from '../../src/browser-first-load.js';
+import { browserFirstLoad, showBrowserFirstLoad, recordPreparationEvent, recordPreparationStorage, resetPreparationDiagnostics } from '../../src/browser-first-load.js';
 import { mountFirstLoadOverlay } from '../../src/components/first-load-overlay.js';
 import { renderFactoryHeader } from '../../src/components/factory-header.js';
 import { scopedStorageKey } from '../../src/storage-scope.js';
@@ -10,6 +10,7 @@ let owner = new AbortController();
 beforeEach(() => {
   owner = new AbortController();
   document.body.replaceChildren();
+  resetPreparationDiagnostics();
   browserFirstLoad.set({ status: 'loading', dismissed: false });
 });
 
@@ -81,6 +82,42 @@ describe('browser first-load presentation', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('shows the same live ingestion message, history and action as the bottom notification', () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
+    browserFirstLoad.set((current) => ({ ...current, ingestion: {
+      id: 'ingestion-progress-1',
+      message: '750 KB/1.5 MB · 3s remaining',
+      detailsSubtitle: 'Downloading and processing a local copy.',
+      details: ['Preparing data... +0s', 'Parsing overall: 1,000 rec. +3s'],
+      actions: [{ label: 'Cancel', run: cancel }]
+    } }));
+    const dialog = document.querySelector('dialog');
+    const details = dialog?.querySelector('.first-load-ingestion-details');
+    expect(dialog?.querySelector('.first-load-message')?.textContent).toBe('750 KB/1.5 MB · 3s remaining');
+    expect(details?.hasAttribute('hidden')).toBe(false);
+    details?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(details?.querySelector('.dashboard-notification-details-subtitle')?.textContent).toBe('Downloading and processing a local copy.');
+    expect([...details?.querySelectorAll('li') ?? []].map((item) => item.textContent)).toEqual([
+      'Preparing data... +0s', 'Parsing overall: 1,000 rec. +3s'
+    ]);
+    details?.querySelector('button')?.click();
+    expect(cancel).toHaveBeenCalledOnce();
+    browserFirstLoad.set((current) => ({ ...current, ingestion: {
+      ...current.ingestion, id: 'ingestion-progress-1', message: '1.5 MB/1.5 MB · 0s remaining',
+      details: ['Storing 1,000/1,000 rec. +4s'], actions: []
+    } }));
+    expect(dialog?.querySelector('.first-load-message')?.textContent).toBe('1.5 MB/1.5 MB · 0s remaining');
+    expect(details?.querySelectorAll('li')).toHaveLength(1);
+    expect(details?.querySelector('button')).toBeNull();
+    browserFirstLoad.set((current) => ({ ...current, ingestion: undefined }));
+    expect(details?.hasAttribute('hidden')).toBe(true);
+    browserFirstLoad.set({ status: 'inactive', dismissed: false });
+    expect(document.querySelector('.first-load-ingestion-details')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not mount after data is already loaded or its owner is aborted', () => {
     vi.useFakeTimers();
     browserFirstLoad.set({ status: 'inactive', dismissed: false });
@@ -105,8 +142,8 @@ describe('browser first-load presentation', () => {
     expect(dialog?.textContent).toContain('build a local database');
     expect(dialog?.querySelector('.first-load-description .first-load-compact-copy')?.textContent)
       .toBe('Bringing your campaign activity together for a first look.');
-    const about = dialog?.querySelector('details');
-    expect(about?.open).toBe(false);
+    const about = dialog?.querySelector('.first-load-about');
+    expect(about?.hasAttribute('open')).toBe(false);
     expect(about?.querySelector('summary')?.textContent).toBe('About this preparation');
     expect(about?.textContent).toContain('build a local database');
     expect(about?.querySelector('.first-load-steps')).not.toBeNull();
@@ -114,7 +151,7 @@ describe('browser first-load presentation', () => {
     expect(serverOption?.textContent).toContain('deploy a CAO backend server');
     expect(serverOption?.textContent).toContain('avoid this browser import');
     expect([...serverOption?.querySelectorAll('a') ?? []].map((link) => [link.textContent, link.href])).toEqual([
-      ['deployment options', 'https://githubnext.github.io/gh-aw-cao/deployment/']
+      ['deployment options', 'https://githubnext.github.io/gh-cao/deployment/']
     ]);
     for (const link of serverOption?.querySelectorAll('a') ?? []) {
       expect(link.target).toBe('_blank');
@@ -168,23 +205,31 @@ describe('browser first-load presentation', () => {
     expect(dialog?.textContent).not.toContain('The first import can take');
     expect(dialog?.querySelector('[role="status"]')?.textContent).toContain('Updating the local database');
     expect(dialog?.querySelector('.first-load-reason')?.textContent).toContain('needs a newer browser database format');
+    expect(dialog?.querySelector('.first-load-reason button')?.textContent).toContain('Copy preparation details');
     browserFirstLoad.set({ status: 'loading', dismissed: false, reason: 'upgrade', stage: 'files', completed: 1, total: 5 });
     expect(dialog?.querySelector('[role="status"]')?.textContent).toContain('Importing activity files');
     browserFirstLoad.set({ status: 'failed', dismissed: false, reason: 'upgrade' });
     expect(dialog?.querySelector('h2')?.textContent).toContain('dashboard update could not finish');
   });
 
-  it('explains a missing snapshot and copies bounded preparation diagnostics', async () => {
+  it('explains a missing snapshot and copies the full preparation log and storage diagnostics', async () => {
     browserFirstLoad.set({ status: 'loading', dismissed: false, reason: 'missing-snapshot', stage: 'files', completed: 2, total: 5 });
+    recordPreparationStorage({ persisted: false, quota: 1000, usage: 100 });
+    for (let index = 0; index < 216; index += 1) {
+      recordPreparationEvent('ingestion', { message: `Shard ${index + 1} committed.` });
+    }
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
     mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
     const dialog = document.querySelector('dialog');
     expect(dialog?.querySelector('.first-load-reason')?.textContent).toContain('no completed local copy yet');
-    const copy = /** @type {HTMLButtonElement | null} */ (dialog?.querySelector('.first-load-details'));
+    const copy = /** @type {HTMLButtonElement | null} */ (dialog?.querySelector('.first-load-reason .first-load-details-link'));
+    expect(copy?.type).toBe('button');
+    expect(copy?.textContent).toContain('Copy preparation details');
     copy?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce());
-    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual({
+    const diagnostics = JSON.parse(writeText.mock.calls[0][0]);
+    expect(diagnostics).toMatchObject({
       event: 'dashboard-browser-database-repopulation',
       reason: 'missing-snapshot',
       status: 'loading',
@@ -192,10 +237,18 @@ describe('browser first-load presentation', () => {
       completed: 2,
       total: 5,
       schemaVersionBefore: null,
-      schemaVersionAfter: null
+      schemaVersionAfter: null,
+      storage: { persisted: false, quota: 1000, usage: 100 },
+      ingestion: null
     });
+    expect(diagnostics.log).toHaveLength(217);
+    expect(diagnostics.log[1]).toMatchObject({ event: 'ingestion', details: { message: 'Shard 1 committed.' } });
+    expect(diagnostics.log.at(-1)).toMatchObject({ event: 'ingestion', details: { message: 'Shard 216 committed.' } });
+    expect(diagnostics.log.every((/** @type {{ timestamp: string }} */ entry) => Number.isFinite(Date.parse(entry.timestamp)))).toBe(true);
     await vi.waitFor(() => expect(dialog?.querySelector('.first-load-copy-status')?.textContent).toBe('Preparation details copied.'));
     browserFirstLoad.set({ status: 'failed', dismissed: false, reason: 'upgrade', oldVersion: 36, newVersion: 37 });
+    expect(dialog?.querySelector('.first-load-reason')?.textContent).toContain('newer browser database format');
+    expect(dialog?.querySelector('.first-load-reason button')).toBe(copy);
     copy?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
     expect(JSON.parse(writeText.mock.calls[1][0])).toMatchObject({
@@ -205,8 +258,19 @@ describe('browser first-load presentation', () => {
 
   it('reports when copying diagnostics is unavailable', async () => {
     mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
-    /** @type {HTMLButtonElement | null} */ (document.querySelector('.first-load-details'))?.click();
+    /** @type {HTMLButtonElement | null} */ (document.querySelector('.first-load-details-link'))?.click();
     await vi.waitFor(() => expect(document.querySelector('.first-load-copy-status')?.textContent).toBe('Could not copy preparation details.'));
+  });
+
+  it('keeps import duration honest without duplicating the managed storage notice', () => {
+    mountFirstLoadOverlay({ document, signal: owner.signal, retry: vi.fn() });
+    recordPreparationStorage({ persisted: false, quota: null, usage: null });
+    const dialog = document.querySelector('dialog');
+    expect(dialog?.querySelector('.first-load-storage-warning')).toBeNull();
+    expect(dialog?.querySelector('.first-load-duration')?.textContent).toContain('download the data again');
+    recordPreparationStorage({ persisted: true, quota: 1000, usage: 100 });
+    expect(dialog?.textContent).not.toContain('data will be lost when the private session ends');
+    expect(dialog?.querySelector('.first-load-duration')?.textContent).toContain('Future visits reuse cached data');
   });
 
   it('supports Escape dismissal, honest failure output and retry', () => {
@@ -246,33 +310,34 @@ describe('browser first-load presentation', () => {
 
   it('suppresses idle and rhythm throughout the initial import, including after dismissal and failure', () => {
     const sources = {
-      status: { rows: () => [{ heading: 'Your campaigns are idle.' }], pending: () => false, unavailable: () => false },
+      status: { rows: () => [{ heading: 'Your factory is idle.' }], pending: () => false, unavailable: () => false },
       rhythm: { rows: () => [], pending: () => false, unavailable: () => false }
     };
     const header = renderFactoryHeader(sources, owner, { presentation: 'status', rhythm: 'rhythm' }, true);
     expect(header.querySelector('h2')?.textContent).toBe('Your dashboard is taking shape.');
     expect(header.querySelector('h2')?.getAttribute('aria-busy')).toBe('true');
     expect(header.querySelector('.factory-rhythm')?.hasAttribute('hidden')).toBe(true);
+    expect(header.querySelectorAll('button')).toHaveLength(0);
     browserFirstLoad.set({ status: 'loading', dismissed: true });
     expect(header.textContent).not.toContain('idle');
-    header.querySelector('button')?.click();
-    expect(browserFirstLoad.get().dismissed).toBe(false);
+    expect(header.querySelectorAll('button')).toHaveLength(0);
     browserFirstLoad.set({ status: 'failed', dismissed: true });
     expect(header.querySelector('h2')?.textContent).toBe('Your dashboard import is incomplete.');
     expect(header.querySelector('h2')?.hasAttribute('aria-busy')).toBe(false);
+    expect(header.querySelector('p')?.textContent).toBe('Factory status is not available yet.');
     browserFirstLoad.set({ status: 'inactive', dismissed: false });
-    expect(header.querySelector('h2')?.textContent).toBe('Your campaigns are idle.');
+    expect(header.querySelector('h2')?.textContent).toBe('Your factory is idle.');
     expect(header.querySelector('.factory-rhythm')?.hasAttribute('hidden')).toBe(false);
-    expect(header.querySelector('button')?.hidden).toBe(true);
+    expect(header.querySelectorAll('button')).toHaveLength(0);
     owner.abort();
     browserFirstLoad.set({ status: 'loading', dismissed: false });
-    expect(header.querySelector('h2')?.textContent).toBe('Your campaigns are idle.');
+    expect(header.querySelector('h2')?.textContent).toBe('Your factory is idle.');
   });
 
   it('does not apply the first-load presentation without declarative opt-in', () => {
     const source = { rows: () => [{ heading: 'Observed campaign status' }], pending: () => false, unavailable: () => false };
     const header = renderFactoryHeader({ status: source, rhythm: source }, owner, { presentation: 'status', rhythm: 'rhythm' });
     expect(header.querySelector('h2')?.textContent).toBe('Observed campaign status');
-    expect(header.querySelector('button')?.hidden).toBe(true);
+    expect(header.querySelectorAll('button')).toHaveLength(0);
   });
 });

@@ -2,21 +2,18 @@
  * Registry for JSON-selected dashboard UI elements.
  */
 
-import { renderAllCampaignMemory } from './campaign-memory.js';
-import { renderConfigurationView } from './configuration-view.js';
 import { renderEntityRoute } from './entity-route.js';
 import { renderFactoryFloorElement } from './factory-floor.js';
 import { renderFactoryHeaderElement } from './factory-header.js';
 import { renderLinkButtonList } from './link-button-list.js';
 import { renderMarkdownElement } from './markdown.js';
-import { renderBoundMeasureHistory } from './measure-history.js';
-import { renderOutcomeDetail } from './outcome-detail.js';
-import { isOutcomeDetailSectionConfig, renderOutcomeDetailSection } from './outcome-detail-sections.js';
 import { renderProblemDetail } from './problem-detail.js';
 import { renderLazyView } from './lazy-view.js';
 import { createFactoryScope } from './factory-elements.js';
 import { h } from '../dom.js';
 import { createDebug } from '../debug.js';
+import { renderCommandTerminal } from './command-terminal.js';
+import { renderStorageInfo } from './storage-info.js';
 
 const debugUiElements = createDebug('ui-elements');
 
@@ -38,7 +35,7 @@ const debugUiElements = createDebug('ui-elements');
  *   viewId?: string,
  *   viewIndex?: number,
  *   sourcesSubscribed?: boolean,
- *   elementConfig?: { body?: string, sections?: string[], stations?: string[], section?: string, labels?: Record<string, unknown>, animate?: string, 'browser-first-load'?: boolean, 'view-all-page'?: string, 'view-all-label'?: string, 'label-field'?: string, 'label-badge-field'?: string, 'link-field'?: string, 'icon-field'?: string, 'fallback-icon'?: string, 'indicator-field'?: string, 'indicator-label-field'?: string, 'empty-message'?: string, 'measure-source'?: 'operational-value'|'operational-grader', 'content-field'?: string, 'path-field'?: string, 'base-link-field'?: string },
+ *   elementConfig?: { actions?: Record<string, string>, body?: string, sections?: string[], stations?: string[], section?: string, labels?: Record<string, unknown>, animate?: string, 'browser-first-load'?: boolean, 'data-status'?: boolean, 'view-all-page'?: string, 'view-all-label'?: string, 'label-field'?: string, 'label-badge-field'?: string, 'link-field'?: string, 'icon-field'?: string, 'fallback-icon'?: string, 'indicator-field'?: string, 'indicator-label-field'?: string, 'empty-message'?: string, 'measure-source'?: 'operational-value'|'operational-grader', 'content-field'?: string, 'path-field'?: string, 'base-link-field'?: string },
  *   headingTag: 'h2'|'h3'|'h4'
  * }} ElementRenderContext
  */
@@ -46,17 +43,14 @@ export {};
 
 /** @type {Map<string, (context: ElementRenderContext) => HTMLElement | null>} */
 const ELEMENT_RENDERERS = new Map([
-  ['outcome-detail', renderOutcomeDetail],
-  ['outcome-detail-section', renderOutcomeDetailSectionElement],
   ['problem-detail', renderProblemDetail],
-  ['configuration-policy', renderConfigurationView],
   ['entity-route', renderEntityRoute],
   ['factory-header', renderFactoryHeaderElement],
   ['factory-floor', renderFactoryFloorElement],
-  ['all-campaign-memory', renderAllCampaignMemory],
   ['link-button-list', renderLinkButtonList],
   ['markdown', renderMarkdownElement],
-  ['measure-history', renderBoundMeasureHistory]
+  ['command-terminal', renderCommandTerminal],
+  ['storage-info', renderStorageInfo]
 ]);
 
 /** Elements that load declared sources independently of the active page subscription. */
@@ -83,7 +77,6 @@ const EMPTY_AWARE_ELEMENTS = new Set([
   'campaign-route',
   'workflow-route-page',
   'outcome-detail',
-  'outcome-detail-section',
   'problem-detail',
   'configuration-policy',
   'entity-route',
@@ -92,7 +85,10 @@ const EMPTY_AWARE_ELEMENTS = new Set([
   'all-campaign-memory',
   'link-button-list',
   'markdown',
-  'measure-history'
+  'measure-history',
+  'command-terminal',
+  'storage-info',
+  'environment-defaults'
 ]);
 const UNAVAILABLE_AWARE_ELEMENTS = new Set(['configuration-policy', 'problem-detail', 'campaign-route']);
 
@@ -117,6 +113,38 @@ function lazyElementRenderer(importModule, render) {
 
 /** @type {Map<string, (context: ElementRenderContext, signal?: AbortSignal) => Promise<HTMLElement | null>>} */
 const LAZY_ELEMENT_RENDERERS = new Map([
+  ['environment-defaults-lazy', lazyElementRenderer(
+    () => import('./environment-defaults.js'),
+    ({ renderEnvironmentDefaults }, context) => renderEnvironmentDefaults(context)
+  )],
+  ['configuration-policy-lazy', lazyElementRenderer(
+    () => import('./configuration-view.js'),
+    ({ renderConfigurationView }, context) => renderConfigurationView(context)
+  )],
+  ['all-campaign-memory-lazy', lazyElementRenderer(
+    () => import('./campaign-memory.js'),
+    ({ renderAllCampaignMemory }, context) => renderAllCampaignMemory(context)
+  )],
+  ['measure-history-lazy', lazyElementRenderer(
+    () => import('./measure-history.js'),
+    ({ renderBoundMeasureHistory }, context) => renderBoundMeasureHistory(context)
+  )],
+  ['outcome-detail-lazy', lazyElementRenderer(
+    () => import('./outcome-detail.js'),
+    ({ renderOutcomeDetail }, context) => renderOutcomeDetail(context)
+  )],
+  ['outcome-detail-section-lazy', lazyElementRenderer(
+    () => import('./outcome-detail-sections.js'),
+    ({ isOutcomeDetailSectionConfig, renderOutcomeDetailSection }, context) => {
+      const outcome = context.sources[context.sourceNames[0]]?.rows[0];
+      return outcome && isOutcomeDetailSectionConfig(context.elementConfig)
+        ? renderOutcomeDetailSection(outcome, context.elementConfig.body) : null;
+    }
+  )],
+  ['query-editor-lazy', lazyElementRenderer(
+    () => import('./query-editor.js'),
+    ({ renderQueryEditor }, context) => renderQueryEditor(context)
+  )],
   ['campaign-route-lazy', lazyElementRenderer(
     () => import('./campaign-route-view.js'),
     ({ renderCampaignRouteView }, context) => renderCampaignRouteView(context)
@@ -173,19 +201,6 @@ export async function renderUiElementAsync(name, context, signal) {
     return element;
   }
   return renderUiElement(name, context);
-}
-
-/**
- * @param {ElementRenderContext} context
- * @returns {HTMLElement | null}
- */
-function renderOutcomeDetailSectionElement(context) {
-  const outcome = context.sources[context.sourceNames[0]]?.rows[0];
-  const sectionConfig = isOutcomeDetailSectionConfig(context.elementConfig)
-    ? context.elementConfig
-    : null;
-  if (!sectionConfig) return null;
-  return outcome ? renderOutcomeDetailSection(outcome, sectionConfig.body) : null;
 }
 
 /**

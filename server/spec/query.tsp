@@ -21,6 +21,7 @@ model Filter {
 model SelectedField { field: string; as?: string; }
 model Join {
   source: string;
+  /** inner and left require unique right keys; inner-many explicitly expands all matching rows within query budgets. Missing or blank keys never match. */
   type?: string;
   on: { left: string; right: string }[];
   fields: SelectedField[];
@@ -33,6 +34,7 @@ model ComputedField {
 model AggregateValue {
   field: string;
   as: string;
+  /** Includes median, p75, p90 and p95: continuous quantiles over known finite numeric values. */
   reducer: string;
   filter?: Filter;
 }
@@ -50,7 +52,14 @@ model OrderField {
   field: string;
   direction?: string;
 }
-/** One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection. */
+/** Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; as names each panel's ordered row sequence. */
+model Facet {
+  field?: string;
+  row?: string;
+  column?: string;
+  as: string;
+}
+/** An ordered rolling, change, previous-value or row-number operation, evaluated after aggregation and before temporal-series projection. previous preserves scalar type; row-number is one-based. */
 model WindowField {
   operation: string;
   field: string;
@@ -83,8 +92,8 @@ model QueryDefinition {
   select?: SelectedField[];
   @encodedName("application/json", "order-by") orderBy?: OrderField[];
   limit?: int32;
+  facet?: Facet;
   stores?: string[];
-  @encodedName("application/json", "stores-by-source") storesBySource?: Record<string[]>;
 }
 
 model PaginationRequest {

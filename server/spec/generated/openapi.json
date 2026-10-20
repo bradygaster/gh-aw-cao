@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "CAO dashboard server",
-    "version": "2.3.0",
+    "version": "2.6.0",
     "description": "The Go dashboard server HTTP contract. Local mode uses a loopback bearer capability; hosted mode uses an authorized GitHub OAuth session and X-CSRF-Token on protected mutations. The optional MCP HTTP transport is covered, but its protocol messages and tool schemas are owned by the MCP contract; dashboard static assets are outside this contract."
   },
   "tags": [
@@ -20,6 +20,9 @@
     },
     {
       "name": "Canonical entities"
+    },
+    {
+      "name": "GitHub resources"
     },
     {
       "name": "Repository memory"
@@ -1253,6 +1256,552 @@
         ]
       }
     },
+    "/api/v1/github/repos/{owner}/{repo}": {
+      "get": {
+        "operationId": "GitHubResources_repository",
+        "description": "Read-only, repository-scoped GitHub metadata through CAO. Local deployments\nuse the server's gh CLI credential; hosted deployments use a GitHub App.\nMissing credentials or unavailable live access return 503, never a browser\nredirect to GitHub. Static Pages deployments have no live endpoint.\nBrowsers use HttpOnly session cookies, never GitHub credentials or bearer\ntokens in the resource configuration. Local bootstrap issues a Secure,\nSameSite=Strict cookie scoped only to these read-only resource routes.\nNormalized resources are retained in the deployment's Postgres data store.\nResponses are private caches with a five-minute freshness window and\nstale-while-revalidate support. Send If-None-Match to reuse cached data.",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Age": {
+                "required": false,
+                "description": "Seconds since the server last validated this resource with GitHub.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "Warning": {
+                "required": false,
+                "description": "A stale response is never assigned a new freshness window.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "required": false,
+                "description": "Minimum delay before attempting to revalidate an unavailable live source.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRepository"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client has made a conditional request and the resource has not been modified.",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Age": {
+                "required": false,
+                "description": "Seconds since the server last validated this resource with GitHub.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "Warning": {
+                "required": false,
+                "description": "A stale response is never assigned a new freshness window.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "required": false,
+                "description": "Minimum delay before attempting to revalidate an unavailable live source.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client error",
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "description": "An error response. The message is diagnostic, not a stable error code."
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable.",
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "description": "An error response. The message is diagnostic, not a stable error code."
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "GitHub resources"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "LocalGitHubResourceSession": []
+          }
+        ]
+      }
+    },
+    "/api/v1/github/repos/{owner}/{repo}/releases/latest": {
+      "get": {
+        "operationId": "GitHubResources_latestRelease",
+        "description": "Same access and conditional-cache behavior as repository metadata; 404 means no accessible latest release.",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Age": {
+                "required": false,
+                "description": "Seconds since the server last validated this resource with GitHub.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "Warning": {
+                "required": false,
+                "description": "A stale response is never assigned a new freshness window.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "required": false,
+                "description": "Minimum delay before attempting to revalidate an unavailable live source.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubRelease"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client has made a conditional request and the resource has not been modified.",
+            "headers": {
+              "ETag": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Age": {
+                "required": false,
+                "description": "Seconds since the server last validated this resource with GitHub.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "Warning": {
+                "required": false,
+                "description": "A stale response is never assigned a new freshness window.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "required": false,
+                "description": "Minimum delay before attempting to revalidate an unavailable live source.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client error",
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "description": "An error response. The message is diagnostic, not a stable error code."
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable.",
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "allOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "description": "An error response. The message is diagnostic, not a stable error code."
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "GitHub resources"
+        ],
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          },
+          {
+            "LocalGitHubResourceSession": []
+          }
+        ]
+      }
+    },
     "/api/v1/health": {
       "get": {
         "operationId": "Health_healthV1",
@@ -2053,7 +2602,7 @@
     "/auth/callback": {
       "get": {
         "operationId": "Auth_callback",
-        "description": "Hosted profile only. Exchange the GitHub OAuth code and state; sets the HttpOnly session and CSRF cookies, then redirects home. Failure pages are HTML.",
+        "description": "OAuth profiles only. Exchange the GitHub OAuth code and signed state; sets the HttpOnly session and CSRF cookies, then redirects home. Local development authenticates only the exact configured developer login without membership reads; its sessions cannot be reused in ordinary hosted mode or for a different configured developer. An administrator-consent callback requires its original active session, matching GitHub account ID and login, current administrator allowlisting, and verified factor evidence. Mismatched or unauthorized callbacks are rejected and issued credentials are revoked or queued for revocation. Failure pages are HTML.",
         "parameters": [
           {
             "name": "code",
@@ -2174,7 +2723,7 @@
     "/auth/login": {
       "get": {
         "operationId": "Auth_login",
-        "description": "Hosted profile only. Start the GitHub OAuth flow; responds with a redirect to GitHub and sets a short-lived state cookie.",
+        "description": "OAuth profiles only. Ordinary hosted login requests read:org read:user for classic OAuth Apps, or offline_access for GitHub Apps. The explicitly configured CAO_GITHUB_LOCAL_USER single-user development mode requires direct loopback HTTPS, requests read:user without read:org, and replaces organization/team authorization with an exact configured GitHub login. It cannot be selected by a request parameter or used by remote/external/platform hosting. hosted_cli=1 explicitly starts repository consent only when hosted CLI is enabled and the existing server-side session belongs to a configured administrator with a known GitHub account ID. Classic OAuth adds repo only for that flow. Its signed state binds the initiating session, account ID, login and ten-minute expiry; the callback must retain that subject and current administrator authorization. The query parameter alone grants no authority.",
         "parameters": [
           {
             "name": "select_account",
@@ -2182,6 +2731,18 @@
             "required": false,
             "schema": {
               "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "hosted_cli",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
             },
             "explode": false
           }
@@ -2199,6 +2760,44 @@
             }
           },
           "400": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "An error response. The message is diagnostic, not a stable error code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "description": "An error response. The message is diagnostic, not a stable error code."
+                }
+              }
+            }
+          },
+          "403": {
             "description": "An error response. The message is diagnostic, not a stable error code.",
             "content": {
               "application/json": {
@@ -2779,7 +3378,8 @@
             "type": "string"
           },
           "reducer": {
-            "type": "string"
+            "type": "string",
+            "description": "Includes median, p75, p90 and p95: continuous quantiles over known finite numeric values."
           },
           "filter": {
             "$ref": "#/components/schemas/Filter"
@@ -2984,6 +3584,27 @@
           }
         }
       },
+      "Facet": {
+        "type": "object",
+        "required": [
+          "as"
+        ],
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "row": {
+            "type": "string"
+          },
+          "column": {
+            "type": "string"
+          },
+          "as": {
+            "type": "string"
+          }
+        },
+        "description": "Terminal projection of processed rows into at most 64 chart panels. Declare field alone, or row and/or column; as names each panel's ordered row sequence."
+      },
       "Filter": {
         "type": "object",
         "properties": {
@@ -3012,6 +3633,132 @@
             ]
           }
         }
+      },
+      "GitHubCacheHeaders": {
+        "type": "object"
+      },
+      "GitHubRelease": {
+        "type": "object",
+        "required": [
+          "tag_name",
+          "name",
+          "html_url",
+          "published_at",
+          "draft",
+          "prerelease"
+        ],
+        "properties": {
+          "tag_name": {
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "html_url": {
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "prerelease": {
+            "type": "boolean"
+          }
+        },
+        "description": "The latest published release, not an inferred version or a list of assets.",
+        "examples": [
+          {
+            "tag_name": "v1.0.0",
+            "name": "Version 1",
+            "html_url": "https://github.com/githubnext/gh-cao/releases/tag/v1.0.0",
+            "published_at": "2026-10-01T00:00:00Z",
+            "draft": false,
+            "prerelease": false
+          }
+        ]
+      },
+      "GitHubRepository": {
+        "type": "object",
+        "required": [
+          "full_name",
+          "description",
+          "html_url",
+          "default_branch",
+          "stargazers_count",
+          "forks_count",
+          "open_issues_count",
+          "archived",
+          "visibility"
+        ],
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "html_url": {
+            "type": "string"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "stargazers_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "forks_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "open_issues_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        },
+        "description": "Safe repository metadata; upstream credentials and unrestricted GitHub payloads are never returned.",
+        "examples": [
+          {
+            "full_name": "githubnext/gh-cao",
+            "description": "Central Agentic Ops",
+            "html_url": "https://github.com/githubnext/gh-cao",
+            "default_branch": "main",
+            "stargazers_count": 10,
+            "forks_count": 2,
+            "open_issues_count": 3,
+            "archived": false,
+            "visibility": "public"
+          }
+        ]
       },
       "HealthResponse": {
         "type": "object",
@@ -3085,7 +3832,8 @@
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "description": "inner and left require unique right keys; inner-many explicitly expands all matching rows within query budgets. Missing or blank keys never match."
           },
           "on": {
             "type": "array",
@@ -3434,19 +4182,13 @@
             "type": "integer",
             "format": "int32"
           },
+          "facet": {
+            "$ref": "#/components/schemas/Facet"
+          },
           "stores": {
             "type": "array",
             "items": {
               "type": "string"
-            }
-          },
-          "stores-by-source": {
-            "type": "object",
-            "unevaluatedProperties": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
             }
           }
         },
@@ -4246,7 +4988,7 @@
             "type": "string"
           }
         },
-        "description": "One observation-count rolling window or elapsed-time change operation, evaluated after aggregation and before temporal-series projection."
+        "description": "An ordered rolling, change, previous-value or row-number operation, evaluated after aggregation and before temporal-series projection. previous preserves scalar type; row-number is one-based."
       }
     },
     "securitySchemes": {
@@ -4258,6 +5000,12 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "cao_session"
+      },
+      "LocalGitHubResourceSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "cao_github_local",
+        "description": "Read-only local browser capability; never a GitHub credential."
       }
     }
   }

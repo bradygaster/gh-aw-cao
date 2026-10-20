@@ -61,7 +61,7 @@ export async function generateDashboardLlms({ outputPath, activityDataPath } = {
   const stats = await artifactStats(activityDataPath);
   const runShards = stats["gh-aw-logs-runs"] ?? {};
   const recordShards = stats["gh-aw-logs-records"] ?? {};
-  const raw = (name) => `https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/skills/${name}/SKILL.md`;
+  const raw = (name) => `https://raw.githubusercontent.com/githubnext/gh-cao/main/skills/${name}/SKILL.md`;
   const lines = [
     "# Central Agentic Ops Dashboard",
     "",
@@ -104,7 +104,7 @@ export async function generateDashboardLlms({ outputPath, activityDataPath } = {
     "## Bulk analysis with CAO CLI and SQLite",
     "",
     "1. Install or use the repository-local CAO CLI.",
-    "2. Run `cao download --url https://githubnext.github.io/gh-aw-cao/cao/payload-hashes.json`.",
+    "2. Run `cao download --url https://githubnext.github.io/gh-cao/cao/payload-hashes.json`.",
     "3. Query `.cao/gh-aw-logs.sqlite` with `cao query`, reviewed named queries, or local SQLite tooling.",
     "4. Use this route for large joins, historical analysis, aggregate computation, exploratory SQL, or analysis across many repositories and runs.",
     "",
@@ -112,7 +112,7 @@ export async function generateDashboardLlms({ outputPath, activityDataPath } = {
     "",
     "## Schema and freshness",
     "",
-    "- [Authoritative dashboard data model](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-data.md) defines canonical entities, storage, and freshness semantics.",
+    "- [Authoritative dashboard data model](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md) defines canonical entities, storage, and freshness semantics.",
     "- [Dashboard data model guide](../dashboard-data-model/) summarizes repositories, workflows, runs, jobs, sessions, events, transactions, safe outputs, graders/evals, and campaign projections.",
     "- Read `agent-summary.json.generatedAt` for summary generation time and its `freshness` entries for source state.",
     "- Named CLI/MCP query results carry `availability`, `completeness`, `freshness`, and `as-of`; do not treat missing, stale, partial, or unavailable evidence as zero.",
@@ -124,17 +124,15 @@ export async function generateDashboardLlms({ outputPath, activityDataPath } = {
   return output;
 }
 
-export async function validateDashboardAgentArtifacts({ sitePath, repositoryPath } = {}) {
+export async function validateDashboardAgentArtifacts({ sitePath } = {}) {
   const site = resolve(sitePath);
-  const repository = resolve(repositoryPath);
   const llms = await readFile(join(site, "llms.txt"), "utf8");
   if (!llms.trim()) throw new Error("dashboard llms.txt is empty");
   for (const section of REQUIRED_SECTIONS) {
     if (!llms.includes(section)) throw new Error(`dashboard llms.txt is missing section: ${section}`);
   }
   for (const [, name] of SKILLS) {
-    await access(join(repository, "skills", name, "SKILL.md"));
-    if (!llms.includes(`https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/skills/${name}/SKILL.md`)) {
+    if (!llms.includes(`https://raw.githubusercontent.com/githubnext/gh-cao/main/skills/${name}/SKILL.md`)) {
       throw new Error(`dashboard llms.txt is missing raw skill URL: ${name}`);
     }
   }
@@ -163,13 +161,12 @@ async function runCli() {
   if (command === "validate" && firstPath) {
     await validateDashboardAgentArtifacts({
       sitePath: firstPath,
-      repositoryPath: secondPath ?? ".",
     });
     return;
   }
   throw new Error(
     "usage: node dashboard/site/scripts/llms.mjs "
-    + "generate OUTPUT_PATH [ACTIVITY_DATA_PATH] | validate SITE_PATH [REPOSITORY_PATH]",
+    + "generate OUTPUT_PATH [ACTIVITY_DATA_PATH] | validate SITE_PATH",
   );
 }
 

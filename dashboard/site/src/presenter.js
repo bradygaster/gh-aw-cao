@@ -21,7 +21,7 @@ import { semanticViewPrompt } from './semantic-view-prompt.js';
 import { normalizeViewAction } from './action-model.js';
 import { enableHorizonOutsideClickDismissal, renderFilterBar, renderViewModeControl, setTimeWindowFilter, setTimeWindowRange } from './components/filter-bar.js';
 import { renderDashboardForm } from './components/dashboard-form.js';
-import { renderSiteCallouts } from './components/site-callout.js';
+import { bindSiteCallouts } from './components/site-callout.js';
 import { renderDashboardHorizon } from './components/dashboard-horizon.js';
 import { restoreDashboardTheme } from './components/theme-settings.js';
 import { disconnectLazyViews, enableLazyViews, renderLazyView } from './components/lazy-view.js';
@@ -32,7 +32,7 @@ import { dashboardFormDefaultValues, dashboardViewAliasName } from './data/queri
 import { dashboardHorizonHours, formatDashboardHorizon, formatDashboardHorizonHours, resolveDashboardHorizon } from './horizon.js';
 import { sourceContinuation } from './data/continuation.js';
 import { renderDashboardNavigation, enableDashboardNavigation, syncDashboardNavigationIndicators, syncMobileViewModeToggle } from './components/dashboard-navigation.js';
-import { renderDashboardHeader } from './components/dashboard-header.js';
+import { renderDashboardHeader, renderRouteBreadcrumbs } from './components/dashboard-header.js';
 import { renderAccountMenu } from './components/account-menu.js';
 import { renderDashboardFooter } from './components/dashboard-footer.js';
 import { renderDashboardFrame } from './components/dashboard-frame.js';
@@ -43,7 +43,7 @@ import { enablePullRefresh } from './components/pull-refresh.js';
 import { resolveModeIndicator } from './components/mode-indicator.js';
 import { createDebug } from './debug.js';
 import { navigationIndicatorSourceNames } from './navigation-indicator.js';
-import { dashboardDataBackend, viewBackendAvailable, viewBackendHidden, viewBackendUnavailableMessage } from './view-availability.js';
+import { dashboardDataBackend, pageCapabilityAvailable, viewBackendAvailable, viewBackendHidden, viewBackendUnavailableMessage } from './view-availability.js';
 import { dashboardViewSourceNames as getViewSources, normalizeViewFilters, viewDataSourceNames, viewFilterControls, viewFilterSourceNames } from './view-filter-contract.js';
 import { captureCardFilterState, renderCardFilterBar, restoreCardFilterState } from './components/card-filter-bar.js';
 
@@ -79,11 +79,11 @@ import {
  */
 
 /**
- * @typedef {{ id: string, kind: 'built-in', page: string, title?: string, ['navigation-label']?: string, ['navigation-indicator']?: Record<string, unknown>, description?: string, icon?: string, ['class-name']?: string, experimental?: boolean, ['filter-bar']?: boolean, ['view-mode-control']?: boolean, ['pull-refresh']?: boolean, ['mode-indicator']?: boolean, form?: Record<string, unknown>, chunk?: string, ['source-names']?: string[], ['lazy-source-names']?: string[], ['table-source-names']?: string[], definition?: { views?: Array<unknown>, sections?: PresentablePageSection[], ['data-state']?: Record<string, boolean> } }} PresentableBuiltInPage
+ * @typedef {{ id: string, kind: 'built-in', page: string, title?: string, ['navigation-label']?: string, ['navigation-indicator']?: Record<string, unknown>, description?: string, icon?: string, ['class-name']?: string, experimental?: boolean, ['filter-bar']?: boolean, ['view-mode-control']?: boolean, ['pull-refresh']?: boolean, ['mode-indicator']?: boolean, ['query-binding']?: 'view'|'page', form?: Record<string, unknown>, chunk?: string, ['source-names']?: string[], ['lazy-source-names']?: string[], ['table-source-names']?: string[], definition?: { views?: Array<unknown>, sections?: PresentablePageSection[], ['data-state']?: Record<string, boolean> } }} PresentableBuiltInPage
  */
 
 /**
- * @typedef {{ id: string, kind: 'custom', title?: string, ['navigation-label']?: string, ['navigation-indicator']?: Record<string, unknown>, description?: string, icon?: string, ['class-name']?: string, experimental?: boolean, ['filter-bar']?: boolean, ['view-mode-control']?: boolean, ['pull-refresh']?: boolean, ['mode-indicator']?: boolean, ['retain-on-navigation']?: boolean, form?: Record<string, unknown>, chunk?: string, ['source-names']?: string[], ['lazy-source-names']?: string[], ['table-source-names']?: string[], route?: { ['hash-query-parameter']?: string, ['navigation-page']?: string, ['availability-view']?: string, ['availability-message']?: string, ['partial-message']?: string, ['title-format']?: 'title-case' }, views: unknown[], sections?: PresentablePageSection[] }} PresentableCustomPage
+ * @typedef {{ id: string, kind: 'custom', title?: string, ['navigation-label']?: string, ['navigation-indicator']?: Record<string, unknown>, description?: string, icon?: string, ['class-name']?: string, experimental?: boolean, ['filter-bar']?: boolean, ['view-mode-control']?: boolean, ['pull-refresh']?: boolean, ['mode-indicator']?: boolean, ['retain-on-navigation']?: boolean, ['query-binding']?: 'view'|'page', form?: Record<string, unknown>, chunk?: string, ['source-names']?: string[], ['lazy-source-names']?: string[], ['table-source-names']?: string[], route?: { ['hash-query-parameter']?: string, ['navigation-page']?: string, ['availability-view']?: string, ['availability-message']?: string, ['partial-message']?: string, ['title-format']?: 'title-case', breadcrumbs?: import('./components/dashboard-header.js').RouteBreadcrumb[] }, views: unknown[], sections?: PresentablePageSection[] }} PresentableCustomPage
  */
 
 /**
@@ -95,11 +95,11 @@ import {
  */
 
 /**
- * @typedef {{ id: string, title: string, description?: string, defaults?: Record<string, unknown>, units?: Record<string, { name: string, symbol: string, significant: number }>, queries?: Array<Record<string, unknown>>, views?: Array<Record<string, unknown>>, ['card-templates']?: Array<{ id: string, icon: string, title: TableField, subtitle?: TableField, labels: TableField[], details: TableField[] }>, callouts?: Array<{ id: string, title: string, description: string, icon?: string, ['navigation-page']?: string, ['visible-when']?: { source: string, field: string, equals: unknown } }>, ['cli-actions']?: Array<{ id: string, label: string, description?: string, icon: string, command: string, placement?: 'toolbar'|'settings'|'view'|'row', arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>, pages: Array<PresentableBuiltInPage | PresentableCustomPage>, ['github-url-base']?: string, repository?: string, navigation?: PresentableNavigationSection[], horizon?: { label: string, tooltip: { label: string, description: string, icon?: string } } }} PresentableDashboard
+ * @typedef {{ id: string, title: string, description?: string, defaults?: Record<string, unknown>, units?: Record<string, { name: string, symbol: string, significant: number }>, queries?: Array<Record<string, unknown>>, views?: Array<Record<string, unknown>>, ['card-templates']?: Array<{ id: string, icon: string, title: TableField, subtitle?: TableField, labels: TableField[], details: TableField[] }>, callouts?: import('./components/site-callout.js').SiteCallout[], ['cli-actions']?: Array<{ id: string, label: string, description?: string, icon: string, command: string, 'preview-command'?: string, placement?: 'toolbar'|'settings'|'view'|'row', arguments?: Array<{ id: string, label: string, description?: string, type: 'boolean', flag: string, default?: boolean }> }>, pages: Array<PresentableBuiltInPage | PresentableCustomPage>, ['github-url-base']?: string, repository?: string, navigation?: PresentableNavigationSection[], horizon?: { label: string, tooltip: { label: string, description: string, icon?: string } } }} PresentableDashboard
  */
 
 /**
- * @typedef {{ languageVersion: string, dashboard: PresentableDashboard }} PresentationDocument
+ * @typedef {{ languageVersion: string, dashboard: PresentableDashboard & { ['data-status']?: import('./dashboard-data-status.js').DashboardStatusConfiguration } }} PresentationDocument
  */
 
 /**
@@ -169,7 +169,7 @@ export function dashboardPageLazySourceNames(document, pageId) {
  */
 export function dashboardPagePaginatedSourceBindings(document, pageId) {
   const page = document.dashboard.pages.find((candidate) => candidate.id === pageId);
-  if (!page) return {};
+  if (!page || !pageCapabilityAvailable(page)) return {};
   const payload = getBuiltInPagePayload(page, document.dashboard.views);
   return Object.fromEntries((payload.views ?? []).flatMap((view, viewIndex) => {
     if (!isPlainObject(view)
@@ -196,7 +196,7 @@ export function dashboardTableSourceNames(document) {
  */
 export function renderDashboard(input) {
   const { document, sources: rawSources } = input;
-  const pages = document.dashboard.pages;
+  const pages = document.dashboard.pages.filter(pageCapabilityAvailable);
   const cardTemplates = Object.fromEntries((document.dashboard['card-templates'] ?? []).map((template) => [template.id, template]));
   const reusableViews = document.dashboard.views ?? [];
   const horizonRange = resolveDashboardHorizon(document.dashboard);
@@ -218,7 +218,14 @@ export function renderDashboard(input) {
   const dashboardHorizon = renderDashboardHorizon({
     dashboard: document.dashboard,
     initialValue: resolveDashboardHorizonViewModel(rawSources, dashboardDefaults, horizonRange, evaluatedAt),
-    formatDate: formatReportDate
+    formatDate: formatReportDate,
+    defaultRange: horizonRange,
+    referenceEnd: evaluatedAt,
+    onChange: (filters, timeWindow) => {
+      root.dispatchEvent(new CustomEvent('dashboard-horizon-filters-change', {
+        detail: { filters: Object.fromEntries(filters), timeWindow }
+      }));
+    }
   });
 
   const styleEl = h('style', null, getPrimerStyles());
@@ -229,6 +236,7 @@ export function renderDashboard(input) {
   const initialPage = pages.find((page) => page.id !== 'configuration') ?? pages[0];
   const overviewPage = pages.find((page) => page.id === 'overview');
   const initialPageHref = initialPage ? `#page-${encodeURIComponent(initialPage.id)}` : '#main-content';
+  const dashboardOwner = new AbortController();
   const appShell = renderDashboardFrame({
     navigation: sidebar,
     header: renderDashboardHeader({
@@ -241,7 +249,7 @@ export function renderDashboard(input) {
       githubUrlBase,
       dashboardRepository
     }),
-    callouts: renderSiteCallouts(document.dashboard.callouts, sources),
+    callouts: bindSiteCallouts(document.dashboard.callouts, sources, input.loadPageSources, dashboardOwner.signal, pages),
     pages: pages.map((page) => renderPagePlaceholder(page)),
     footer: renderDashboardFooter({ evaluatedAt, commitSha: input.commitSha, caoVersion: input.caoVersion, ghAwVersion: input.ghAwVersion, githubUrlBase, dashboardRepository })
   });
@@ -252,7 +260,6 @@ export function renderDashboard(input) {
     skipLink,
     appShell
   );
-  const dashboardOwner = new AbortController();
   void enableDashboardDomProvenanceWhenDebugging(root, document).catch((error) => {
     root.dataset.domProvenanceError = String(error?.message ?? error);
   });
@@ -276,9 +283,13 @@ export function renderDashboard(input) {
     (pageId, options) => {
       const pageStartedAt = monotonicNow();
       let renderCount = 0;
-      const pageIndex = pages.findIndex((candidate) => candidate.id === pageId);
-      const resolvedPage = () => pages[pageIndex] ?? pages.find((candidate) => candidate.id === pageId);
-      if (!resolvedPage()) return null;
+      const pageIndex = document.dashboard.pages.findIndex((candidate) => candidate.id === pageId);
+      if (pageIndex < 0) return null;
+      const resolvedPage = () => {
+        const page = document.dashboard.pages[pageIndex];
+        if (!page) throw new Error(`Dashboard page "${pageId}" is not available.`);
+        return page;
+      };
       const renderPreparedPage = () => {
         const pagePayload = getBuiltInPagePayload(resolvedPage(), reusableViews);
         const initialViewMode = defaultViewMode(pagePayload.views ?? []);
@@ -295,7 +306,8 @@ export function renderDashboard(input) {
               pageSources,
               dashboardDefaults,
               horizonRange,
-              evaluatedAt
+              evaluatedAt,
+              effectiveQueryContext?.timeWindow
             ));
           }
         };
@@ -310,7 +322,7 @@ export function renderDashboard(input) {
             failures,
             loading,
             signal: options.signal
-          });
+          }, { repository: document.dashboard.repository, githubUrlBase: document.dashboard['github-url-base'] });
           debugPerformance('page render', {
             pageId,
             phase: renderCount++ === 0 ? 'initial' : 'update',
@@ -337,7 +349,7 @@ export function renderDashboard(input) {
             });
           };
           const rendered = render(sources);
-          if (input.loadPageSources.subscribeViewSources) {
+          if (input.loadPageSources.subscribeViewSources && pagePayload['query-binding'] !== 'page') {
             const payload = getBuiltInPagePayload(resolvedPage(), reusableViews);
             const bindings = (payload.views ?? []).flatMap((view, index) => {
               if (!isPlainObject(view) || !viewBackendAvailable(view, dashboardDataBackend())
@@ -400,12 +412,20 @@ export function renderDashboard(input) {
               if (!input.loading) loading.set(false);
             });
           } else {
-            options.onUpdate = (pageSources) => publish(pageSources, true);
+            options.onUpdate = (pageSources) => batch(() => {
+              failures.set({});
+              publish(pageSources, true);
+            });
             void input.loadPageSources(pageId, options).then(options.onUpdate).catch((error) => {
               if (options.signal.aborted) return;
+              const message = error instanceof Error ? error.message : String(error);
+              failures.set(Object.fromEntries((pagePayload.views ?? []).flatMap((view) => (
+                isPlainObject(view) && typeof view.id === 'string' && getViewSources(view).length
+                  ? [[view.id, message]] : []
+              ))));
               debugRender('page source binding failed', {
                 pageId,
-                message: error instanceof Error ? error.message : String(error)
+                message
               });
             }).finally(() => {
               if (!options.signal.aborted && !input.loading) loading.set(false);
@@ -523,17 +543,16 @@ async function enableDashboardDomProvenanceWhenDebugging(root, document) {
 }
 
 /**
- * Retains route tabs while moving between sibling views so only the selected
- * view body enters its loading state.
+ * Matches a sibling tab without crossing the declared route binding.
  * @param {HTMLElement} page
  * @param {string} pageId
  * @param {URLSearchParams} parameters
  * @returns {HTMLElement | null}
  */
-function cloneRouteTabsForPage(page, pageId, parameters) {
+function routeTabForPage(page, pageId, parameters) {
   const tabs = page.querySelector('[data-route-tabs]');
   if (!(tabs instanceof HTMLElement)) return null;
-  const target = [...tabs.querySelectorAll('a')].find((link) => {
+  return [...tabs.querySelectorAll('a')].find((link) => {
     const href = link.getAttribute('href') ?? '';
     const [route, query = ''] = href.split('?');
     if (!route.startsWith('#page-')) return false;
@@ -543,8 +562,20 @@ function cloneRouteTabsForPage(page, pageId, parameters) {
     } catch {
       return false;
     }
-  });
+  }) ?? null;
+}
+
+/**
+ * @param {HTMLElement} page
+ * @param {string} pageId
+ * @param {URLSearchParams} parameters
+ * @returns {HTMLElement | null}
+ */
+function cloneRouteTabsForPage(page, pageId, parameters) {
+  const target = routeTabForPage(page, pageId, parameters);
   if (!target) return null;
+  const tabs = target.closest('[data-route-tabs]');
+  if (!(tabs instanceof HTMLElement)) return null;
   const clone = /** @type {HTMLElement} */ (tabs.cloneNode(true));
   for (const link of clone.querySelectorAll('a')) {
     if (link.getAttribute('href') === target.getAttribute('href')) {
@@ -669,9 +700,21 @@ function enableResponsiveReportActions(root, signal) {
  * @param {Record<string, unknown>} dashboardDefaults
  * @param {string} horizonRange
  * @param {string} fallbackEvaluatedAt
+ * @param {{ start?: string, end?: string }} [timeWindow]
  * @returns {{ available: boolean, evaluatedAt: string, duration: string, start: string, end: string }}
  */
-function resolveDashboardHorizonViewModel(sources, dashboardDefaults, horizonRange, fallbackEvaluatedAt) {
+function resolveDashboardHorizonViewModel(sources, dashboardDefaults, horizonRange, fallbackEvaluatedAt, timeWindow) {
+  const selectedStart = Date.parse(timeWindow?.start ?? '');
+  const selectedEnd = Date.parse(timeWindow?.end ?? '');
+  if (Number.isFinite(selectedStart) && Number.isFinite(selectedEnd) && selectedEnd > selectedStart) {
+    return {
+      available: true,
+      evaluatedAt: new Date(selectedEnd).toISOString(),
+      duration: formatDashboardHorizonHours(Math.ceil((selectedEnd - selectedStart) / 3_600_000)),
+      start: new Date(selectedStart).toISOString(),
+      end: new Date(selectedEnd).toISOString()
+    };
+  }
   const dataHorizon = resolveDataHorizon(sources);
   const evaluatedAt = dataHorizon?.end ?? latestRetrievedAt(sources) ?? fallbackEvaluatedAt;
   const duration = dataHorizon
@@ -757,6 +800,7 @@ function renderPagePlaceholder(page) {
     'data-route-parameter': routeParameter,
     'data-route-navigation-page': routeNavigationPage,
     'data-route-title-format': payload.route?.['title-format'],
+    'data-route-breadcrumbs': payload.route?.breadcrumbs ? JSON.stringify(payload.route.breadcrumbs) : undefined,
     'data-retain-on-navigation': payload['retain-on-navigation'] === true ? 'true' : undefined,
     'data-page-pending': ''
   });
@@ -779,12 +823,34 @@ function renderPageSkeleton() {
  * @param {PageSourceLoadOptions['queryContext']} [queryContext]
  * @param {Array<Record<string, unknown>>} [queries]
  * @param {{ sources: import('./reactive.js').State<Record<string, LogicalSourceInput>>, failures: import('./reactive.js').State<Record<string, string>>, loading: import('./reactive.js').State<boolean>, signal: AbortSignal }} [binding]
+ * @param {{ repository?: string, githubUrlBase?: string }} [promptContext]
  * @returns {HTMLElement}
  */
-function renderPage(page, sources, units, dashboardDefaults, cardTemplates, reusableViews, queryContext, queries = [], binding = undefined) {
+function renderPage(page, sources, units, dashboardDefaults, cardTemplates, reusableViews, queryContext, queries = [], binding = undefined, promptContext = {}) {
   const title = getPageTitle(page);
   const payload = getBuiltInPagePayload(page, reusableViews);
-  return renderCustomPage(payload, title, sources, units, dashboardDefaults, cardTemplates, true, queryContext, queries, binding);
+  return renderCustomPage(payload, title, sources, units, dashboardDefaults, cardTemplates, true, queryContext, queries, binding, promptContext);
+}
+
+/**
+ * Renders an isolated, validated page with the normal declarative renderer,
+ * without installing another dashboard shell or global navigation.
+ * @param {PresentationDocument} document
+ * @param {{ sources: import('./reactive.js').State<Record<string, LogicalSourceInput>>, failures: import('./reactive.js').State<Record<string, string>>, loading: import('./reactive.js').State<boolean>, signal: AbortSignal }} binding
+ * @param {PageSourceLoadOptions['queryContext']} [queryContext]
+ */
+export function renderDashboardPagePreview(document, binding, queryContext) {
+  const page = document.dashboard.pages[0];
+  if (!page || document.dashboard.pages.length !== 1 || page.kind !== 'custom') {
+    throw new Error('A dashboard preview requires exactly one custom page.');
+  }
+  const templates = Object.fromEntries((document.dashboard['card-templates'] ?? []).map((template) => [template.id, template]));
+  const root = renderPage(page, binding.sources.get(), document.dashboard.units ?? {},
+    document.dashboard.defaults ?? {}, templates, [], queryContext, document.dashboard.queries ?? [], binding,
+    { repository: document.dashboard.repository, githubUrlBase: document.dashboard['github-url-base'] });
+  enableLazyViews(root);
+  binding.signal.addEventListener('abort', () => disconnectLazyViews(root), { once: true });
+  return root;
 }
 
 /**
@@ -798,9 +864,10 @@ function renderPage(page, sources, units, dashboardDefaults, cardTemplates, reus
  * @param {PageSourceLoadOptions['queryContext']} [queryContext]
  * @param {Array<Record<string, unknown>>} [queries]
  * @param {{ sources: import('./reactive.js').State<Record<string, LogicalSourceInput>>, failures: import('./reactive.js').State<Record<string, string>>, loading: import('./reactive.js').State<boolean>, signal: AbortSignal }} [binding]
+ * @param {{ repository?: string, githubUrlBase?: string }} [promptContext]
  * @returns {HTMLElement}
  */
-function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTemplates, withFilterBar = true, queryContext, queries = [], binding = undefined) {
+function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTemplates, withFilterBar = true, queryContext, queries = [], binding = undefined, promptContext = {}) {
   const effectiveDashboardDefaults = inventoryPage(page.id)
     ? { ...dashboardDefaults, time: undefined }
     : dashboardDefaults;
@@ -879,10 +946,31 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
             'unavailable', [`Data query failure: ${failure}`], headingTag, 'This view cannot be shown because its data query failed.')
         : pending && viewSourceNames.length > 0 && !isSelfBound && (!isPlainObject(view) || view.mark !== 'callout')
         ? renderPageSection(page.id, getViewTitle(view, index), [
+            ...(isPlainObject(view) && view.mark === 'chart' && view.chart === 'pie' && typeof view.description === 'string'
+              ? [h('p', { className: 'view-description' }, view.description)] : []),
             renderDashboardViewSkeleton(),
             h('span', { className: 'sr-only' }, `Loading ${getViewTitle(view, index)}`)
           ], headingTag)
         : renderCustomView(page.id, view, index, readySources, units, cardTemplates, headingTag, routeParameter, queryContext);
+      const fullPie = isPlainObject(view) && view.mark === 'chart' && view.chart === 'pie' && view.layout === 'full';
+      const pieState = fullPie ? rendered.querySelector(':scope > .view-state-card') : null;
+      if (fullPie) rendered.classList.add('chart-view', 'chart-view-pie');
+      if (pieState && isPlainObject(view)) {
+        if (typeof view.description === 'string') {
+          pieState.before(h('p', { className: 'view-description' }, view.description));
+        }
+        const layout = h('div', { className: 'pie-chart-layout' });
+        pieState.before(layout);
+        layout.append(pieState);
+      }
+      if ((pending && isPlainObject(view) && view.mark === 'chart' && view.chart === 'pie') || pieState) {
+        const heading = rendered.querySelector(':scope > :is(h2, h3, h4)');
+        if (heading) {
+          const titleRow = h('div', { className: 'chart-prompt-heading' });
+          heading.before(titleRow);
+          titleRow.append(heading);
+        }
+      }
       if (pending && !isSelfBound) rendered.setAttribute('aria-busy', 'true');
       const filterControls = viewFilterControls(view);
       if (filterControls.length > 0 && viewBackendAvailable(view, dashboardDataBackend())) {
@@ -936,6 +1024,8 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
               const routeValues = Object.fromEntries(new URLSearchParams(globalThis.location?.hash.split('?')[1] ?? ''));
               return semanticViewPrompt({
                 pageId: page.id,
+                pageContract: page,
+                ...promptContext,
                 viewId: view.id ?? `view-${index + 1}`,
                 title: getViewTitle(view, index),
                 semantics,
@@ -1202,10 +1292,13 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
       currentTimeWindow = timeWindow;
       dispatchQueryContextChange(currentFilters, currentTimeWindow, selectedViewMode);
     }, {
+      restoreSettings: false,
+      signal: binding?.signal,
+      maxDays: 30,
       defaultRange: isPlainObject(dashboardDefaults.time) && typeof dashboardDefaults.time.range === 'string'
         ? dashboardDefaults.time.range
         : 'all',
-      referenceEnd: latestSourceCoverageEnd(page.id === 'readiness'
+      referenceEnd: queryContext?.timeWindow?.end ?? latestSourceCoverageEnd(page.id === 'readiness'
         ? [sources.runs, sources.findings, sources.outcomes]
         : [...pageSources.values()])
     })
@@ -1245,6 +1338,7 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
       'data-route-parameter': routeParameter,
       'data-route-navigation-page': routeNavigationPage,
       'data-route-title-format': page.route?.['title-format'],
+      'data-route-breadcrumbs': page.route?.breadcrumbs ? JSON.stringify(page.route.breadcrumbs) : undefined,
       'data-retain-on-navigation': page['retain-on-navigation'] === true ? 'true' : undefined,
       'data-view-mode': selectedViewMode
     },
@@ -1465,6 +1559,8 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
   };
   /** @type {Map<string, NonNullable<PageSourceLoadOptions['queryContext']>>} */
   const pageQueryContext = new Map();
+  /** @type {Pick<NonNullable<PageSourceLoadOptions['queryContext']>, 'filters' | 'timeWindow'> | undefined} */
+  let horizonQueryContext;
   let pendingQueryFocusId = '';
   const overviewPage = pages.find((page) => page.dataset.pageId === 'overview');
   const links = [...root.querySelectorAll('[data-nav-page-id], [data-mobile-nav-page-id]')]
@@ -1541,7 +1637,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
    */
   const primePageChrome = (pageId, routeTitle = '', routeDescription = '') => {
     const page = pages.find((candidate) => candidate.dataset.pageId === pageId);
-    const title = routeTitle.trim() || page?.dataset.pageTitle || '';
+    const title = (page?.dataset.routeBreadcrumbs ? '' : routeTitle.trim()) || page?.dataset.pageTitle || '';
     const description = routeDescription.trim() || page?.dataset.pageDescription || '';
     if (breadcrumbPage) breadcrumbPage.textContent = title;
     if (pageTitle) pageTitle.textContent = title;
@@ -1561,13 +1657,13 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     if (!(page instanceof HTMLElement) || page.hidden) return;
     const title = typeof event.detail?.title === 'string' ? event.detail.title.trim() : '';
     const description = typeof event.detail?.description === 'string' ? event.detail.description.trim() : '';
-    if (title) {
+    if (title && !page.dataset.routeBreadcrumbs) {
       if (breadcrumbPage) breadcrumbPage.textContent = title;
       if (pageTitle) pageTitle.textContent = title;
       updateDocumentTitle(root.ownerDocument, title, dashboardTitle);
     }
     renderPageTitleLink(pageTitleLink, event.detail?.titleLink);
-    const hasAllocatedBreadcrumbs = Array.isArray(event.detail?.breadcrumbs);
+    const hasAllocatedBreadcrumbs = !page.dataset.routeBreadcrumbs && Array.isArray(event.detail?.breadcrumbs);
     const breadcrumbs = hasAllocatedBreadcrumbs ? event.detail.breadcrumbs : [];
     for (const [index, link] of [breadcrumbRoot, breadcrumbDashboard].entries()) {
       const breadcrumb = breadcrumbs[index];
@@ -1621,6 +1717,15 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     } catch {
       return null;
     }
+  };
+  /**
+   * @param {string} pageId
+   * @param {URLSearchParams} [parameters]
+   */
+  const navigationTransitionKind = (pageId, parameters = new URLSearchParams()) => {
+    const activePage = pages.find((candidate) => candidate.dataset.pageId === activePageId);
+    return activePage && pageId !== activePageId && routeTabForPage(activePage, pageId, parameters)
+      ? 'tab' : 'page';
   };
   /**
    * Defers expensive rendering until the lightweight title and skeleton update
@@ -1702,7 +1807,13 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     }
     activePageId = pageId;
     const routeParameters = Object.fromEntries([...parameters.entries()].map(([key, value]) => [key, value]));
-    const queryContext = pageQueryContext.get(pageId);
+    const queryContext = horizonQueryContext
+      ? {
+          ...pageQueryContext.get(pageId),
+          ...horizonQueryContext,
+          timeWindow: pageId === 'readiness' ? undefined : horizonQueryContext.timeWindow
+        }
+      : pageQueryContext.get(pageId);
     const pageIndex = pages.findIndex((candidate) => candidate.dataset.pageId === pageId);
     const pendingPage = pages[pageIndex];
     const pendingRouteParameter = pendingPage?.dataset.routeParameter ?? '';
@@ -1811,6 +1922,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
         populate();
       }
     }
+    for (const crumb of root.querySelectorAll('[data-route-breadcrumb]')) crumb.remove();
     for (const [index, link] of [breadcrumbRoot, breadcrumbDashboard].entries()) {
       if (!(link instanceof HTMLAnchorElement)) continue;
       link.hidden = defaultBreadcrumbs[index].hidden;
@@ -1851,7 +1963,23 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     const formattedRouteTitle = page?.dataset.routeTitleFormat === 'title-case'
       ? titleCase(routeValue)
       : routeValue;
-    const title = queryTitle || provisionalTitle.trim() || formattedRouteTitle || page?.dataset.pageTitle || '';
+    const title = page?.dataset.routeBreadcrumbs
+      ? page.dataset.pageTitle || ''
+      : queryTitle || provisionalTitle.trim() || formattedRouteTitle || page?.dataset.pageTitle || '';
+    if (page?.dataset.routeBreadcrumbs) {
+      const breadcrumbs = /** @type {import('./components/dashboard-header.js').RouteBreadcrumb[]} */ (JSON.parse(page.dataset.routeBreadcrumbs));
+      for (const link of [breadcrumbRoot, breadcrumbDashboard]) {
+        if (link instanceof HTMLElement) link.hidden = true;
+      }
+      breadcrumbRoot?.parentElement?.append(...renderRouteBreadcrumbs({
+        breadcrumbs,
+        pages: pages.map(candidate => ({
+          id: candidate.dataset.pageId ?? '', title: candidate.dataset.pageTitle ?? '',
+          titleFormat: candidate.dataset.routeTitleFormat
+        })),
+        parameters, activePage: pageId
+      }));
+    }
     const description = provisionalDescription.trim() || page?.dataset.pageDescription || '';
     if (breadcrumbPage) breadcrumbPage.textContent = title;
     if (pageTitle) pageTitle.textContent = title;
@@ -1912,7 +2040,13 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
       return false;
     }
   };
+  const declaredParentLink = () => {
+    const parent = [...root.querySelectorAll('a[data-route-breadcrumb]')].at(-1);
+    return parent instanceof HTMLAnchorElement ? parent : undefined;
+  };
   const logicalParentPageId = () => {
+    const declaredParent = declaredParentLink()?.dataset.navPageId;
+    if (declaredParent && availableIds.has(declaredParent)) return declaredParent;
     const pageId = routeFromHash()?.pageId ?? activePageId;
     const parentPageId = pages.find((page) => page.dataset.pageId === pageId)
       ?.dataset.routeNavigationPage;
@@ -1924,7 +2058,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
       ?? (!previousEntryIsDashboard() ? initialPageId : undefined);
     historyBack.hidden = (routeFromHash()?.pageId ?? activePageId) === initialPageId;
     const parentLink = parentPageId
-      ? links.find((link) => getNavigationPageId(link) === parentPageId)
+      ? declaredParentLink() ?? links.find((link) => getNavigationPageId(link) === parentPageId)
       : undefined;
     const label = parentPageId
       ? `Back to ${parentLink?.textContent?.trim() || parentPageId.replaceAll('-', ' ')}`
@@ -1978,12 +2112,13 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     }
     commitScrollTop();
     navigationIndex += 1;
+    const parentHref = declaredParentLink()?.getAttribute('href') ?? `#page-${parentPageId}`;
     defaultView?.history.pushState(
       { [NAVIGATION_INDEX_STATE_KEY]: navigationIndex },
       '',
-      `#page-${parentPageId}`
+      parentHref
     );
-    activate(parentPageId, new URLSearchParams(), true);
+    activate(parentPageId, new URLSearchParams(parentHref.split('?', 2)[1] ?? ''), true);
     syncHistoryBack();
     if (pageTitle instanceof HTMLElement) pageTitle.focus();
   }, { signal: navigationOwner.signal });
@@ -1998,6 +2133,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     pendingNavigationHash = undefined;
     const pageId = getNavigationPageId(link);
     if (!pageId || !availableIds.has(pageId)) return;
+    const transitionKind = navigationTransitionKind(pageId, new URLSearchParams(link.hash.split('?', 2)[1] ?? ''));
     const provisionalTitle = link.dataset.routeTitle ?? '';
     const provisionalDescription = link.dataset.routeDescription ?? '';
     commitScrollTop();
@@ -2006,14 +2142,19 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     syncHistoryBack();
     defaultView?.dispatchEvent(new CustomEvent('dashboard-history-change'));
     primePageChrome(pageId, provisionalTitle, provisionalDescription);
+    const navigate = () => {
+      activate(pageId, routeFromHash()?.parameters, true, provisionalTitle, provisionalDescription);
+      syncHistoryBack();
+    };
     if (pages.find((candidate) => candidate.dataset.pageId === pageId)?.dataset.retainOnNavigation === 'true'
       || pages.find((candidate) => candidate.dataset.pageId === activePageId)?.dataset.retainOnNavigation === 'true') {
-      activate(pageId, routeFromHash()?.parameters, true, provisionalTitle, provisionalDescription);
+      navigate();
     } else {
       updateWithViewTransition(
         root.ownerDocument,
-        () => activate(pageId, routeFromHash()?.parameters, true, provisionalTitle, provisionalDescription),
-        'forward'
+        navigate,
+        'forward',
+        transitionKind
       );
     }
     if (pageTitle instanceof HTMLElement) pageTitle.focus();
@@ -2027,6 +2168,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     if (!pageId || pageId !== activePageId || !availableIds.has(pageId)) return;
     const nextContext = normalizeDashboardQueryContext(detail.queryContext);
     if (sameDashboardQueryContext(pageQueryContext.get(pageId), nextContext)) return;
+    if (horizonQueryContext) horizonQueryContext.filters = nextContext?.filters;
     const focused = root.ownerDocument.activeElement;
     pendingQueryFocusId = focused instanceof HTMLElement && root.contains(focused) ? focused.id : '';
     if (nextContext) pageQueryContext.set(pageId, nextContext);
@@ -2034,6 +2176,24 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     pages.find((page) => page.dataset.pageId === pageId)?.setAttribute('data-page-pending', '');
     const route = routeFromHash();
     activate(route?.pageId ?? pageId, route?.parameters ?? new URLSearchParams(), true);
+  }, { signal: navigationOwner.signal });
+  root.addEventListener('dashboard-horizon-filters-change', (event) => {
+    if (!(event instanceof CustomEvent) || !activePageId) return;
+    horizonQueryContext = {
+      filters: event.detail.filters,
+      timeWindow: event.detail.timeWindow
+    };
+    for (const page of pages) page.setAttribute('data-page-pending', '');
+    root.dispatchEvent(new CustomEvent('dashboard-query-context-change', {
+      detail: {
+        pageId: activePageId,
+        queryContext: {
+          ...pageQueryContext.get(activePageId),
+          timeWindow: activePageId === 'readiness' ? undefined : horizonQueryContext.timeWindow,
+          filters: event.detail.filters
+        }
+      }
+    }));
   }, { signal: navigationOwner.signal });
   root.addEventListener('dashboard-retry-page', () => {
     const route = routeFromHash();
@@ -2083,10 +2243,14 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
     primePageChrome(route?.pageId ?? initialPageId);
     const historyScrollTop = pendingScrollPageId === route?.pageId ? pendingScrollTop : undefined;
     const targetId = route?.pageId ?? initialPageId;
-    const navigate = () => activate(targetId, route?.parameters, true);
+    const transitionKind = navigationTransitionKind(targetId, route?.parameters);
+    const navigate = () => {
+      activate(targetId, route?.parameters, true);
+      syncHistoryBack();
+    };
     if (pages.find((candidate) => candidate.dataset.pageId === targetId)?.dataset.retainOnNavigation === 'true'
       || pages.find((candidate) => candidate.dataset.pageId === activePageId)?.dataset.retainOnNavigation === 'true') navigate();
-    else updateWithViewTransition(root.ownerDocument, navigate, navigationDirection);
+    else updateWithViewTransition(root.ownerDocument, navigate, navigationDirection, transitionKind);
     if (historyScrollTop !== undefined && !route?.parameters.has('section')) {
       const scrollingElement = pageScroller instanceof HTMLElement
         ? pageScroller
@@ -2374,7 +2538,7 @@ function renderCustomView(pageId, view, index, sources, units, cardTemplates, he
     );
   }
 
-  if (filteredRows.length === 0 && view.mark !== 'table' && !isMetricCard) {
+  if (filteredRows.length === 0 && view.mark !== 'table' && view.mark !== 'list' && !isMetricCard) {
     return renderCustomViewState(pageId, title, authoredSourceName, 'empty', contextDetails, headingTag, emptyMessage);
   }
 
@@ -2389,6 +2553,8 @@ function renderCustomView(pageId, view, index, sources, units, cardTemplates, he
     view,
     sourceName: authoredSourceName,
     rows: filteredRows,
+    sourceTruncated: sourceInput.continuationToken !== undefined
+      || Number(metadata['total-row-count']) > filteredRows.length,
     rowLimit: Number(/** @type {Record<PropertyKey, unknown>} */ (view.data ?? {})[TABLE_ROW_LIMIT]),
     metadata,
     contextDetails,
@@ -2499,7 +2665,7 @@ function renderElementView(pageId, title, view, viewIndex, sources, contextDetai
   const elementName = typeof view.element === 'string' ? view.element : '';
   const sourceNames = getViewSources(view);
   const viewData = isPlainObject(view.data) ? view.data : undefined;
-  if (sourceNames.length === 0) {
+  if (sourceNames.length === 0 && !['query-editor', 'command-terminal', 'storage-info', 'environment-defaults'].includes(elementName)) {
     return renderCustomViewState(pageId, title, null, 'unavailable', [...contextDetails, 'No sources declared for element view.'], headingTag);
   }
 

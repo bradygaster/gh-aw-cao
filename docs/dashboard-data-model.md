@@ -13,9 +13,9 @@ Views query this source-neutral model instead of interpreting upstream formats
 directly.
 
 When changing canonical entities or storage, continue to the
-[Dashboard Data Architecture Specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-data.md),
+[Dashboard Data Architecture Specification](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md),
 then `dashboard/site/src/data/`. See
-[Data ingestion](/gh-aw-cao/dashboard-data-ingestion/) for collection, JSONL
+[Data ingestion](/gh-cao/dashboard-data-ingestion/) for collection, JSONL
 publication, retention, browser updates, and SQLite projections.
 
 ## Entity map
@@ -60,14 +60,22 @@ The current dashboard publication does not include immutable GitHub repository o
 
 ## Maintenance inventory
 
-The Maintenance page, grouped in navigation alongside Marketplace, Indexing, and
-Configuration, combines two distinct inventory concerns:
+The Updates page under Maintenance separates inventory into **Repositories**
+(the default tab) and **Campaigns**. Both tabs retain the Updates navigation
+indicator, and each has a directly addressable route:
 
 - **Agentic campaigns** use Campaign records and compare `campaign-version` with
   `campaign-current-version`. These are installed campaign revisions resolved
   from the control repository's catalog sources.
 - **Agentic Workflow compilers** use workflow inventory and compare
   `gh-aw-version` with `gh-aw-current-version` for each repository.
+
+Repositories opens at `#page-maintenance`; Campaigns opens at
+`#page-maintenance-campaigns`. Repository enrollment and compiler upgrade actions
+remain in Repositories, while campaign package update actions remain in Campaigns.
+Switching sibling tabs, including browser back and forward, cross-fades only the
+tab content. The shared navigation and tab bar stay outside the full-page
+transition used when opening a different dashboard view.
 
 These records do not constitute an inventory of vendored agents or project
 skills. Runtime skill calls are retained as Skill records, but a call
@@ -77,6 +85,13 @@ must publish explicit scope and provenance (for example, a `gh skill` source,
 revision, or lock record) before it can report maintenance state.
 
 ## Run-owned records
+
+Model routing uses typed Audit facts projected from `usage/aw_session.jsonl`,
+not a parallel telemetry table. The Model routing page resolves proxy-first
+state, per-phase accounting, sub-agent attribution and cost completeness with
+Dashboard Language queries. Missing costs remain unknown; partial runs do not
+enter cost quantiles. Browser schema 32 / IndexedDB version 42 rebuild older
+projections, and hosted PostgreSQL requires a fresh generated schema.
 
 A Run owns ordered Domain, Tool, Skill, Friction, Audit, and Issue records combining observations
 from agents, tools, MCP servers, gateways, firewalls, policy engines,
@@ -97,10 +112,10 @@ Observations can arrive at different times and enrich an existing entity. Explic
 
 The activity shard manifest is the dashboard's published operational input. Normalized run-information and record shards are JSONL streams: a metadata envelope is followed by one canonical record envelope per line. The worker imports every run-information stream before downloading the larger record streams and writes bounded batches as response bytes arrive; it never parses a normalized shard as one JSON object. Run records include immutable agent, model, duration, firewall, MCP, operational-grader, and audit-priority aggregates; every Domain, Tool, Audit, and Issue includes its owning `runId`. Run queries may refresh between phases, but that intermediate state is not a complete snapshot and record-dependent queries remain stale until record ingestion succeeds. Legacy schema-v2 JSONL remains a compatibility input. `github_api_rate_limit` envelopes create Audits only when explicit collection context identifies their owning run; browser ingestion does not fabricate that ownership. Unknown kinds and unsupported non-empty schema versions fail explicitly.
 
-The complete normative [cached gh-aw JSONL mapping](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md) describes source fields, canonical entities, identity, ownership, and accounting.
+The complete normative [cached gh-aw JSONL mapping](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md) describes source fields, canonical entities, identity, ownership, and accounting.
 
-The canonical model is version 28. The browser database is
-`gh-aw-cao-dashboard-data`, IndexedDB version 37. Its canonical stores are
+The canonical model is version 32. The browser database is
+`gh-aw-cao-dashboard-data`, IndexedDB version 42. Its canonical stores are
 `campaigns`, `repositories`, `workflows`, `runs`, `domains`, `tools`, `skills`,
 `friction`, `audits`, `issues`, `operationalValues`, `marketplacePackages`,
 `experiments`, `experimentAssignments`, `graders`, `graderObservations`,
@@ -122,7 +137,7 @@ ingestion outcomes and is indexed by `createdAt`. Overview aggregates are
 computed by request-scoped queries over canonical runs. Schema upgrades rebuild all stores from
 authoritative dashboard inputs.
 
-For each ingestion, the worker reads the existing canonical batch, merges the incoming records, expires time-bounded records outside the 30-day retention window, and prunes orphaned descendants and unreferenced structural parents. The effective retention horizon is the later of the browser clock and the newest incoming observation, so a browser with a slow clock cannot prune current producer data. The worker then reconciles each canonical collection: it deletes records absent from the retained batch and writes changed records. This makes expired records disappear while allowing fresh partial collections to retain compatible history.
+For each ingestion, the worker reads the existing canonical batch, merges the incoming records, expires run-linked detail outside the browser's 7-day window (while retaining available run summaries and keeping Operational Values on 30 days), and prunes orphaned descendants and unreferenced structural parents. The effective retention horizon is the later of the browser clock and the newest incoming observation, so a browser with a slow clock cannot prune current producer data. The worker then reconciles each canonical collection: it deletes records absent from the retained batch and writes changed records. This makes expired records disappear while allowing fresh partial collections to retain compatible history.
 
 Browser storage remains disposable derived state rather than a generation-atomic
 authority. Writes use bounded transactions, so interruption can leave a
@@ -179,4 +194,4 @@ identity, and run-detail retention does not remove the campaign.
 See [Data ingestion](dashboard-data-ingestion.md#use-local-sqlite) for download,
 ingestion, query, and repair commands.
 
-For normative requirements, failure behavior, and implementation phases, see the [Dashboard Data Architecture Specification](https://github.com/githubnext/gh-aw-cao/blob/main/specs/dashboard-data.md).
+For normative requirements, failure behavior, and implementation phases, see the [Dashboard Data Architecture Specification](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md).

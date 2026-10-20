@@ -1,11 +1,14 @@
-import { expect, test } from "@playwright/test";
+import { expect, test as baseTest } from "@playwright/test";
 import { createServer } from "node:http";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import {
   deployedActivityShardEntries,
   deployedDashboardUrl,
+  deployedStorageContext,
   configureDeployedStorageQuota,
+  DEPLOYED_REFRESH_TIMEOUT_MS,
+  DEPLOYED_STORAGE_QUOTA_BYTES,
   legacyPhaseJsonToJsonl,
   shouldIgnoreRequestFailure,
 } from "./dashboard-deployed-refresh-helpers.mjs";
@@ -20,7 +23,9 @@ import {
 } from "./dashboard-query-performance-helpers.mjs";
 import { dashboardPageAllSourceNames } from "../../dashboard/site/src/dashboard-chunks.js";
 import { loadDashboardSource } from "../../dashboard/report/bundle-dashboards.mjs";
+import { dashboardBenchmarkQueries } from "../helpers/dashboard-benchmark-queries.mjs";
 
+const test = baseTest.extend({ context: deployedStorageContext });
 const shard = parseQueryPerformanceShard(process.env.DASHBOARD_QUERY_PERFORMANCE_SHARD);
 const outputDirectory = resolve("test-results/dashboard-query-performance");
 const siteRoot = resolve("dashboard/site");
@@ -38,7 +43,7 @@ const { document: dashboardSource } = await loadDashboardSource(
 const dashboardDocument = dashboardSource.dashboard;
 const dashboardContext = {
   pages: dashboardDocument.pages,
-  queries: dashboardDocument.queries,
+  queries: dashboardBenchmarkQueries(dashboardDocument),
   views: dashboardDocument.views ?? [],
 };
 const overviewSourceNames = dashboardPageAllSourceNames(
@@ -224,7 +229,7 @@ test(`benchmarks every dashboard query against settled deployed data (shard ${sh
       const events = window.__dashboardPerformanceEvents ?? [];
       return events.some(({ detail }) =>
         detail?.kind === "refresh" && ["completed", "failed"].includes(detail?.status));
-    }, null, { timeout: 300_000 });
+    }, null, { timeout: DEPLOYED_REFRESH_TIMEOUT_MS });
     expect(browserErrors, "Deployed data must refresh successfully before benchmarking").toEqual([]);
     expect(failedRequests, "The deployed snapshot must be available in full").toEqual([]);
     await expect(page.locator(".dashboard-root")).not.toHaveAttribute("aria-busy", "true", {
@@ -271,29 +276,30 @@ test(`benchmarks every dashboard query against settled deployed data (shard ${sh
       for (const definition of queries) {
         const name = definition?.name;
         if (typeof name !== "string" || !name) continue;
+        const loadQuery = async (pagination) => {
+          try {
+            return await loadCanonicalDashboardPage([name], context, pagination);
+          } catch (error) {
+            throw new Error(`Dashboard query "${name}" failed: ${error.message}`, { cause: error });
+          }
+        };
         let chunkStartedAt = performance.now();
-        let sources = await loadCanonicalDashboardPage(
-          [name],
-          context,
-          { [name]: { limit: chunkSize } },
-        );
+        let sources = await loadQuery({ [name]: { limit: chunkSize } });
         const firstChunkMs = performance.now() - chunkStartedAt;
         let source = sources[name];
         if (!source) throw new Error(`Query "${name}" did not return its named source.`);
         let continuationChunkMs = null;
         if (source.continuationToken) {
           chunkStartedAt = performance.now();
-          sources = await loadCanonicalDashboardPage(
-            [name],
-            context,
-            { [name]: { limit: chunkSize, continuationToken: source.continuationToken } },
-          );
+          sources = await loadQuery({
+            [name]: { limit: chunkSize, continuationToken: source.continuationToken },
+          });
           continuationChunkMs = performance.now() - chunkStartedAt;
           source = sources[name];
           if (!source) throw new Error(`Query "${name}" continuation omitted its named source.`);
         }
         const fillStartedAt = performance.now();
-        const filledSources = await loadCanonicalDashboardPage([name], context);
+        const filledSources = await loadQuery();
         const filled = filledSources[name];
         if (!filled) throw new Error(`Query "${name}" fill omitted its named source.`);
         timings.push({
@@ -350,7 +356,7 @@ test(`benchmarks every dashboard query against settled deployed data (shard ${sh
     const report = {
       generatedAt: new Date().toISOString(),
       dashboardUrl: deployedDashboardUrl,
-      methodology: "Fresh Chromium profile with a fixed 2 GiB origin quota running the checkout's dashboard and query worker; proxy current deployed data; measure native IndexedDB count() across all canonical entity stores, initial Overview readiness, and the median of several settled Overview requests by worker phase; then measure a 25-row first chunk, one continuation chunk when present, and one unpaginated fill iteration.",
+      methodology: `Fresh disk-backed Chromium profile with a fixed ${DEPLOYED_STORAGE_QUOTA_BYTES / 1024 ** 3} GiB origin quota running the checkout's dashboard and query worker; proxy current deployed data; resolve declared form defaults before query execution; measure native IndexedDB count() across all canonical entity stores, initial Overview readiness, and the median of several settled Overview requests by worker phase; then measure a 25-row first chunk, one continuation chunk when present, and one unpaginated fill iteration.`,
       chunkSize: QUERY_CHUNK_SIZE,
       shard: { index: shard.index, total: shard.total },
       populateMs: Math.round(populateMs * 100) / 100,

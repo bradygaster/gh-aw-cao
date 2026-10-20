@@ -7,12 +7,36 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/operational"
+	"github.com/githubnext/gh-cao/server/internal/operational"
 )
 
 func digest(name string) string {
 	h := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(h[:])
+}
+
+func TestClassifyCacheAdmissionIdentifiesEachRejection(t *testing.T) {
+	cases := []struct {
+		name                                                              string
+		dataLen                                                           int
+		size, maxResultBytes, maxBytes, maxCacheValueBytes, maxCacheBytes int64
+		want                                                              cacheAdmissionRejection
+	}{
+		{"accepted", 10, 20, 100, 100, 100, 100, cacheAdmissionAccepted},
+		{"over result limit", 50, 20, 10, 100, 100, 100, cacheAdmissionRejectedResultLimit},
+		{"over value limit", 50, 20, 100, 100, 10, 100, cacheAdmissionRejectedValueLimit},
+		{"over request cap", 10, 200, 100, 100, 100, 100, cacheAdmissionRejectedRequestCap},
+		{"over store cap", 10, 200, 100, 300, 100, 100, cacheAdmissionRejectedStoreCap},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyCacheAdmission(c.dataLen, c.size, c.maxResultBytes, c.maxBytes, c.maxCacheValueBytes, c.maxCacheBytes)
+			if got != c.want {
+				t.Fatalf("classifyCacheAdmission(%d, %d, %d, %d, %d, %d) = %s, want %s",
+					c.dataLen, c.size, c.maxResultBytes, c.maxBytes, c.maxCacheValueBytes, c.maxCacheBytes, got, c.want)
+			}
+		})
+	}
 }
 
 func TestCacheTTLAdmissionCopyAndOldestEviction(t *testing.T) {

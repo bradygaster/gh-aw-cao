@@ -17,7 +17,8 @@ import { root, workflow } from "../unit/workflow-contract.helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
-const steps = parse(workflow("cao-dashboard.yml")).jobs.build.steps;
+const dashboardWorkflow = parse(workflow("cao-dashboard.yml"));
+const steps = dashboardWorkflow.jobs.build.steps;
 const repository = "acme/control";
 const commitSha = "0123456789abcdef0123456789abcdef01234567";
 
@@ -35,10 +36,11 @@ async function runBuildStep(name, temporaryRoot) {
     GITHUB_REPOSITORY: repository,
     GITHUB_SERVER_URL: "https://github.com",
     RUNNER_TEMP: temporaryRoot,
-    ...Object.fromEntries(Object.entries(step.env ?? {}).map(([key, value]) => [
+    ...Object.fromEntries(Object.entries({ ...dashboardWorkflow.env, ...step.env }).map(([key, value]) => [
       key,
       value.replaceAll("${{ runner.temp }}", temporaryRoot)
-        .replaceAll("${{ github.workflow_sha }}", commitSha),
+        .replaceAll("${{ github.workflow_sha }}", commitSha)
+        .replace(/\$\{\{ vars\.[A-Z_]+ \|\| '([^']*)' \}\}/g, "$1"),
     ])),
   };
   const results = [];
@@ -58,6 +60,29 @@ async function runBuildStep(name, temporaryRoot) {
     },
   });
   return results;
+}
+
+async function loadPublishedSources(t, published, sourceNames) {
+  const { dashboard } = JSON.parse(await readFile(path.join(published, "dashboard.json"), "utf8"));
+  await deleteCanonicalDatabase(indexedDB);
+  t.after(() => deleteCanonicalDatabase(indexedDB));
+  const previousSelf = globalThis.self;
+  globalThis.self = { postMessage() {} };
+  t.after(() => {
+    if (previousSelf === undefined) delete globalThis.self;
+    else globalThis.self = previousSelf;
+  });
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    assert.equal(url.origin, "https://bootstrap.test");
+    return new Response(await readFile(path.join(published, url.pathname)), { status: 200 });
+  });
+  return processDataRequest({
+    operation: "load-canonical-dashboard",
+    sourceUrl: "https://bootstrap.test/payload-hashes.json",
+    sourceNames,
+    context: { ...dashboard, dashboardRepository: repository },
+  });
 }
 
 test("first deployment builds a publishable dashboard with campaigns and no activity", async (t) => {
@@ -84,7 +109,6 @@ test("first deployment builds a publishable dashboard with campaigns and no acti
 
   const published = path.join(temporaryRoot, "central-agentic-ops-dashboard");
   assert.match(await readFile(path.join(published, "index.html"), "utf8"), new RegExp(commitSha));
-  const { dashboard } = JSON.parse(await readFile(path.join(published, "dashboard.json"), "utf8"));
   const manifest = JSON.parse(await readFile(path.join(published, "payload-hashes.json"), "utf8"));
   assert.ok(manifest["gh-aw-logs.sqlite"]);
   for (const phase of ["runs", "records"]) {
@@ -100,29 +124,54 @@ test("first deployment builds a publishable dashboard with campaigns and no acti
     assert.equal(createHash("sha256").update(await readFile(path.join(published, name))).digest("hex"), digest, name);
   }
 
-  await deleteCanonicalDatabase(indexedDB);
-  t.after(() => deleteCanonicalDatabase(indexedDB));
-  const previousSelf = globalThis.self;
-  globalThis.self = { postMessage() {} };
-  t.after(() => {
-    if (previousSelf === undefined) delete globalThis.self;
-    else globalThis.self = previousSelf;
-  });
-  t.mock.method(globalThis, "fetch", async (input) => {
-    const url = new URL(input);
-    assert.equal(url.origin, "https://bootstrap.test");
-    return new Response(await readFile(path.join(published, url.pathname)), { status: 200 });
-  });
-  const sources = await processDataRequest({
-    operation: "load-canonical-dashboard",
-    sourceUrl: "https://bootstrap.test/payload-hashes.json",
-    sourceNames: ["campaigns", "workflows", "runs", "configuration-policy"],
-    context: { ...dashboard, dashboardRepository: repository },
-  });
+  const sources = await loadPublishedSources(t, published, ["campaigns", "workflows", "runs", "configuration-policy"]);
   assert.ok(sources.campaigns.rows.some((row) => row.campaign === "dependabot"));
   assert.ok(sources.workflows.rows.length > 0);
   assert.equal(sources.runs.rows.length, 0);
   assert.equal(sources["configuration-policy"].rows[0].diagnostics[0].severity, "valid");
+});
+
+test("collected runs and audit evidence survive Dashboard upgrade, publication and worker ingestion", async (t) => {
+  const temporaryRoot = await temporaryDirectory(t);
+  const directory = path.join(temporaryRoot, "cao-activity");
+  await bootstrapActivity({ root, directory, repository });
+  const timestamp = new Date().toISOString();
+  const fixture = await readFile(path.join(root, "dashboard/site/test/fixtures/gh-aw-logs/cached-v2.jsonl"), "utf8");
+  const envelopes = fixture.trim().split("\n").map(JSON.parse);
+  for (const envelope of envelopes) {
+    if (envelope.kind === "workflow_runs") {
+      envelope.request.repository = repository;
+      for (const run of envelope.payload) Object.assign(run, {
+        createdAt: timestamp, startedAt: timestamp, updatedAt: timestamp,
+      });
+    }
+    if (envelope.kind === "run") Object.assign(envelope.run, {
+      organization: "acme", repository,
+      created_at: timestamp, started_at: timestamp, updated_at: timestamp,
+      audit: { key_findings: [{ title: "Collected actionable finding", severity: "high" }] },
+    });
+  }
+  await writeFile(path.join(directory, "gh-aw-logs-shards/collected.jsonl"),
+    envelopes.map((envelope) => JSON.stringify(envelope)).join("\n") + "\n");
+  await runBuildStep("Upgrade fallback activity data", temporaryRoot);
+  await runBuildStep("Validate restored activity data", temporaryRoot);
+  const [health] = await runBuildStep("Assess activity database health", temporaryRoot);
+  const report = JSON.parse(health.stdout);
+  assert.equal(report.healthy, true);
+  assert.equal(report.after.counts.runs, 1);
+  assert.ok(report.after.counts.audits > 0);
+  await runBuildStep("Assemble Dashboard Language site", temporaryRoot);
+  const published = path.join(temporaryRoot, "central-agentic-ops-dashboard");
+  const manifest = JSON.parse(await readFile(path.join(published, "payload-hashes.json"), "utf8"));
+  for (const [name, digest] of Object.entries(manifest)) {
+    assert.equal(createHash("sha256").update(await readFile(path.join(published, name))).digest("hex"), digest, name);
+    assert.ok(!name.startsWith("gh-aw-logs-shards/"));
+  }
+  const sources = await loadPublishedSources(t, published, ["runs", "audits"]);
+  assert.equal(sources.runs.rows.length, 1);
+  assert.equal(sources.runs.rows[0].run, "303");
+  assert.ok(sources.audits.rows.some((row) =>
+    row["event-summary"] === "Collected actionable finding" && row.run === "303"));
 });
 
 test("bootstrap rejects invalid policy and never replaces existing activity", async (t) => {

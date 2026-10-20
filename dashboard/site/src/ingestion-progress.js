@@ -9,7 +9,7 @@ const debugIngestionProgress = createDebug('ingestion-progress');
 
 /**
  * Publishes a user-facing notification from the data worker.
- * @param {{ id?: string, message?: string, icon?: 'download', detailsSubtitle?: string, tone?: 'info' | 'success' | 'warning' | 'error', duration?: number, details?: string[], actions?: Array<{ label: string, operation: 'cancel-data-ingestion' | 'sync-dashboard-queries', placement: 'details', requestId?: number }>, dismiss?: boolean }} notification
+ * @param {{ id?: string, kind?: 'ingestion', message?: string, icon?: 'download', detailsSubtitle?: string, tone?: 'info' | 'success' | 'warning' | 'error', duration?: number, details?: string[], actions?: Array<{ label: string, operation: 'cancel-data-ingestion' | 'sync-dashboard-queries', placement: 'details', requestId?: number }>, dismiss?: boolean }} notification
  * @param {{ postMessage: (message: unknown) => void }} [target]
  */
 export function publishWorkerNotification(notification, target = self) {
@@ -42,6 +42,8 @@ export function startIngestionProgress(target = self, requestId) {
   let totalBytes;
   let started = false;
   let completed = false;
+  /** @param {string} message */
+  const publishLog = (message) => target.postMessage({ type: 'preparation-log', event: { message } });
   const updateStatus = () => {
     if (workloadStartedAt === 0) {
       status = 'Preparing data...';
@@ -65,6 +67,7 @@ export function startIngestionProgress(target = self, requestId) {
       const snapshot = clock.snapshot();
       publishWorkerNotification({
         id,
+        kind: 'ingestion',
         message: status,
         icon: 'download',
         detailsSubtitle: 'Downloading and processing a local copy in this browser can take several minutes. Cached shards are reused.',
@@ -100,6 +103,7 @@ export function startIngestionProgress(target = self, requestId) {
      * @param {{ bytesProcessed: number, recordsIngested: number, totalBytes?: number }} progress
      */
     update({ bytesProcessed: nextProcessedBytes, recordsIngested, totalBytes: nextTotalBytes }) {
+      if (completed) return;
       processedBytes = Math.max(0, Number(nextProcessedBytes) || 0);
       if (typeof nextTotalBytes === 'number' && Number.isFinite(nextTotalBytes) && nextTotalBytes >= 0) {
         totalBytes = nextTotalBytes;
@@ -112,6 +116,7 @@ export function startIngestionProgress(target = self, requestId) {
         `Parsing overall: ${recordsIngested.toLocaleString('en-US')} rec, ${byteProgress}.`,
         'parsing'
       );
+      publishLog(clock.snapshot().message);
     },
     /**
      * Reports the storage phase, which dominates large ingestions and would
@@ -119,15 +124,19 @@ export function startIngestionProgress(target = self, requestId) {
      * @param {{ storedRecords: number, totalRecords: number }} progress
      */
     store({ storedRecords, totalRecords }) {
+      if (completed) return;
       updateStatus();
       clock.update(
         `Storing ${storedRecords.toLocaleString('en-US')}/${totalRecords.toLocaleString('en-US')} rec.`,
         'storing'
       );
+      publishLog(clock.snapshot().message);
     },
     /** @param {string} nextMessage */
     log(nextMessage) {
+      if (completed) return;
       clock.advance(nextMessage);
+      publishLog(nextMessage);
     },
     /** @param {number} completed @param {number} total @param {'files' | 'maintenance' | 'inventory' | 'queries'} stage */
     reportImportProgress(completed, total, stage) {
@@ -141,7 +150,7 @@ export function startIngestionProgress(target = self, requestId) {
       debugIngestionProgress({ event: 'completed', id, started });
       if (!started) return;
       publishWorkerLoadingProgress({ id, phase: 'complete' }, target);
-      publishWorkerNotification({ id, dismiss: true }, target);
+      publishWorkerNotification({ id, kind: 'ingestion', dismiss: true }, target);
     }
   };
 }

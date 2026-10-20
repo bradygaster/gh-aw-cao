@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parse } from "yaml";
 import {
@@ -149,6 +150,27 @@ test("detects installed campaigns absent from policy", async () => {
   }
 });
 
+test("validates standalone policy without campaign declarations and diagnoses missing sources", async () => {
+  const root = await fixture({ policyCampaign: false, declaration: false });
+  try {
+    const policy = JSON.parse(await readFile(path.join(root, ".github", "workflows", "cao.json"), "utf8"));
+    delete policy["control-plane"].campaigns;
+    policy["control-plane"].workflows = { sample: { mode: "review" } };
+    const valid = await validatePolicy(root, JSON.stringify(policy));
+    assert.deepEqual(valid.findings, []);
+    assert.deepEqual(valid.installed, []);
+    policy["control-plane"].workflows.missing = {};
+    const missing = await validatePolicy(root, JSON.stringify(policy));
+    assert.equal(missing.findings.length, 1);
+    assert.equal(missing.findings[0].id, "missing-standalone-workflow");
+    assert.deepEqual(missing.findings[0].files, [
+      ".github/workflows/cao.json", ".github/workflows/missing.md",
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("detects campaign declarations with a missing worker workflow", async () => {
   const root = await fixture();
   try {
@@ -187,6 +209,40 @@ test("preserves unavailable GitHub enablement state as unknown", () => {
   assert.equal(findings[0].severity, "warning");
 });
 
+test("reports a manually paused orchestrator with active workers as a note", () => {
+  const findings = validateEnablement(".", () => ({
+    status: 0,
+    stdout: JSON.stringify([
+      { path: ".github/workflows/sample.lock.yml", state: "disabled_manually" },
+      { path: ".github/workflows/sample-worker.lock.yml", state: "active" },
+    ]),
+    stderr: "",
+  }), [{
+    campaign: "sample", orchestrator: "sample", workers: { worker: "sample-worker" },
+  }]);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].id, "campaign-orchestrator-paused");
+  assert.equal(findings[0].severity, "note");
+  assert.doesNotMatch(findings[0].remediation, /\.\/cao\.sh enable/);
+  assert.match(findings[0].remediation, /resumes its schedule/);
+});
+
+test("does not treat unavailable or inactive workers as an intentional pause", () => {
+  for (const workerState of ["unknown", "disabled_inactivity", "disabled_manually"]) {
+    const findings = validateEnablement(".", () => ({
+      status: 0,
+      stdout: JSON.stringify([
+        { path: ".github/workflows/sample.lock.yml", state: "disabled_manually" },
+        { path: ".github/workflows/sample-worker.lock.yml", state: workerState },
+      ]),
+      stderr: "",
+    }), [{
+      campaign: "sample", orchestrator: "sample", workers: { worker: "sample-worker" },
+    }]);
+    assert.ok(!findings.some(({ id }) => id === "campaign-orchestrator-paused"), workerState);
+  }
+});
+
 test("detects bounded static security findings", async () => {
   const root = await fixture({ declaration: false });
   try {
@@ -210,11 +266,11 @@ test("allows only the reviewed protected-main publisher exception", async () => 
     await writeFile(path.join(root, ".github", "workflows", "package.yml"), [
       "jobs:",
       "  publish:",
-      "    uses: githubnext/gh-aw-cao/.github/workflows/cao-package-publish.yml@main # zizmor: ignore[unpinned-uses] protected default-branch publisher",
+      "    uses: githubnext/gh-cao/.github/workflows/cao-package-publish.yml@main # zizmor: ignore[unpinned-uses] protected default-branch publisher",
       "  unreviewed:",
-      "    uses: githubnext/gh-aw-cao/.github/workflows/cao-package-publish.yml@main",
+      "    uses: githubnext/gh-cao/.github/workflows/cao-package-publish.yml@main",
       "  other:",
-      "    uses: githubnext/gh-aw-cao/.github/workflows/other.yml@main",
+      "    uses: githubnext/gh-cao/.github/workflows/other.yml@main",
       "  external:",
       "    steps:",
       "      - uses: someone/action@main",
@@ -222,8 +278,8 @@ test("allows only the reviewed protected-main publisher exception", async () => 
     ].join("\n"));
     const findings = await validateSecurity(root, "{}");
     assert.deepEqual(findings.map(({ observed }) => observed), [
-      "githubnext/gh-aw-cao/.github/workflows/cao-package-publish.yml@main",
-      "githubnext/gh-aw-cao/.github/workflows/other.yml@main",
+      "githubnext/gh-cao/.github/workflows/cao-package-publish.yml@main",
+      "githubnext/gh-cao/.github/workflows/other.yml@main",
       "someone/action@main",
     ]);
   } finally {
@@ -259,6 +315,47 @@ test("doctor failures are warnings", () => {
   assert.equal(doctorFindings(".", execute)[0].severity, "warning");
 });
 
+test("CI validation uses the installed runtime without consumer npm metadata", async () => {
+  const workflow = parse(await readFile(".github/workflows/cao-validate.yml", "utf8"));
+  const runtime = JSON.parse(await readFile("runtime/package.json", "utf8"));
+  const steps = workflow.jobs.validate.steps;
+  const setupNode = steps.find(({ uses }) => uses?.startsWith("actions/setup-node@"));
+  const validation = steps.find(({ id }) => id === "validation");
+
+  assert.equal(workflow["run-name"], "CAO validation / ${{ github.run_id }}");
+  assert.equal(setupNode.with["node-version"], 24);
+  assert.equal(setupNode.with["package-manager-cache"], false);
+  assert.equal(setupNode.with.cache, undefined);
+  assert.ok(!steps.some(({ run }) => /\bnpm (?:ci|install)\b/.test(run ?? "")));
+  assert.ok(!steps.some(({ uses }) => uses?.startsWith("actions/setup-go@")));
+  assert.ok(!steps.some(({ run }) => /\bgo build\b|\bgh release download\b/.test(run ?? "")));
+  assert.match(validation.run, /node activity\/cao\.mjs validate --json/);
+  assert.doesNotMatch(validation.run, /cao\.sh|gh-cao/);
+  assert.ok(runtime.files.includes("activity/validation.mjs"));
+  assert.ok(runtime.files.includes("activity/commands"));
+  for (const event of [workflow.on.pull_request, workflow.on.push]) {
+    assert.ok(event.paths.includes("activity/validation.mjs"));
+    assert.ok(event.paths.includes("runtime/package.json"));
+  }
+});
+
+test("the JavaScript runtime exposes structured validation without a consumer package", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cao-validation-runtime-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const entrypoint = fileURLToPath(new URL("../../activity/cao.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [entrypoint, "validate", "--json"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1, result.stderr || result.error?.message);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.validatorVersion, "1");
+  assert.equal(report.exitCode, 1);
+  assert.equal(report.findings[0].id, "missing-cao-policy");
+  assert.equal(report.findings[0].remediation, "gh cao init");
+  assert.equal(report.findings[0].validate, "gh workflow run cao-validate.yml");
+});
+
 test("CI validation does not dirty a fresh checkout with its own report", async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "cao-validation-workflow-"));
   t.after(() => rm(temporaryRoot, { recursive: true, force: true }));
@@ -270,7 +367,8 @@ test("CI validation does not dirty a fresh checkout with its own report", async 
   const validation = workflow.jobs.validate.steps.find(({ id }) => id === "validation");
   const upload = workflow.jobs.validate.steps.find(({ name }) => name === "Upload validation report");
   const moduleUrl = new URL("../../activity/validation.mjs", import.meta.url).href;
-  await writeFile(path.join(root, "validate.mjs"), `
+  await mkdir(path.join(root, "activity"));
+  await writeFile(path.join(root, "activity", "cao.mjs"), `
 import { spawnSync } from "node:child_process";
 import { doctorFindings } from ${JSON.stringify(moduleUrl)};
 const findings = doctorFindings(process.cwd(), (command, args, options) => {
@@ -289,7 +387,6 @@ console.log(JSON.stringify({
   summary: { errors: 0, warnings: findings.length, notes: 0 },
 }));
 `);
-  await writeFile(path.join(root, "cao.sh"), '#!/usr/bin/env bash\nexec node validate.mjs "$@"\n', { mode: 0o755 });
   const execute = (command, args, extra = {}) => {
     const result = spawnSync(command, args, { cwd: root, encoding: "utf8", ...extra });
     assert.equal(result.status, 0, result.stderr || result.error?.message);
@@ -369,6 +466,16 @@ test("clean repositories and warnings-only repositories exit successfully", asyn
     });
     assert.equal(warning.exitCode, 0);
     assert.equal(warning.summary.warnings, 1);
+    const strict = await validateRepository({
+      root,
+      execute(command, args, options) {
+        if (command === "gh" && args[0] === "workflow") return { status: 1, stdout: "", stderr: "offline" };
+        return cleanExecutor()(command, args, options);
+      },
+      strictWarnings: true,
+    });
+    assert.equal(strict.exitCode, 1);
+    assert.deepEqual(strict.summary, { errors: 0, warnings: 1, notes: 0 });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@ import { resolveDashboardQuerySources } from './data/queries/declarative.js';
 import { elementLoadsSourcesAsync } from './components/ui-elements.js';
 import { navigationIndicatorSourceNames } from './navigation-indicator.js';
 import { createDebug } from './debug.js';
-import { dashboardDataBackend, viewBackendAvailable } from './view-availability.js';
+import { dashboardDataBackend, pageCapabilityAvailable, viewBackendAvailable } from './view-availability.js';
 import { dashboardViewSourceNames as getViewSources, viewDataSourceNames } from './view-filter-contract.js';
 
 const debugDashboardChunks = createDebug('dashboard-chunks');
@@ -138,7 +138,8 @@ export function dashboardPageSourcesAreIndependentlyBound(page, reusableViews = 
  */
 export function dashboardPageSourceNames(document, pageId, viewMode, backend = dashboardDataBackend()) {
   const page = dashboardPage(document, pageId);
-  if (!page) return [];
+  if (!page || backend !== 'all' && !pageCapabilityAvailable(page)) return [];
+  if (page['query-binding'] === 'page') viewMode = undefined;
   const indexed = backendSourceIndex(page, backend)?.sourceNames ?? stringList(page['source-names']);
   if (!dashboardPageIsLoaded(page) && !viewMode && (indexed.length > 0 || backendSourceIndex(page, backend))) return indexed;
   const payload = dashboardPagePayload(page, document.dashboard.views);
@@ -175,7 +176,7 @@ export function dashboardPageSourceNames(document, pageId, viewMode, backend = d
  */
 export function dashboardPageAllSourceNames(document, pageId, backend = dashboardDataBackend()) {
   const page = dashboardPage(document, pageId);
-  if (!page) return [];
+  if (!page || backend !== 'all' && !pageCapabilityAvailable(page)) return [];
   const names = new Set(dashboardPageSourceNames(document, pageId, undefined, backend));
   const payload = dashboardPagePayload(page, document.dashboard.views);
   for (const view of payload.views ?? []) {
@@ -202,7 +203,7 @@ function viewMatchesMode(view, mode) {
  */
 export function dashboardPageLazySourceNames(document, pageId, backend = dashboardDataBackend()) {
   const page = dashboardPage(document, pageId);
-  if (!page) return [];
+  if (!page || backend !== 'all' && !pageCapabilityAvailable(page)) return [];
   const indexed = backendSourceIndex(page, backend)?.lazySourceNames ?? stringList(page['lazy-source-names']);
   if (!dashboardPageIsLoaded(page) && (indexed.length > 0 || backendSourceIndex(page, backend))) return indexed;
   const payload = dashboardPagePayload(page, document.dashboard.views);
@@ -221,7 +222,7 @@ export function dashboardPageLazySourceNames(document, pageId, backend = dashboa
 export function dashboardTableSourceNames(document, pageId, backend = dashboardDataBackend()) {
   if (typeof pageId === 'string' && pageId.length > 0) {
     const page = dashboardPage(document, pageId);
-    if (!page) return [];
+    if (!page || backend !== 'all' && !pageCapabilityAvailable(page)) return [];
     const indexed = backendSourceIndex(page, backend)?.tableSourceNames ?? stringList(page['table-source-names']);
     if (!dashboardPageIsLoaded(page) && (indexed.length > 0 || backendSourceIndex(page, backend))) return indexed;
     const payload = dashboardPagePayload(page, document.dashboard.views);
@@ -274,6 +275,7 @@ export function resolveBuiltInPages(document, templateDocument) {
  * @returns {DashboardPage}
  */
 function stubDashboardPage(page, chunkPath, index) {
+  /** @type {DashboardPage} */
   const base = {
     ...page,
     chunk: chunkPath,
@@ -283,6 +285,7 @@ function stubDashboardPage(page, chunkPath, index) {
     'independent-source-bindings': index.independentSourceBindings,
     ...(index.backendSourceIndex ? { 'backend-source-index': index.backendSourceIndex } : {}),
   };
+  for (const field of ['intent', 'subject', 'objective', 'acceptance']) delete base[field];
   if (page.kind === 'built-in') {
     delete base.definition;
   } else {
@@ -403,7 +406,16 @@ export function splitDashboardDocument(source, options = {}) {
     });
   });
   const dashboard = { ...document.dashboard, pages: corePages };
-  delete dashboard.queries;
+  const calloutSources = (document.dashboard.callouts ?? []).flatMap((callout) => {
+    const visibility = isPlainObject(callout?.['visible-when']) ? callout['visible-when'] : null;
+    return typeof visibility?.source === 'string' ? [visibility.source] : [];
+  });
+  const status = isPlainObject(document.dashboard['data-status']) ? document.dashboard['data-status'] : {};
+  const statusSources = [status['freshness-source'], status['health-source']].filter((name) => typeof name === 'string');
+  const shellQueries = new Set(resolveDashboardQuerySources(queryDefinitions, [...calloutSources, ...statusSources]));
+  const shellDefinitions = queryDefinitions.filter((query) => shellQueries.has(query.name ?? ''));
+  if (shellDefinitions.length) dashboard.queries = shellDefinitions;
+  else delete dashboard.queries;
   debugDashboardChunks({
     event: 'split-complete',
     pageCount: corePages.length,
@@ -430,12 +442,11 @@ export function resolveDashboardDocument(core, chunks) {
       ...core.dashboard,
       pages: [...core.dashboard.pages],
       /** @type {DashboardQuery[]} */
-      queries: [],
+      queries: Array.isArray(core.dashboard.queries) ? [...core.dashboard.queries] : [],
     },
   };
-  /** @type {string[]} */
-  const queryNames = [];
   const queries = /** @type {DashboardQuery[]} */ (document.dashboard.queries);
+  const queryNames = queries.map((query) => query.name ?? '');
   for (const chunk of chunks) {
     const normalized = normalizeDashboardPageChunk(chunk);
     const pageIndex = document.dashboard.pages.findIndex((page) => page.id === normalized.page.id);

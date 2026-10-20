@@ -10,6 +10,7 @@ import {
   benchmarkDashboardQueryCost,
   dashboardQueryCostMarkdown,
   readSnapshotDatabaseVersion,
+  QUERY_COST_PAGE_LIMIT,
 } from "../helpers/dashboard-query-cost.mjs";
 import { authoritativeDashboard as dashboardDocument } from "../helpers/authoritative-dashboard.mjs";
 
@@ -26,6 +27,23 @@ async function syntheticSnapshot() {
     "--shards", "1",
     "--workflows", "3",
   ], { stdio: ["ignore", "ignore", "pipe"] });
+  await writeFile(path.join(shards, "operational-values.jsonl"), `${JSON.stringify({
+    schema_version: 2,
+    kind: "operational_value",
+    operational_value: {
+      timestamp: new Date().toISOString(),
+      repository: "octo/api",
+      campaign: "optimization",
+      value_id: "worker.remaining",
+      value: 4,
+      metric_role: "primary",
+      metric_unit: "alerts",
+      metric_direction: "decrease",
+      maturity_status: "matured",
+      evaluator_digest: "a".repeat(64),
+      cadence_days: 1,
+    },
+  })}\n`);
   execFileSync(process.execPath, [
     "activity/cao.mjs",
     "ingest-jsonl",
@@ -49,6 +67,7 @@ test("benchmark measures computational and space cost per query", async (t) => {
   });
   assert.equal(report.candidates, 3);
   assert.equal(report.measurements.length, 3);
+  assert.equal(report["page-limit"], QUERY_COST_PAGE_LIMIT);
   assert.equal(report.queries, dashboardDocument.dashboard.queries.length);
   assert.ok(report.database["records-read"] > 0);
   assert.equal(report.database["snapshot-version"], DATABASE_VERSION);
@@ -58,6 +77,7 @@ test("benchmark measures computational and space cost per query", async (t) => {
     assert.ok(measurement["duration-ms"] >= 0);
     assert.ok(measurement.operations >= 0);
     assert.ok(measurement["result-bytes"] > 0);
+    assert.equal(measurement.rows, Math.min(measurement["total-rows"], QUERY_COST_PAGE_LIMIT));
     assert.ok(measurement["retained-heap-bytes"] >= 0);
     assert.ok(measurement["execution-heap-bytes"] >= 0);
     assert.equal(typeof measurement["heap-measured"], "boolean");
@@ -81,6 +101,7 @@ test("benchmark measures computational and space cost per query", async (t) => {
   assert.match(markdown, /### Dashboard query cost \(deployed SQLite snapshot\)/);
   assert.match(markdown, /### Computational cost/);
   assert.match(markdown, /### Space cost/);
+  assert.match(markdown, /first \*\*500 result rows\*\*/);
   assert.match(markdown, /Canonical projection by source/);
   assert.doesNotMatch(markdown, /canonical projection returned no records/);
   for (const measurement of report.measurements) {

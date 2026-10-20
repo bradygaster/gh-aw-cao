@@ -3,7 +3,10 @@ title: Set Up One Organization
 description: Install a CAO control plane for private repositories in one organization using private GitHub Apps.
 ---
 
-You need permission to create and install private GitHub Apps for the organization.
+You need an approved private App pair and authorized access to its keys, or
+permission to create and install private Apps for the organization. Repository
+administrators can extend an approved installation to their repositories where
+organization policy permits; new installations still need appropriate approval.
 
 > [!IMPORTANT]
 > Permission does not authorize setup. A coding agent must ask before creating or reusing the control repository, running the installer, creating either App, storing variables or secrets, committing, or pushing.
@@ -19,7 +22,7 @@ gh repo create "$CONTROL_REPO" --private --clone
 cd "${CONTROL_REPO##*/}"
 
 curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/githubnext/gh-aw-cao/main/install.sh |
+  https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh |
   bash
 ```
 
@@ -34,12 +37,18 @@ In `.github/workflows/cao.json`, add only the exact first target:
 
 ## Configure the Apps
 
+If Apps are already approved, prefer
+[reusing their client IDs](authentication.md#reuse-approved-apps)
+with `--read-client-id` and `--write-client-id`, or choose **Reuse approved
+private GitHub Apps** in guided setup. Keys are entered only at hidden prompts.
+Otherwise create a pair:
+
 ```bash
-./cao.sh setup-auth github-app \
+gh cao setup auth github-app \
   --repo "$CONTROL_REPO" \
   --dry-run
 
-./cao.sh setup-auth github-app \
+gh cao setup auth github-app \
   --repo "$CONTROL_REPO"
 ```
 
@@ -68,7 +77,7 @@ git diff --check
 Review the diff. After explicit approval:
 
 ```bash
-git add .github activity dashboard cao.sh
+git add .github activity dashboard
 git commit -m "Install Central Agentic Ops control plane"
 git push --set-upstream origin HEAD
 ```

@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/logger"
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/logger"
+	"github.com/githubnext/gh-cao/server/internal/model"
 )
 
 var resolveLog = logger.New("cao:marketplace:resolve")
@@ -72,6 +72,7 @@ type Registry struct {
 	Repository string `json:"repository"`
 	Path       string `json:"path,omitempty"`
 	Ref        string `json:"ref"`
+	Format     string `json:"format,omitempty"`
 	APIURL     string `json:"api-url,omitempty"`
 	Auth       Auth   `json:"auth,omitempty"`
 }
@@ -146,7 +147,11 @@ func (p Package) Row() model.Row {
 		"forks":               p.Forks,
 	}
 	if p.RepositoryLink != nil {
-		row["repository-link"] = p.RepositoryLink
+		row["repository-link"] = model.Row{
+			"relation": p.RepositoryLink.Relation,
+			"href":     p.RepositoryLink.Href,
+			"label":    p.RepositoryLink.Label,
+		}
 	}
 	return row
 }
@@ -262,6 +267,9 @@ func ValidateRegistry(registry Registry, index int) (Registry, error) {
 	}
 	if strings.TrimSpace(registry.Ref) == "" {
 		return Registry{}, fmt.Errorf("registry %s ref is required", registry.ID)
+	}
+	if registry.Format != "" && registry.Format != "packages" && registry.Format != "workflows" {
+		return Registry{}, fmt.Errorf("registry %s format must be packages or workflows", registry.ID)
 	}
 	path := strings.Trim(registry.Path, "/")
 	if strings.HasPrefix(registry.Path, "/") || !isSafePath(path) {

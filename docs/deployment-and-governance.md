@@ -39,6 +39,9 @@ A single control repository can address an explicitly named repository in anothe
 
 ## Operating Ownership
 
+For independent approval and exact-source validation at the prerelease-to-latest
+transition, see [Release promotion controls](release-controls.md).
+
 | Level | Owner | Controls | Does not control |
 | --- | --- | --- | --- |
 | **Catalog campaign** | Catalog maintainers; enterprise governance for an enterprise-owned catalog | Campaign source, `aw.yml`, workflow definitions, release approval, and compatibility policy | Installation credentials, organization-local extensions, or target repository acceptance |
@@ -62,7 +65,7 @@ GitHub repository custom properties may project selected fields from those recor
 | Custom property | Example | Purpose |
 | --- | --- | --- |
 | `central-ops-role` | `enterprise`, `organization`, or `independent` | Identifies the runtime's governance scope. |
-| `central-ops-catalog` | `githubnext/gh-aw-cao` | Projects the authoritative catalog source. |
+| `central-ops-catalog` | `githubnext/gh-cao` | Projects the authoritative catalog source. |
 | `central-ops-version` | Published release tag | Projects the catalog release installed by the control repository. |
 | `central-ops-owner` | `organization/platform-team` | Identifies the team responsible for operation and incidents. |
 | `central-ops-status` | `review`, `active`, or `suspended` | Records the installation lifecycle state. |

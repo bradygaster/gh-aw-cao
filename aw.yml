@@ -1,12 +1,22 @@
 name: Central Agentic Ops
 icon: ":workflow:"
 description: Central agentic workflow control plane for reusable campaigns at the organization level
-min-version: v0.91.5
+min-version: v0.92.6
 experimental: true
 includes:
   - activity/aw.yml
   - dashboard/aw.yml
   - .github/workflows/cao-validate.yml
+skills:
+  - skills/agentic-workflows
+  - skills/setup-cao
+  - skills/add-cao-campaign
+  - skills/create-cao-campaign
+  - skills/debug-cao
+  - skills/analyze-cao
+  - skills/cao-cli
+agents:
+  - .github/agents/agentic-workflows.md
 resources:
   - source: .github/workflows/shared/control.mjs
     destination: .github/workflows/shared/control.mjs

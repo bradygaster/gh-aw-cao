@@ -45,7 +45,7 @@ test("add-cao-campaign requires discovery, consent, and review-safe installation
   assert.match(skill, /Exclude campaigns with `private: true`/);
   assert.match(skill, /no more than three installable campaigns/);
   assert.match(skill, /explicit approval/);
-  assert.match(skill, /\.\/cao\.sh add githubnext\/gh-aw-cao\/<campaign-slug>@<catalog-commit>/);
+  assert.match(skill, /gh cao campaigns add githubnext\/gh-cao\/<campaign-slug>@<catalog-commit>/);
   assert.match(skill, /must remain in review/);
   assert.match(skill, /did not broaden or change/);
   assert.match(skill, /Treat all installed campaign package sources as immutable/);
@@ -122,13 +122,15 @@ test("Copilot extension uses the current Canvas provider contract", async () => 
   assert.match(source, /cao_dashboard_execute_query/);
   assert.match(source, /cao_dashboard_read_data_specification/);
   assert.match(source, /onSessionStart:/);
-  assert.match(source, /onSessionEnd: closePreviews/);
+  assert.match(source, /onSessionEnd: async/);
+  assert.match(source, /if \(reason === "user_exit"\) await closePreviews\(\)/);
   assert.match(source, /onClose:/);
   assert.match(source, /additionalProperties: false/);
   assert.doesNotMatch(source, /github\.io|https:/);
   assert.match(entry, /process\.once\("SIGTERM", shutdown\)/);
   assert.doesNotMatch(entry, /process\.once\("exit"/);
-  assert.match(entry, /approveDashboardCommand\(session, request\)/);
+  assert.match(entry, /approveCommand: approveDashboardCommand/);
+  assert.doesNotMatch(entry, /session\.ui\.confirm|session\.ui\.elicitation/);
 });
 
 test("the complete plugin passes portable metadata, link, and bundled-resource validation", async () => {

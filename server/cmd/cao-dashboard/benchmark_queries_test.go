@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
 )
 
 func TestMergeBenchmarkDefinitionsDeclaresDashboardNames(t *testing.T) {
@@ -160,6 +160,27 @@ func TestBenchmarkQueriesRejectsEmptyEvidence(t *testing.T) {
 	}
 	if records, err := validateBenchmarkEvidence(map[string]int{"$runs": 2, "$repositories": 3}); err != nil || records != 5 {
 		t.Fatalf("expected nonempty projection, got records=%d err=%v", records, err)
+	}
+}
+
+func TestClassifyBenchmarkEvidenceIdentifiesEachRejectionStage(t *testing.T) {
+	cases := []struct {
+		name    string
+		records int
+		counts  map[string]int
+		want    benchmarkEvidenceRejectionStage
+	}{
+		{"no sources at all", 0, map[string]int{}, benchmarkEvidenceRejectionStageNoRecord},
+		{"records present but zero $runs", 20, map[string]int{"$runs": 0, "$repositories": 20}, benchmarkEvidenceRejectionStageNoRuns},
+		{"missing $runs key entirely", 20, map[string]int{"$repositories": 20}, benchmarkEvidenceRejectionStageNoRuns},
+		{"nonempty projection with runs", 5, map[string]int{"$runs": 2, "$repositories": 3}, benchmarkEvidenceRejectionStageNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyBenchmarkEvidence(tc.records, tc.counts); got != tc.want {
+				t.Fatalf("classifyBenchmarkEvidence(%d, %+v) = %q, want %q", tc.records, tc.counts, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -418,5 +439,21 @@ func TestLoadBenchmarkCandidatesRejectsEmptyList(t *testing.T) {
 	_, err := loadBenchmarkCandidates(path)
 	if err == nil || !strings.Contains(err.Error(), "no query candidates") {
 		t.Fatalf("expected an empty-candidates error, got %v", err)
+	}
+}
+
+func TestBenchmarkExecutionOptionsBoundsPageAndRaisesBudgets(t *testing.T) {
+	options := benchmarkExecutionOptions("runs-overview")
+	if len(options.Pages) != 1 || options.Pages["runs-overview"].Limit != benchmarkPageLimit {
+		t.Fatalf("pages = %#v, want only runs-overview limited to %d", options.Pages, benchmarkPageLimit)
+	}
+	limits := options.ResourceLimits
+	if limits == nil {
+		t.Fatal("resource limits missing")
+	}
+	if limits.MaxInputRows != query.MaxWorkingRows ||
+		limits.MaxOperations != 10*query.MaxOperations ||
+		limits.MaxWorkingBytes != 4*query.MaxWorkingBytes {
+		t.Fatalf("limits = %#v, want benchmark budgets", limits)
 	}
 }

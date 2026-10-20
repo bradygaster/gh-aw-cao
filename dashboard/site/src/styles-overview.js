@@ -25,7 +25,7 @@ ${overviewGridStyles}
 .factory-floor-active { background-image: radial-gradient(circle at 50% 100%, var(--overview-hero-glow), transparent 34rem); }
 .factory-floor-active::before { border-color: var(--overview-grid-major); background-image: linear-gradient(var(--overview-grid-major) 1px, transparent 1px), linear-gradient(90deg, var(--overview-grid-major) 1px, transparent 1px), linear-gradient(var(--overview-grid-minor) 1px, transparent 1px), linear-gradient(90deg, var(--overview-grid-minor) 1px, transparent 1px); background-size: 160px 160px, 160px 160px, 32px 32px, 32px 32px; }
 .dashboard-overview-page .factory-floor::before { content: none; }
-.factory-stations { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 28px; margin: 0; padding: 0; list-style: none; }
+.factory-stations { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px; margin: 0; padding: 0; list-style: none; }
 .factory-floor-compact .factory-stations { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .factory-station { min-width: 0; display: grid; justify-items: center; text-align: center; animation: factory-station-enter 420ms cubic-bezier(.2, .7, .2, 1) both; }
 .factory-station:nth-child(2) { animation-delay: 70ms; }
@@ -45,7 +45,7 @@ ${overviewGridStyles}
 .factory-station-empty .factory-station-icon { border-color: var(--border); background: var(--canvas); color: var(--muted); box-shadow: none; }
 .factory-station-pending .factory-station-icon { border-color: var(--border-muted); background: var(--canvas-subtle); color: var(--muted); box-shadow: none; }
 .factory-station-pending strong { min-width: 48px; height: 1.75rem; border-radius: 6px; background: linear-gradient(90deg, var(--canvas-subtle) 25%, var(--neutral-muted) 50%, var(--canvas-subtle) 75%); background-size: 200% 100%; animation: dashboard-skeleton-pulse 1.5s ease-in-out infinite; }
-.factory-station > span:nth-child(2) { color: var(--muted); font-size: .6875rem; font-weight: 700; text-transform: uppercase; }
+.factory-station > span:nth-child(2) { color: var(--muted); font-size: .6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .factory-station strong { margin-top: 3px; font-size: 1.75rem; font-variant-numeric: tabular-nums; line-height: 1; }
 .factory-station small { margin-top: 5px; color: var(--muted); font-size: .6875rem; }
 .factory-station a { min-width: 24px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; color: inherit; text-decoration: none; }
@@ -54,7 +54,7 @@ ${overviewGridStyles}
 .factory-intro .factory-rhythm { grid-template-columns: minmax(0, 1fr); align-self: stretch; gap: 16px; padding: 0; border: 0; background: transparent; }
 .factory-intro .factory-rhythm[hidden] { display: none; }
 .factory-rhythm-heading { display: grid; gap: 5px; }
-.factory-rhythm-heading > span { color: var(--muted); font-size: .6875rem; font-weight: 700; text-transform: uppercase; }
+.factory-rhythm-heading > span { color: var(--muted); font-size: .6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .factory-rhythm-heading strong, .factory-rhythm-legend { color: var(--muted); font-size: .6875rem; font-weight: 400; }
 .factory-rhythm-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 0; padding: 0; list-style: none; }
 .factory-rhythm-legend li { display: inline-flex; align-items: center; gap: 5px; }

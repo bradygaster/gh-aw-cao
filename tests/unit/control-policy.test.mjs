@@ -478,7 +478,7 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
     "github/gh-aw-mcpg",
     "github/gh-aw-actions",
     "github/gh-aw-threat-detection",
-    "githubnext/gh-aw-cao",
+    "githubnext/gh-cao",
   ];
 
   assert.deepEqual(policy["control-plane"].scope["allowed-repositories"], repositories);
@@ -498,7 +498,7 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
   const dependabotGhAw = effectivePolicy(policy, {
     campaignName: "dependabot",
     role: "orchestrator",
-    controlRepository: "githubnext/gh-aw-cao",
+    controlRepository: "githubnext/gh-cao",
     targetRepository: "github/gh-aw",
   });
   assert.equal(dependabotGhAw.safe_output_mode, "live");
@@ -508,7 +508,7 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
     const effective = effectivePolicy(policy, {
       campaignName: "dependabot",
       role: "orchestrator",
-      controlRepository: "githubnext/gh-aw-cao",
+      controlRepository: "githubnext/gh-cao",
       targetRepository,
     });
     assert.equal(effective.safe_output_mode, "review");
@@ -518,8 +518,8 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
   const selfCare = effectivePolicy(policy, {
     campaignName: "self-care",
     role: "orchestrator",
-    controlRepository: "githubnext/gh-aw-cao",
-    targetRepository: "githubnext/gh-aw-cao",
+    controlRepository: "githubnext/gh-cao",
+    targetRepository: "githubnext/gh-cao",
   });
   assert.equal(selfCare.safe_output_mode, "live");
   assert.equal(selfCare.max_repositories, 1);
@@ -539,10 +539,7 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
     policy["control-plane"].campaigns["self-care"].workers.glossary.workflow,
     "self-care-glossary",
   );
-  assert.equal(
-    policy["control-plane"].campaigns["self-care"].workers["hosted-health"].workflow,
-    "self-care-hosted-health",
-  );
+  assert.equal(policy["control-plane"].campaigns["self-care"].workers["hosted-health"], undefined);
   assert.equal(
     policy["control-plane"].campaigns["self-care"].workers["docs-maintainer"].workflow,
     "self-care-docs-maintainer",
@@ -559,11 +556,7 @@ test("checked-in control policy keeps Dependabot scoped with live gh-aw target a
     policy["control-plane"].campaigns["self-care"].workers["server-go-logging"].workflow,
     "self-care-server-go-logging",
   );
-  assert.equal(
-    policy["control-plane"].campaigns["self-care"].workers["redis-query-optimization"].workflow,
-    "self-care-redis-query-optimization",
-  );
-  assert.equal(policy["target-authority"].campaigns["self-care"].authority, "githubnext/gh-aw-cao");
+  assert.equal(policy["target-authority"].campaigns["self-care"].authority, "githubnext/gh-cao");
 });
 
 test("control policy applies schema defaults and campaign values", () => {
@@ -616,6 +609,35 @@ test("control policy exposes scope and publishing defaults to deterministic add-
     publishing_control_repositories: ["acme/control"],
     publishing_reviewers: [],
   });
+});
+
+test("control policy validates and exposes an explicit Activity collection subset", () => {
+  const policy = JSON.parse(minimalPolicy);
+  policy["control-plane"].scope["allowed-repositories"].push("acme/control");
+  policy["control-plane"].activity = { repositories: ["acme/control"] };
+
+  assert.equal(validate(JSON.stringify(policy)).status, 0);
+  assert.deepEqual(
+    controlSettings(parsePolicy(JSON.stringify(policy)), "acme/control").activity_repositories,
+    ["acme/control"],
+  );
+
+  policy["control-plane"].activity.repositories = ["octo/outside-scope"];
+  const outsideScope = validate(JSON.stringify(policy));
+  assert.notEqual(outsideScope.status, 0);
+  assert.match(outsideScope.stderr, /outside control-plane\.scope\.allowed-repositories/);
+
+  delete policy["control-plane"].scope["allowed-repositories"];
+  policy["control-plane"].scope["allowed-owners"] = ["acme"];
+  policy["control-plane"].activity.repositories = ["octo/outside-owner"];
+  const outsideOwner = validate(JSON.stringify(policy));
+  assert.notEqual(outsideOwner.status, 0);
+  assert.match(outsideOwner.stderr, /outside control-plane\.scope\.allowed-owners/);
+
+  policy["control-plane"].activity.repositories = [];
+  const empty = validate(JSON.stringify(policy));
+  assert.notEqual(empty.status, 0);
+  assert.match(empty.stderr, /must contain at least one repository/);
 });
 
 test("control policy validates and exposes web presentation settings", () => {

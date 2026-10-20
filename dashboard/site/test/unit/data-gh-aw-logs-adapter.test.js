@@ -21,6 +21,128 @@ function files(directory) {
 }
 
 describe('gh-aw logs adapter', () => {
+  it('preserves same-attempt credit enrichment in either input order without leaking it to reruns', () => {
+    const run = {
+      run_id: 303, run_attempt: 1, organization: 'octo', repository: 'octo/api', workflow_name: 'Worker',
+      workflow_path: '.github/workflows/worker.lock.yml', status: 'completed', conclusion: 'success',
+      created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:01:00Z'
+    };
+    const measured = { ...run, token_usage_summary: { total_aic: 2.5, total_input_tokens: 100 } };
+    const sparse = { ...run, updated_at: '2026-10-01T00:02:00Z', token_usage_summary: null };
+    const adapt = (/** @type {Record<string, unknown>[]} */ runs) => normalize(adaptCachedGhAwJsonl(
+      runs.map((value) => JSON.stringify({ schema_version: 2, kind: 'run', run: value })).join('\n')
+    ).observations).runs[0];
+    for (const records of [[measured, sparse], [sparse, measured],
+      [measured, { ...sparse, token_usage_summary: {} }],
+      [measured, { ...sparse, token_usage_summary: { total_aic: null } }]]) {
+      expect(adapt(records)).toMatchObject({ aicTotal: 2.5, inputTokens: 100 });
+    }
+    expect(adapt([measured, { ...sparse, run_attempt: 2 }])).toMatchObject({
+      attempt: 2, aicTotal: null, inputTokens: null
+    });
+    expect(adapt([measured, { ...sparse, token_usage_summary: { total_aic: 0 } }]).aicTotal).toBe(0);
+    for (const aic of [0, 1.25]) {
+      for (const token_usage_summary of [null, {}, { total_aic: null }]) {
+        const corrected = { ...sparse, aic, token_usage_summary };
+        for (const records of [[measured, corrected], [corrected, measured]]) {
+          expect(adapt(records)).toMatchObject({ aicTotal: aic, inputTokens: 100 });
+        }
+      }
+      const corrected = { ...sparse, token_usage: { total_aic: aic } };
+      expect(adapt([measured, corrected])).toMatchObject({ aicTotal: aic, inputTokens: 100 });
+    }
+    expect(adapt([measured, {
+      ...sparse, aic: 5, token_usage_summary: { total_aic: 1.25 }
+    }]).aicTotal).toBe(1.25);
+    const mixed = [
+      { schema_version: 2, kind: 'run', run: {
+        ...measured, tool_calls: [{ tool: 'report_incomplete', server: 'safeoutputs', status: 'incomplete' }]
+      } },
+      {
+        schema_version: 2, kind: 'workflow_runs',
+        request: { host: 'github.com', repository: 'octo/api', args: ['run', 'list'] },
+        payload: [{
+          databaseId: 303, attempt: 2, workflowName: 'Worker', status: 'completed',
+          conclusion: 'success', createdAt: run.created_at, updatedAt: sparse.updated_at
+        }]
+      }
+    ];
+    const rerun = normalize(adaptCachedGhAwJsonl(mixed.map(value => JSON.stringify(value)).join('\n')).observations).runs[0];
+    expect(rerun).toMatchObject({ attempt: 2, aicTotal: null, inputTokens: null });
+    expect(rerun).not.toHaveProperty('terminalOutcome');
+  });
+
+  it('preserves declared cadence and rejects invalid cadence without inventing legacy metadata', () => {
+    const envelope = {
+      schema_version: 2, kind: 'operational_value',
+      operational_value: {
+        repository: 'octo/api', timestamp: '2026-10-14T00:00:00Z',
+        campaign: 'custom', value_id: 'worker.remaining', value: 4,
+        metric_unit: 'alerts', cadence_days: 2.5
+      }
+    };
+    const adapt = (/** @type {Record<string, unknown>} */ value) => adaptCachedGhAwJsonl(JSON.stringify({
+      ...envelope, operational_value: value
+    }));
+    const observations = adapt(envelope.operational_value);
+    expect(observations.observations.find((row) => row.kind === 'operational-value')?.data['cadence-days']).toBe(2.5);
+    const { cadence_days: omitted, ...legacy } = envelope.operational_value;
+    expect(omitted).toBe(2.5);
+    expect(adapt(legacy).observations.find((row) => row.kind === 'operational-value')?.data).not.toHaveProperty('cadence-days');
+    for (const cadence_days of [0, -1, null, '7']) {
+      expect(() => adapt({ ...envelope.operational_value, cadence_days })).toThrow('cadence_days must be a positive finite number');
+    }
+  });
+
+  it('preserves complete period proof and explicit unavailable assessments without coercing invalid metadata', () => {
+    const value = {
+      repository: 'octo/api', timestamp: '2026-09-24T10:00:00Z', campaign: 'custom',
+      value_id: 'worker.remaining', value: null, maturity_status: 'unavailable',
+      window_start: '2026-09-17T10:00:00Z', window_end: '2026-09-24T10:00:00Z',
+      measurement_kind: 'interval', coverage_status: 'missing', missing_reason: 'source-inaccessible',
+      population_digest: 'a'.repeat(64), evidence_digest: 'b'.repeat(64), eligible_count: 0
+    };
+    const adapt = (/** @type {Record<string, unknown>} */ record) => adaptCachedGhAwJsonl(JSON.stringify({
+      schema_version: 2, kind: 'operational_value', operational_value: record
+    }));
+    expect(adapt(value).observations.find(row => row.kind === 'operational-value')?.data).toMatchObject({
+      value: null, 'maturity-status': 'unavailable', 'coverage-status': 'missing',
+      'window-start': '2026-09-17T10:00:00.000Z', 'window-end': '2026-09-24T10:00:00.000Z',
+      'measurement-kind': 'interval', 'missing-reason': 'source-inaccessible', 'eligible-count': 0,
+      'population-digest': 'a'.repeat(64), 'evidence-digest': 'b'.repeat(64)
+    });
+    for (const changes of [
+      { window_start: null }, { window_end: '2026-09-25T10:00:00Z' },
+      { window_start: value.window_end }, { measurement_kind: ['interval'] },
+      { coverage_status: ['complete'] }, { eligible_count: -1 }, { eligible_count: 1.5 },
+      { population_digest: 'A'.repeat(64) }, { evidence_digest: null }, { missing_reason: '' },
+      { maturity_status: 'matured' }, { rollup_numerator: 0, rollup_denominator: 1 }
+    ]) {
+      expect(() => adapt({ ...value, ...changes })).toThrow();
+    }
+    expect(adapt({ ...value, value: 0, maturity_status: 'matured', coverage_status: 'complete' })
+      .observations.find(row => row.kind === 'operational-value')?.data.value).toBe(0);
+  });
+
+  it('rejects malformed evaluator fingerprints and preserves valid or absent legacy metadata', () => {
+    const value = {
+      repository: 'octo/api', timestamp: '2026-10-14T00:00:00Z',
+      campaign: 'custom', value_id: 'worker.remaining', value: 4
+    };
+    const adapt = (/** @type {Record<string, unknown>} */ operational_value) => adaptCachedGhAwJsonl(JSON.stringify({
+      schema_version: 2, kind: 'operational_value', operational_value
+    }));
+    expect(adapt(value).observations.find(row => row.kind === 'operational-value')?.data['evaluator-digest']).toBeUndefined();
+    const digest = 'a'.repeat(64);
+    expect(adapt({ ...value, evaluator_digest: digest }).observations
+      .find(row => row.kind === 'operational-value')?.data['evaluator-digest']).toBe(digest);
+    for (const evaluator_digest of [
+      null, 64, {}, [digest], '', 'a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64)
+    ]) {
+      expect(() => adapt({ ...value, evaluator_digest })).toThrow('evaluator_digest must be a SHA-256 fingerprint');
+    }
+  });
+
   it('splits agent, tool, and firewall JSONL into run-linked tables', () => {
     const context = JSON.parse(readFileSync(join(fixtureRoot, 'context.json'), 'utf8'));
     const adapted = adaptGhAwLogs({ ...context, files: files(fixtureRoot) });
@@ -28,12 +150,12 @@ describe('gh-aw logs adapter', () => {
 
     expect(relationshipErrors(batch)).toEqual([]);
     expect([...batch.domains, ...batch.tools, ...batch.audits]
-      .every((record) => record.runId === 'github:run:githubnext/gh-aw-cao:303')).toBe(true);
-    expect(batch.domains.map((record) => record.type)).toEqual(['net_allowed']);
+      .every((record) => record.runId === 'github:run:githubnext/gh-cao:303')).toBe(true);
+    expect(batch.domains.map((record) => record.type)).toEqual(['firewall.http_access']);
     expect(batch.tools.map((record) => record.type)).toEqual([
-      'tool_call', 'agent_tool_start', 'agent_tool_done'
+      'mcp.tool_call', 'tool.execution_start', 'tool.execution_complete'
     ]);
-    expect(batch.audits.map((record) => record.type)).toEqual(['agent_turn', 'assistant_message']);
+    expect(batch.audits.map((record) => record.type)).toEqual(['user.message', 'assistant.message']);
     expect(batch.tools.filter((record) => record.correlationId === 'call-1')).toHaveLength(3);
   });
 
@@ -49,7 +171,7 @@ describe('gh-aw logs adapter', () => {
       files: [{ path: 'run-303/mcp-logs/gateway.jsonl', content }]
     }).observations);
 
-    expect(batch.tools.map((record) => record.type)).toEqual(['difc_filtered', 'guard_blocked']);
+    expect(batch.tools.map((record) => record.type)).toEqual(['mcp.difc.filtered', 'mcp.guard.blocked']);
     expect(batch.audits).toEqual([]);
   });
 
@@ -60,7 +182,7 @@ describe('gh-aw logs adapter', () => {
         kind: 'workflow_runs',
         request: {
           host: 'github.com',
-          repository: 'githubnext/gh-aw-cao',
+          repository: 'githubnext/gh-cao',
           args: ['run', 'list']
         },
         payload: [{
@@ -77,7 +199,7 @@ describe('gh-aw logs adapter', () => {
           createdAt: '2026-09-09T03:59:00Z',
           startedAt: '2026-09-09T04:00:00Z',
           updatedAt: '2026-09-09T04:01:00Z',
-          url: 'https://github.com/githubnext/gh-aw-cao/actions/runs/303'
+          url: 'https://github.com/githubnext/gh-cao/actions/runs/303'
         }]
       },
       {
@@ -87,7 +209,7 @@ describe('gh-aw logs adapter', () => {
           run_id: 303,
           run_attempt: '1',
           organization: 'githubnext',
-          repository: 'githubnext/gh-aw-cao',
+          repository: 'githubnext/gh-cao',
           workflow_name: 'Dashboard',
           workflow_path: '.github/workflows/dashboard.md',
           display_title: 'Dashboard worker · github/gh-aw · live',
@@ -140,7 +262,7 @@ describe('gh-aw logs adapter', () => {
           run_id: 303,
           run_attempt: '1',
           organization: 'githubnext',
-          repository: 'githubnext/gh-aw-cao',
+          repository: 'githubnext/gh-cao',
           workflow_name: 'Dashboard',
           workflow_path: '.github/workflows/dashboard.md',
           display_title: 'Build dashboard',
@@ -204,9 +326,9 @@ describe('gh-aw logs adapter', () => {
             ],
             created_items: [{
               type: 'create_issue',
-              url: 'https://github.com/githubnext/gh-aw-cao/issues/42',
+              url: 'https://github.com/githubnext/gh-cao/issues/42',
               number: 42,
-              repo: 'githubnext/gh-aw-cao',
+              repo: 'githubnext/gh-cao',
               timestamp: '2026-09-09T04:00:45Z'
             }]
           },
@@ -259,9 +381,9 @@ describe('gh-aw logs adapter', () => {
         safe_output: {
           run_id: 303,
           type: 'create_pull_request',
-          url: 'https://github.com/githubnext/gh-aw-cao/pull/43',
+          url: 'https://github.com/githubnext/gh-cao/pull/43',
           number: 43,
-          repo: 'githubnext/gh-aw-cao',
+          repo: 'githubnext/gh-cao',
           timestamp: '2026-09-09T04:00:50Z'
         }
       },
@@ -315,7 +437,7 @@ describe('gh-aw logs adapter', () => {
     expect(relationshipErrors(batch)).toEqual([]);
     expect(batch.runs).toEqual([
       expect.objectContaining({
-        id: 'github:run:githubnext/gh-aw-cao:303',
+        id: 'github:run:githubnext/gh-cao:303',
         workflowPath: '.github/workflows/dashboard.md',
         targetRepository: 'github/gh-aw',
         rolloutMode: 'live',
@@ -357,14 +479,14 @@ describe('gh-aw logs adapter', () => {
         summary: 'Slow response'
       }),
       expect.objectContaining({
-        type: 'audit.gateway_steering',
+        type: 'firewall.steering',
         code: 'token_steering',
         status: 'token_steering',
         timestamp: '2026-09-09T04:00:35.000Z',
         summary: '[AWF TOKEN WARNING] 90% of the AI credit budget is used.'
       }),
       expect.objectContaining({
-        type: 'audit.gateway_steering',
+        type: 'firewall.steering',
         code: 'timeout_steering',
         status: 'timeout_steering',
         summary: '[AWF TIME WARNING] 2 minutes remain before the workflow times out.'
@@ -373,7 +495,7 @@ describe('gh-aw logs adapter', () => {
     expect(batch.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: 'mcp',
-        type: 'tool.call',
+        type: 'mcp.tool_call',
         correlationId: 'call-7',
         summary: 'github/get_file',
         requestBytes: 42,
@@ -381,14 +503,14 @@ describe('gh-aw logs adapter', () => {
       }),
       expect.objectContaining({
         source: 'mcp',
-        type: 'tool.result',
+        type: 'tool.execution_complete',
         correlationId: 'call-7',
         status: 'success'
       }),
     ]));
     expect(batch.skills).toEqual([
       expect.objectContaining({
-        type: 'audit.skill_activation',
+        type: 'skill.invoked',
         name: 'review',
         invocationCount: 3,
         failedCount: 1,
@@ -409,11 +531,11 @@ describe('gh-aw logs adapter', () => {
     expect(batch.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: 'safe-output',
-        type: 'safe_output.created',
+        type: 'safe_output.result',
         safeOutputType: 'create_pull_request',
         githubEntityType: 'pull_request',
-        correlationId: 'https://github.com/githubnext/gh-aw-cao/pull/43',
-        runId: 'github:run:githubnext/gh-aw-cao:303',
+        correlationId: 'https://github.com/githubnext/gh-cao/pull/43',
+        runId: 'github:run:githubnext/gh-cao:303',
         payloadRef: 'gh-aw-logs-shards#L4',
         isPullRequest: true
       })
@@ -421,13 +543,13 @@ describe('gh-aw logs adapter', () => {
     expect(batch.audits).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: 'safe-output',
-        type: 'safe_output.created',
+        type: 'safe_output.result',
         safeOutputType: 'create_issue',
         correlationId: 'draft-issue'
       }),
       expect.objectContaining({
         source: 'safe-output',
-        type: 'safe_output.created',
+        type: 'safe_output.result',
         safeOutputType: 'report_incomplete',
         summary: 'Required vulnerability-alert evidence was unavailable.'
       })
@@ -435,14 +557,14 @@ describe('gh-aw logs adapter', () => {
     expect(batch.domains).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: 'firewall',
-        type: 'net_allowed',
+        type: 'firewall.http_access',
         domain: 'api.github.com',
         decision: 'allowed',
         requestCount: 3
       }),
       expect.objectContaining({
         source: 'firewall',
-        type: 'net_blocked',
+        type: 'firewall.http_access',
         domain: 'api.github.com',
         decision: 'denied',
         requestCount: 1
@@ -458,7 +580,7 @@ describe('gh-aw logs adapter', () => {
         run_id: 404,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_name: 'Optimization / Token Optimizer',
         workflow_path: '.github/workflows/optimization-token-optimizer.md',
         status: 'completed',
@@ -505,7 +627,7 @@ describe('gh-aw logs adapter', () => {
     const content = JSON.stringify({
       schema_version: 2,
       kind: 'workflow_runs',
-      request: { repository: 'githubnext/gh-aw-cao' },
+      request: { repository: 'githubnext/gh-cao' },
       payload: [{
         databaseId: 303,
         attempt: 1,
@@ -523,7 +645,7 @@ describe('gh-aw logs adapter', () => {
     const batch = normalize(adaptCachedGhAwJsonl(content, {
       workflowHints: [{
         owner: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         name: 'Dashboard',
         path: '.github/workflows/dashboard.md'
       }]
@@ -531,7 +653,7 @@ describe('gh-aw logs adapter', () => {
 
     expect(batch.workflows).toEqual([
       expect.objectContaining({
-        id: 'workflow:githubnext%2Fgh-aw-cao%3A.github%2Fworkflows%2Fdashboard.md',
+        id: 'workflow:githubnext%2Fgh-cao%3A.github%2Fworkflows%2Fdashboard.md',
         path: '.github/workflows/dashboard.md'
       })
     ]);
@@ -549,7 +671,7 @@ describe('gh-aw logs adapter', () => {
     const content = JSON.stringify({
       schema_version: 2,
       kind: 'workflow_runs',
-      request: { repository: 'githubnext/gh-aw-cao' },
+      request: { repository: 'githubnext/gh-cao' },
       payload: [
         {
           databaseId: 304,
@@ -579,7 +701,7 @@ describe('gh-aw logs adapter', () => {
     const batch = normalize(adaptCachedGhAwJsonl(content, {
       workflowHints: [{
         owner: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         name: 'Dashboard',
         path: '.github/workflows/dashboard.md'
       }]
@@ -589,13 +711,13 @@ describe('gh-aw logs adapter', () => {
     expect(batch.runs.every((run) => run.targetRepository === undefined)).toBe(true);
   });
 
-  it('maps schema-v4 and mixed-version shards like schema-v2 across input paths', async () => {
+  it.each([4, 5])('maps schema-v%s and mixed-version shards like schema-v2 across input paths', async (version) => {
     const original = readFileSync(join(fixtureRoot, 'cached-v2.jsonl'), 'utf8');
     const expected = adaptCachedGhAwJsonl(original);
     for (const mixed of [false, true]) {
       const content = original.trim().split('\n').map((line, index) => {
         const envelope = JSON.parse(line);
-        envelope.schema_version = mixed && index % 2 === 0 ? 2 : 4;
+        envelope.schema_version = mixed && index % 2 === 0 ? 2 : version;
         if (envelope.schema_version === 4 && envelope.kind === 'run') {
           envelope.run.dispatch_coordinator = { operations: [] };
         }
@@ -617,7 +739,7 @@ describe('gh-aw logs adapter', () => {
     }
   });
 
-  it.each([1, 3, 5, '4', null])('rejects unsupported cached JSONL schema version %s', async (version) => {
+  it.each([1, 3, 6, '4', null])('rejects unsupported cached JSONL schema version %s', async (version) => {
     const content = JSON.stringify({ schema_version: version, kind: 'run', run: {} }) + '\n';
     for (const input of [content, new TextEncoder().encode(content)]) {
       expect(() => adaptCachedGhAwJsonl(input)).toThrow('Unsupported gh-aw JSONL schema version at line 1');
@@ -634,7 +756,7 @@ describe('gh-aw logs adapter', () => {
         run_id: 1186001,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'githubnext/gh-aw-cao',
+        repository: 'githubnext/gh-cao',
         workflow_name: 'Optimization / Token Optimizer',
         workflow_path: '.github/workflows/optimization-token-optimizer.md',
         status: 'completed',
@@ -650,7 +772,7 @@ describe('gh-aw logs adapter', () => {
         schemaVersion: 1,
         lifecycleObservationId: 'token-lifecycle:retained',
         observedAt: '2026-10-17T00:00:00Z',
-        controlRepository: 'githubnext/gh-aw-cao',
+        controlRepository: 'githubnext/gh-cao',
         claimRunId: '1189002',
         claimRunAttempt: 1,
         actor: 'maintainer',
@@ -667,11 +789,11 @@ describe('gh-aw logs adapter', () => {
         previousRecommendationDisposition: 'unapplied',
         recommendationDisposition: 'applied',
         evidenceState: 'complete',
-        safeOutputId: 'github:issue:githubnext/gh-aw-cao:11861',
-        safeOutputUrl: 'https://github.com/githubnext/gh-aw-cao/issues/11861',
+        safeOutputId: 'github:issue:githubnext/gh-cao:11861',
+        safeOutputUrl: 'https://github.com/githubnext/gh-cao/issues/11861',
         sourceProvenance: {
           kind: 'workflow-dispatch-claim',
-          sourceId: 'github-actions-run:githubnext/gh-aw-cao:1189002:attempt:1'
+          sourceId: 'github-actions-run:githubnext/gh-cao:1189002:attempt:1'
         }
       }
     };
@@ -710,7 +832,7 @@ describe('gh-aw logs adapter', () => {
       kind: 'run',
       run: {
         run_id: 607, run_attempt: 1,
-        organization: 'githubnext', repository: 'gh-aw-cao',
+        organization: 'githubnext', repository: 'gh-cao',
         workflow_name: 'Worker', workflow_path: '.github/workflows/worker.md',
         created_at: '2026-09-17T00:00:00Z',
         evals: [{ id: 'unverified', answer: 'MAYBE' }],
@@ -726,7 +848,7 @@ describe('gh-aw logs adapter', () => {
     expect(batch.evals).toEqual([]);
     expect(batch.evalObservations).toEqual([]);
     expect(batch.audits.map((record) => record.type)).toContain('workflow_run_eval_unclassified');
-    expect(batch.audits.map((record) => record.type)).toContain('workflow_run_grader');
+    expect(batch.audits.map((record) => record.type)).toContain('grader.result');
     expect(relationshipErrors(batch)).toEqual([]);
   });
 
@@ -736,14 +858,18 @@ describe('gh-aw logs adapter', () => {
       kind: 'run',
       run: {
         run_id: 608, run_attempt: 1,
-        organization: 'githubnext', repository: 'gh-aw-cao',
+        organization: 'githubnext', repository: 'gh-cao',
         workflow_name: 'Worker', workflow_path: '.github/workflows/worker.md',
         created_at: '2026-09-17T00:00:00Z',
         evals: [
           { id: 'correctness', answer: 'YES', runId: '608', timestamp: '2026-09-17T00:01:00Z' },
           { id: 'uncertain', answer: 'UNKNOWN' },
           { id: 'mismatch', answer: 'NO', runId: '999' },
-          { id: 'bad-timestamp', answer: 'YES', timestamp: 'not-a-date' }
+          { id: 'bad-timestamp', answer: 'YES', timestamp: 'not-a-date' },
+          { id: 'conflicting-run-alias', answer: 'YES', runId: '608', runid: '999' },
+          { id: 'wrong-attempt', answer: 'NO', run_attempt: 2 },
+          { id: { untrusted: 'id' }, answer: 'YES' },
+          { id: 'invalid-run', answer: 'YES', runId: null }
         ]
       }
     })}\n`;
@@ -753,11 +879,38 @@ describe('gh-aw logs adapter', () => {
       ['YES', 'pass'], ['UNKNOWN', 'unavailable']
     ]);
     expect(batch.evalObservations?.every((record) => record.runId === batch.runs[0].id)).toBe(true);
-    expect(batch.audits.filter((record) => record.type === 'workflow_run_eval')).toHaveLength(2);
+    expect(batch.audits.filter((record) => record.type === 'eval.result')).toHaveLength(2);
     expect(batch.evalObservations?.every((record) =>
       batch.audits.some((audit) => audit.id === record.auditId && audit.runId === record.runId)
     )).toBe(true);
-    expect(batch.audits.filter((record) => record.type === 'workflow_run_eval_unclassified')).toHaveLength(2);
+    expect(batch.audits.filter((record) => record.type === 'workflow_run_eval_unclassified')).toHaveLength(6);
+    expect(relationshipErrors(batch)).toEqual([]);
+  });
+
+  it('links grader and eval experiments only to explicit own assignments with matching variants', () => {
+    const results = [
+      { id: 'matching', experimentId: 'prompt', variant: 'candidate' },
+      { id: 'mismatch', experimentId: 'prompt', variant: 'control' },
+      { id: 'missing', experimentId: 'absent' },
+      { id: 'invalid', experimentId: 'invalid' },
+      { id: 'prototype', experimentId: 'toString' }
+    ];
+    const batch = normalize(adaptCachedGhAwJsonl(`${JSON.stringify({
+      schema_version: 5, kind: 'run', run: {
+        run_id: 608, run_attempt: 1, organization: 'octo', repository: 'octo/api',
+        workflow_name: 'Worker', workflow_path: '.github/workflows/worker.lock.yml',
+        created_at: '2026-10-15T10:00:00Z',
+        experiments: { assignments: { prompt: 'candidate', invalid: true } },
+        graders: { results: results.map((row) => ({ ...row, value: 0.5, status: 'pass' })) },
+        evals: results.map((row) => ({ ...row, answer: 'YES' }))
+      }
+    })}\n`).observations);
+    expect(batch.experiments).toHaveLength(1);
+    for (const records of [batch.graderObservations, batch.evalObservations]) {
+      expect(records?.filter((row) => row.experimentId)).toEqual([
+        expect.objectContaining({ experimentId: batch.experiments?.[0].id, variant: 'candidate' })
+      ]);
+    }
     expect(relationshipErrors(batch)).toEqual([]);
   });
 
@@ -769,7 +922,7 @@ describe('gh-aw logs adapter', () => {
         run_id: 303,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow_name: 'Activity',
         workflow_path: '.github/workflows/cao-activity.yml',
         status: 'completed',
@@ -839,7 +992,7 @@ describe('gh-aw logs adapter', () => {
         run_id: 304,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow_name: 'Activity',
         workflow_path: '.github/workflows/cao-activity.yml',
         status: 'completed',
@@ -870,7 +1023,7 @@ describe('gh-aw logs adapter', () => {
         run_id: 305,
         run_attempt: 1,
         organization: 'githubnext',
-        repository: 'gh-aw-cao',
+        repository: 'gh-cao',
         workflow_name: 'Activity',
         workflow_path: '.github/workflows/cao-activity.yml',
         status: 'completed',

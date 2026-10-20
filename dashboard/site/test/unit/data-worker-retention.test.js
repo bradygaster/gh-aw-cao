@@ -1,6 +1,6 @@
 // @vitest-environment node
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANONICAL_SCHEMA_VERSION } from '../../src/data/model/schema.js';
 import { DATABASE_NAME, readTransactions } from '../../src/data/storage/indexeddb.js';
 
@@ -13,14 +13,14 @@ const metadata = { 'as-of': '2026-09-09T05:00:00Z', 'artifact-generation': 'gene
 function collection(generation, toolRows) {
   const collected = { ...metadata, 'artifact-generation': generation };
   return {
-    repositories: { rows: [{ organization: 'githubnext', repository: 'gh-aw-cao' }], metadata: collected },
+    repositories: { rows: [{ organization: 'githubnext', repository: 'gh-cao' }], metadata: collected },
     workflows: {
-      rows: [{ organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md' }],
+      rows: [{ organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md' }],
       metadata: collected
     },
     runs: {
       rows: [{
-        organization: 'githubnext', repository: 'gh-aw-cao', workflow: '.github/workflows/dashboard.md',
+        organization: 'githubnext', repository: 'gh-cao', workflow: '.github/workflows/dashboard.md',
         run: '42', 'run-attempt': 1, 'run-status': 'completed', 'run-conclusion': 'success',
         'started-at': '2026-09-09T04:00:00Z'
       }],
@@ -36,7 +36,7 @@ function collection(generation, toolRows) {
 const toolRows = [
   {
     run: '42', 'run-attempt': 1, event: 'event:tool-call',
-    'event-timestamp': '2026-09-09T04:00:10Z', 'event-source': 'mcp', 'event-type': 'tool.call',
+    'event-timestamp': '2026-09-09T04:00:10Z', 'event-source': 'mcp', 'event-type': 'mcp.tool_call',
     'event-summary': 'github.list_issues', 'source-sequence': 0, 'observed-at': '2026-09-09T04:00:10Z'
   }
 ];
@@ -62,11 +62,17 @@ function stubFetch(sources) {
 }
 
 beforeEach(async () => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-10T00:00:00Z'));
   await new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DATABASE_NAME);
     request.onsuccess = () => resolve(undefined);
     request.onerror = () => reject(request.error);
   });
+  afterEach(() => vi.restoreAllMocks());
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('canonical dashboard worker retention updates', () => {

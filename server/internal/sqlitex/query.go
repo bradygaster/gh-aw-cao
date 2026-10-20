@@ -1,0 +1,239 @@
+package sqlitex
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/githubnext/gh-cao/internal/dashboardquery"
+
+	"github.com/githubnext/gh-cao/server/internal/dashboardstore"
+	"github.com/githubnext/gh-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
+)
+
+const (
+	maxSnapshotInputRows     = 500_000
+	maxSnapshotWorkingBytes  = 1 << 30
+	maxSnapshotRetainedRows  = 2_000_000
+	maxSnapshotRetainedBytes = 2 << 30
+	maxSnapshotOperations    = 50_000_000
+)
+
+func (r *reader) ExecuteSQLPlan(ctx context.Context, definitions []query.Definition, requested []string) (map[string]model.Source, model.Metrics, error) {
+	return r.ExecuteSQLPlanWithOptions(ctx, definitions, requested, dashboardstore.ExecutionOptions{})
+}
+
+func (r *reader) ExecuteSQLPlanWithOptions(ctx context.Context, definitions []query.Definition, requested []string, options dashboardstore.ExecutionOptions) (map[string]model.Source, model.Metrics, error) {
+	metrics := model.Metrics{PushedDown: []string{}, FallbackOperations: []string{"local-go-plan"}}
+	if options.ResourceLimits != nil {
+		return nil, metrics, errors.New("local SQLite queries do not support overriding resource limits")
+	}
+	if err := query.Validate(definitions); err != nil {
+		return nil, metrics, err
+	}
+	order, err := query.Dependencies(definitions, requested)
+	if err != nil {
+		return nil, metrics, err
+	}
+	if len(order) > query.MaxPlanQueries {
+		return nil, metrics, errors.New("local query exceeds max plan queries")
+	}
+	executionDefinitions, fields := projectSnapshotPlan(definitions, requested, order)
+	state, err := r.State(ctx)
+	if err != nil {
+		return nil, metrics, err
+	}
+	roots := map[string]model.Metadata{}
+	cache := map[string][]map[string]any{}
+	uses := map[string]int{}
+	reachable := map[string]bool{}
+	for _, name := range order {
+		reachable[name] = true
+	}
+	for _, definition := range definitions {
+		if reachable[definition.Name] {
+			for _, input := range snapshotInputs(definition) {
+				uses[input]++
+			}
+		}
+	}
+	for _, name := range requested {
+		uses[name]++
+	}
+	sizes := map[string]int64{}
+	var retainedRows int
+	var retainedBytes int64
+	evaluator, err := dashboardquery.NewEvaluatorWithLimits(ctx, maxSnapshotInputRows, maxSnapshotOperations)
+	if err != nil {
+		return nil, metrics, err
+	}
+	retain := func(name string, rows []map[string]any) error {
+		owned := make([]model.Row, len(rows))
+		for index, row := range rows {
+			owned[index] = model.Row(row)
+		}
+		bytes := query.EstimateRowsBytesWithLimit(owned, maxSnapshotRetainedBytes)
+		metrics.PeakWorkingRows = max(metrics.PeakWorkingRows, len(rows))
+		metrics.PeakWorkingBytes = max(metrics.PeakWorkingBytes, bytes)
+		retainedRows += len(rows)
+		retainedBytes += bytes
+		metrics.RetainedRows = max(metrics.RetainedRows, retainedRows)
+		metrics.RetainedBytes = max(metrics.RetainedBytes, retainedBytes)
+		metrics.Operations = int(evaluator.Operations())
+		if len(rows) > maxSnapshotInputRows || bytes > maxSnapshotWorkingBytes {
+			return fmt.Errorf("local query %q exceeds working input budget", name)
+		}
+		if retainedRows > maxSnapshotRetainedRows || retainedBytes > maxSnapshotRetainedBytes {
+			return &query.PlanLimitError{QueryID: name, Boundary: query.BoundaryRetainedBytes}
+		}
+		cache[name] = rows
+		sizes[name] = bytes
+		return nil
+	}
+	loadRoot := func(name string) error {
+		if _, exists := cache[name]; exists {
+			return nil
+		}
+		source, err := r.source(ctx, name, state, options, fields[name])
+		if err != nil {
+			return err
+		}
+		roots[name] = source.Metadata
+		rows := make([]map[string]any, len(source.Rows))
+		for index, row := range source.Rows {
+			rows[index] = map[string]any(row)
+		}
+		return retain(name, rows)
+	}
+	err = query.WalkPlan(executionDefinitions, requested, loadRoot, func(definition query.Definition) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		content, err := json.Marshal(definition)
+		if err != nil {
+			return err
+		}
+		var plan map[string]any
+		if err := json.Unmarshal(content, &plan); err != nil {
+			return err
+		}
+		rows, err := evaluator.Execute(plan, func(input string) ([]map[string]any, error) {
+			rows, exists := cache[input]
+			if !exists {
+				return nil, fmt.Errorf("local query input %q is unavailable", input)
+			}
+			return rows, nil
+		})
+		if err != nil {
+			return err
+		}
+		metrics.QueryCount++
+		if err := retain(definition.Name, rows); err != nil {
+			return err
+		}
+		// Results are owned clones, so completed inputs can leave the live DAG.
+		for _, input := range snapshotInputs(definition) {
+			uses[input]--
+			if uses[input] == 0 {
+				retainedRows -= len(cache[input])
+				retainedBytes -= sizes[input]
+				delete(cache, input)
+				delete(sizes, input)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, metrics, err
+	}
+	output := make(map[string]model.Source, len(requested))
+	for _, name := range requested {
+		rows := cache[name]
+		total := len(rows)
+		metadata := postgresx.ComposeMetadata(definitions, roots, name)
+		owned := model.Metadata{}
+		for key, value := range metadata {
+			owned[key] = value
+		}
+		metadata = owned
+		if metadata["availability"] == "unavailable" {
+			rows, total = nil, 0
+		}
+		page, paginated := options.Pages[name]
+		if paginated {
+			if page.Offset < 0 || page.Offset > total || page.Limit <= 0 || page.Limit > query.MaxOutputRows {
+				return nil, metrics, fmt.Errorf("invalid or stale page for %q", name)
+			}
+			rows = rows[page.Offset:min(page.Offset+page.Limit, total)]
+			metadata["total-row-count"] = total
+		} else if total > query.MaxOutputRows {
+			return nil, metrics, fmt.Errorf("query %q exceeds max output rows", name)
+		}
+		result := make([]model.Row, len(rows))
+		for index, row := range rows {
+			result[index] = model.Row(row)
+		}
+		metadata["source-id"], metadata["source-kind"], metadata["row-count"] = name, "derived", len(result)
+		if metadata["availability"] != "unavailable" {
+			metadata["availability"] = "available"
+			if total == 0 {
+				metadata["availability"] = "empty"
+			}
+		}
+		output[name] = model.Source{Source: name, Rows: result, Metadata: metadata}
+		metrics.OutputRows += len(result)
+	}
+	return output, metrics, nil
+}
+
+func snapshotInputs(definition query.Definition) []string {
+	inputs := append([]string{definition.From}, definition.Union...)
+	for _, join := range definition.Joins {
+		inputs = append(inputs, join.Source)
+	}
+	return inputs
+}
+
+func (r *reader) source(ctx context.Context, name string, state dashboardstore.State, options dashboardstore.ExecutionOptions, fields snapshotFields) (model.Source, error) {
+	collection := strings.TrimPrefix(name, "$")
+	if strings.HasPrefix(name, "$") && canonicalCollection(collection) {
+		if _, declared := state.Counts[name]; !declared {
+			return model.Source{}, fmt.Errorf("canonical SQLite source %q is not present in the snapshot", name)
+		}
+		var projected []string
+		if !fields.all {
+			projected = make([]string, 0, len(fields.fields))
+			for field := range fields.fields {
+				projected = append(projected, field)
+			}
+			sort.Strings(projected)
+		}
+		rows, err := dashboardquery.ReadCollectionFields(ctx, r.tx, collection, projected, maxSnapshotInputRows, maxSnapshotWorkingBytes)
+		if err != nil {
+			return model.Source{}, err
+		}
+		result := make([]model.Row, len(rows))
+		for index, row := range rows {
+			result[index] = model.Row(row)
+		}
+		availability := "available"
+		if len(result) == 0 {
+			availability = "empty"
+		}
+		return model.Source{Source: name, Rows: result, Metadata: model.Metadata{
+			"source-id": name, "availability": availability, "completeness": "unknown", "freshness": "unknown",
+			"as-of": state.EvaluatedAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		}}, nil
+	}
+	if postgresx.IsRuntimeSource(name) {
+		if options.Runtime != nil {
+			return options.Runtime(ctx, name)
+		}
+	}
+	return model.Source{}, fmt.Errorf("local query source %q is not registered", name)
+}

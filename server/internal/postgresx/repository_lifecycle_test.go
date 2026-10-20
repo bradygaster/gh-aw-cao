@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/model"
+	"github.com/githubnext/gh-cao/server/internal/model"
 )
 
 func TestRepositoryLifecycleSurvivesProjectionAndExpires(t *testing.T) {
@@ -57,7 +57,7 @@ func TestRepositoryLifecycleSurvivesProjectionAndExpires(t *testing.T) {
 		time.Now().AddDate(0, 0, -9), store.namespace); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RunPartitionMaintenance(ctx, time.Now(), 7); err != nil {
+	if err := store.RunPartitionMaintenance(ctx, time.Now(), 7, 7); err != nil {
 		t.Fatal(err)
 	}
 	var count int

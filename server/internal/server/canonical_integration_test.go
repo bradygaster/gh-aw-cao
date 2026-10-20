@@ -14,9 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/githubnext/gh-aw-cao/server/internal/ingest"
-	"github.com/githubnext/gh-aw-cao/server/internal/postgresx"
-	"github.com/githubnext/gh-aw-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/ingest"
+	"github.com/githubnext/gh-cao/server/internal/postgresx"
+	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/testutil"
 )
 
 func TestCanonicalAPIQueriesMatchPostgresIngestion(t *testing.T) {
@@ -50,7 +51,8 @@ func TestCanonicalAPIQueriesMatchPostgresIngestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	result, err := ingest.Run(ctx, store, "../../testdata/deployed-subset", ingest.Options{
+	directory, _ := testutil.RecentSnapshot(t, "../../testdata/deployed-subset")
+	result, err := ingest.Run(ctx, store, directory, ingest.Options{
 		DatabaseQueriesPath: "../../../dashboard/site/src/data/queries/database.json",
 	})
 	if err != nil {
@@ -114,11 +116,7 @@ func TestCanonicalAPIQueriesMatchPostgresIngestion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := &App{database: store, databaseQueries: append([]query.Definition{{
-		Name: "$records", From: "$domains",
-		Union: []string{"$tools", "$skills", "$friction", "$audits", "$issues"},
-	}}, definitions...)}
-	app.databaseQueries = append(app.databaseQueries, rawSourceDefinitions(definitions)...)
+	app := &App{database: store, databaseQueries: definitions}
 	response, status, err := app.executeQuery(ctx, queryRequest{
 		SourceNames: []string{"runs", "overview-runs", "outcomes", "mcp-calls", "domains", "issues"},
 	}, false)
@@ -133,7 +131,7 @@ func TestCanonicalAPIQueriesMatchPostgresIngestion(t *testing.T) {
 	if rows := response.Sources["outcomes"].Rows; len(rows) == 1 {
 		outcome := rows[0]
 		if link, ok := outcome["issue-link"].(map[string]any); !ok ||
-			link["href"] != "https://github.com/githubnext/gh-aw-cao/issues/42" || outcome["pull-request-link"] != nil {
+			link["href"] != "https://github.com/githubnext/gh-cao/issues/42" || outcome["pull-request-link"] != nil {
 			t.Fatalf("outcome issue link was not preserved: %#v", outcome)
 		}
 	}
