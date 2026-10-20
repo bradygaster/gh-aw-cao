@@ -272,6 +272,48 @@ later does not restore dropped partitions.
    fails the build. Both images are private artifacts: restrict registry access
    and retention appropriately.
 
+   **Building from a release asset bundle.** Operators without a full catalog
+   checkout can use the attested `cao-azure-REVISION.tgz` attached to each
+   release beside the runtime archive. It contains only the Docker build inputs
+   for `azure-functions-runtime`, `azure-ingest-runtime`, and
+   `azure-empty-ingest-runtime`, the compiled `server/azure/main.json`
+   template, and a `cao-azure.json` manifest with the source revision and the
+   SHA-256 digest of every file. It never contains adopter policy
+   (`cao.json`, `cao.azure.json`), credentials, tests, or documentation. Verify
+   and extract it, then supply your policy and snapshot as named build
+   contexts:
+
+   ```bash
+   gh release download RELEASE-TAG --repo OWNER/REPOSITORY --pattern 'cao-azure-*'
+   sha256sum --check cao-azure-REVISION.tgz.sha256
+   gh attestation verify cao-azure-REVISION.tgz --repo OWNER/REPOSITORY \
+     --signer-workflow OWNER/REPOSITORY/.github/workflows/cao-runtime.yml \
+     --source-digest REVISION --signer-digest REVISION --deny-self-hosted-runners
+   mkdir cao-azure && tar -xzf cao-azure-REVISION.tgz -C cao-azure
+   docker build --platform linux/amd64 \
+     --target azure-functions-runtime --file cao-azure/server/Dockerfile \
+     --build-arg CAO_PROFILE=cao.azure.json \
+     --build-context cao-policy=POLICY-DIRECTORY \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG \
+     cao-azure
+   docker build --platform linux/amd64 \
+     --target azure-ingest-runtime --file cao-azure/server/Dockerfile \
+     --build-arg CAO_PROFILE=cao.azure.json \
+     --build-context cao-policy=POLICY-DIRECTORY \
+     --build-context cao-ingest-source=SNAPSHOT-DIRECTORY \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-ingest:DEPLOYMENT-TAG \
+     cao-azure
+   ```
+
+   `POLICY-DIRECTORY` must contain your reviewed `cao.json` and
+   `cao.azure.json` at its root. `SNAPSHOT-DIRECTORY` holds your verified
+   ingestion snapshot. Use `--target azure-empty-ingest-runtime` without the
+   `cao-ingest-source` context for an empty instance. Deploy the bundled
+   `cao-azure/server/azure/main.json` with `--template-file`. When those
+   contexts are omitted, the build reads `.github/workflows/cao.json`,
+   `.github/workflows/cao.azure.json`, and `CAO_INGEST_SOURCE` from the main
+   build context, so builds from a checkout behave as before.
+
 1. Review the template with `az deployment group what-if` before using
    `az deployment group create`. Replace the placeholders with your own values.
    The example below uses the public-main default: the dashboard is reachable
