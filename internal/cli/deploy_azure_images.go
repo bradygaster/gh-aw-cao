@@ -181,9 +181,15 @@ func prepareDeployAzureBuild(ctx context.Context, source deployAzureBuildSource,
 		if err != nil {
 			return build, fmt.Errorf("read adopter-owned %s: %w", name, err)
 		}
-		var policy map[string]any
-		if err := json.Unmarshal(content, &policy); err != nil || policy == nil {
+		value, err := nativeDecodeJSON(content)
+		policy, ok := value.(map[string]any)
+		if err != nil || !ok || policy == nil {
 			return build, fmt.Errorf("adopter-owned %s must be a JSON object", name)
+		}
+		if name == "cao.json" {
+			if err := nativeValidatePolicy(policy); err != nil {
+				return build, fmt.Errorf("adopter-owned %s is invalid: %w", name, err)
+			}
 		}
 		for _, pattern := range deployEmbeddedSecretPatterns {
 			if pattern.Match(content) {
@@ -250,7 +256,7 @@ func deployAzureBuildImages(ctx context.Context, az azcli.Executor, config deplo
 			args = append(args, "--build-arg", "CAO_INGEST_SOURCE=cao-deploy-evidence")
 		}
 		if _, err := az.Run(ctx, append(args, build.Directory)...); err != nil {
-			return nil, fmt.Errorf("ACR build target %s failed; full template was not deployed: %w", image.target, err)
+			return nil, deployAzureBuildFailure(ctx, az, config, image.target, err)
 		}
 		result, err := az.Run(ctx, "acr", "repository", "show", "--subscription", config.Subscription, "--name", config.Resources.ContainerRegistry, "--image", image.repository+":"+tag, "--output", "json")
 		if err != nil {
@@ -275,4 +281,20 @@ func deployAzureBuildImages(ctx context.Context, az azcli.Executor, config deplo
 		})
 	}
 	return images, nil
+}
+
+func deployAzureBuildFailure(ctx context.Context, az azcli.Executor, config deployAzureConfig, target string, failure error) error {
+	run := regexp.MustCompile(`run with ID '([a-z0-9]+)'`).FindStringSubmatch(failure.Error())
+	if len(run) != 2 {
+		return fmt.Errorf("ACR build target %s failed; full template was not deployed: %w", target, failure)
+	}
+	logs, err := az.Run(ctx, "acr", "task", "logs", "--subscription", config.Subscription, "--registry", config.Resources.ContainerRegistry, "--run-id", run[1])
+	if err != nil {
+		return fmt.Errorf("ACR build target %s failed; full template was not deployed: %w; build log read-back failed: %v", target, failure, err)
+	}
+	tail := strings.TrimSpace(logs.Stdout)
+	if len(tail) > 6000 {
+		tail = tail[len(tail)-6000:]
+	}
+	return fmt.Errorf("ACR build target %s failed; full template was not deployed: %w\nACR build %s log tail:\n%s", target, failure, run[1], tail)
 }

@@ -38,6 +38,7 @@ type fakeAzureApply struct {
 	plan       *fakeAz
 	calls      [][]string
 	failBuild  bool
+	buildRunID bool
 	failJob    bool
 	concurrent bool
 	httpCalls  int
@@ -67,6 +68,9 @@ func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result,
 		return azcli.Result{}, nil
 	case "acr build":
 		if f.failBuild {
+			if f.buildRunID {
+				return azcli.Result{}, fmt.Errorf("the run with ID 'ds1' failed %s", testDeployClientSecret)
+			}
 			return azcli.Result{}, fmt.Errorf("build failed %s", testDeployClientSecret)
 		}
 		if flag("--target") == "" || flag("--platform") != "linux/amd64" {
@@ -77,6 +81,8 @@ func (f *fakeAzureApply) Run(ctx context.Context, args ...string) (azcli.Result,
 			f.t.Fatal("operator policy was not layered into build context")
 		}
 		return azcli.Result{Stdout: `{}`}, nil
+	case "acr task logs":
+		return azcli.Result{Stdout: "source build diagnostic: required COPY input missing " + testDeploySession}, nil
 	case "acr repository show":
 		return azcli.Result{Stdout: `{"digest":"sha256:` + strings.Repeat("b", 64) + `"}`}, nil
 	case "deployment group create":
@@ -172,9 +178,8 @@ func testAzureApplySetup(t *testing.T) (*fakeAzureApply, deployAzureDeps, string
 	}
 	fake.calls = nil
 	repo := t.TempDir()
-	for _, name := range []string{"cao.json", "cao.azure.json"} {
-		writeTestFile(t, filepath.Join(repo, ".github", "workflows", name), `{"schemaVersion":1}`)
-	}
+	writeTestFile(t, filepath.Join(repo, ".github", "workflows", "cao.json"), `{"version":1,"gh-aw-version":"v0.92.6","control-plane":{"campaigns":{}}}`)
+	writeTestFile(t, filepath.Join(repo, ".github", "workflows", "cao.azure.json"), `{"extends":"cao.json","control-plane":{"web":{"host":{"target":{"module":"azure-functions"},"operational-store":{"backend":"postgres"}}}}}`)
 	return fake, deps, configPath, planPath, deployAzureApplyOptions{
 		SourceDir: "development-source", RepoDir: repo, EmptyEvidence: true, ReceiptPath: filepath.Join(t.TempDir(), "receipt.json"),
 	}
@@ -401,6 +406,7 @@ func TestDeployAzurePostgresNameCheckUsesSupportedAPIVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	preflight := deployAzurePreflight{
 		config:   deployAzureConfig{Subscription: testDeploySubscription, Location: "westus3"},
 		template: deployAzureTemplateFactsFrom(content),
@@ -408,5 +414,37 @@ func TestDeployAzurePostgresNameCheckUsesSupportedAPIVersion(t *testing.T) {
 	args := preflight.restNameArgs("Microsoft.DBforPostgreSQL", "Microsoft.DBforPostgreSQL/flexibleServers", "synthetic-test-pg")
 	if !strings.Contains(strings.Join(args, " "), "/locations/westus3/checkNameAvailability?api-version=2024-08-01") {
 		t.Fatalf("name-check must use the actual PostgreSQL resource API version, got %q", args)
+	}
+}
+
+func TestDeployAzureBuildFailureRetainsRedactedDiagnostics(t *testing.T) {
+	fake, deps, config, plan, options := testAzureApplySetup(t)
+	fake.failBuild, fake.buildRunID = true, true
+	err := deployAzureApply(context.Background(), deps, config, testDeployTemplatePath(t), plan, options)
+	if err == nil || !strings.Contains(err.Error(), "required COPY input missing") || !strings.Contains(err.Error(), "ACR build ds1 log tail") {
+		t.Fatalf("failed build did not retain diagnostics: %v", err)
+	}
+
+	for _, secret := range testDeploySecrets() {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatal("build diagnostics contain a secret")
+		}
+	}
+	if fake.httpCalls != 0 {
+		t.Fatal("verification proceeded after build failure")
+	}
+}
+
+func TestDeployAzureInvalidAdopterPolicyAbortsBeforeWrites(t *testing.T) {
+	fake, deps, config, plan, options := testAzureApplySetup(t)
+	writeTestFile(t, filepath.Join(options.RepoDir, ".github", "workflows", "cao.json"), `{"version":1,"control-plane":{"campaigns":{}}}`)
+	err := deployAzureApply(context.Background(), deps, config, testDeployTemplatePath(t), plan, options)
+	if err == nil || !strings.Contains(err.Error(), "gh-aw-version is required") {
+		t.Fatalf("invalid operator policy was not rejected: %v", err)
+	}
+	for _, args := range fake.calls {
+		if !azcli.IsReadOnly(args) {
+			t.Fatalf("invalid operator policy caused Azure write: %q", args)
+		}
 	}
 }
