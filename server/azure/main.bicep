@@ -76,9 +76,24 @@ param subnetNetworkSecurityGroupId string = ''
 param postgresDatabaseName string = 'cao'
 
 @minLength(1)
-@maxLength(127)
-@description('Key Vault secret that stores the PostgreSQL URL for every database-owning role. Use lowercase letters, digits, and hyphens. The default matches existing deployments; use a new name with a new database so the previous URL remains available for rollback.')
-param postgresUrlSecretName string = 'cao-postgres-url'
+@maxLength(110)
+@description('Runtime-only PostgreSQL URL secret. Use a new name and database when moving from the administrator-backed topology.')
+param postgresUrlSecretName string = 'cao-postgres-runtime-url'
+
+@secure()
+@minLength(16)
+@description('Separately generated bootstrap-login password from the operator secret manager. Never reuse the administrator or runtime password.')
+param postgresOwnerPassword string
+
+@secure()
+@minLength(16)
+@description('Separately generated runtime-login password from the operator secret manager.')
+param postgresRuntimePassword string
+
+@description('ACR repository containing the azure-db-provision Dockerfile target.')
+param provisioningImageRepository string = 'cao-db-provision'
+
+param provisioningImageTag string = functionImageTag
 
 @description('Repository of an explicitly built snapshot or empty ingestion image in this deployment registry.')
 param ingestionImageRepository string = 'cao-ingest'
@@ -326,8 +341,33 @@ resource postgresConnectionStringValue 'Microsoft.KeyVault/vaults/secrets@2023-0
   parent: keyVault
   name: postgresUrlSecretName
   properties: {
-    value: 'postgresql://${uriComponent(postgresAdministratorLogin)}:${uriComponent(postgresAdministratorPassword)}@${network.outputs.postgresHostName}:5432/${network.outputs.databaseName}?sslmode=verify-full'
-    contentType: 'CAO dashboard PostgreSQL connection URL'
+    value: 'postgresql://cao_runtime_login:${uriComponent(postgresRuntimePassword)}@${network.outputs.postgresHostName}:5432/${uriComponent(network.outputs.databaseName)}?sslmode=verify-full&options=-csearch_path%3Dcao'
+    contentType: 'CAO runtime-only PostgreSQL connection URL'
+  }
+}
+
+resource postgresAdminUrl 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: '${postgresUrlSecretName}-admin'
+  properties: {
+    value: 'postgresql://${uriComponent(postgresAdministratorLogin)}:${uriComponent(postgresAdministratorPassword)}@${network.outputs.postgresHostName}:5432/${uriComponent(network.outputs.databaseName)}?sslmode=verify-full'
+    contentType: 'Short-lived CAO database provisioning only'
+  }
+}
+
+resource postgresOwnerPasswordValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: '${postgresUrlSecretName}-owner-password'
+  properties: {
+    value: postgresOwnerPassword
+  }
+}
+
+resource postgresRuntimePasswordValue 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: '${postgresUrlSecretName}-runtime-password'
+  properties: {
+    value: postgresRuntimePassword
   }
 }
 
@@ -569,6 +609,11 @@ module functionRoles 'function-roles.bicep' = {
     keyVaultName: keyVault.name
     containerRegistryName: registry.name
     functionPrincipalId: functionApp.identity.principalId
+    secretNames: concat([
+      postgresUrlSecretName
+      githubClientSecretValue.name
+      sessionSecretValue.name
+    ], empty(previousSessionSecret) ? [] : [previousSessionSecretValue.name], !collectionEnabled ? [] : [githubWebhookSecretValue.name])
   }
 }
 
@@ -615,14 +660,30 @@ module ingestion 'ingestion.bicep' = {
     postgresRunRetentionDays: postgresRunRetentionDays
     postgresUrlSecretName: postgresUrlSecretName
     canonicalNamespace: 'azure-dashboard'
-    operationalNamespace: 'azure-dashboard-operational'
+  }
+  dependsOn: [postgresConnectionStringValue]
+}
+
+module provisioning 'provisioning.bicep' = {
+  name: 'database-provisioning'
+  params: {
+    location: location
+    namePrefix: functionAppName
+    environmentName: containerEnvironment.name
+    containerRegistryName: registry.name
+    keyVaultName: keyVault.name
+    provisioningImage: '${registry.properties.loginServer}/${provisioningImageRepository}:${provisioningImageTag}'
+    postgresUrlSecretName: postgresUrlSecretName
+    postgresHostName: network.outputs.postgresHostName
+    postgresDatabaseName: network.outputs.databaseName
+    postgresRunRetentionDays: postgresRunRetentionDays
     operationalCacheMaxBytes: operationalCacheMaxBytes
     operationalCacheMaxValueBytes: operationalCacheMaxValueBytes
     operationalCacheMaxEntries: operationalCacheMaxEntries
     operationalProtectedMaxBytes: operationalProtectedMaxBytes
     operationalProtectedMaxEntries: operationalProtectedMaxEntries
   }
-  dependsOn: [postgresConnectionStringValue]
+  dependsOn: [postgresAdminUrl, postgresOwnerPasswordValue, postgresRuntimePasswordValue]
 }
 
 output collectionEnabled bool = collectionEnabled
@@ -632,6 +693,7 @@ output functionHostName string = functionApp.properties.defaultHostName
 output githubOAuthRedirectUri string = githubRedirectUri
 output keyVaultUri string = keyVault.properties.vaultUri
 output ingestionJobName string = ingestion.outputs.jobName
+output provisioningJobName string = provisioning.outputs.jobName
 output logAnalyticsWorkspaceId string = workspace.id
 output applicationInsightsId string = insights.id
 output postgresHostName string = network.outputs.postgresHostName
