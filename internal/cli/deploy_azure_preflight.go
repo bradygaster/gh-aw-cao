@@ -598,8 +598,12 @@ func (p *deployAzurePreflight) restNameArgs(provider, resourceType, name string)
 		apiVersion = "2023-01-01"
 	}
 	body, _ := json.Marshal(map[string]string{"name": name, "type": resourceType})
+	path := fmt.Sprintf("/subscriptions/%s/providers/%s", p.config.Subscription, provider)
+	if provider == "Microsoft.DBforPostgreSQL" {
+		path += "/locations/" + p.config.Location
+	}
 	return []string{"rest", "--method", "post",
-		"--url", fmt.Sprintf("/subscriptions/%s/providers/%s/checkNameAvailability?api-version=%s", p.config.Subscription, provider, apiVersion),
+		"--url", fmt.Sprintf("%s/checkNameAvailability?api-version=%s", path, apiVersion),
 		"--body", string(body), "--output", "json"}
 }
 

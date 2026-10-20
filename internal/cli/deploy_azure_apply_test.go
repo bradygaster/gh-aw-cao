@@ -376,6 +376,7 @@ func TestDeployAzureConfigPurgeProtectionAndTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	config, err := parseDeployAzureConfig(content)
 	if err != nil {
 		t.Fatal(err)
@@ -392,5 +393,20 @@ func TestDeployAzureConfigPurgeProtectionAndTag(t *testing.T) {
 	config.RetentionDays++
 	if tag == deployAzureImageTag(config) || !strings.HasPrefix(tag, config.Image.Tag+"-") {
 		t.Fatal("immutable tag does not include reviewed version and configuration identity")
+	}
+}
+
+func TestDeployAzurePostgresNameCheckUsesSupportedAPIVersion(t *testing.T) {
+	content, err := os.ReadFile(testDeployTemplatePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := deployAzurePreflight{
+		config:   deployAzureConfig{Subscription: testDeploySubscription, Location: "westus3"},
+		template: deployAzureTemplateFactsFrom(content),
+	}
+	args := preflight.restNameArgs("Microsoft.DBforPostgreSQL", "Microsoft.DBforPostgreSQL/flexibleServers", "synthetic-test-pg")
+	if !strings.Contains(strings.Join(args, " "), "/locations/westus3/checkNameAvailability?api-version=2024-08-01") {
+		t.Fatalf("name-check must use the actual PostgreSQL resource API version, got %q", args)
 	}
 }

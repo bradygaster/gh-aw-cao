@@ -92,7 +92,7 @@ var testDeployCheckIDs = []string{"tools", "login", "existing-instance", "permis
 	"name-storage-account", "name-container-registry", "name-key-vault", "name-function-app", "name-postgres-server",
 	"ingress-drift", "retention-readback"}
 
-var testDeployRestPath = regexp.MustCompile(`^/subscriptions/` + testDeploySubscription + `/providers/(Microsoft\.KeyVault|Microsoft\.Web|Microsoft\.DBforPostgreSQL)/checkNameAvailability\?api-version=\d{4}-\d{2}-\d{2}(-preview)?$`)
+var testDeployRestPath = regexp.MustCompile(`^/subscriptions/` + testDeploySubscription + `/providers/(Microsoft\.KeyVault|Microsoft\.Web|Microsoft\.DBforPostgreSQL)(/locations/[a-z0-9]+)?/checkNameAvailability\?api-version=\d{4}-\d{2}-\d{2}(-preview)?$`)
 
 func assertDeployCallsReadOnly(t *testing.T, calls [][]string) {
 	t.Helper()

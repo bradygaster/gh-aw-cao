@@ -141,6 +141,9 @@ func fakeAzKey(args []string) string {
 	}
 	switch key {
 	case "rest":
+		if strings.Contains(flag("--url"), "/providers/Microsoft.DBforPostgreSQL/locations/") {
+			return "rest Microsoft.DBforPostgreSQL"
+		}
 		parts := strings.Split(strings.SplitN(flag("--url"), "?", 2)[0], "/")
 		if parts[len(parts)-1] == "geoRegions" {
 			return "rest Microsoft.Web geoRegions"

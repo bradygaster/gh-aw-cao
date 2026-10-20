@@ -129,6 +129,7 @@ var readOnlyRestPaths = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.KeyVault/checkNameAvailability$`),
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.Web/checkNameAvailability$`),
 	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.DBforPostgreSQL/checkNameAvailability$`),
+	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.DBforPostgreSQL/locations/[a-z0-9]{2,40}/checkNameAvailability$`),
 }
 
 var readOnlyPermissionsPath = regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/resourceGroups/[-a-z0-9_.()]+)?/providers/Microsoft\.Authorization/permissions$`)

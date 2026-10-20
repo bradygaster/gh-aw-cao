@@ -126,6 +126,7 @@ func TestReadOnlyGuard(t *testing.T) {
 		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
 		{"rest", "--method", "get", "--url", "https://management.azure.com/subscriptions/" + sub + "/resourceGroups/rg-synthetic/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"},
 		{"rest", "--method", "get", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/geoRegions?api-version=2024-11-01&sku=EP1&linuxWorkersEnabled=true"},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.DBforPostgreSQL/locations/westus3/checkNameAvailability?api-version=2024-08-01", "--body", "{}"},
 	}
 	for _, args := range allowed {
 		if _, err := guard.Run(context.Background(), args...); err != nil {
