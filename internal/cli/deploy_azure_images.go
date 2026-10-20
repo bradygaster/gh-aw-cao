@@ -105,7 +105,7 @@ func deployAzureBuildFileAllowed(name string) bool {
 			return false
 		}
 	}
-	if name == ".dockerignore" || name == "server/azure/provision.sh" || name == "aw.yml" || name == "README.md" || strings.HasSuffix(name, "/aw.yml") || strings.HasSuffix(name, "/README.md") {
+	if name == ".dockerignore" || name == "dashboard/site/manifest.webmanifest" || name == "server/azure/provision.sh" || name == "aw.yml" || name == "README.md" || strings.HasSuffix(name, "/aw.yml") || strings.HasSuffix(name, "/README.md") {
 		return true
 	}
 	if name == ".github/workflows/cao.json" || name == ".github/workflows/cao.azure.json" {
