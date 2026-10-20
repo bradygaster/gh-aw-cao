@@ -301,6 +301,7 @@ func TestDeployAzureApplyStopsOnFailures(t *testing.T) {
 		{"drift", "plan drift", func(fake *fakeAzureApply) { fake.plan.whatIf = `{"status":"Succeeded","changes":[]}` }},
 		{"build", "ACR build target", func(fake *fakeAzureApply) { fake.failBuild = true }},
 		{"bootstrap", "init/bootstrap container bootstrap-canonical", func(fake *fakeAzureApply) { fake.failJob = true }},
+		{"bootstrap-log-hint", "--container bootstrap-canonical", func(fake *fakeAzureApply) { fake.failJob = true }},
 		{"concurrent", "concurrent ingestion execution", func(fake *fakeAzureApply) { fake.concurrent = true }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
