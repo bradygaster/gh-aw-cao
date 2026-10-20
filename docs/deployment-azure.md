@@ -74,13 +74,18 @@ it never silently substitutes for a missing or invalid snapshot.
 Apply creates the resource group if necessary, deploys the exact template ACR
 resource, builds the Functions, database-provisioning, and ingestion Dockerfile targets, records their
 digests, and locks the version-plus-config-hash tags against writes and deletes.
+It then deploys the full template.
 New managed-identity Key Vault grants can take time to propagate. Apply retries
 the exact reviewed ARM request at most three times only when every nested
 failure is the recognized job secret-fetch error in the ingestion or
-database-provisioning module. Retries use cancellation-aware backoff and an
-eight-minute overall budget, never change access grants, and fail closed on
-mixed, unknown, authorization, or policy errors.
-Only then does it deploy the full template. It refuses an overlapping ingestion
+database-provisioning module. Each attempt has the same 45-minute bound as the
+initial full deployment; the command's overall timeout also applies. Retries use
+cancellation-aware backoff, never change access grants, and fail closed on mixed,
+unknown, authorization, or policy errors. An interrupted attempt issues an
+explicit cancellation of that exact ARM deployment using a separate, two-minute
+bounded context before returning. Cancellation failures are reported rather than
+assuming ARM stopped.
+After the full deployment succeeds, it refuses an overlapping ingestion
 execution and waits on the exact execution it starts. The separate
 `<app>-db-provision` execution must succeed before runtime-only ingestion starts;
 bootstrap container failures stop the deployment before verification.
