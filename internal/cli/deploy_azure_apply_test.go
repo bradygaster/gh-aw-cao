@@ -448,3 +448,20 @@ func TestDeployAzureInvalidAdopterPolicyAbortsBeforeWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployAzureBuildMetadataSeparatesTagsFromSemanticVersions(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	for _, tag := range []string{"v1.2.3", "1.2.3-preview.1", "u7-dev", revision} {
+		version := deployAzureBuildVersion(tag, revision)
+		if !nativeExactVersion.MatchString("v" + strings.TrimPrefix(version, "v")) {
+			t.Fatalf("image tag %s produced invalid dashboard version %s", tag, version)
+		}
+		if tag == "u7-dev" || tag == revision {
+			if version != "0.0.0-main."+revision {
+				t.Fatalf("non-semver tag lost its explicit source revision: %s", version)
+			}
+		} else if version != tag {
+			t.Fatalf("reviewed release version changed: %s", version)
+		}
+	}
+}

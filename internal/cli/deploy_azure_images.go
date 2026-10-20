@@ -171,6 +171,9 @@ func prepareDeployAzureBuild(ctx context.Context, source deployAzureBuildSource,
 	if err != nil {
 		return build, err
 	}
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(build.Revision) {
+		return build, errors.New("build source must provide its full Git revision")
+	}
 	repoDir, err := filepath.EvalSymlinks(options.RepoDir)
 	if err != nil {
 		return build, fmt.Errorf("resolve operator repository: %w", err)
@@ -229,6 +232,13 @@ func prepareDeployAzureBuild(ctx context.Context, source deployAzureBuildSource,
 	return build, err
 }
 
+func deployAzureBuildVersion(tag, revision string) string {
+	if nativeExactVersion.MatchString("v" + strings.TrimPrefix(tag, "v")) {
+		return tag
+	}
+	return "0.0.0-main." + revision
+}
+
 func deployAzureBuildImages(ctx context.Context, az azcli.Executor, config deployAzureConfig, build deployAzureBuildContext, options deployAzureApplyOptions, provision bool) ([]deployAzureBuiltImage, error) {
 	repository := config.Image.Repository
 	if repository == "" {
@@ -248,7 +258,7 @@ func deployAzureBuildImages(ctx context.Context, az azcli.Executor, config deplo
 		args := []string{"acr", "build", "--subscription", config.Subscription, "--registry", config.Resources.ContainerRegistry,
 			"--image", image.repository + ":" + tag, "--file", "server/Dockerfile", "--target", image.target,
 			"--platform", "linux/amd64", "--build-arg", "REVISION=" + build.Revision,
-			"--build-arg", "VERSION=" + config.Image.Tag, "--build-arg", "CAO_PROFILE=cao.azure.json",
+			"--build-arg", "VERSION=" + deployAzureBuildVersion(config.Image.Tag, build.Revision), "--build-arg", "CAO_PROFILE=cao.azure.json",
 			"--no-logs", "--output", "json"}
 		if options.EmptyEvidence {
 			args = append(args, "--build-arg", "CAO_INGEST_SOURCE=server/azure/empty-data")
