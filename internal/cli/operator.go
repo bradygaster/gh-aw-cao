@@ -27,7 +27,7 @@ var (
 	paramFlag     = operatorFlag{name: "param", description: "Query parameter NAME=VALUE (repeatable)", repeat: true}
 )
 
-func addOperatorCommands(root *cobra.Command, execute runtimeExecutor) {
+func addOperatorCommands(root *cobra.Command, execute runtimeExecutor, github ghExecutor) {
 	download := operatorCommand("download", "Download the deployed CAO evidence snapshot", cobra.NoArgs, []operatorFlag{
 		textFlag("url", "Dashboard payload-hashes.json URL"),
 		textFlag("output", "Local output directory (default .cao)"),
@@ -91,7 +91,7 @@ func addOperatorCommands(root *cobra.Command, execute runtimeExecutor) {
 		return nil
 	}
 	computation.AddCommand(intelligence, health)
-	root.AddCommand(setupCommand(execute), download, pages, queries, info, prompt, query, mcp, upgrade, gh, computation,
+	root.AddCommand(setupCommand(execute, github), download, pages, queries, info, prompt, query, mcp, upgrade, gh, computation,
 		passthroughCommand("update [REF] [GH_AW_OPTIONS...]", "Update installed CAO packages without widening rollout", execute),
 	)
 }
