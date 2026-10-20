@@ -112,7 +112,6 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 	writeTestFile(t, parameters, `{"password":{"value":"`+testDeploySession+`"}}`)
 	transient := testAzureRetryJSON(t, testAzureRetryFailure(config, "cao-test", "snapshot-ingestion", "database-provisioning"))
 	var calls [][]string
-	var retryDeadline time.Time
 	az := azcli.ExecutorFunc(func(ctx context.Context, args ...string) (azcli.Result, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 45*time.Minute {
@@ -135,8 +134,8 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 		if len(calls) == 1 {
 			return azcli.Result{Stderr: transient}, errors.New("original secret propagation detail")
 		}
-		if !deadline.Equal(retryDeadline) {
-			t.Fatal("ARM replay must use the bounded overall retry deadline, not a shorter subprocess cap")
+		if time.Until(deadline) < 10*time.Minute {
+			t.Fatal("a simulated ten-minute ARM replay must fit within the same 45-minute attempt bound")
 		}
 		return azcli.Result{Stdout: `{"succeeded":true}`}, nil
 	})
@@ -149,11 +148,6 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 			if delay != 30*time.Second {
 				t.Fatalf("unexpected backoff: %s", delay)
 			}
-			deadline, ok := ctx.Deadline()
-			if !ok || time.Until(deadline) > 8*time.Minute {
-				t.Fatal("retry budget is not bounded")
-			}
-			retryDeadline = deadline
 			return ctx.Err()
 		},
 	}
@@ -212,7 +206,7 @@ func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			calls, pauses := 0, 0
+			calls, pauses, cancellations := 0, 0, 0
 			deps := deployAzureDeps{pause: func(ctx context.Context, _ time.Duration) error {
 				pauses++
 				if mode == "cancel-backoff" {
@@ -220,7 +214,17 @@ func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 				}
 				return ctx.Err()
 			}}
-			az := azcli.ExecutorFunc(func(context.Context, ...string) (azcli.Result, error) {
+			az := azcli.ExecutorFunc(func(ctx context.Context, args ...string) (azcli.Result, error) {
+				if azcli.CommandName(args) == "deployment group cancel" {
+					cancellations++
+					if ctx.Err() != nil {
+						t.Fatal("ARM cancellation reused a cancelled context")
+					}
+					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Minute {
+						t.Fatal("ARM cancellation is not bounded")
+					}
+					return azcli.Result{}, nil
+				}
 				calls++
 				stderr := transient
 				failure := errors.New("terminal detail must survive")
@@ -260,6 +264,77 @@ func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 			}
 			if calls != wantCalls || pauses != wantPauses {
 				t.Fatalf("calls=%d pauses=%d, want %d/%d", calls, pauses, wantCalls, wantPauses)
+			}
+			wantCancellations := 0
+			if mode == "cancel-command" || mode == "cancel-retry" {
+				wantCancellations = 1
+			}
+			if cancellations != wantCancellations {
+				t.Fatalf("ARM cancellations=%d, want %d", cancellations, wantCancellations)
+			}
+		})
+	}
+}
+
+func TestDeployAzureAttemptDeadlineExplicitlyCancelsExactARMDeployment(t *testing.T) {
+	for _, mode := range []string{"initial-timeout", "replay-timeout", "cancel-fails"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			config := testAzureRetryConfig()
+			transient := testAzureRetryJSON(t, testAzureRetryFailure(config, "cao-test", "snapshot-ingestion"))
+			var calls []string
+			var diagnostics bytes.Buffer
+			deps := deployAzureDeps{
+				diagnostics: &diagnostics,
+				pause:       func(ctx context.Context, _ time.Duration) error { return ctx.Err() },
+			}
+			az := azcli.ExecutorFunc(func(attemptCtx context.Context, args ...string) (azcli.Result, error) {
+				verb := azcli.CommandName(args)
+				calls = append(calls, verb)
+				if verb == "deployment group create" {
+					if mode == "replay-timeout" && len(calls) == 1 {
+						return azcli.Result{Stderr: transient}, errors.New("preceding propagation detail")
+					}
+					<-attemptCtx.Done()
+					return azcli.Result{}, attemptCtx.Err()
+				}
+				want := []string{"deployment", "group", "cancel", "--subscription", config.Subscription,
+					"--resource-group", config.ResourceGroup, "--name", "cao-test", "--output", "none"}
+				if !slices.Equal(args, want) {
+					t.Fatalf("cancellation changed deployment identity: %q", args)
+				}
+				if attemptCtx.Err() != nil || ctx.Err() == nil {
+					t.Fatal("cancellation must remain executable after the deployment deadline")
+				}
+				if deadline, ok := attemptCtx.Deadline(); !ok || time.Until(deadline) > 2*time.Minute {
+					t.Fatal("ARM cancellation has no bounded independent deadline")
+				}
+				if mode == "cancel-fails" {
+					return azcli.Result{}, errors.New("cancel permission denied")
+				}
+				return azcli.Result{}, nil
+			})
+			_, err := deployAzureCreateTemplate(ctx, deps, az, config, "cao-test", "template.json", "parameters.json")
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("attempt timeout did not fail closed: %v", err)
+			}
+			want := []string{"deployment group create", "deployment group cancel"}
+			if mode == "replay-timeout" {
+				want = []string{"deployment group create", "deployment group create", "deployment group cancel"}
+				if !strings.Contains(err.Error(), "preceding propagation detail") {
+					t.Fatalf("interrupted replay lost preceding detail: %v", err)
+				}
+			}
+			if !slices.Equal(calls, want) {
+				t.Fatalf("unexpected requests after timeout: %q", calls)
+			}
+			if mode == "cancel-fails" {
+				if !strings.Contains(err.Error(), "explicit ARM cancellation failed") || !strings.Contains(err.Error(), "cancel permission denied") {
+					t.Fatalf("ARM cancellation failure was hidden: %v", err)
+				}
+			} else if !strings.Contains(diagnostics.String(), "explicit cancellation request") {
+				t.Fatal("accepted ARM cancellation was not reported")
 			}
 		})
 	}
