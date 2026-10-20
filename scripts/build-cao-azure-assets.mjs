@@ -39,11 +39,14 @@ export const AZURE_ASSET_ALLOWLIST = Object.freeze([
   "server/Dockerfile",
   "server/azure/empty-data/",
   "server/azure/main.json",
+  "server/azure/provision.sh",
+  "server/azure/provision.sql",
   "server/cmd/cao-dashboard/",
   "server/cmd/cao-functions/",
   "server/go.mod",
   "server/go.sum",
   "server/internal/",
+  "server/postgres/",
 ]);
 
 // Tests, fixtures, and documentation below allowlisted directories are not

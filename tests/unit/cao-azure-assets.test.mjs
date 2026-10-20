@@ -95,11 +95,14 @@ test("Azure asset bundle contains exactly the allowlisted Docker build inputs", 
     "server/Dockerfile",
     "server/azure/empty-data/",
     "server/azure/main.json",
+    "server/azure/provision.sh",
+    "server/azure/provision.sql",
     "server/cmd/cao-dashboard/",
     "server/cmd/cao-functions/",
     "server/go.mod",
     "server/go.sum",
     "server/internal/",
+    "server/postgres/",
   ]);
   const tracked = git("ls-tree", "-r", "--name-only", "--full-tree", revision).split("\n").filter(Boolean);
   const expected = [...selectAzureAssetFiles(tracked), AZURE_ASSET_MANIFEST].toSorted();
@@ -181,7 +184,7 @@ test("Azure Dockerfile targets read only bundled sources or named build contexts
     visit(/^FROM (\S+)/.exec(stage)[1]);
     for (const match of stage.matchAll(/--from=(\S+)/g)) visit(match[1]);
   };
-  for (const target of ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime"]) visit(target);
+  for (const target of ["azure-functions-runtime", "azure-ingest-runtime", "azure-empty-ingest-runtime", "azure-db-provision"]) visit(target);
   assert.ok(!reachable.has("control-plane-inventory"), "Azure targets must not depend on the catalog inventory");
   assert.ok(reachable.has("cao-policy") && reachable.has("cao-ingest-source"));
   for (const name of reachable) {
@@ -191,8 +194,11 @@ test("Azure Dockerfile targets read only bundled sources or named build contexts
       for (const source of sources) {
         if (source === ".") continue;
         const normalized = source.replace(/\/$/, "");
+        const glob = normalized.includes("*")
+          ? new RegExp(`^${normalized.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")}$`)
+          : null;
         assert.ok(
-          files.some((file) => file === normalized || file.startsWith(`${normalized}/`)),
+          files.some((file) => (glob ? glob.test(file) : file === normalized || file.startsWith(`${normalized}/`))),
           `${name} copies ${source}, which the bundle does not contain`,
         );
       }
