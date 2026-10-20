@@ -578,3 +578,24 @@ func TestDeployAzureBuildContextIsReadableByNonRootImageUser(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployAzureVerifyReportsHealthSignals(t *testing.T) {
+	for body, want := range map[string]string{
+		`<html>Application Error</html>`:                                                "may not have started",
+		`{"status":"unhealthy","redis":{"connected":false},"data":{"available":false}}`: "operational cache is disconnected",
+		`{"status":"unhealthy","redis":{"connected":true},"data":{"available":false}}`:  "dashboard data unavailable",
+	} {
+		fake, deps, configPath, _, _ := testAzureApplySetup(t)
+		config, err := loadDeployAzureConfig(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deps.http = &http.Client{Transport: testAzureTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 503, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		_, err = deployAzureVerify(context.Background(), deps, fake, config.config, "fa-synthetic-test.azurewebsites.net")
+		if err == nil || !strings.Contains(err.Error(), "health returned HTTP 503") || !strings.Contains(err.Error(), want) {
+			t.Fatalf("body %q: missing health signal %q: %v", body, want, err)
+		}
+	}
+}
