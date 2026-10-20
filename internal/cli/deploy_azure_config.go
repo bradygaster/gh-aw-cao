@@ -123,7 +123,7 @@ func (c *deployAzureConfig) parameters() map[string]any {
 		"storageAccountName":         c.Resources.StorageAccount,
 		"containerRegistryName":      c.Resources.ContainerRegistry,
 		"keyVaultName":               c.Resources.KeyVault,
-		"functionImageTag":           c.Image.Tag,
+		"functionImageTag":           deployAzureImageTag(*c),
 		"allowedHosts":               nonNil(c.AllowedHosts),
 		"githubAllowedOrganizations": nonNil(c.Access.Organizations),
 		"githubAllowedTeams":         nonNil(c.Access.Teams),
