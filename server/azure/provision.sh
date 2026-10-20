@@ -39,6 +39,9 @@ if [ "$PGPASSWORD" = "$CAO_POSTGRES_OWNER_PASSWORD" ] || [ "$PGPASSWORD" = "$CAO
   exit 1
 fi
 export PGSSLMODE="${PGSSLMODE:-verify-full}"
+# Without sslrootcert, libpq verify-full looks only for ~/.postgresql/root.crt.
+# "system" uses the image CA bundle for both psql (libpq) and pgx.
+export PGSSLROOTCERT="${PGSSLROOTCERT:-system}"
 unset PGOPTIONS
 psql -X -q -v ON_ERROR_STOP=1 -f /app/azure/provision.sql
 # psql hashes \password input client-side; plaintext never becomes SQL or argv.
