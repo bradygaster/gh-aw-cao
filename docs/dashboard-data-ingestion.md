@@ -177,9 +177,10 @@ role with the event engine, role, configured model, resolved model, provider,
 status (`resolved`, `exact` or `failed`) and cause (`model_unavailable` or
 `catalog_unavailable`). Configured and resolved models keep their recorded value,
 including provider prefixes; unsafe or missing values stay unknown, and a failed
-resolution keeps its resolved model unknown. The events have no timestamp, so the
-Model resolution section orders alias history by the recorded session clock and
-counts distinct runs separately from role records. Routed sessions are expected
+resolution keeps its resolved model unknown. The events have no timestamp, so
+failed resolutions appear in the Model routing Problems view once per run, with
+an unknown time unless the session clock is recorded, and per-run resolution roles
+stay on the run page. Routed sessions are expected
 to lack these events, and legacy sessions report no resolution evidence rather
 than failure. Canonical schema 32 / IndexedDB version 42 rebuild older browser
 projections; hosted PostgreSQL needs a fresh generated schema with the new
@@ -202,7 +203,9 @@ Overview aggregates are computed by request-scoped queries over canonical runs
 rather than stored separately. Because the database is derived state, physical schema
 upgrades rebuild every store from authoritative dashboard inputs.
 
-Experiment assignments and eval observations come from the unified session when it contains them. Otherwise, ingestion accepts gh-aw's explicit current-run `assignments.json` artifact (including the compact `usage/experiment/` layout and prefixed artifact directories) and a supplied `evals.jsonl`. Collection requests the `usage,experiment` artifact sets without widening repository scope or collection budgets. Before retaining either artifact, collection verifies repository, run ID, and attempt against `aw_info.json`; a mismatch skips that evidence. Unified assignments, including an explicitly empty map, take precedence, and cumulative experiment state counts never infer a run's variant. The Experiments page shows retained assignment variants with run evidence links, and the Evals ledger shows `YES`, `NO`, and `UNKNOWN` answers distinctly; `UNKNOWN` is not a failed eval.
+Experiment assignments and eval observations come from the unified session when it contains them. Otherwise, ingestion accepts gh-aw's explicit current-run `assignments.json` artifact (including the compact `usage/experiment/` layout and prefixed artifact directories) and a supplied `evals.jsonl`. Collection requests the `usage,experiment,graders` artifact sets without widening repository scope or collection budgets. Before retaining these artifacts, collection verifies repository, run ID, and attempt against `aw_info.json`; a mismatch skips that evidence. Unified assignments, including an explicitly empty map, take precedence, and cumulative experiment state counts never infer a run's variant. The Experiments page shows retained assignment variants with run evidence links, and the Evals ledger shows `YES`, `NO`, and `UNKNOWN` answers distinctly; `UNKNOWN` is not a failed eval.
+
+gh-aw v0.92.6 publishes built-in graders in the unified session and `usage/graders/`, with custom grader results in a separate `graders` artifact. Ingestion accepts version-1 and version-2 result documents, uses the adjacent `grader_manifest.json` for definition metadata, and retains session results in preference to duplicate built-ins. The separate artifact may add custom results not already present in the session. Native metric order, finite values, explicit `null` values, and evaluator digests survive projection; scripts, messages, error bodies, and raw session payloads do not. Historical repository-owned shell evaluators remain retired and are not executed during collection.
 
 Normalized shards are written in bounded transactions, with a separate receipt
 recorded after each complete shard. A stopped import can reuse those receipts on

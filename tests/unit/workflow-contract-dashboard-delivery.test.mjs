@@ -417,7 +417,7 @@ test("Dashboard campaign builds artifacts and deploys Pages in one workflow", ()
   assert.equal((dashboardWorkflow.match(/actions\/deploy-pages@/g) || []).length, 1);
   assert.doesNotMatch(activityWorkflow, /actions\/setup-go|go build|go clean|gh-aw-operational-value/);
   assert.doesNotMatch(dashboardWorkflow, /pages-aic|REPORT_AIC_CACHE/);
-  assert.match(activityCollector, /--artifacts usage,experiment \\\s+--start-date/);
+  assert.match(activityCollector, /--artifacts usage,experiment,graders \\\s+--start-date/);
   assert.match(aicUsage, /const FIREWALL_HORIZON_DAYS = 30/);
   assert.match(activityCollector, /--start-date "-\$\{window_days\}d"/);
   assert.match(activityCollector, /--cache-before "-\$\{window_days\}d"/);
@@ -555,9 +555,15 @@ test("Documentation Pages deploys docs with the latest dashboard artifact", () =
   assert.equal(existsSync(join(root, ".github", "workflows", "documentation-build.yml")), false);
 
   assert.doesNotMatch(workflow, /dashboard-build|needs: dashboard/);
-  assert.match(workflow, /name: Restore node_modules[\s\S]*?id: node-modules-cache[\s\S]*?actions\/cache\/restore@[0-9a-f]{40}[\s\S]*?path: node_modules[\s\S]*?key: \$\{\{ runner\.os \}\}-node-24-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/);
-  assert.match(workflow, /name: Install dependencies\n\s+if: steps\.node-modules-cache\.outputs\.cache-hit != 'true'\n\s+run: npm ci/);
-  assert.match(workflow, /name: Save node_modules[\s\S]*?if: steps\.node-modules-cache\.outputs\.cache-hit != 'true'[\s\S]*?actions\/cache\/save@[0-9a-f]{40}[\s\S]*?path: node_modules[\s\S]*?key: \$\{\{ steps\.node-modules-cache\.outputs\.cache-primary-key \}\}/);
+  const steps = parse(workflow).jobs.build.steps;
+  const setupNode = steps.find(({ uses }) => uses?.startsWith("actions/setup-node@"));
+  assert.equal(setupNode.with.cache, "npm");
+  const installs = steps.filter(({ run }) => run === "npm ci");
+  assert.equal(installs.length, 1);
+  assert.equal(installs[0].if, undefined, "npm ci must run even on a cache hit");
+  assert.notEqual(installs[0]["continue-on-error"], true);
+  assert.ok(steps.findIndex(({ run }) => run === "npm run docs:build") > steps.indexOf(installs[0]));
+  assert.doesNotMatch(workflow, /\bnode_modules\b/);
   assert.match(workflow, /run: npm run docs:build/);
   assert.ok(
     workflow.indexOf("run: npm run docs:build") < workflow.indexOf("uses: actions/upload-pages-artifact@"),
