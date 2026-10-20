@@ -23,8 +23,8 @@ func TestHelperAzProcess(t *testing.T) {
 	}
 	switch strings.Join(args, " ") {
 	case "ok":
-		fmt.Fprint(os.Stdout, `{"ok":true}`)
-		fmt.Fprint(os.Stderr, os.Getenv("AZURE_CORE_ONLY_SHOW_ERRORS"))
+		_, _ = fmt.Fprint(os.Stdout, `{"ok":true}`)
+		_, _ = fmt.Fprint(os.Stderr, os.Getenv("AZURE_CORE_ONLY_SHOW_ERRORS"))
 		os.Exit(0)
 	case "fail":
 		fmt.Fprint(os.Stderr, "synthetic failure")

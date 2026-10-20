@@ -265,14 +265,14 @@ func testDeployRootWith(az azcli.Executor, getenv func(string) (string, bool)) (
 	return root, stdout, stderr
 }
 
-func runDeployPlan(t *testing.T, fake *fakeAz, config any) (string, string, error, string) {
+func runDeployPlan(t *testing.T, fake *fakeAz, config any) (string, string, string, error) {
 	t.Helper()
 	configPath := writeDeployConfig(t, config)
 	out := filepath.Join(t.TempDir(), "plans", "plan.json")
 	root, stdout, stderr := testDeployRoot(fake)
 	root.SetArgs([]string{"deploy", "azure", "--config", configPath, "--template", testDeployTemplatePath(t), "--out", out})
 	err := root.ExecuteContext(context.Background())
-	return stdout.String(), stderr.String(), err, out
+	return stdout.String(), stderr.String(), out, err
 }
 
 func TestDeployAzurePlanRunsOnlyReadOnlyCommands(t *testing.T) {
@@ -287,7 +287,7 @@ func TestDeployAzurePlanRunsOnlyReadOnlyCommands(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeAz{t: t, groupExists: tt.groupExists}
-			stdout, _, err, out := runDeployPlan(t, fake, testDeployConfig())
+			stdout, _, out, err := runDeployPlan(t, fake, testDeployConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -340,7 +340,7 @@ func TestDeployAzurePlanNeverExposesSecrets(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.fake.t = t
-			stdout, stderr, err, out := runDeployPlan(t, tt.fake, testDeployConfig())
+			stdout, stderr, out, err := runDeployPlan(t, tt.fake, testDeployConfig())
 			observed := stdout + stderr
 			if err != nil {
 				observed += err.Error()
@@ -377,7 +377,7 @@ func TestDeployAzurePlanFailsClosedOnExistingInstance(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.fake.t = t
-			_, _, err, out := runDeployPlan(t, tt.fake, testDeployConfig())
+			_, _, out, err := runDeployPlan(t, tt.fake, testDeployConfig())
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected %q, got %v", tt.want, err)
 			}

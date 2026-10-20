@@ -140,11 +140,11 @@ func (p *deployAzurePreflight) err() error {
 
 func writeDeployAzurePreflightTable(w io.Writer, checks []deployAzureCheck) error {
 	table := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "STATUS\tCHECK\tMESSAGE")
+	_, _ = fmt.Fprintln(table, "STATUS\tCHECK\tMESSAGE")
 	counts := map[string]int{}
 	for _, check := range checks {
 		counts[check.Status]++
-		fmt.Fprintf(table, "%s\t%s\t%s\n", strings.ToUpper(check.Status), check.ID, check.Message)
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\n", strings.ToUpper(check.Status), check.ID, check.Message)
 	}
 	if err := table.Flush(); err != nil {
 		return err
@@ -156,7 +156,9 @@ func writeDeployAzurePreflightTable(w io.Writer, checks []deployAzureCheck) erro
 		}
 	}
 	if len(remediation) > 0 {
-		fmt.Fprintf(w, "\nRemediation:\n%s\n", strings.Join(remediation, "\n"))
+		if _, err := fmt.Fprintf(w, "\nRemediation:\n%s\n", strings.Join(remediation, "\n")); err != nil {
+			return err
+		}
 	}
 	_, err := fmt.Fprintf(w, "\nPreflight: %d pass, %d fail, %d unknown, %d info\n",
 		counts[deployAzureCheckPass], counts[deployAzureCheckFail], counts[deployAzureCheckUnknown], counts[deployAzureCheckInfo])

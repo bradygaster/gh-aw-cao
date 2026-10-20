@@ -356,7 +356,7 @@ func TestDeployAzurePreflightNeverExposesSecrets(t *testing.T) {
 
 func TestDeployAzurePlanRunsPreflightFirst(t *testing.T) {
 	fake := &fakeAz{t: t, overrides: map[string]fakeAzResponse{"rest Microsoft.Web": {stdout: `{"nameAvailable":false,"reason":"AlreadyExists"}`}}}
-	stdout, _, err, out := runDeployPlan(t, fake, testDeployConfig())
+	stdout, _, out, err := runDeployPlan(t, fake, testDeployConfig())
 	if err == nil || !strings.Contains(err.Error(), "name-function-app") {
 		t.Fatalf("expected preflight failure, got %v", err)
 	}

@@ -191,7 +191,7 @@ func deployAzurePlanRun(ctx context.Context, stdout io.Writer, deps deployAzureD
 	if err != nil {
 		return err
 	}
-	defer workspace.Close()
+	defer func() { _ = workspace.Close() }()
 	parameterPath, err := workspace.write("parameters.json", deployAzureParameterFile(parameters, secrets))
 	if err != nil {
 		return err
@@ -410,7 +410,7 @@ func writeDeployAzurePlan(path string, plan deployAzurePlan) error {
 	if err != nil {
 		return fmt.Errorf("write plan: %w", err)
 	}
-	defer os.Remove(temporary.Name())
+	defer func() { _ = os.Remove(temporary.Name()) }()
 	if _, err := temporary.Write(content); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write plan: %w", err)
