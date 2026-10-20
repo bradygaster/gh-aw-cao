@@ -63,19 +63,25 @@ The config (default ` + defaultDeployAzureConfigPath + `) names the subscription
 resource group, resources, and access policy. It never contains secret values;
 secure parameters reference environment variables or Key Vault secrets.
 
---plan (default) runs only read-only Azure CLI checks and what-if, then writes
-a secret-free plan file. Only fresh deployments are supported: existing
-resources fail closed. --apply validates a plan file but is not yet implemented.`,
+--plan (default) runs read-only preflight checks and what-if, then writes a
+secret-free plan file. --preflight runs only the preflight checks (tools,
+login, permissions, resource providers, name availability, location, existing
+instance, ingress drift, and retention read-back), prints every result, and
+fails if any check failed; it writes no plan file. Only fresh deployments are
+supported: existing resources fail closed. --apply validates a plan file but is
+not yet implemented.`,
 		Args: cobra.NoArgs,
 	}
 	flags := cmd.Flags()
 	flags.String("config", defaultDeployAzureConfigPath, "Reviewed deployment config")
 	flags.Bool("plan", false, "Preview with read-only checks and what-if (default mode)")
+	flags.Bool("preflight", false, "Run read-only preflight checks only; writes no plan file")
+	flags.Bool("json", false, "Print preflight results as JSON (with --preflight)")
 	flags.Bool("apply", false, "Apply a reviewed plan file (not yet implemented)")
 	flags.String("plan-file", "", "Reviewed plan file required by --apply")
 	flags.String("template", "", "Compiled ARM template (development source until assets are distributed)")
 	flags.String("out", defaultDeployAzurePlanPath, "Plan file to write")
-	cmd.MarkFlagsMutuallyExclusive("plan", "apply")
+	cmd.MarkFlagsMutuallyExclusive("plan", "apply", "preflight")
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		apply, _ := flags.GetBool("apply")
 		planFile, _ := flags.GetString("plan-file")
@@ -89,6 +95,16 @@ resources fail closed. --apply validates a plan file but is not yet implemented.
 		}
 		if flags.Changed("plan-file") {
 			return errors.New("--plan-file is only valid with --apply")
+		}
+		asJSON, _ := flags.GetBool("json")
+		if preflight, _ := flags.GetBool("preflight"); preflight {
+			if flags.Changed("out") {
+				return errors.New("--out is not valid with --preflight, which writes no plan file")
+			}
+			return deployAzurePreflightRun(cmd.Context(), cmd.OutOrStdout(), deps, configPath, templatePath, asJSON)
+		}
+		if asJSON {
+			return errors.New("--json is only valid with --preflight")
 		}
 		out, _ := flags.GetString("out")
 		return deployAzurePlanRun(cmd.Context(), cmd.OutOrStdout(), deps, configPath, templatePath, out)
@@ -162,17 +178,14 @@ func deployAzurePlanRun(ctx context.Context, stdout io.Writer, deps deployAzureD
 	}
 	az := deployAzureRedacting(azcli.ReadOnly(deps.az), secrets)
 
-	account, err := deployAzureAccount(ctx, az, config.Subscription)
-	if err != nil {
+	preflight := runDeployAzurePreflight(ctx, az, config, template)
+	if err := writeDeployAzurePreflightTable(stdout, preflight.checks); err != nil {
 		return err
 	}
-	groupExists, err := deployAzureGroupExists(ctx, az, config)
-	if err != nil {
+	if err := preflight.err(); err != nil {
 		return err
 	}
-	if err := deployAzureRequireFresh(ctx, az, config, groupExists); err != nil {
-		return err
-	}
+	account, groupExists := preflight.account, preflight.groupExists
 
 	workspace, err := newDeployAzureWorkspace()
 	if err != nil {
@@ -242,9 +255,43 @@ func deployAzurePlanRun(ctx context.Context, stdout io.Writer, deps deployAzureD
 	for _, kind := range sortedKeys(summary.Counts) {
 		counts = append(counts, fmt.Sprintf("%s=%d", kind, summary.Counts[kind]))
 	}
-	_, err = fmt.Fprintf(stdout, "Azure deployment plan written to %s\nsubscription: %s\nresource group: %s (exists: %t)\nwhat-if: %s\nReview the plan, then run gh cao deploy azure --apply --plan-file %s\n",
+	_, err = fmt.Fprintf(stdout, "\nAzure deployment plan written to %s\nsubscription: %s\nresource group: %s (exists: %t)\nwhat-if: %s\nReview the plan, then run gh cao deploy azure --apply --plan-file %s\n",
 		out, plan.Subscription, plan.ResourceGroup, groupExists, strings.Join(counts, ", "), out)
 	return err
+}
+
+func deployAzurePreflightRun(ctx context.Context, stdout io.Writer, deps deployAzureDeps, configPath, templatePath string, asJSON bool) error {
+	loaded, err := loadDeployAzureConfig(configPath)
+	if err != nil {
+		return err
+	}
+	config := loaded.config
+	template, err := deployAzureLoadTemplate(ctx, deps, templatePath)
+	if err != nil {
+		return err
+	}
+	var secureNames []string
+	for _, secure := range config.secureParameters() {
+		secureNames = append(secureNames, secure.name)
+	}
+	if _, err := checkDeployAzureTemplate(template, config.parameters(), secureNames); err != nil {
+		return err
+	}
+	// Preflight needs no secret values, but redacts any that are present.
+	az := deployAzureRedacting(azcli.ReadOnly(deps.az), deployAzureAvailableSecrets(config, deps.getenv))
+	preflight := runDeployAzurePreflight(ctx, az, config, template)
+	if asJSON {
+		content, err := json.MarshalIndent(preflight.report(), "", "  ")
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "%s\n", content); err != nil {
+			return err
+		}
+	} else if err := writeDeployAzurePreflightTable(stdout, preflight.checks); err != nil {
+		return err
+	}
+	return preflight.err()
 }
 
 func deployAzureRedacting(next azcli.Executor, secrets deployAzureSecrets) azcli.Executor {
@@ -266,6 +313,10 @@ type deployAzureAccountInfo struct {
 	ID       string `json:"id"`
 	State    string `json:"state"`
 	TenantID string `json:"tenantId"`
+	User     struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	} `json:"user"`
 }
 
 func deployAzureAccount(ctx context.Context, az azcli.Executor, subscription string) (deployAzureAccountInfo, error) {
@@ -301,46 +352,17 @@ func deployAzureGroupExists(ctx context.Context, az azcli.Executor, config deplo
 	}
 }
 
-func deployAzureRequireFresh(ctx context.Context, az azcli.Executor, config deployAzureConfig, groupExists bool) error {
-	const freshOnly = "only fresh deployments are supported; upgrading an existing instance is not yet available"
-	if groupExists {
-		resources, err := deployAzureResourceList(ctx, az, "--subscription", config.Subscription, "--resource-group", config.ResourceGroup)
-		if err != nil {
-			return err
-		}
-		if len(resources) > 0 {
-			return fmt.Errorf("resource group %s already contains %d resource(s) (for example %s); %s", config.ResourceGroup, len(resources), resources[0], freshOnly)
-		}
-	}
-	for _, name := range config.globalResourceNames() {
-		resources, err := deployAzureResourceList(ctx, az, "--subscription", config.Subscription, "--name", name)
-		if err != nil {
-			return err
-		}
-		if len(resources) > 0 {
-			return fmt.Errorf("resource %s already exists in subscription %s (%s); %s", name, config.Subscription, resources[0], freshOnly)
-		}
-	}
-	return nil
-}
-
-func deployAzureResourceList(ctx context.Context, az azcli.Executor, filters ...string) ([]string, error) {
+func deployAzureResourceList(ctx context.Context, az azcli.Executor, filters ...string) ([]deployAzureResource, error) {
 	args := append([]string{"resource", "list"}, filters...)
 	result, err := az.Run(ctx, append(args, "--output", "json")...)
 	if err != nil {
 		return nil, fmt.Errorf("detect existing resources: %w", err)
 	}
-	var resources []struct {
-		ID string `json:"id"`
-	}
+	var resources []deployAzureResource
 	if err := json.Unmarshal([]byte(result.Stdout), &resources); err != nil {
 		return nil, fmt.Errorf("parse az resource list: %w", err)
 	}
-	ids := make([]string, 0, len(resources))
-	for _, resource := range resources {
-		ids = append(ids, resource.ID)
-	}
-	return ids, nil
+	return resources, nil
 }
 
 // Fresh deployments may only create resources; any change to an existing

@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -97,20 +99,109 @@ func (p Process) Run(ctx context.Context, args ...string) (Result, error) {
 	return result, nil
 }
 
-// readOnlyCommands lists the only Azure CLI command paths that plan mode may run.
+// readOnlyCommands lists the only Azure CLI command paths that plan and
+// preflight modes may run. `az rest` is handled separately by isReadOnlyRest.
 var readOnlyCommands = [][]string{
+	{"version"},
 	{"account", "show"},
 	{"group", "exists"},
 	{"resource", "list"},
+	{"resource", "show"},
+	{"provider", "list"},
+	{"role", "assignment", "list"},
+	{"ad", "signed-in-user", "show"},
+	{"ad", "sp", "show"},
+	{"storage", "account", "check-name"},
+	{"acr", "check-name"},
+	{"keyvault", "list-deleted"},
+	{"appservice", "list-locations"},
+	{"postgres", "flexible-server", "list-skus"},
+	{"functionapp", "config", "appsettings", "list"},
 	{"deployment", "group", "what-if"},
 	{"deployment", "sub", "what-if"},
+}
+
+// readOnlyRestPaths are the only ARM paths `az rest` may call. Each is a
+// checkNameAvailability action: a POST that reads global name state and
+// changes nothing. Every other `az rest` request, including GET, is refused.
+var readOnlyRestPaths = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.KeyVault/checkNameAvailability$`),
+	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.Web/checkNameAvailability$`),
+	regexp.MustCompile(`(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/providers/Microsoft\.DBforPostgreSQL/checkNameAvailability$`),
 }
 
 // IsReadOnly reports whether args name an allowlisted read-only or what-if command.
 func IsReadOnly(args []string) bool {
 	path := CommandPath(args)
+	if slices.Equal(path, []string{"rest"}) {
+		return isReadOnlyRest(args[1:])
+	}
 	for _, allowed := range readOnlyCommands {
 		if slices.Equal(path, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+// isReadOnlyRest accepts only `az rest --method post --url <checkNameAvailability>`
+// against the ARM endpoint with an api-version query and no other options that
+// could change the target or method.
+func isReadOnlyRest(options []string) bool {
+	valued := map[string]string{
+		"--method": "method", "-m": "method",
+		"--url": "url", "--uri": "url", "-u": "url",
+		"--body": "body", "-b": "body",
+		"--output": "", "-o": "", "--query": "",
+	}
+	seen := map[string]bool{}
+	var method, target string
+	for index := 0; index < len(options); index++ {
+		name, value, inline := strings.Cut(options[index], "=")
+		role, ok := valued[name]
+		if !ok {
+			return false
+		}
+		if !inline {
+			index++
+			if index >= len(options) {
+				return false
+			}
+			value = options[index]
+		}
+		if role == "" {
+			continue
+		}
+		if seen[role] {
+			return false
+		}
+		seen[role] = true
+		switch role {
+		case "method":
+			method = value
+		case "url":
+			target = value
+		}
+	}
+	if !strings.EqualFold(method, "post") || target == "" {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.RawPath != "" || parsed.Fragment != "" || parsed.User != nil {
+		return false
+	}
+	switch {
+	case parsed.Scheme == "" && parsed.Host == "":
+	case parsed.Scheme == "https" && strings.EqualFold(parsed.Host, "management.azure.com"):
+	default:
+		return false
+	}
+	query := parsed.Query()
+	if len(query) != 1 || len(query["api-version"]) != 1 {
+		return false
+	}
+	for _, pattern := range readOnlyRestPaths {
+		if pattern.MatchString(parsed.Path) {
 			return true
 		}
 	}

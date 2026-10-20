@@ -27,6 +27,7 @@ const (
 	testDeployPassword     = "synthetic-postgres-password-0001"
 	testDeployClientSecret = "synthetic-client-secret-value-0002"
 	testDeploySession      = "synthetic-session-secret-material-0003-abcdef"
+	testDeployPrincipal    = "00000000-0000-4000-8000-000000000004"
 )
 
 func testDeployConfig() map[string]any {
@@ -80,13 +81,15 @@ func writeDeployConfig(t *testing.T, config any) string {
 	return path
 }
 
+// testDeployTemplateAbs is resolved at init so tests that t.Chdir still find it.
+var testDeployTemplateAbs, testDeployTemplateErr = filepath.Abs(filepath.Join("..", "..", "server", "azure", "main.json"))
+
 func testDeployTemplatePath(t *testing.T) string {
 	t.Helper()
-	path, err := filepath.Abs(filepath.Join("..", "..", "server", "azure", "main.json"))
-	if err != nil {
-		t.Fatal(err)
+	if testDeployTemplateErr != nil {
+		t.Fatal(testDeployTemplateErr)
 	}
-	return path
+	return testDeployTemplateAbs
 }
 
 // fakeAz records argv and answers the read-only plan commands.
@@ -100,11 +103,48 @@ type fakeAz struct {
 	whatIfStderr   string
 	whatIfErr      error
 	parameterFiles []string
+	// overrides replace the default healthy response for a fakeAzKey.
+	overrides map[string]fakeAzResponse
+}
+
+type fakeAzResponse struct {
+	stdout string
+	stderr string
+	err    error
 }
 
 var deployAzureAllowedCommands = [][]string{
-	{"account", "show"}, {"group", "exists"}, {"resource", "list"},
+	{"version"}, {"account", "show"}, {"group", "exists"}, {"resource", "list"}, {"resource", "show"},
+	{"provider", "list"}, {"role", "assignment", "list"}, {"ad", "signed-in-user", "show"}, {"ad", "sp", "show"},
+	{"storage", "account", "check-name"}, {"acr", "check-name"}, {"keyvault", "list-deleted"},
+	{"appservice", "list-locations"}, {"postgres", "flexible-server", "list-skus"},
+	{"functionapp", "config", "appsettings", "list"}, {"rest"},
 	{"deployment", "group", "what-if"}, {"deployment", "sub", "what-if"},
+}
+
+// fakeAzKey names a call for overrides: the command path, plus the provider
+// namespace for az rest checkNameAvailability and the target for resource show.
+func fakeAzKey(args []string) string {
+	key := azcli.CommandName(args)
+	flag := func(name string) string {
+		index := slices.Index(args, name)
+		if index < 0 || index+1 >= len(args) {
+			return ""
+		}
+		return args[index+1]
+	}
+	switch key {
+	case "rest":
+		parts := strings.Split(strings.SplitN(flag("--url"), "?", 2)[0], "/")
+		return "rest " + parts[len(parts)-2]
+	case "resource show":
+		ids := flag("--ids")
+		if strings.HasSuffix(ids, "/config/web") {
+			return "resource show config"
+		}
+		return "resource show " + ids[strings.LastIndex(ids, "/providers/")+len("/providers/"):strings.LastIndex(ids, "/")]
+	}
+	return key
 }
 
 var deployAzureForbiddenWords = []string{"create", "update", "delete", "set", "start", "stop", "restart", "import", "build", "push", "deploy", "assign", "purge", "login"}
@@ -116,8 +156,11 @@ func (f *fakeAz) Run(ctx context.Context, args ...string) (azcli.Result, error) 
 	}
 	f.calls = append(f.calls, slices.Clone(args))
 	path := azcli.CommandPath(args)
-	if !slices.ContainsFunc(deployAzureAllowedCommands, func(allowed []string) bool { return slices.Equal(allowed, path) }) {
+	if !slices.ContainsFunc(deployAzureAllowedCommands, func(allowed []string) bool { return slices.Equal(allowed, path) }) || !azcli.IsReadOnly(args) {
 		f.t.Fatalf("plan executed non-allowlisted az command %q", strings.Join(args, " "))
+	}
+	if response, ok := f.overrides[fakeAzKey(args)]; ok {
+		return azcli.Result{Stdout: response.stdout, Stderr: response.stderr}, response.err
 	}
 	for _, word := range path {
 		if slices.Contains(deployAzureForbiddenWords, word) && word != "deployment" {
@@ -131,9 +174,35 @@ func (f *fakeAz) Run(ctx context.Context, args ...string) (azcli.Result, error) 
 		}
 		return args[index+1]
 	}
-	switch strings.Join(path, " ") {
+	switch fakeAzKey(args) {
+	case "version":
+		return azcli.Result{Stdout: `{"azure-cli":"2.67.0","azure-cli-core":"2.67.0"}`}, nil
 	case "account show":
-		return azcli.Result{Stdout: fmt.Sprintf(`{"id":%q,"state":"Enabled","tenantId":%q}`, flag("--subscription"), testDeployTenant)}, nil
+		return azcli.Result{Stdout: fmt.Sprintf(`{"id":%q,"state":"Enabled","tenantId":%q,"user":{"name":"operator@example.test","type":"user"}}`, flag("--subscription"), testDeployTenant)}, nil
+	case "ad signed-in-user show":
+		return azcli.Result{Stdout: `"` + testDeployPrincipal + `"`}, nil
+	case "ad sp show":
+		return azcli.Result{Stdout: `"` + testDeployPrincipal + `"`}, nil
+	case "role assignment list":
+		return azcli.Result{Stdout: `[{"roleDefinitionName":"Owner","scope":"/subscriptions/` + testDeploySubscription + `"}]`}, nil
+	case "provider list":
+		return azcli.Result{Stdout: testDeployProviders(f.t, "Registered", "West US 3")}, nil
+	case "storage account check-name", "acr check-name", "rest Microsoft.KeyVault", "rest Microsoft.Web", "rest Microsoft.DBforPostgreSQL":
+		return azcli.Result{Stdout: `{"nameAvailable":true,"reason":null,"message":null}`}, nil
+	case "keyvault list-deleted":
+		return azcli.Result{Stdout: `[]`}, nil
+	case "appservice list-locations":
+		return azcli.Result{Stdout: `[{"name":"West US 3"},{"name":"East US"}]`}, nil
+	case "postgres flexible-server list-skus":
+		return azcli.Result{Stdout: `[{"supportedServerEditions":[{"name":"Burstable","supportedServerSkus":[{"name":"Standard_B1ms"},{"name":"Standard_B2s"}]}]}]`}, nil
+	case "resource show Microsoft.Web/sites":
+		return azcli.Result{Stdout: `{"publicNetworkAccess":"Enabled"}`}, nil
+	case "resource show config":
+		return azcli.Result{Stdout: `{"ipSecurityRestrictionsDefaultAction":"Allow","ipSecurityRestrictions":[{"name":"Allow all","ipAddress":"Any","action":"Allow"}],"scmIpSecurityRestrictionsDefaultAction":"Deny","scmIpSecurityRestrictionsUseMain":false}`}, nil
+	case "resource show Microsoft.App/containerApps", "resource show Microsoft.App/jobs":
+		return azcli.Result{Stdout: `[{"name":"CAO_POSTGRES_RUN_RETENTION_DAYS","value":"60"},{"name":"CAO_POSTGRES_LINKED_RETENTION_DAYS","value":"60"}]`}, nil
+	case "functionapp config appsettings list":
+		return azcli.Result{Stdout: `[{"name":"CAO_POSTGRES_RUN_RETENTION_DAYS","value":"45"},{"name":"CAO_POSTGRES_LINKED_RETENTION_DAYS","value":"45"}]`}, nil
 	case "group exists":
 		return azcli.Result{Stdout: fmt.Sprintf("%t\n", f.groupExists)}, nil
 	case "resource list":

@@ -147,13 +147,17 @@ func (c *deployAzureConfig) parameters() map[string]any {
 	return parameters
 }
 
+// postgresServerName mirrors the template default for postgresServerName.
+func (c *deployAzureConfig) postgresServerName() string {
+	if c.Resources.PostgresServer != "" {
+		return c.Resources.PostgresServer
+	}
+	return c.Resources.FunctionApp + "-pg"
+}
+
 // globalResourceNames lists configured names that must not already exist.
 func (c *deployAzureConfig) globalResourceNames() []string {
-	postgres := c.Resources.PostgresServer
-	if postgres == "" {
-		postgres = c.Resources.FunctionApp + "-pg"
-	}
-	return []string{c.Resources.FunctionApp, c.Resources.StorageAccount, c.Resources.ContainerRegistry, c.Resources.KeyVault, postgres}
+	return []string{c.Resources.FunctionApp, c.Resources.StorageAccount, c.Resources.ContainerRegistry, c.Resources.KeyVault, c.postgresServerName()}
 }
 
 func nonNil(values []string) []string {

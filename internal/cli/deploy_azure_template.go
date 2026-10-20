@@ -169,6 +169,21 @@ func resolveDeployAzureSecrets(config deployAzureConfig, getenv func(string) (st
 	return secrets, nil
 }
 
+// deployAzureAvailableSecrets collects env-referenced secret values that are
+// set, only so preflight diagnostics can redact them.
+func deployAzureAvailableSecrets(config deployAzureConfig, getenv func(string) (string, bool)) deployAzureSecrets {
+	secrets := deployAzureSecrets{entries: map[string]any{}}
+	for _, secure := range config.secureParameters() {
+		if secure.ref.Env == "" {
+			continue
+		}
+		if value, ok := getenv(secure.ref.Env); ok && value != "" {
+			secrets.values = append(secrets.values, value)
+		}
+	}
+	return secrets
+}
+
 func (s deployAzureSecrets) redact(text string) string {
 	for _, value := range s.values {
 		text = strings.ReplaceAll(text, value, "***")

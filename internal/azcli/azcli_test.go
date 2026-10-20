@@ -97,15 +97,67 @@ func TestReadOnlyGuard(t *testing.T) {
 		return Result{}, nil
 	})
 	guard := ReadOnly(next)
-	for _, args := range [][]string{
+	const sub = "00000000-0000-4000-8000-000000000001"
+	checkName := func(provider string) string {
+		return "/subscriptions/" + sub + "/providers/" + provider + "/checkNameAvailability?api-version=2023-07-01"
+	}
+	allowed := [][]string{
+		{"version", "--output", "json"},
 		{"account", "show", "--subscription", "x"},
 		{"group", "exists", "--name", "x"},
 		{"resource", "list", "--resource-group", "x"},
+		{"resource", "show", "--ids", "x"},
+		{"provider", "list", "--subscription", "x"},
+		{"role", "assignment", "list", "--assignee", "x"},
+		{"ad", "signed-in-user", "show"},
+		{"ad", "sp", "show", "--id", "x"},
+		{"storage", "account", "check-name", "--name", "x"},
+		{"acr", "check-name", "--name", "x"},
+		{"keyvault", "list-deleted"},
+		{"appservice", "list-locations", "--sku", "EP1"},
+		{"postgres", "flexible-server", "list-skus", "--location", "x"},
+		{"functionapp", "config", "appsettings", "list", "--name", "x"},
 		{"deployment", "group", "what-if", "--resource-group", "x"},
 		{"deployment", "sub", "what-if", "--location", "x"},
-	} {
+		{"rest", "--method", "post", "--url", checkName("Microsoft.KeyVault"), "--body", `{"name":"x"}`, "--output", "json"},
+		{"rest", "--method", "POST", "--url", checkName("Microsoft.Web"), "--body", `{"name":"x"}`},
+		{"rest", "-m", "post", "-u", checkName("Microsoft.DBforPostgreSQL"), "-b", `{"name":"x"}`},
+		{"rest", "--method=post", "--url=https://management.azure.com" + checkName("Microsoft.Web")},
+	}
+	for _, args := range allowed {
 		if _, err := guard.Run(context.Background(), args...); err != nil {
 			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"rest", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "get", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "put", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "patch", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "delete", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Storage/checkNameAvailability?api-version=1"},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/resourceGroups/rg/providers/Microsoft.Web/sites/x/restart?api-version=1"},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/checkNameAvailability"},
+		{"rest", "--method", "post", "--url", checkName("Microsoft.Web") + "&x=1"},
+		{"rest", "--method", "post", "--url", "https://attacker.example.test" + checkName("Microsoft.Web")},
+		{"rest", "--method", "post", "--url", "http://management.azure.com" + checkName("Microsoft.Web")},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web/checkNameAvailability/../../x?api-version=1"},
+		{"rest", "--method", "post", "--url", "/subscriptions/" + sub + "/providers/Microsoft.Web%2FcheckNameAvailability?api-version=1"},
+		{"rest", "--method", "post", "--method", "delete", "--url", checkName("Microsoft.Web")},
+		{"rest", "--method", "post", "--url", checkName("Microsoft.Web"), "--url", "/subscriptions/" + sub + "/resourceGroups/rg?api-version=1"},
+		{"rest", "--method", "post", "--url", checkName("Microsoft.Web"), "--resource", "https://example.test"},
+		{"rest", "--method", "post", "--url", checkName("Microsoft.Web"), "extra"},
+		{"rest", "--method", "post", "--url"},
+		{"rest"},
+		{"role", "assignment", "create"},
+		{"provider", "register", "--namespace", "x"},
+		{"keyvault", "purge", "--name", "x"},
+		{"keyvault", "recover", "--name", "x"},
+		{"functionapp", "config", "appsettings", "set"},
+		{"functionapp", "config", "access-restriction", "add"},
+	} {
+		if _, err := guard.Run(context.Background(), args...); err == nil {
+			t.Fatalf("%v: write command was allowed", args)
 		}
 	}
 	for _, args := range [][]string{
@@ -127,7 +179,7 @@ func TestReadOnlyGuard(t *testing.T) {
 			t.Fatalf("%v: write command was allowed", args)
 		}
 	}
-	if calls != 5 {
-		t.Fatalf("guard forwarded %d calls, want 5", calls)
+	if calls != len(allowed) {
+		t.Fatalf("guard forwarded %d calls, want %d", calls, len(allowed))
 	}
 }
