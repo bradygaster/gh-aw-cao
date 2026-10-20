@@ -1,0 +1,469 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/githubnext/gh-cao/internal/azcli"
+)
+
+const (
+	deployAzurePlanKind        = "cao.deploy.azure.plan"
+	deployAzurePlanVersion     = 1
+	defaultDeployAzurePlanPath = ".cao/deploy-azure-plan.json"
+)
+
+type deployAzureDeps struct {
+	az       azcli.Executor
+	getenv   func(string) (string, bool)
+	now      func() time.Time
+	template func(path string) deployAzureTemplateSource
+}
+
+func defaultDeployAzureDeps() deployAzureDeps {
+	return deployAzureDeps{
+		az:       azcli.Process{},
+		getenv:   os.LookupEnv,
+		now:      time.Now,
+		template: func(path string) deployAzureTemplateSource { return deployAzureFileTemplate{path: path} },
+	}
+}
+
+func deployCommand(deps deployAzureDeps) *cobra.Command {
+	deploy := &cobra.Command{
+		Use:   "deploy",
+		Short: "Plan CAO dashboard deployments to cloud hosting",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return fmt.Errorf("deploy requires azure")
+		},
+	}
+	deploy.AddCommand(deployAzureCommand(deps))
+	return deploy
+}
+
+func deployAzureCommand(deps deployAzureDeps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "azure",
+		Short: "Plan a fresh CAO dashboard deployment to Azure",
+		Long: `Plan a fresh CAO dashboard deployment to Azure from a reviewed config.
+
+The config (default ` + defaultDeployAzureConfigPath + `) names the subscription,
+resource group, resources, and access policy. It never contains secret values;
+secure parameters reference environment variables or Key Vault secrets.
+
+--plan (default) runs only read-only Azure CLI checks and what-if, then writes
+a secret-free plan file. Only fresh deployments are supported: existing
+resources fail closed. --apply validates a plan file but is not yet implemented.`,
+		Args: cobra.NoArgs,
+	}
+	flags := cmd.Flags()
+	flags.String("config", defaultDeployAzureConfigPath, "Reviewed deployment config")
+	flags.Bool("plan", false, "Preview with read-only checks and what-if (default mode)")
+	flags.Bool("apply", false, "Apply a reviewed plan file (not yet implemented)")
+	flags.String("plan-file", "", "Reviewed plan file required by --apply")
+	flags.String("template", "", "Compiled ARM template (development source until assets are distributed)")
+	flags.String("out", defaultDeployAzurePlanPath, "Plan file to write")
+	cmd.MarkFlagsMutuallyExclusive("plan", "apply")
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		apply, _ := flags.GetBool("apply")
+		planFile, _ := flags.GetString("plan-file")
+		configPath, _ := flags.GetString("config")
+		templatePath, _ := flags.GetString("template")
+		if apply {
+			if planFile == "" {
+				return errors.New("--apply requires --plan-file from a reviewed --plan run")
+			}
+			return deployAzureApply(cmd.Context(), deps, configPath, templatePath, planFile)
+		}
+		if flags.Changed("plan-file") {
+			return errors.New("--plan-file is only valid with --apply")
+		}
+		out, _ := flags.GetString("out")
+		return deployAzurePlanRun(cmd.Context(), cmd.OutOrStdout(), deps, configPath, templatePath, out)
+	}
+	return cmd
+}
+
+type deployAzurePlan struct {
+	Kind                string                   `json:"kind"`
+	SchemaVersion       int                      `json:"schemaVersion"`
+	CreatedAt           string                   `json:"createdAt"`
+	Config              deployAzurePlanDigest    `json:"config"`
+	Template            deployAzurePlanDigest    `json:"template"`
+	Subscription        string                   `json:"subscription"`
+	TenantID            string                   `json:"tenantId"`
+	ResourceGroup       string                   `json:"resourceGroup"`
+	Location            string                   `json:"location"`
+	ResourceGroupExists bool                     `json:"resourceGroupExists"`
+	Scope               string                   `json:"scope"`
+	Parameters          map[string]any           `json:"parameters"`
+	SecureParameters    map[string]string        `json:"secureParameters"`
+	WhatIf              deployAzureWhatIfSummary `json:"whatIf"`
+}
+
+type deployAzurePlanDigest struct {
+	Path   string `json:"path,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	SHA256 string `json:"sha256"`
+}
+
+type deployAzureWhatIfSummary struct {
+	Status  string              `json:"status"`
+	Counts  map[string]int      `json:"counts"`
+	Changes []deployAzureChange `json:"changes"`
+}
+
+type deployAzureChange struct {
+	ResourceID string `json:"resourceId"`
+	ChangeType string `json:"changeType"`
+}
+
+func deployAzureLoadTemplate(ctx context.Context, deps deployAzureDeps, path string) (deployAzureTemplate, error) {
+	if path == "" {
+		return deployAzureTemplate{}, errors.New("--template is required until reviewed template distribution is available")
+	}
+	return deps.template(path).Load(ctx)
+}
+
+func deployAzurePlanRun(ctx context.Context, stdout io.Writer, deps deployAzureDeps, configPath, templatePath, out string) error {
+	loaded, err := loadDeployAzureConfig(configPath)
+	if err != nil {
+		return err
+	}
+	config := loaded.config
+	template, err := deployAzureLoadTemplate(ctx, deps, templatePath)
+	if err != nil {
+		return err
+	}
+	parameters := config.parameters()
+	var secureNames []string
+	for _, secure := range config.secureParameters() {
+		secureNames = append(secureNames, secure.name)
+	}
+	document, err := checkDeployAzureTemplate(template, parameters, secureNames)
+	if err != nil {
+		return err
+	}
+	secrets, err := resolveDeployAzureSecrets(config, deps.getenv)
+	if err != nil {
+		return err
+	}
+	az := deployAzureRedacting(azcli.ReadOnly(deps.az), secrets)
+
+	account, err := deployAzureAccount(ctx, az, config.Subscription)
+	if err != nil {
+		return err
+	}
+	groupExists, err := deployAzureGroupExists(ctx, az, config)
+	if err != nil {
+		return err
+	}
+	if err := deployAzureRequireFresh(ctx, az, config, groupExists); err != nil {
+		return err
+	}
+
+	workspace, err := newDeployAzureWorkspace()
+	if err != nil {
+		return err
+	}
+	defer workspace.Close()
+	parameterPath, err := workspace.write("parameters.json", deployAzureParameterFile(parameters, secrets))
+	if err != nil {
+		return err
+	}
+	scope := "resourceGroup"
+	var args []string
+	if groupExists {
+		templateFile, err := workspace.write("template.json", json.RawMessage(template.Content))
+		if err != nil {
+			return err
+		}
+		args = []string{"deployment", "group", "what-if", "--subscription", config.Subscription, "--resource-group", config.ResourceGroup,
+			"--template-file", templateFile}
+	} else {
+		scope = "subscription"
+		names := append(sortedKeys(parameters), secureNames...)
+		wrapper, err := deployAzureSubscriptionWrapper(template, document, config, names)
+		if err != nil {
+			return err
+		}
+		templateFile, err := workspace.write("template.json", wrapper)
+		if err != nil {
+			return err
+		}
+		args = []string{"deployment", "sub", "what-if", "--subscription", config.Subscription, "--location", config.Location,
+			"--template-file", templateFile}
+	}
+	args = append(args, "--parameters", "@"+parameterPath, "--result-format", "ResourceIdOnly", "--no-pretty-print", "--output", "json")
+	result, err := az.Run(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("what-if failed: %w", err)
+	}
+	summary, err := parseDeployAzureWhatIf(result.Stdout)
+	if err != nil {
+		return err
+	}
+
+	plan := deployAzurePlan{
+		Kind:                deployAzurePlanKind,
+		SchemaVersion:       deployAzurePlanVersion,
+		CreatedAt:           deps.now().UTC().Format(time.RFC3339),
+		Config:              deployAzurePlanDigest{Path: filepath.ToSlash(configPath), SHA256: loaded.digest},
+		Template:            deployAzurePlanDigest{Origin: template.Origin, SHA256: template.Digest},
+		Subscription:        account.ID,
+		TenantID:            account.TenantID,
+		ResourceGroup:       config.ResourceGroup,
+		Location:            config.Location,
+		ResourceGroupExists: groupExists,
+		Scope:               scope,
+		Parameters:          parameters,
+		SecureParameters:    map[string]string{},
+		WhatIf:              summary,
+	}
+	for _, secure := range config.secureParameters() {
+		plan.SecureParameters[secure.name] = secure.ref.describe()
+	}
+	if err := writeDeployAzurePlan(out, plan); err != nil {
+		return err
+	}
+	var counts []string
+	for _, kind := range sortedKeys(summary.Counts) {
+		counts = append(counts, fmt.Sprintf("%s=%d", kind, summary.Counts[kind]))
+	}
+	_, err = fmt.Fprintf(stdout, "Azure deployment plan written to %s\nsubscription: %s\nresource group: %s (exists: %t)\nwhat-if: %s\nReview the plan, then run gh cao deploy azure --apply --plan-file %s\n",
+		out, plan.Subscription, plan.ResourceGroup, groupExists, strings.Join(counts, ", "), out)
+	return err
+}
+
+func deployAzureRedacting(next azcli.Executor, secrets deployAzureSecrets) azcli.Executor {
+	return azcli.ExecutorFunc(func(ctx context.Context, args ...string) (azcli.Result, error) {
+		result, err := next.Run(ctx, args...)
+		result.Stdout = secrets.redact(result.Stdout)
+		result.Stderr = secrets.redact(result.Stderr)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, fmt.Errorf("az %s: %w", azcli.CommandName(args), ctxErr)
+			}
+			return result, fmt.Errorf("az %s: %s", azcli.CommandName(args), secrets.redact(err.Error()))
+		}
+		return result, nil
+	})
+}
+
+type deployAzureAccountInfo struct {
+	ID       string `json:"id"`
+	State    string `json:"state"`
+	TenantID string `json:"tenantId"`
+}
+
+func deployAzureAccount(ctx context.Context, az azcli.Executor, subscription string) (deployAzureAccountInfo, error) {
+	result, err := az.Run(ctx, "account", "show", "--subscription", subscription, "--output", "json")
+	if err != nil {
+		return deployAzureAccountInfo{}, fmt.Errorf("check Azure subscription (run az login): %w", err)
+	}
+	var account deployAzureAccountInfo
+	if err := json.Unmarshal([]byte(result.Stdout), &account); err != nil {
+		return account, fmt.Errorf("parse az account show: %w", err)
+	}
+	if !strings.EqualFold(account.ID, subscription) {
+		return account, fmt.Errorf("signed-in Azure account resolved subscription %q, want %q", account.ID, subscription)
+	}
+	if account.State != "Enabled" {
+		return account, fmt.Errorf("subscription %s is %q, want Enabled", subscription, account.State)
+	}
+	return account, nil
+}
+
+func deployAzureGroupExists(ctx context.Context, az azcli.Executor, config deployAzureConfig) (bool, error) {
+	result, err := az.Run(ctx, "group", "exists", "--subscription", config.Subscription, "--name", config.ResourceGroup, "--output", "json")
+	if err != nil {
+		return false, fmt.Errorf("check resource group: %w", err)
+	}
+	switch strings.TrimSpace(result.Stdout) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected az group exists output %q", strings.TrimSpace(result.Stdout))
+	}
+}
+
+func deployAzureRequireFresh(ctx context.Context, az azcli.Executor, config deployAzureConfig, groupExists bool) error {
+	const freshOnly = "only fresh deployments are supported; upgrading an existing instance is not yet available"
+	if groupExists {
+		resources, err := deployAzureResourceList(ctx, az, "--subscription", config.Subscription, "--resource-group", config.ResourceGroup)
+		if err != nil {
+			return err
+		}
+		if len(resources) > 0 {
+			return fmt.Errorf("resource group %s already contains %d resource(s) (for example %s); %s", config.ResourceGroup, len(resources), resources[0], freshOnly)
+		}
+	}
+	for _, name := range config.globalResourceNames() {
+		resources, err := deployAzureResourceList(ctx, az, "--subscription", config.Subscription, "--name", name)
+		if err != nil {
+			return err
+		}
+		if len(resources) > 0 {
+			return fmt.Errorf("resource %s already exists in subscription %s (%s); %s", name, config.Subscription, resources[0], freshOnly)
+		}
+	}
+	return nil
+}
+
+func deployAzureResourceList(ctx context.Context, az azcli.Executor, filters ...string) ([]string, error) {
+	args := append([]string{"resource", "list"}, filters...)
+	result, err := az.Run(ctx, append(args, "--output", "json")...)
+	if err != nil {
+		return nil, fmt.Errorf("detect existing resources: %w", err)
+	}
+	var resources []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(result.Stdout), &resources); err != nil {
+		return nil, fmt.Errorf("parse az resource list: %w", err)
+	}
+	ids := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		ids = append(ids, resource.ID)
+	}
+	return ids, nil
+}
+
+// Fresh deployments may only create resources; any change to an existing
+// resource means an instance already exists.
+var deployAzureFreshChangeTypes = map[string]bool{"Create": true, "Deploy": true, "Ignore": true, "Unsupported": true}
+
+func parseDeployAzureWhatIf(output string) (deployAzureWhatIfSummary, error) {
+	var raw struct {
+		Status  string          `json:"status"`
+		Error   json.RawMessage `json:"error"`
+		Changes []struct {
+			ResourceID string `json:"resourceId"`
+			ChangeType string `json:"changeType"`
+		} `json:"changes"`
+	}
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return deployAzureWhatIfSummary{}, fmt.Errorf("parse what-if result: %w", err)
+	}
+	if raw.Status != "Succeeded" {
+		return deployAzureWhatIfSummary{}, fmt.Errorf("what-if status %q, want Succeeded", raw.Status)
+	}
+	summary := deployAzureWhatIfSummary{Status: raw.Status, Counts: map[string]int{}, Changes: []deployAzureChange{}}
+	for _, change := range raw.Changes {
+		if !deployAzureFreshChangeTypes[change.ChangeType] {
+			return deployAzureWhatIfSummary{}, fmt.Errorf("what-if reports %s for %s; only fresh deployments are supported", change.ChangeType, change.ResourceID)
+		}
+		summary.Counts[change.ChangeType]++
+		summary.Changes = append(summary.Changes, deployAzureChange{ResourceID: change.ResourceID, ChangeType: change.ChangeType})
+	}
+	sort.Slice(summary.Changes, func(i, j int) bool { return summary.Changes[i].ResourceID < summary.Changes[j].ResourceID })
+	return summary, nil
+}
+
+func writeDeployAzurePlan(path string, plan deployAzurePlan) error {
+	content, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		return err
+	}
+	content = append(content, '\n')
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("create plan directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".deploy-azure-plan-*")
+	if err != nil {
+		return fmt.Errorf("write plan: %w", err)
+	}
+	defer os.Remove(temporary.Name())
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write plan: %w", err)
+	}
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write plan: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("write plan: %w", err)
+	}
+	if err := os.Rename(temporary.Name(), path); err != nil {
+		return fmt.Errorf("write plan: %w", err)
+	}
+	return nil
+}
+
+func readDeployAzurePlan(path string) (deployAzurePlan, error) {
+	var plan deployAzurePlan
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return plan, fmt.Errorf("read plan file: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&plan); err != nil {
+		return plan, fmt.Errorf("invalid plan file %s: %w", path, err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return plan, fmt.Errorf("invalid plan file %s: unexpected trailing content", path)
+	}
+	switch {
+	case plan.Kind != deployAzurePlanKind || plan.SchemaVersion != deployAzurePlanVersion:
+		return plan, fmt.Errorf("invalid plan file %s: expected %s version %d", path, deployAzurePlanKind, deployAzurePlanVersion)
+	case plan.WhatIf.Status != "Succeeded":
+		return plan, fmt.Errorf("invalid plan file %s: what-if did not succeed", path)
+	case plan.Config.SHA256 == "" || plan.Template.SHA256 == "":
+		return plan, fmt.Errorf("invalid plan file %s: missing config or template digest", path)
+	}
+	if _, err := time.Parse(time.RFC3339, plan.CreatedAt); err != nil {
+		return plan, fmt.Errorf("invalid plan file %s: createdAt: %w", path, err)
+	}
+	return plan, nil
+}
+
+func deployAzureApply(ctx context.Context, deps deployAzureDeps, configPath, templatePath, planFile string) error {
+	plan, err := readDeployAzurePlan(planFile)
+	if err != nil {
+		return err
+	}
+	loaded, err := loadDeployAzureConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if loaded.digest != plan.Config.SHA256 {
+		return fmt.Errorf("plan file %s was created from a different config; rerun --plan", planFile)
+	}
+	if !strings.EqualFold(loaded.config.Subscription, plan.Subscription) || loaded.config.ResourceGroup != plan.ResourceGroup {
+		return fmt.Errorf("plan file %s targets a different subscription or resource group; rerun --plan", planFile)
+	}
+	template, err := deployAzureLoadTemplate(ctx, deps, templatePath)
+	if err != nil {
+		return err
+	}
+	if template.Digest != plan.Template.SHA256 {
+		return fmt.Errorf("plan file %s was created from a different template; rerun --plan", planFile)
+	}
+	return fmt.Errorf("deploy azure --apply is not yet implemented; plan file %s is valid and no Azure changes were made", planFile)
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
