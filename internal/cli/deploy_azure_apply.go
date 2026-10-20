@@ -146,7 +146,7 @@ func deployAzureExecute(ctx context.Context, deps deployAzureDeps, loaded deploy
 	if err != nil {
 		return err
 	}
-	result, err := run([]string{"deployment", "group", "create"}, "--name", receipt.DeploymentName, "--template-file", templatePath, "--parameters", "@"+parametersPath)
+	result, err := deployAzureCreateTemplate(ctx, deps, az, config, receipt.DeploymentName, templatePath, parametersPath)
 	if err != nil {
 		return fmt.Errorf("deploy full template (resource group retained for diagnosis): %w", err)
 	}

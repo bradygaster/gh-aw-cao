@@ -16,6 +16,31 @@ const provisionSql = await readFile(new URL('../../server/azure/provision.sql', 
 const dockerfile = await readFile(new URL('../../server/Dockerfile', import.meta.url), 'utf8');
 const deploymentDocs = await readFile(new URL('../../docs/deployment-azure.md', import.meta.url), 'utf8');
 
+test('Derived Container Apps names are bounded before Azure creates any resources', () => {
+  assert.equal(generated.parameters.functionAppName.minLength, 2);
+  assert.equal(generated.parameters.functionAppName.maxLength, 19);
+  for (const [moduleName, limit, suffixes] of [
+    ['database-provisioning', 19, ['-db-provision']],
+    ['snapshot-ingestion', 19, ['-ingest']],
+    ['collection-workers', 22, ['-collector', '-backfill']],
+  ]) {
+    const template = resources.find((resource) => resource.name === moduleName)?.properties.template;
+    assert.ok(template, `${moduleName} must have a compiled template`);
+    assert.equal(template.parameters.namePrefix.maxLength, limit);
+    const children = Object.values(template.resources);
+    for (const suffix of suffixes) {
+      assert.ok(children.some((resource) => ['Microsoft.App/jobs', 'Microsoft.App/containerApps'].includes(resource.type)
+        && resource.name.includes(suffix)), `${moduleName} must declare ${suffix}`);
+      assert.ok(limit + suffix.length <= 32, `${moduleName}${suffix} exceeds the Azure name limit`);
+    }
+    for (const resource of children.filter((resource) => resource.type === 'Microsoft.ManagedIdentity/userAssignedIdentities')) {
+      const suffix = resource.name.match(/\{0\}([^']+)'/)?.[1];
+      assert.ok(suffix, `expected an explicit identity suffix: ${resource.name}`);
+      assert.ok(limit + suffix.length <= 128, 'managed identity name exceeds the Azure name limit');
+    }
+  }
+});
+
 test('Key Vault purge protection remains default-on with an explicit disposable opt-out', () => {
   assert.equal(generated.parameters.keyVaultPurgeProtection.type, 'bool');
   assert.equal(generated.parameters.keyVaultPurgeProtection.defaultValue, true);
