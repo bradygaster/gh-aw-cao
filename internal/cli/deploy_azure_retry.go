@@ -134,11 +134,13 @@ func deployAzureCreateTemplate(ctx context.Context, deps deployAzureDeps, az azc
 		if err := deployAzurePause(retryCtx, deps, delay); err != nil {
 			return result, errors.Join(failure, fmt.Errorf("wait for job secret access: %w", err))
 		}
-		attemptCtx, attemptCancel := context.WithTimeout(retryCtx, 2*time.Minute)
-		result, failure = az.Run(attemptCtx, request...)
-		attemptCancel()
+		previousFailure := failure
+		result, failure = az.Run(retryCtx, request...)
 		if failure == nil {
 			return result, nil
+		}
+		if errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
+			return result, errors.Join(failure, fmt.Errorf("preceding managed-identity secret propagation failure: %w", previousFailure))
 		}
 	}
 	return result, fmt.Errorf("deployment failed after three bounded managed-identity secret propagation retries: %w", failure)

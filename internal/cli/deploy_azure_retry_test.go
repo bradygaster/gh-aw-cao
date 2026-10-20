@@ -112,6 +112,7 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 	writeTestFile(t, parameters, `{"password":{"value":"`+testDeploySession+`"}}`)
 	transient := testAzureRetryJSON(t, testAzureRetryFailure(config, "cao-test", "snapshot-ingestion", "database-provisioning"))
 	var calls [][]string
+	var retryDeadline time.Time
 	az := azcli.ExecutorFunc(func(ctx context.Context, args ...string) (azcli.Result, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 45*time.Minute {
@@ -134,8 +135,8 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 		if len(calls) == 1 {
 			return azcli.Result{Stderr: transient}, errors.New("original secret propagation detail")
 		}
-		if time.Until(deadline) > 2*time.Minute {
-			t.Fatal("retry subprocess exceeds its two-minute bound")
+		if !deadline.Equal(retryDeadline) {
+			t.Fatal("ARM replay must use the bounded overall retry deadline, not a shorter subprocess cap")
 		}
 		return azcli.Result{Stdout: `{"succeeded":true}`}, nil
 	})
@@ -148,9 +149,11 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 			if delay != 30*time.Second {
 				t.Fatalf("unexpected backoff: %s", delay)
 			}
-			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 8*time.Minute {
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) > 8*time.Minute {
 				t.Fatal("retry budget is not bounded")
 			}
+			retryDeadline = deadline
 			return ctx.Err()
 		},
 	}
@@ -171,10 +174,41 @@ func TestDeployAzureSecretRetryReusesExactReviewedRequest(t *testing.T) {
 	}
 }
 
+func TestDeployAzureSecretRetryPreservesShorterCallerDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	config := testAzureRetryConfig()
+	transient := testAzureRetryJSON(t, testAzureRetryFailure(config, "cao-test", "snapshot-ingestion"))
+	calls := 0
+	deps := deployAzureDeps{pause: func(ctx context.Context, _ time.Duration) error {
+		if actual, ok := ctx.Deadline(); !ok || !actual.Equal(deadline) {
+			t.Fatal("retry backoff extended the caller deadline")
+		}
+		return ctx.Err()
+	}}
+	az := azcli.ExecutorFunc(func(ctx context.Context, _ ...string) (azcli.Result, error) {
+		calls++
+		if actual, ok := ctx.Deadline(); !ok || !actual.Equal(deadline) {
+			t.Fatal("deployment subprocess extended the caller deadline")
+		}
+		if calls == 1 {
+			return azcli.Result{Stderr: transient}, errors.New("secret propagation")
+		}
+		return azcli.Result{Stdout: `{}`}, nil
+	})
+	if _, err := deployAzureCreateTemplate(ctx, deps, az, config, "cao-test", "template.json", "parameters.json"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("deployment calls=%d, want 2", calls)
+	}
+}
+
 func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 	config := testAzureRetryConfig()
 	transient := testAzureRetryJSON(t, testAzureRetryFailure(config, "cao-test", "snapshot-ingestion"))
-	for _, mode := range []string{"exhaustion", "cancel-backoff", "cancel-command", "unrecognized-error"} {
+	for _, mode := range []string{"exhaustion", "cancel-backoff", "cancel-command", "cancel-retry", "unrecognized-error"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -190,7 +224,7 @@ func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 				calls++
 				stderr := transient
 				failure := errors.New("terminal detail must survive")
-				if mode == "cancel-command" {
+				if mode == "cancel-command" || (mode == "cancel-retry" && calls == 2) {
 					failure = context.DeadlineExceeded
 				}
 				if mode == "unrecognized-error" {
@@ -217,6 +251,11 @@ func TestDeployAzureSecretRetryExhaustionAndCancellation(t *testing.T) {
 			case "cancel-command":
 				if !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("subprocess deadline was hidden: %v", err)
+				}
+			case "cancel-retry":
+				wantCalls, wantPauses = 2, 1
+				if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "terminal detail must survive") {
+					t.Fatalf("retry deadline lost context or preceding failure detail: %v", err)
 				}
 			}
 			if calls != wantCalls || pauses != wantPauses {
