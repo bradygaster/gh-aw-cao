@@ -109,20 +109,38 @@ func deployAzureCreateTemplate(ctx context.Context, deps deployAzureDeps, az azc
 	request := []string{"deployment", "group", "create", "--subscription", config.Subscription,
 		"--resource-group", config.ResourceGroup, "--name", deployment, "--template-file", template,
 		"--parameters", "@" + parameters, "--output", "json"}
-	initialCtx, initialCancel := context.WithTimeout(ctx, 45*time.Minute)
-	result, failure := az.Run(initialCtx, request...)
-	initialCancel()
+	runAttempt := func() (azcli.Result, error) {
+		attemptCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
+		defer cancel()
+		result, failure := az.Run(attemptCtx, request...)
+		if attemptCtx.Err() == nil && !errors.Is(failure, context.Canceled) && !errors.Is(failure, context.DeadlineExceeded) {
+			return result, failure
+		}
+		failure = errors.Join(failure, attemptCtx.Err())
+		cancelCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancelCleanup()
+		_, cancelErr := az.Run(cancelCtx, "deployment", "group", "cancel", "--subscription", config.Subscription,
+			"--resource-group", config.ResourceGroup, "--name", deployment, "--output", "none")
+		if cancelErr != nil {
+			return result, errors.Join(failure, fmt.Errorf("explicit ARM cancellation failed; deployment may still be running: %w", cancelErr))
+		}
+		if deps.diagnostics != nil {
+			if _, err := fmt.Fprintln(deps.diagnostics, "ARM deployment timed out or was cancelled; the explicit cancellation request for this exact deployment was accepted."); err != nil {
+				return result, errors.Join(failure, fmt.Errorf("write ARM cancellation diagnostic: %w", err))
+			}
+		}
+		return result, failure
+	}
+	result, failure := runAttempt()
 	if failure == nil {
 		return result, nil
 	}
-	retryCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
-	defer cancel()
 	for retry := 1; retry <= 3; retry++ {
 		if errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) ||
 			!deployAzureSecretPropagationFailure(result.Stderr, config, deployment) {
 			return result, failure
 		}
-		if err := retryCtx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return result, errors.Join(failure, err)
 		}
 		delay := time.Duration(retry) * 30 * time.Second
@@ -131,14 +149,16 @@ func deployAzureCreateTemplate(ctx context.Context, deps deployAzureDeps, az azc
 				return result, errors.Join(failure, fmt.Errorf("write deployment retry diagnostic: %w", err))
 			}
 		}
-		if err := deployAzurePause(retryCtx, deps, delay); err != nil {
+		if err := deployAzurePause(ctx, deps, delay); err != nil {
 			return result, errors.Join(failure, fmt.Errorf("wait for job secret access: %w", err))
 		}
-		attemptCtx, attemptCancel := context.WithTimeout(retryCtx, 2*time.Minute)
-		result, failure = az.Run(attemptCtx, request...)
-		attemptCancel()
+		previousFailure := failure
+		result, failure = runAttempt()
 		if failure == nil {
 			return result, nil
+		}
+		if errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
+			return result, errors.Join(failure, fmt.Errorf("preceding managed-identity secret propagation failure: %w", previousFailure))
 		}
 	}
 	return result, fmt.Errorf("deployment failed after three bounded managed-identity secret propagation retries: %w", failure)
