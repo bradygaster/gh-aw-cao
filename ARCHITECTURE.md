@@ -719,12 +719,17 @@ The conventional `cao-runtime.yml` pipeline builds on main pushes. Read-only
 build/test and source-free attestation use separate jobs, producing exact-SHA
 Actions artifacts retained for 90 days. The Release workflow creates a draft
 stable tag at an exact main SHA, waits for that SHA's successful runtime push
-run, verifies its checksum and signed provenance, and attaches the archive and
-checksum together with the six extension binaries and their checksum manifest.
+run, verifies the checksum and signed provenance of both the runtime archive
+and the Azure deployment-asset bundle (`cao-azure-<sha>.tgz`: an allowlisted
+Docker build context for the Azure image targets, the compiled ARM template,
+and a per-file SHA-256 manifest, with no adopter policy, which builds supply
+through the `cao-policy` and `cao-ingest-source` named contexts), and attaches
+both archives and checksums together with the six extension binaries and their
+checksum manifest.
 The extension build runs in a separate read-only job at the exact release SHA
 with Go caching disabled, runs extension checks, and verifies the embedded tag.
 The source-free attachment job checks the complete binary checksum manifest;
-publication requires the exact nine-asset set before publishing the completed
+publication requires the exact eleven-asset set before publishing the completed
 draft as an immutable prerelease. A maintainer reviews the completed notes and
 promotes the prerelease to stable. Publication locks
 the tag and assets through immutable releases; no workflow mutates release

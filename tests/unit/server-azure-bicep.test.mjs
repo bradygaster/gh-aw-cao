@@ -171,8 +171,8 @@ test('Azure selects PostgreSQL operational storage without Redis', () => {
     const stages = dockerfile.split('\n').filter((line) => line.startsWith('FROM '));
     assert.equal(stages.at(-1), 'FROM dashboard-runtime AS final');
     assert.doesNotMatch(dockerfile, /cao\.mjs download/);
-    assert.match(dockerfile, /ARG CAO_INGEST_SOURCE\nRUN test -n "\$\{CAO_INGEST_SOURCE\}"/);
-    assert.match(dockerfile, /COPY --chown=cao:cao \$\{CAO_INGEST_SOURCE\}\/ \/data\//);
+    assert.match(dockerfile, /FROM scratch AS cao-ingest-source\nARG CAO_INGEST_SOURCE\nCOPY \$\{CAO_INGEST_SOURCE:-\.cao-ingest-source-required\}\/ \/\n/);
+    assert.match(dockerfile, /COPY --from=cao-ingest-source --chown=cao:cao \/ \/data\//);
     assert.match(dockerfile, /FROM dashboard-runtime AS azure-empty-ingest-runtime/);
     assert.match(dockerfile, /COPY --chown=cao:cao server\/azure\/empty-data\/ \/data\//);
   });
