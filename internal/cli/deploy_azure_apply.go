@@ -154,8 +154,16 @@ func deployAzureExecute(ctx context.Context, deps deployAzureDeps, loaded deploy
 		ID         string `json:"id"`
 		Properties struct {
 			ProvisioningState string `json:"provisioningState"`
-			Outputs           map[string]struct {
-				Value string `json:"value"`
+			Outputs           struct {
+				FunctionHostName struct {
+					Value string `json:"value"`
+				} `json:"functionHostName"`
+				IngestionJobName struct {
+					Value string `json:"value"`
+				} `json:"ingestionJobName"`
+				ProvisioningJobName struct {
+					Value string `json:"value"`
+				} `json:"provisioningJobName"`
 			} `json:"outputs"`
 		} `json:"properties"`
 	}
@@ -166,13 +174,13 @@ func deployAzureExecute(ctx context.Context, deps deployAzureDeps, loaded deploy
 		return errors.New("full deployment did not return an ID and Succeeded state")
 	}
 	receipt.DeploymentID = deployment.ID
-	host := deployment.Properties.Outputs["functionHostName"].Value
-	job := deployment.Properties.Outputs["ingestionJobName"].Value
+	host := deployment.Properties.Outputs.FunctionHostName.Value
+	job := deployment.Properties.Outputs.IngestionJobName.Value
 	if host != config.Resources.FunctionApp+".azurewebsites.net" || job != config.Resources.FunctionApp+"-ingest" {
 		return errors.New("deployment returned unexpected Function App hostname or ingestion job; refusing to contact it")
 	}
 	if provision {
-		provisionJob := deployment.Properties.Outputs["provisioningJobName"].Value
+		provisionJob := deployment.Properties.Outputs.ProvisioningJobName.Value
 		if provisionJob != config.Resources.FunctionApp+"-db-provision" {
 			return errors.New("deployment returned an unexpected database provision job; refusing to execute it")
 		}
