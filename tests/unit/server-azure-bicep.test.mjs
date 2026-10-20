@@ -389,6 +389,16 @@ test('Only the separate provisioning identity can resolve the administrator secr
     ["[parameters('postgresUrlSecretName')]", 'cao-collect-private-key']);
 });
 
+test('Provisioning verifies PostgreSQL TLS against the system CA bundle', () => {
+  const job = provisioning.slice(provisioning.indexOf("name: 'PGSSLMODE'"));
+  assert.match(job, /name: 'PGSSLMODE'\s+value: 'verify-full'/);
+  assert.match(job, /name: 'PGSSLROOTCERT'\s+value: 'system'/);
+  assert.match(provisionScript, /export PGSSLMODE="\$\{PGSSLMODE:-verify-full\}"/);
+  assert.match(provisionScript, /export PGSSLROOTCERT="\$\{PGSSLROOTCERT:-system\}"/);
+  assert.ok(provisionScript.indexOf('export PGSSLROOTCERT') < provisionScript.indexOf('psql -X'));
+  assert.doesNotMatch(provisionScript + provisioning + bicep, /sslmode=(require|verify-ca|prefer|disable)/);
+});
+
 test('Provisioning uses the deployment ACR and checked-in grants under the non-login owner', () => {
   const module = resources.find((resource) => resource.name === 'database-provisioning');
   assert.match(module.properties.parameters.provisioningImage.value, /Microsoft\.ContainerRegistry\/registries/);

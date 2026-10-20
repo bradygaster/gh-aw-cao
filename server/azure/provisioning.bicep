@@ -107,6 +107,11 @@ resource job 'Microsoft.App/jobs@2024-03-01' = {
               value: 'verify-full'
             }
             {
+              // libpq otherwise requires ~/.postgresql/root.crt for verify-full.
+              name: 'PGSSLROOTCERT'
+              value: 'system'
+            }
+            {
               name: 'CAO_POSTGRES_RUN_RETENTION_DAYS'
               value: string(postgresRunRetentionDays)
             }

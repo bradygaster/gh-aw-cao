@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "17678355614586457366"
+      "templateHash": "3295845834636612073"
     }
   },
   "parameters": {
@@ -2028,7 +2028,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "13922595630935070524"
+              "templateHash": "2928209390772572588"
             }
           },
           "parameters": {
@@ -2162,6 +2162,10 @@
                         {
                           "name": "PGSSLMODE",
                           "value": "verify-full"
+                        },
+                        {
+                          "name": "PGSSLROOTCERT",
+                          "value": "system"
                         },
                         {
                           "name": "CAO_POSTGRES_RUN_RETENTION_DAYS",
