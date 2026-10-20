@@ -301,6 +301,7 @@ func TestDeployAzureApplyStopsOnFailures(t *testing.T) {
 		{"drift", "plan drift", func(fake *fakeAzureApply) { fake.plan.whatIf = `{"status":"Succeeded","changes":[]}` }},
 		{"build", "ACR build target", func(fake *fakeAzureApply) { fake.failBuild = true }},
 		{"bootstrap", "init/bootstrap container bootstrap-canonical", func(fake *fakeAzureApply) { fake.failJob = true }},
+		{"bootstrap-log-hint", "--container bootstrap-canonical", func(fake *fakeAzureApply) { fake.failJob = true }},
 		{"concurrent", "concurrent ingestion execution", func(fake *fakeAzureApply) { fake.concurrent = true }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -522,6 +523,58 @@ func TestDeployAzureBuildMetadataSeparatesTagsFromSemanticVersions(t *testing.T)
 			}
 		} else if version != tag {
 			t.Fatalf("reviewed release version changed: %s", version)
+		}
+	}
+}
+
+type testRestrictiveAzureBuildSource struct{}
+
+func (testRestrictiveAzureBuildSource) Materialize(_ context.Context, directory string) (string, error) {
+	nested := filepath.Join(directory, "server", "azure")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(nested, "provision.sql"), []byte("select 1;"), 0o600); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(nested, "provision.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		return "", err
+	}
+	return strings.Repeat("b", 40), nil
+}
+
+// Remote ACR builds preserve context modes and CAO images run as a non-root
+// user, so owner-only context files become unreadable inside the image.
+func TestDeployAzureBuildContextIsReadableByNonRootImageUser(t *testing.T) {
+	_, _, _, _, options := testAzureApplySetup(t)
+	workspace, err := newDeployAzureWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(workspace.directory) }()
+	build, err := prepareDeployAzureBuild(context.Background(), testRestrictiveAzureBuildSource{}, workspace, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(workspace.directory); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("private workspace must stay owner-only: %v %v", info.Mode(), err)
+	}
+	for name, want := range map[string]os.FileMode{
+		".":                                0o755,
+		"server":                           0o755,
+		"server/azure":                     0o755,
+		"server/azure/provision.sql":       0o644,
+		"server/azure/provision.sh":        0o755,
+		".github/workflows":                0o755,
+		".github/workflows/cao.json":       0o644,
+		".github/workflows/cao.azure.json": 0o644,
+	} {
+		info, err := os.Stat(filepath.Join(build.Directory, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s mode %v, want %v", name, info.Mode().Perm(), want)
 		}
 	}
 }
