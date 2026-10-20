@@ -40,7 +40,7 @@ The `server/azure/main.bicep` template creates the following resources in one re
 | Storage account | `Standard_LRS`, HTTPS only, TLS 1.2, and no public blob access | Stores Azure Functions runtime state only |
 | PostgreSQL Flexible Server | PostgreSQL 16, private delegated subnet, TLS certificate verification, seven-day backups | Stores canonical data and isolated operational tables without Redis |
 | Virtual network and private DNS | Separate Functions, PostgreSQL, and Container Apps subnets | Provides private database access for all roles |
-| Container Apps environment and manual ingestion job | Internal environment, Key Vault secrets, managed-identity ACR pulls | Bootstraps the database schema, then runs explicit snapshot ingestion inside the private network |
+| Container Apps environment and manual provisioning/ingestion jobs | Internal environment, separate identities, secret-scoped Key Vault access, managed-identity ACR pulls | Provisions database authority separately from runtime-only snapshot ingestion |
 | Application Insights and Log Analytics | Exactly one workspace-backed component and one shared workspace | Receives container logs and configured application telemetry |
 
 ### Other requirements
@@ -195,6 +195,58 @@ Initialization performs partition maintenance even without ingestion: omitting
 or reducing retention can irreversibly delete history at startup. Increasing it
 later does not restore dropped partitions.
 
+### PostgreSQL authority
+
+Fresh deployments use the [PostgreSQL authority model](https://github.com/githubnext/gh-cao/blob/main/server/POSTGRES.md):
+`cao_owner`, `cao_runtime`, `cao_retention`, and `cao_evidence` are non-login
+group roles. Only `cao_bootstrap_login` and `cao_runtime_login` authenticate;
+both are non-superusers without database/role creation, replication, or RLS
+bypass. Each login belongs only to its corresponding group. The `cao` schema
+belongs to `cao_owner`. PUBLIC loses database CONNECT/TEMPORARY and schema CREATE;
+runtime receives explicit CONNECT and TEMPORARY for ingestion staging.
+
+The separate manual `FUNCTION-APP-NAME-db-provision` job alone can read the
+administrator URL and bootstrap password. It creates/verifies roles and the
+schema, then authenticates as the bootstrap login with
+`PGOPTIONS='-c role=cao_owner -c search_path=cao'`, bootstraps both stores, and
+applies the checked-in `server/postgres/operational-grants.sql` and
+`canonical-grants.sql`. These files are copied into the `azure-db-provision`
+Dockerfile target, not duplicated in ARM. Its PostgreSQL 16 client base is
+digest-pinned; the built image must be pushed to this deployment's ACR before
+starting the job. No deployed container pulls from Docker Hub.
+
+Generate distinct administrator, owner, and runtime passwords in your secret
+manager and preserve them across redeployments. Supply the latter two as
+`postgresOwnerPassword` and `postgresRuntimePassword` **secure** Bicep inputs.
+Secure parameters and Key Vault secret values are not exposed in deployment
+history or outputs; do not pass plaintext secrets as command-line arguments or
+write them to ordinary parameter files, logs, source, or build arguments.
+This approach avoids giving the provisioning identity Key Vault write authority
+or generating passwords whose recovery depends on a job execution. The job
+rejects reused authority passwords and role-password line breaks; `psql` hashes password
+changes client-side without putting plaintext in SQL or process arguments.
+
+The Function App, ingestion, collector, and backfill receive only the
+runtime-login URL, with `search_path=cao` and certificate-verified TLS. Their
+identities have only explicitly listed secret-level **Key Vault Secrets User**
+assignments, never vault-wide read access. Only the provisioning identity gets
+the administrator secret. For an existing deployment, remove its previous
+vault-wide role assignments as a separately reviewed prerequisite: incremental
+ARM deployment does **not** remove old RBAC grants or revoke distributed
+administrator credentials.
+
+No Azure audit-retention job currently exists. The retention/evidence group
+roles and their explicit grants are provisioned, but there are deliberately no
+retention/evidence logins or mounted credentials. Audit retention is not run by
+web, ingestion, collector, or bootstrap. Before enabling retention or evidence
+export, separately provision a restricted login and job following
+`server/POSTGRES.md`; do not use the owner for routine audit retention.
+Canonical partition maintenance must run at least daily as a short-lived owner
+operation with the same retention settings, not as runtime. Until a dedicated
+owner-only maintenance job is configured, schedule this manual provisioning
+job at least daily with the unchanged passwords and reviewed configuration.
+Monitor failures; runtime does not repair missing partitions.
+
 ### Bootstrap steps
 
 1. Register a GitHub OAuth app, or use a GitHub App's user authorization flow. Set its **Authorization callback URL** to `https://FUNCTION-APP-NAME.azurewebsites.net/auth/callback`. Store the client secret in your secret manager for use in a later step. For more information, see [Creating an OAuth app](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [Authenticating with a GitHub App on behalf of a user](https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) in the GitHub documentation.
@@ -245,6 +297,15 @@ later does not restore dropped partitions.
      --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG \
      .
    docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-functions:DEPLOYMENT-TAG
+   ```
+
+1. Build and push the short-lived provisioning image to the same ACR:
+
+   ```bash
+   docker build --platform linux/amd64 \
+     --target azure-db-provision --file server/Dockerfile \
+     --tag CONTAINER-REGISTRY-NAME.azurecr.io/cao-db-provision:DEPLOYMENT-TAG .
+   docker push CONTAINER-REGISTRY-NAME.azurecr.io/cao-db-provision:DEPLOYMENT-TAG
    ```
 
 1. Build and push **one** ingestion image with the same deployment tag.
@@ -301,14 +362,33 @@ later does not restore dropped partitions.
    ```
 
    The Azure CLI prompts you for `githubClientSecret`, `sessionSecret`, and
-   `postgresAdministratorPassword`. Enter them at the prompt or supply them from
-   your secret manager through a protected parameters file outside the repository.
-   Preserve the database password across deployments. The template constructs a
-   certificate-verified TLS URL and stores it in Key Vault without outputting it.
+   `postgresAdministratorPassword`, `postgresOwnerPassword`, and
+   `postgresRuntimePassword`. Enter them at the secure prompts or supply secure
+   Key Vault parameter references from your operator secret manager.
+   Preserve all three passwords across deployments. The template stores separate
+   administrator and runtime TLS URLs and provisioning passwords in Key Vault
+   without outputting them.
 
 1. Review the non-secret outputs, especially `githubOAuthRedirectUri`,
-   `ingestionJobName`, `logAnalyticsWorkspaceId`, and `applicationInsightsId`.
+   `provisioningJobName`, `ingestionJobName`, `logAnalyticsWorkspaceId`, and `applicationInsightsId`.
    Confirm the OAuth callback matches the **new** app registration.
+1. Start the private provisioning job and wait for `Succeeded` before starting
+   ingestion or collection:
+
+   ```bash
+   az containerapp job start --resource-group cao-dashboard \
+     --name FUNCTION-APP-NAME-db-provision
+   az containerapp job execution list --resource-group cao-dashboard \
+     --name FUNCTION-APP-NAME-db-provision --output table
+   ```
+
+   It runs `database bootstrap --store canonical --namespace azure-dashboard`
+   with reviewed retention and
+   `database bootstrap --store operational --namespace azure-dashboard-operational`
+   with the shared operational capacities, followed by both explicit grant
+   scripts. Repeating the job with identical configuration is idempotent.
+   Unexpected privileged role memberships or schema ownership fail closed.
+   Do not overlap provisioning executions or rotate passwords during active use.
 1. Load the dashboard data by starting the private ingestion job. Unlike a public
    ACR build agent, this job has a network path to private PostgreSQL. Its managed
    identity resolves the URL from Key Vault and pulls the image from private ACR.
@@ -320,19 +400,9 @@ later does not restore dropped partitions.
    and optional collection/backfill roles. This preserves the earlier shared
    window only when that existing effective value was carried forward explicitly.
 
-   Runtime roles only open storage; they never create it. Before ingesting,
-   every job execution runs two init containers from the ingestion image, in
-   order, with the administrator URL from Key Vault as `CAO_DATABASE_ADMIN_URL`:
-
-   - `database bootstrap --store canonical --namespace azure-dashboard`, with
-     the reviewed retention settings.
-   - `database bootstrap --store operational --namespace azure-dashboard-operational`,
-     with the template's `CAO_OPERATIONAL_*` capacities.
-
-   Both commands are idempotent. On a new database they create the schema; on
-   an existing one they verify it and apply the same partition maintenance as
-   runtime startup. If either fails, ingestion does not start. The ingest
-   container itself does not receive `CAO_DATABASE_ADMIN_URL`.
+   Runtime roles only open storage; they never create it. The ingestion job
+   has no bootstrap init containers, administrator secret, or owner credential.
+   Missing provisioning or grants fails ingestion rather than elevating authority.
 
    ```bash
    az containerapp job start --resource-group cao-dashboard \
@@ -372,6 +442,16 @@ Do not use placeholder OAuth values to bypass application startup requirements.
 
 ### Updating an existing runtime
 
+**Moving from the old administrator-backed Azure topology requires a new
+database**, following [Moving to a new database](#moving-to-a-new-database).
+Do not apply these grants as a privilege scrubber to an existing overgranted
+database. Stop/drain existing processes, preserve pending work and audit anchors,
+back up operational state, and plan recovery before switching. Creating a new
+database does not migrate operational audit, queues, sessions, or revocations;
+retain the previous database and independent evidence. Remove old vault-wide
+RBAC and retire the previously distributed administrator credential after the
+reviewed cutover. A template redeployment alone does neither.
+
 Compare the deployed source's generated `server/internal/postgresx/schema.sql`
 with the release. A changed physical contract requires a new database and
 explicit re-ingestion; there is no automatic compatibility migration. An
@@ -381,12 +461,13 @@ Before starting such a release, check the
 [existing retention](#retention-for-existing-deployments)
 and explicitly set **both** retention settings on every database-owning role to
 the reviewed value. Never replace a larger existing run or linked window with
-the generic 45-day template default; otherwise startup can drop older partitions
-even without ingestion.
+the generic 45-day template default; otherwise owner bootstrap/maintenance can
+drop older partitions even without ingestion.
 
 Validate old-to-new startup, representative historical records, new ingestion,
 and rollback against an isolated local database. With retention preserved,
-normal aging, weekly partition maintenance, and existing curation still run;
+normal aging and existing curation still run; owner partition maintenance must
+be scheduled separately as described above;
 "no schema migration" does not mean "no database writes." Never use production
 startup as a read-only compatibility probe. Preserve the current image/settings
 receipt and verified recovery evidence, review a minimal settings/image delta,
@@ -399,21 +480,25 @@ Use a new database when a release changes the physical contract, or when you
 deliberately want to start from empty canonical and operational state. Do this
 with a reviewed redeployment, not by editing app settings by hand.
 
-1. Choose a new `postgresDatabaseName` and a new `postgresUrlSecretName`, for
-   example `cao2` and `cao-postgres-url-cao2`. A new secret name keeps the
-   previous URL in Key Vault, so rollback is a redeployment with the previous
-   names.
+1. Choose a new `postgresDatabaseName` and a new runtime `postgresUrlSecretName`,
+   for example `cao2` and `cao-postgres-runtime-url-cao2`. The administrator and
+   provisioning-password secret names derive from this prefix. A new prefix
+   retains the previous secrets. Role names are server-wide: this topology uses
+   one role set per dedicated server, not mutually distrusting databases on one
+   server. Keep role passwords unchanged when adding a database to that server.
 1. Run `az deployment group what-if` with both new names and every other
    parameter unchanged, including the reviewed `postgresRunRetentionDays`.
-   Expect a new database, a new Key Vault secret, and changed PostgreSQL URL
+   Expect a new database, new Key Vault secrets and secret-level RBAC, and changed PostgreSQL URL
    references on the Function App, the ingestion job, and any enabled
    collection roles. Stop if anything else changes.
 1. Deploy. Incremental deployment does not delete the previous database or its
    secret. Every role now points at the new, empty database, so the dashboard
    reports `503` readiness until the next step succeeds.
-1. Start the ingestion job and wait for it to report `Succeeded`, as in
-   [Bootstrap steps](#bootstrap-steps). Its init containers bootstrap both
-   stores in the new database before ingesting. Then restart the Function App and any
+1. Start the provisioning job and wait for `Succeeded`, then run ingestion
+   and wait for `Succeeded`, as in [Bootstrap steps](#bootstrap-steps).
+   Never restore administrator-backed runtime access for rollback; use a
+   reviewed recovery procedure that preserves unfinished work and audit evidence.
+   Then restart the Function App and any
    collection roles and verify health, readiness, and sign-in.
 1. After the new database is verified and no longer needs rollback, delete the
    previous database and disable or delete its Key Vault secret as a separate,
@@ -431,7 +516,7 @@ The template creates the following app settings.
 | `CAO_AZURE_ALLOWED_HOSTS` | `allowedHosts` parameter | Exact public host names that the server trusts in forwarded `Host` headers. |
 | `CAO_AZURE_REQUIRE_HTTPS` | Fixed value `true` | Requires `X-Forwarded-Proto: https`. |
 | `CAO_POLICY_PATH` | Fixed value `.github/workflows/cao.azure.json` | Selects the reviewed Azure deployment profile. |
-| `CAO_POSTGRES_URL` | Key Vault secret named by `postgresUrlSecretName` (default `cao-postgres-url`) | TLS PostgreSQL URL shared by canonical and operational adapters. |
+| `CAO_POSTGRES_URL` | Key Vault secret named by `postgresUrlSecretName` (default `cao-postgres-runtime-url`) | Restricted runtime-login TLS URL shared by canonical and operational adapters, never the administrator URL. |
 | `CAO_POSTGRES_RUN_RETENTION_DAYS` | Explicit reviewed `postgresRunRetentionDays`; template default `45` is not upgrade-safe | Canonical run-history window and partition-retention horizon. Preserve existing effective retention and the snapshot window before startup. |
 | `CAO_POSTGRES_LINKED_RETENTION_DAYS` | Same explicit `postgresRunRetentionDays` | Linked-evidence horizon shared by all database-owning roles. Never shorten an existing linked window during redeployment. |
 | `REDIS_NAMESPACE` | Fixed value `azure-dashboard` | Legacy name for the canonical PostgreSQL dataset identity; no Redis service is used. |
@@ -474,14 +559,19 @@ Besides the parameters in the deployment command, the template accepts:
   window. Do not rely on the generic default during redeployment.
 - `operationalCacheMaxBytes`, `operationalCacheMaxValueBytes`, `operationalCacheMaxEntries`, `operationalProtectedMaxBytes`, and `operationalProtectedMaxEntries`.
 - `logAnalyticsWorkspaceName`, `postgresServerName`, `postgresAdministratorLogin`,
-  `postgresAdministratorPassword`, `postgresSkuName`, and `postgresSkuTier`.
+  `postgresAdministratorPassword`, `postgresOwnerPassword`,
+  `postgresRuntimePassword`, `postgresSkuName`, and `postgresSkuTier`.
 - `postgresDatabaseName` (default `cao`) and `postgresUrlSecretName` (default
-  `cao-postgres-url`). The defaults match earlier deployments, so omitting them
-  leaves existing resources unchanged. Use lowercase letters, digits, and hyphens
-  for the secret name. To change them, see
+  `cao-postgres-runtime-url`). The secret name is a prefix for provisioning
+  secrets too; reserve space for the `-runtime-password` suffix (110 characters
+  maximum for the prefix). Use lowercase letters, digits, and hyphens.
+  The new runtime-secret default intentionally does not reuse the old admin URL.
+  For an existing administrator-backed installation, see
   [Moving to a new database](#moving-to-a-new-database).
 - `ingestionImageRepository` and `ingestionImageTag` (defaulting to `cao-ingest`
   and the Function App image tag).
+- `provisioningImageRepository` and `provisioningImageTag` (defaulting to
+  `cao-db-provision` and the Function App image tag).
 - The collection parameters. For more information, see [Using the optional collection profile](#using-the-optional-collection-profile).
 
 ### Startup checks
