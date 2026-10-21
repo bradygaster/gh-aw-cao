@@ -74,7 +74,7 @@ test("Node-only command documentation uses explicit runtime entry points without
   assert.match(docs, /gh cao setup --help/);
   const demo = readFileSync("docs/components/TerminalDemo.astro", "utf8");
   assert.match(demo, /gh cao<\/span> setup/);
-  assert.match(demo, /gh cao<\/span> doctor/);
+  assert.match(demo, /data-terminal-output="setup">Next: gh cao doctor/);
   assert.doesNotMatch(demo, /cao\.sh|<\/span> validate/);
 });
 

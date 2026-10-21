@@ -194,12 +194,20 @@ gh aw run dependabot --ref main \
 | --- | --- |
 | `gh cao setup` | Interactively choose repository scope, inspect visibility and ownership, and configure a compatible authentication profile. |
 | `gh cao init` | Create a minimal review-safe policy when one does not exist. It refuses to overwrite an existing policy. |
+| `gh cao setup admission --repo OWNER/REPO --url HTTPS_URL [--dry-run]` | Configure non-secret admission variables (OIDC requires no workflow secret); `--dry-run` previews changes. |
+| `gh cao admission setup --repo OWNER/REPO --url HTTPS_URL [--dry-run]` | Configure repository admission variables for an already deployed authority; default audience is the URL and outage policy is `block`. |
+| `gh cao admission status --repo OWNER/REPO [--json]` | Read effective admission settings, including repository overrides of inherited organization variables. |
+| `gh cao admission disable --repo OWNER/REPO [--dry-run]` | Disable the cooperative gate by setting an empty repository URL, without deleting the override and reactivating organization defaults; `--dry-run` previews changes. |
+| `gh cao setup admission --all-repos --url HTTPS_URL [--dry-run]` | Configure all repositories selected by the current control repository's validated global CAO scope. |
+| `gh cao setup admission --org ORG [--org ORG...] --url HTTPS_URL [--dry-run]` | Configure organization defaults with visibility all, including future repositories; preserve repository overrides. |
+| `gh cao setup admission --enterprise SLUG --url HTTPS_URL [--dry-run]` | Enumerate enterprise organizations and configure their organization variables, with enterprise read and per-organization Variables write access. |
 | `gh cao setup auth github-app ...` | Configure organization-owned read and write Apps. |
 | `gh cao setup auth enterprise-app ...` | Configure existing enterprise-owned Apps with policy-derived read scope and explicit `--write-repository` output scope. |
 | `node activity/cao.mjs setup-auth hosted-cli ...` | Create the dedicated least-privilege App that the dashboard server's optional `execute-cli` worker uses for single-use, repository-scoped command tokens. |
 | `gh cao setup auth token ...` | Configure explicitly consented owner-scoped fine-grained PAT pairs when an App is unavailable. |
 | `gh cao campaigns add OWNER/REPO/CAMPAIGN` | Install one campaign and merge its declared workers into policy without broadening rollout or enabling live mode. |
 | `gh cao repos add OWNER/REPO` | Verify GitHub CLI read access and stage one exact repository in local control-plane policy, with review-mode overrides for existing campaigns. |
+| `gh cao deploy azure --plan --config FILE --template FILE --out FILE` | Review a fresh Azure Functions deployment without writing to Azure; `--apply --plan-file FILE` then repeats preflight and refuses change-set drift. See [Azure deployment](deployment-azure.md#native-fresh-deployment-command). |
 | `gh cao update` | Upgrade gh-aw when required, update installed campaigns, and refresh worker declarations while preserving operator-owned settings. |
 | `gh cao update --campaign SLUG` | Update exactly one installed campaign, retaining runtime materialization and worker-declaration refresh. Use `root` for the CAO root package. |
 | `gh cao upgrade-gh-aw VERSION` | Install an exact gh-aw release, upgrade local Agentic Workflow files, and update the pinned policy version after the upgrade succeeds. |

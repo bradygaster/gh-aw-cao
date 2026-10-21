@@ -265,6 +265,67 @@ state and available history, not every missed event or expired artifact. There
 is no memory disk journal, automatic failover, or dual-write path.
 `specs/server-operational-storage.md` specifies these guarantees.
 
+The optional hosted activation-admission service (`server/internal/admission/`)
+implements gh-aw's separate OIDC-only `POST /api/admission` contract, never CAO
+rollout authority. Explicit server configuration selects a protected, atomically
+published policy/accounting snapshot; immutable signed repository, workflow
+revision and original-actor identities gate exact enrollment. Accounting must
+be fresh and expressed in AI Credits; missing evidence is an outage, not zero.
+The initial GitHub.com/string-audience profile denies ambiguous reusable calls
+and never authorizes from an unverified triggering actor or workflow hash.
+The service receives a narrow durable decision contract; the PostgreSQL
+operational adapter atomically retains the first primary/optional allowances,
+a non-sliding five-minute authorization window and permanent expiry/revocation
+tombstones within protected capacity. Every retry revalidates policy and usage;
+transient failures preserve retained decisions. No cache eviction, financial
+mutation, dashboard-session authentication, trace-response identifier or CAO
+scope widening is permitted. Redis, memory and local modes cannot enable it.
+`server/ADMISSION.md` documents the trust profile, publisher requirements,
+capacity/retention lifecycle and cooperative fail-open limitations.
+The HTTP contract is pinned to merged gh-aw `be70cb4ec4317135a1ab21d5b830b6fae7d5be4a`.
+Its isolated admission job relays caller-owned tracing through activation.
+Valid incoming traceparent parents the server HTTP span and dependencies;
+HTTP instrumentation must consume the sanitized context without re-extracting
+global baggage/tracestate or another parent. Invalid/duplicate context starts
+a fresh trace without changing authorization, and responses expose no trace ID.
+Admission reuses the hosted OTLP providers and bounded shutdown flush, emits
+fixed-name identity/JWKS/policy/decision/replay spans, and labels HTTP
+duration/status metrics with the fixed admission route even across its separate
+authentication path. Raw errors, credentials, identities, allowance values and
+denial reasons never enter those signals; exporter failures do not change
+operation results.
+Verified successful admission publishes a sparse canonical Run in admitted
+state before returning approval; blocked attempts publish nothing. Publication
+uses existing canonical IDs, inserts only missing parent identity facts,
+advances revision once and never downgrades collected evidence. Namespace
+ingestion locks serialize publication with replacement; replacement temporarily
+preserves missing admitted runs/parents but authoritative incoming Run evidence
+wins. Sparse quality stays partial and no start/completion/spend is inferred.
+Canonical publication failure is transient without changing the first durable
+decision; retry repairs the idempotent projection, not a financial commitment.
+Native `gh cao admission setup/status/disable` commands configure the
+selected scope's three managed non-secret variables. `gh cao setup admission`
+reuses admission setup without introducing workflow secrets. Setup/disable apply
+unless `--dry-run` is supplied; setup defaults to outage block, publishes the URL
+last and preserves unrelated defaults. Status resolves available organization
+variables beneath repository overrides; disable writes an empty repository URL
+rather than deleting an override that could reactivate inheritance. These
+commands neither deploy/enroll an authority nor change CAO rollout policy.
+Bulk `--all-repos` selects exact repositories from validated global CAO scope
+or enumerates allowed organization inventories when no exact list exists.
+Explicit repeatable `--org` and `--enterprise` select organization variables
+with visibility all; enterprise rollout enumerates organizations, never invents
+an enterprise Actions-variable scope. Repository overrides remain authoritative.
+Discovery and all variable preflight reads precede mutations; bounded sequential
+writes report partial progress and stop without automatic retries or rollback.
+Setup reuses an existing target endpoint/audience, or the current control
+repository's effective configuration for bulk rollout and disabled-target
+recovery, when `--url` is omitted; missing configuration is an error.
+The server's read-only `admission validate` command checks protected policy and
+current accounting without network calls, mutations or fabricated evidence;
+it does not attest live deployment readiness. `docs/admission-gate.md` covers
+the operator journey and the independent trusted-publisher requirement.
+
 Hosted CLI actions are an experimental opt-in
 `serve-hosted --experimental --hosted-cli-actions` mode. Step-up administrators
 enqueue catalog-declared actions into the PostgreSQL CLI command queue after the
