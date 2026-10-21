@@ -246,10 +246,11 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: "Overview",
+          label: "Introduction",
           items: [
             { label: "What is Central Agentic Ops?", link: "/architecture-at-a-glance/" },
-            { label: "How the control plane works", link: "/architecture/" },
+            { label: "How does CAO work?", link: "/how-cao-works/" },
+            { label: "Architecture", link: "/architecture/" },
           ],
         },
         {
@@ -325,6 +326,7 @@ export default defineConfig({
             { label: "CAO Activity", link: "/activity/" },
             { label: "Campaign package marketplace", link: "/marketplace/" },
             { label: "Operational value", link: "/operational-value/" },
+            { label: "Define and measure value", link: "/operational-value-how-to/" },
             { label: "Deployment and governance", link: "/deployment-and-governance/" },
             { label: "Execution and safety", link: "/execution-and-safety/" },
             { label: "Agentic workflow smells", link: "/agentic-workflow-smells/" },

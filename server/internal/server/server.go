@@ -134,6 +134,7 @@ type App struct {
 	cacheError       error
 	githubResources  githubResourceCache
 	hostedCLI        *hostedCLI
+	valuePublisher   operationalValuePublisher
 	admission        *admission.Service
 }
 
@@ -323,6 +324,9 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		canonical: canonicalService{store: config.Database, definitions: databaseQueries}, reconciler: reconciler, memory: memoryResolver,
 		webhookSecret: []byte(config.WebhookSecret), actionsToken: actionsToken, actionsActor: actionsActor,
 		quota: quota, drain: make(chan struct{}),
+	}
+	if isPostgres {
+		app.valuePublisher = postgresDatabase
 	}
 	if resources, ok := config.Database.(githubResourceStore); ok {
 		app.githubResources.store = resources
@@ -676,7 +680,9 @@ func (a *App) Handler() http.Handler {
 	register("GET /llms.txt", a.llms)
 	register("GET /api/v1/events", a.events)
 	register("POST /api/v1/query", a.query)
+	register("POST /api/v1/value", a.publishValue)
 	register("POST /api/admission", a.activationAdmission)
+	register("POST /api/conclusion", a.conclusionAdmission)
 	if a.mcp != nil {
 		register("POST /mcp", a.mcp.ServeHTTP)
 	}
@@ -711,12 +717,12 @@ func (a *App) Handler() http.Handler {
 	}
 	dashboardHandler := handler
 	handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/api/admission" {
-			route := semconv.HTTPRoute("/api/admission")
+		if admissionPath(request.URL.Path) {
+			route := semconv.HTTPRoute(request.URL.Path)
 			trace.SpanFromContext(request.Context()).SetAttributes(route)
 			labeler, _ := otelhttp.LabelerFromContext(request.Context())
 			labeler.Add(route)
-			a.activationAdmission(response, request)
+			a.serveAdmission(response, request, request.URL.Path == "/api/conclusion")
 			return
 		}
 		dashboardHandler.ServeHTTP(response, request)
@@ -751,15 +757,15 @@ func (a *App) Handler() http.Handler {
 	)
 	safeTelemetry := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		traceparent := request.Header.Get("Traceparent")
-		if request.URL.Path == "/api/admission" && len(request.Header.Values("Traceparent")) != 1 {
+		if admissionPath(request.URL.Path) && len(request.Header.Values("Traceparent")) != 1 {
 			traceparent = ""
 		}
 		parentContext := request.Context()
-		if request.URL.Path == "/api/admission" {
+		if admissionPath(request.URL.Path) {
 			parentContext = trace.ContextWithSpanContext(parentContext, trace.SpanContext{})
 		}
 		ctx := telemetry.ExtractTraceparent(parentContext, traceparent)
-		if request.URL.Path == "/api/admission" {
+		if admissionPath(request.URL.Path) {
 			parent := trace.SpanContextFromContext(ctx)
 			// Use one local sampling choice, not the remote caller's sampled flag.
 			ctx = trace.ContextWithRemoteSpanContext(ctx, parent.WithTraceFlags(trace.FlagsSampled))
@@ -769,7 +775,7 @@ func (a *App) Handler() http.Handler {
 		safe.Host = ""
 		safe.RequestURI = ""
 		safe.Header = make(http.Header)
-		if traceparent != "" && request.URL.Path != "/api/admission" {
+		if traceparent != "" && !admissionPath(request.URL.Path) {
 			safe.Header.Set("Traceparent", traceparent)
 		}
 		path := ""
@@ -796,7 +802,7 @@ type originalHTTPRequestKey struct{}
 // the client to send its own traceparent header.
 func withResponseTraceHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/admission" {
+		if !admissionPath(request.URL.Path) {
 			telemetry.SetResponseTraceHeaders(response, trace.SpanContextFromContext(request.Context()))
 		}
 		next.ServeHTTP(response, request)
@@ -1438,8 +1444,11 @@ func (a *App) executeQuery(ctx context.Context, input queryRequest, allowCollect
 	}
 	var cacheKey string
 	if cacheEnabled {
-		cacheKey, err = a.queryCacheIdentity(input, allowCollectionHealth)
+		cacheKey, err = a.queryResultCacheIdentity(ctx, input, allowCollectionHealth)
 		if err != nil {
+			if errors.Is(err, errValueRevisionUnavailable) {
+				return queryResponse{}, http.StatusServiceUnavailable, err
+			}
 			return queryResponse{}, http.StatusBadRequest, err
 		}
 		cached, hit, err := a.loadCachedQuery(ctx, cacheKey, cache)
@@ -1493,23 +1502,8 @@ func (a *App) executeQueryWithReader(ctx context.Context, input queryRequest, al
 			Metrics: model.Metrics{PushedDown: []string{}, FallbackOperations: []string{}},
 		}, http.StatusOK, nil
 	}
-	definitions := append([]query.Definition{}, a.databaseQueries...)
-	definitions = append(definitions, a.config.DashboardQueries...)
-	if len(input.Queries) > 0 {
-		definitions = append(append([]query.Definition{}, a.databaseQueries...), input.Queries...)
-	}
-	definitions = append(definitions, input.CompiledQueries...)
+	definitions, requested := a.queryPlan(input)
 	ResolveQueryContext(definitions, evaluatedAt)
-	replaced := map[string]bool{}
-	for _, name := range input.ReplacedSources {
-		replaced[name] = true
-	}
-	requested := append([]string{}, input.Aliases...)
-	for _, name := range input.SourceNames {
-		if !replaced[name] {
-			requested = append(requested, name)
-		}
-	}
 	started := time.Now()
 	loader := &databaseLoader{
 		ctx: ctx, database: reader, operational: a.services.Cache, dataRevision: active.DataRevision,
@@ -1548,6 +1542,26 @@ func (a *App) executeQueryWithReader(ctx context.Context, input queryRequest, al
 		Revision: active.Revision, HealthRevision: healthRevision,
 		EvaluatedAt: evaluatedAt, Sources: sources, Metrics: metrics,
 	}, http.StatusOK, nil
+}
+
+func (a *App) queryPlan(input queryRequest) ([]query.Definition, []string) {
+	definitions := append([]query.Definition{}, a.databaseQueries...)
+	definitions = append(definitions, a.config.DashboardQueries...)
+	if len(input.Queries) > 0 {
+		definitions = append(append([]query.Definition{}, a.databaseQueries...), input.Queries...)
+	}
+	definitions = append(definitions, input.CompiledQueries...)
+	replaced := map[string]bool{}
+	for _, name := range input.ReplacedSources {
+		replaced[name] = true
+	}
+	requested := append([]string{}, input.Aliases...)
+	for _, name := range input.SourceNames {
+		if !replaced[name] {
+			requested = append(requested, name)
+		}
+	}
+	return definitions, requested
 }
 
 type databaseLoader struct {

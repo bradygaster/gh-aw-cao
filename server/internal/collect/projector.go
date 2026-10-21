@@ -32,8 +32,9 @@ const (
 //
 // It regenerates the payload manifest with the Activity CLI and then calls the
 // Actions profile's ingestion implementation over the lake directory. There is
-// no second projector, no second canonical mapping, and no incremental upsert
-// path that could observe a dangling relationship.
+// no second full-evidence projector or incremental collection upsert path.
+// Independently authorized admission callbacks publish provisional typed facts
+// through postgresx; this replacement enriches or supersedes them atomically.
 //
 // Projection is coalesced: collections that complete within one debounce
 // window produce a single replacement. Coalescing, not per-run projection, is
@@ -194,6 +195,13 @@ func (p Projector) project(ctx context.Context, force bool) (ingest.Result, erro
 		return ingest.Result{}, err
 	}
 	projectorLog.Printf("activated dashboard data revision=%d sources=%d", result.Revision, len(result.Counts))
+	revision, err := p.refreshWorkflowValues(ctx)
+	if revision > result.Revision {
+		result.Revision = revision
+	}
+	if err != nil {
+		projectorLog.Printf("opted-in workflow Value collection failed; retaining accepted evidence")
+	}
 	return result, nil
 }
 

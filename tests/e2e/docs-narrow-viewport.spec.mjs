@@ -4,6 +4,7 @@ import { issueOpenedPaths, safeOutputPaths } from "../../docs/components/workflo
 const paths = [
   "./",
   "architecture-at-a-glance/",
+  "how-cao-works/",
   "setup-quickstarts/",
   "repo-assist-quickstart/",
   "setup-one-organization/",
@@ -20,21 +21,96 @@ const paths = [
   "catalog/dependabot/",
   "blog/",
   "operational-observability-visualization-specification/",
+  "operational-value-how-to/",
+  "blog/measuring-agent-work-value/",
 ];
 
-for (const width of [390, 799, 800, 1920]) {
+for (const colorScheme of ["light", "dark"]) {
+  for (const width of [320, 1280]) {
+    test(`operational value beginner guide connects evidence and research at ${width}px in ${colorScheme}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
+      await page.setViewportSize({ width, height: 900 });
+      expect((await page.goto("operational-value-how-to/"))?.ok()).toBe(true);
+      await expect(page.locator("html")).toHaveAttribute("data-theme", colorScheme);
+      const content = page.locator(".sl-markdown-content");
+      const trail = content.getByRole("list", { name: "Five steps from a goal to evidence" });
+      await expect(trail.locator("li")).toHaveCount(5);
+      await expect(trail.locator("strong")).toHaveText([
+        "1. Define value", "2. Follow the output", "3. Locate acceptance", "4. Measure it", "5. State the limits",
+      ]);
+      await expect(trail.locator('svg[aria-hidden="true"][focusable="false"]')).toHaveCount(5);
+      for (const icon of await trail.locator("svg").all()) {
+        const bounds = await icon.boundingBox();
+        expect(bounds.width).toBeGreaterThanOrEqual(24);
+        expect(bounds.height).toBeGreaterThanOrEqual(24);
+      }
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Define and measure workflow value");
+      await expect(content).toContainText("Markdown, imports and precomputes");
+      await expect(content).toContainText("value function");
+      await expect(content).toContainText("at least 800 lines");
+      await expect(content).toContainText("1,129 to 248 lines");
+      await expect(content).toContainText("fixed cadence, including periods");
+      await expect(content).toContainText("compare cohorts with equal follow-up");
+      await expect(content).toContainText("Unresolved work is not automatically zero or failure");
+      await expect(content.locator(".mermaid svg")).toBeVisible();
+      await expect(content.locator(".mermaid svg")).toContainText("Fixed-cadence repository snapshots");
+      expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(width);
+      for (const link of await content.locator('a[href^="/gh-cao/"]').all()) {
+        const href = await link.getAttribute("href");
+        const response = await page.request.get(href);
+        expect(response.ok(), href).toBe(true);
+        const hash = new URL(href, page.url()).hash;
+        if (hash) {
+          const html = await response.text();
+          expect(html, href).toContain(`id="${hash.slice(1)}"`);
+        }
+      }
+
+      expect((await page.goto("blog/measuring-agent-work-value/"))?.ok()).toBe(true);
+      const diagram = page.locator(".sl-markdown-content .mermaid svg");
+      await expect(diagram).toBeVisible();
+      await expect(diagram).not.toContainText("Syntax error");
+      expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(width);
+      expect((await page.goto("blog/"))?.ok()).toBe(true);
+      await expect(page.locator("main").getByRole("link", { name: "What counts as value from agent work?", exact: true }))
+        .toBeVisible();
+    });
+  }
+}
+
+test("operational value beginner guide remains readable without JavaScript", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({
+    baseURL,
+    javaScriptEnabled: false,
+    viewport: { width: 320, height: 900 },
+  });
+  try {
+    const page = await context.newPage();
+    expect((await page.goto("operational-value-how-to/"))?.ok()).toBe(true);
+    const content = page.locator(".sl-markdown-content");
+    await expect(content.getByRole("list", { name: "Five steps from a goal to evidence" }).locator("li"))
+      .toHaveCount(5);
+    await expect(content).toContainText("actual first parent");
+    await expect(content.getByRole("link", { name: "github/gh-aw#55785", exact: true })).toBeVisible();
+    expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(320);
+  } finally {
+    await context.close();
+  }
+});
+
+for (const width of [320, 390, 799, 800, 1440, 1920]) {
   test(`documentation uses responsive content width at ${width}px without changing the hero page`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     expect((await page.goto("setup-quickstarts/"))?.ok()).toBe(true);
     await expect(page.locator("html")).not.toHaveAttribute("data-has-hero");
     expect(await page.locator("html").evaluate(
       (element) => getComputedStyle(element).getPropertyValue("--sl-content-width").trim(),
-    )).toBe(width < 800 ? "100%" : "52rem");
+    )).toBe("38.75rem");
     const content = page.locator(".sl-markdown-content");
     const bounds = await content.boundingBox();
     expect(bounds.width).toBeGreaterThan(0);
-    expect(bounds.width).toBeLessThanOrEqual(Math.min(width, 832));
-    if (width === 1920) expect(bounds.width).toBeCloseTo(832, 0);
+    expect(bounds.width).toBeLessThanOrEqual(Math.min(width, 620));
+    if (width === 1920) expect(bounds.width).toBeCloseTo(620, 0);
     expect(await page.locator("html").evaluate((element) => element.scrollWidth))
       .toBeLessThanOrEqual(width);
 
@@ -46,13 +122,56 @@ for (const width of [390, 799, 800, 1920]) {
   });
 }
 
+for (const colorScheme of ["light", "dark"]) {
+  for (const [width, sizes] of [
+    [390, { body: 15.0334, h1: 27.7739, h2: 19.1892, h3: 16.9817 }],
+    [1440, { body: 16, h1: 39.0624, h2: 25, h3: 20 }],
+  ]) {
+    test(`documentation matches gh-aw prose typography at ${width}px in ${colorScheme}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme });
+      await page.setViewportSize({ width, height: 900 });
+      expect((await page.goto("architecture-at-a-glance/"))?.ok()).toBe(true);
+      const typography = await page.evaluate(() => {
+        const selectors = {
+          body: ".sl-markdown-content > p",
+          item: ".sl-markdown-content li",
+          h1: "h1#_top",
+          h2: ".sl-markdown-content h2",
+          h3: ".sl-markdown-content h3",
+        };
+        return Object.fromEntries(Object.entries(selectors).map(([name, selector]) => {
+          const style = getComputedStyle(document.querySelector(selector));
+          return [name, {
+            fontSize: parseFloat(style.fontSize),
+            lineHeight: parseFloat(style.lineHeight),
+            fontWeight: style.fontWeight,
+          }];
+        }));
+      });
+      for (const name of ["body", "h1", "h2", "h3"]) {
+        expect(typography[name].fontSize).toBeCloseTo(sizes[name], 2);
+      }
+      expect(typography.item.fontSize).toBeCloseTo(sizes.body, 2);
+      expect(typography.body.lineHeight).toBeCloseTo(sizes.body * 1.7, 2);
+      expect(typography.h1.lineHeight).toBeCloseTo(sizes.h1 * 1.15, 2);
+      expect(typography.h2.lineHeight).toBeCloseTo(sizes.h2 * 1.35, 2);
+      expect(typography.h1.fontWeight).toBe("400");
+      expect(typography.h2.fontWeight).toBe("400");
+      expect(typography.h3.fontWeight).toBe("600");
+      expect(await page.locator("html").evaluate(element => element.scrollWidth))
+        .toBeLessThanOrEqual(width);
+    });
+  }
+}
+
 test("Get started navigation follows the user journey without duplicate authentication pages", async ({ page }) => {
   expect((await page.goto("getting-started/"))?.ok()).toBe(true);
 
-  const overviewGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Overview$/ }).locator("..");
-  await expect(overviewGroup.getByRole("link")).toHaveText([
+  const introductionGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Introduction$/ }).locator("..");
+  await expect(introductionGroup.getByRole("link")).toHaveText([
     "What is Central Agentic Ops?",
-    "How the control plane works",
+    "How does CAO work?",
+    "Architecture",
   ]);
 
   const getStartedGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Get started$/ }).locator("..");
@@ -92,55 +211,58 @@ test("getting started leads from monitoring to a separate optional campaign guid
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Try a Repo Assist review");
 });
 
-test("CAO introduction presents operating capabilities and leads to setup", async ({ page }, testInfo) => {
+test("CAO introduction presents operating capabilities and leads to how CAO works", async ({ page }, testInfo) => {
   expect((await page.goto("architecture-at-a-glance/"))?.ok()).toBe(true);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("What is Central Agentic Ops?");
   const content = page.locator(".sl-markdown-content");
-  await expect(content).toContainText("GitHub Agentic Workflows (AWs) are AI-powered workflows");
-  await expect(content).toContainText("understand and operate this work across repositories");
+  const text = await content.innerText();
+  expect(text.match(/central agentic ops/gi)).toHaveLength(1);
+  expect(text.trim().split(/\s+/u).length).toBeLessThanOrEqual(425);
+  await expect(content.locator("p").first()).toContainText("Central Agentic Ops (CAO)");
+  await expect(content.locator("p").first()).toContainText("a system for monitoring and governing GitHub Agentic Workflows across repositories");
+  const introduction = content.locator(".sl-heading-wrapper:has(h2#what-is-cao) + p");
+  await expect(introduction).toHaveText(/^Agentic work might begin with a single task/);
+  await expect(introduction.locator("strong")).toHaveCount(0);
+  await expect(content).toContainText("GitHub Agentic Workflows (AWs) run those tasks in GitHub Actions");
+  await expect(content).toContainText("These AWs form the building blocks of CAO as we scale.");
+  await expect(content).toContainText("Monitoring them does not move them or change their permissions.");
+  await expect(content).toContainText("CAO governs explicitly integrated workflows, not every observed AW");
   await expect(content).toContainText("A successful run is not automatically a successful outcome.");
-  await expect(content.locator("table tbody tr")).toHaveCount(3);
+  await expect(content.locator("h2")).toHaveText([
+    "What is CAO?",
+    "Agentic workflows, operated across repositories",
+  ]);
+  const capabilities = content.getByRole("list").filter({ hasText: "Observe activity" });
+  await expect(capabilities.locator(":scope > li")).toHaveCount(3);
   await expect(content.locator("details")).toHaveCount(0);
-  await expect(content.locator("table")).toContainText("Observe activity");
-  await expect(content.locator("table")).toContainText("Evaluate results");
-  await expect(content.locator("table")).toContainText("Scale and roll out shared work");
-  await expect(content.locator("table")).toContainText("target repositories stay unchanged until live output is explicitly authorized");
-  await expect(content).toContainText("Campaigns are one opinionated way to package, scale, and roll out shared work, not the only operating pattern.");
-  await expect(content).toContainText("apply to participating campaigns, not automatically to every observed workflow.");
-  await expect(content).not.toContainText(/\boptional\b/i);
+  await expect(capabilities).toContainText("Observe activity");
+  await expect(capabilities).toContainText("Evaluate results");
+  await expect(capabilities).toContainText("Govern shared work");
+  await expect(content).toContainText("live output requires explicit authorization");
+  await expect(content.locator("table, pre, .mermaid")).toHaveCount(0);
+  await expect(content.getByRole("heading", { name: "A simple example", exact: true })).toBeVisible();
+  await expect(content).toContainText("campaigns are one way to package and scale work, not a prerequisite.");
   await expect(content.getByRole("heading", { name: /campaign/i })).toHaveCount(0);
-  const campaignLink = content.getByRole("link", { name: "browse campaigns", exact: true });
+  const campaignLink = content.getByRole("link", { name: "Browse campaigns", exact: true });
   await expect(campaignLink).toHaveAttribute("href", "/gh-cao/catalog/");
   await expect(campaignLink).toHaveCount(1);
-  await expect(content.getByRole("link", { name: "workflow operating patterns and ownership", exact: true }))
-    .toHaveAttribute("href", "/gh-cao/deployment-and-governance/");
   const image = content.getByAltText(/^CAO Repositories chart view/);
   await image.scrollIntoViewIfNeeded();
   await expect(image).toBeVisible();
   await expect.poll(() => image.evaluate((element) => element.complete && element.naturalWidth > 0)).toBe(true);
-  await expect(content.locator("figure figcaption li")).toHaveCount(3);
-  await expect(content.locator("figure figcaption")).toContainText("Ranked bars compare distinct retained runs");
-  await expect(content.locator("figure figcaption")).toContainText("output counts alone do not prove successful outcomes");
+  await expect(content.locator("figure figcaption")).toContainText("Collected evidence, not a live feed.");
   await expect(content.getByRole("link", { name: "Explore the public Repositories view", exact: true }))
     .toHaveAttribute("href", "https://githubnext.github.io/gh-cao/cao/#page-repositories");
-  const diagram = content.locator(".mermaid svg");
-  await expect(diagram).toBeVisible();
-  await expect(diagram).toContainText("Existing AWs");
-  await expect(diagram).toContainText("CAO Activity");
-  await expect(diagram).toContainText("Shared dashboard");
-  await expect(diagram).not.toContainText(/campaign/i);
 
   const setupLinks = content.getByRole("link", { name: "Set up CAO and monitor your workflows", exact: true });
-  await expect(setupLinks).toHaveCount(2);
+  await expect(setupLinks).toHaveCount(1);
   expect(await setupLinks.last().evaluate((element) =>
     Boolean(element.compareDocumentPosition(document.querySelector('main a[href="/gh-cao/catalog/"]')) & Node.DOCUMENT_POSITION_FOLLOWING),
   )).toBe(true);
   await expect(setupLinks.first()).toHaveAttribute("href", "/gh-cao/setup-quickstarts/");
-  expect(await setupLinks.first().evaluate((element) =>
-    Boolean(element.compareDocumentPosition(document.querySelector("main h2")) & Node.DOCUMENT_POSITION_FOLLOWING),
-  )).toBe(true);
   const next = page.locator(".pagination-links a[rel=next]");
-  await expect(next).toContainText("Set up CAO and monitor your workflows");
-  await expect(next).toHaveAttribute("href", "/gh-cao/setup-quickstarts/");
+  await expect(next).toContainText("How does CAO work?");
+  await expect(next).toHaveAttribute("href", "/gh-cao/how-cao-works/");
 
   for (const [name, viewport] of [
     ["desktop", { width: 1280, height: 900 }],
@@ -150,18 +272,9 @@ test("CAO introduction presents operating capabilities and leads to setup", asyn
     await page.setViewportSize(viewport);
     expect(await page.locator("html").evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     const imageBounds = await image.boundingBox();
-    const markers = content.locator(".cao-intro-marker");
-    await expect(markers).toHaveCount(3);
-    for (const marker of await markers.all()) {
-      const bounds = await marker.boundingBox();
-      expect(bounds.x).toBeGreaterThanOrEqual(imageBounds.x);
-      expect(bounds.y).toBeGreaterThanOrEqual(imageBounds.y);
-      expect(bounds.x + bounds.width).toBeLessThanOrEqual(imageBounds.x + imageBounds.width);
-      expect(bounds.y + bounds.height).toBeLessThanOrEqual(imageBounds.y + imageBounds.height);
-    }
-    for (const label of await diagram.locator(".nodeLabel p, .edgeLabel p").all()) {
-      expect((await label.boundingBox()).height).toBeGreaterThanOrEqual(12);
-    }
+    expect(imageBounds.width).toBeGreaterThan(0);
+    expect(imageBounds.x).toBeGreaterThanOrEqual(0);
+    expect(imageBounds.x + imageBounds.width).toBeLessThanOrEqual(viewport.width);
     const screenshot = testInfo.outputPath(`cao-introduction-${name}.png`);
     await page.screenshot({ path: screenshot, fullPage: true });
     await testInfo.attach(`CAO introduction (${name})`, { path: screenshot, contentType: "image/png" });
@@ -172,9 +285,86 @@ test("CAO introduction presents operating capabilities and leads to setup", asyn
     expect(response.ok(), response.url()).toBe(true);
   }
   await next.click();
-  await expect(page).toHaveURL(/\/setup-quickstarts\/$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Set Up CAO");
+  await expect(page).toHaveURL(/\/how-cao-works\/$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("How does CAO work?");
 });
+
+test("how CAO works separates observation from governed execution and leads to architecture", async ({ page }) => {
+  expect((await page.goto("how-cao-works/"))?.ok()).toBe(true);
+  const content = page.locator(".sl-markdown-content");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("How does CAO work?");
+  await expect(content).toContainText("Collection is read-only");
+  await expect(content.getByRole("heading", { name: "Read activity and follow outputs", exact: true })).toBeVisible();
+  await expect(content).toContainText("where the workflow ran");
+  await expect(content).toContainText("Unavailable");
+  await expect(content).toContainText("Partial");
+  await expect(content).toContainText("Stale");
+  await expect(content).toContainText("A successful run is not automatically a successful outcome.");
+  await expect(content).toContainText("Before an agent starts, admission checks");
+  await expect(content).toContainText("Standalone agentic workflows");
+  await expect(content).toContainText("Campaigns are one opinionated way");
+  await expect(content).toContainText("Merely hosting or observing a workflow does not opt it into CAO policy.");
+  await expect(content).toContainText("it is not a no-write simulation");
+  await expect(content).toContainText("Changing policy alone does not cancel work already in flight.");
+  await expect(content.getByRole("heading", { name: "Review, promote, and recover", exact: true })).toBeVisible();
+  await expect(content.locator(".mermaid svg")).toBeVisible();
+  await expect(content.locator(".mermaid svg")).not.toContainText("Syntax error");
+  await expect(page.locator(".pagination-links a[rel=prev]"))
+    .toHaveAttribute("href", "/gh-cao/architecture-at-a-glance/");
+
+  for (const link of await content.locator('a[href^="/gh-cao/"]').all()) {
+    const href = await link.getAttribute("href");
+    const response = await page.request.get(href);
+    expect(response.ok(), href).toBe(true);
+    const hash = new URL(href, page.url()).hash;
+    if (hash) expect(await response.text(), href).toContain(`id="${hash.slice(1)}"`);
+  }
+
+  await page.locator(".pagination-links a[rel=next]").click();
+  await expect(page).toHaveURL(/\/architecture\/$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Architecture");
+  await expect(page.locator(".sl-markdown-content"))
+    .toContainText("orchestrators and workers run from the control repository");
+  for (const id of [
+    "objectives", "control-plane-and-dashboard", "mental-model", "repository-roles-and-records",
+    "authority-and-admission", "how-it-works", "execution-boundaries", "evidence-and-dashboard-hosting",
+    "core-safety-properties", "detailed-references",
+  ]) {
+    await expect(page.locator(`[id="${id}"]`)).toHaveCount(1);
+  }
+  await expect(page.locator(".pagination-links a[rel=prev]"))
+    .toHaveAttribute("href", "/gh-cao/how-cao-works/");
+  const architecture = page.locator(".sl-markdown-content");
+  await expect(architecture).toContainText(".github/workflows/cao.json is the sole persistent non-secret rollout policy");
+  await expect(architecture).toContainText("target files do not grant, narrow, or veto control-plane authority");
+  await expect(architecture).toContainText("not the policy credentials used for precompute");
+  await expect(architecture).toContainText("It does not fall back to browser storage or static shards");
+  await expect(architecture).toContainText("A private repository does not guarantee private Pages");
+  for (const link of await architecture.locator('a[href^="/gh-cao/"]').all()) {
+    const href = await link.getAttribute("href");
+    const response = await page.request.get(href);
+    expect(response.ok(), href).toBe(true);
+    const hash = new URL(href, page.url()).hash;
+    if (hash) expect(await response.text(), href).toContain(`id="${hash.slice(1)}"`);
+  }
+});
+
+for (const [route, href, expected] of [
+  ["deployment/", "/gh-cao/architecture/#control-plane-and-dashboard", "are deployed separately"],
+  ["deployment-and-governance/", "/gh-cao/architecture/#repository-roles-and-records", "a target-side file cannot grant, narrow, or veto the decision"],
+  ["execution-and-safety/", "/gh-cao/architecture/#execution-boundaries", "this reference supplies the exact handoff and invariants"],
+  ["rollout-and-routing/", "/gh-cao/how-cao-works/#review-promote-and-recover", "commit the assigned live authority and explicit target scope in the control repository"],
+]) {
+  test(`${route} links to its consolidated introduction`, async ({ page }) => {
+    expect((await page.goto(route))?.ok()).toBe(true);
+    const content = page.locator(".sl-markdown-content");
+    await expect(content).toContainText(expected);
+    await expect(content.locator(`a[href="${href}"]`)).toHaveCount(1);
+    const response = await page.request.get(href);
+    expect(response.ok()).toBe(true);
+    expect(await response.text()).toContain(`id="${new URL(href, page.url()).hash.slice(1)}"`);
+  });
+}
 
 test("legacy getting-started route redirects to interactive setup", async ({ page }) => {
   await page.goto("getting-started/");
@@ -628,7 +818,7 @@ test("desktop documentation navigation links to the introduction and an empty bl
   await expect(navigation.getByRole("link")).toHaveText(["Docs", "Blog"]);
   await navigation.getByRole("link", { name: "Docs", exact: true }).click();
   await expect(page).toHaveURL(/\/architecture-at-a-glance\/$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("What Is Central Agentic Ops?");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("What is Central Agentic Ops?");
 
   await navigation.getByRole("link", { name: "Blog", exact: true }).click();
   await expect(page).toHaveURL(/\/blog\/$/);
@@ -750,11 +940,11 @@ for (const { name, viewport } of [
       expect((await page.goto("./"))?.ok()).toBe(true);
 
       await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-        "Monitor and control GitHub Agentic Workflows at scale.",
+        "Monitor and govern GitHub Agentic Workflows at scale.",
       );
       const tagline = page.locator(".docs-hero-intro .tagline");
       await expect(tagline).toBeVisible();
-      await expect(tagline).toHaveText("Keep track of all runs, costs, and outcomes of your GitHub Agentic Workflows across repositories. Set execution scope and rollout policy.");
+      await expect(tagline).toHaveText("Keep track of all runs, costs, and outcomes of your GitHub Agentic Workflows across repositories. Set execution scope and rollout policy and refine workflows in review mode so you can roll out safely and confidently.");
       await expect(page.getByRole("heading", { name: "Shared work. Clear ownership.", exact: true })).toBeAttached();
       await expect(page.getByRole("heading", { name: "Monitor what runs.", exact: true })).toBeAttached();
       await expect(page.getByRole("heading", { name: "Roll out safely.", exact: true })).toBeAttached();
