@@ -70,6 +70,7 @@ test("Azure asset bundle is byte-for-byte reproducible", () => {
 
 test("Azure asset bundle contains exactly the allowlisted Docker build inputs", () => {
   assert.deepEqual(AZURE_ASSET_ALLOWLIST, [
+    ".github/workflows/shared/authority.mjs",
     ".github/workflows/shared/policy.mjs",
     "activity/actions-log.mjs",
     "dashboard/report/bundle-dashboards.mjs",
@@ -131,7 +132,7 @@ test("Azure asset bundle excludes policy, credentials, VCS data, dependencies, t
     [/(^|\/)(tests?|testdata|testutil|__tests__)\//, "tests"],
     [/_test\.go$|\.(test|spec)\.[cm]?[jt]sx?$/, "tests"],
     [/(^|\/)docs\/|\.md$/i, "documentation"],
-    [/^\.github\/(workflows\/(?!shared\/policy\.mjs$)|aw\/|cao\/)/, "control-plane records"],
+    [/^\.github\/(workflows\/(?!shared\/(?:authority|policy)\.mjs$)|aw\/|cao\/)/, "control-plane records"],
   ];
   for (const [pattern, label] of forbidden) {
     const matches = files.filter((file) => pattern.test(file));

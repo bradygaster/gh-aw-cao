@@ -232,6 +232,8 @@ async function setupNonInteractivePublicControl({
   execute,
   policyPath,
   UsageError,
+  publicOnly = false,
+  repositories: requestedRepositories = [],
 }) {
   output.write('Applying non-interactive setup defaults for the current public control repository.\n');
   const auth = execute('gh', ['auth', 'status'], { encoding: 'utf8' });
@@ -265,7 +267,12 @@ async function setupNonInteractivePublicControl({
     && (!isMapping(controlPlane.workflows) || Object.keys(controlPlane.workflows).length > 0)) {
     throw new UsageError('Non-interactive setup requires a bare control plane with no declared standalone workflows');
   }
+  if (controlPlane.operations !== undefined
+    && (!isMapping(controlPlane.operations) || Object.keys(controlPlane.operations).length > 0)) {
+    throw new UsageError('Non-interactive setup requires a bare control plane with no declared operations');
+  }
   const owner = control.repository.split('/')[0];
+  publicOnly ||= controlPlane.activity?.['public-only'] === true;
   const scope = controlPlane.scope;
   if (scope !== undefined) {
     const owners = scope?.['allowed-owners'];
@@ -280,7 +287,7 @@ async function setupNonInteractivePublicControl({
       && repositories.length === 1
       && typeof repositories[0] === 'string'
       && repositories[0].toLowerCase() === control.repository.toLowerCase();
-    if (!exactScope) {
+    if (!exactScope && !(publicOnly && controlPlane.activity?.['public-only'] === true)) {
       throw new UsageError(
         'Non-interactive setup refuses to replace existing repository scope; '
         + 'run gh cao setup from an interactive terminal to review it',
@@ -295,7 +302,7 @@ async function setupNonInteractivePublicControl({
       && repositories.length === 1
       && typeof repositories[0] === 'string'
       && repositories[0].toLowerCase() === control.repository.toLowerCase();
-    if (!exactActivity) {
+    if (!exactActivity && !(publicOnly && activity?.['public-only'] === true)) {
       throw new UsageError(
         'Non-interactive setup refuses to replace existing Activity scope; '
         + 'run gh cao setup from an interactive terminal to review it',
@@ -304,13 +311,36 @@ async function setupNonInteractivePublicControl({
   }
 
   const intendedPolicy = structuredClone(policy);
+  const selected = new Map([[control.repository.toLowerCase(), control]]);
+  if (publicOnly) {
+    if (requestedRepositories.length === 0 && activity?.['public-only'] === true) {
+      requestedRepositories = activity.repositories;
+    }
+    for (const requested of requestedRepositories) {
+      if (!REPOSITORY_PATTERN.test(requested) || requested.split('/')[0].includes('*')) {
+        throw new UsageError('Public-only quickstart accepts exact OWNER/REPO or OWNER/* patterns');
+      }
+      const matches = requested.includes('*')
+        ? listOwnerRepositories(requested.split('/')[0], execute)
+          .filter(({ repository, visibility }) => visibility === 'public' && repositoryPatternMatches(requested, repository))
+        : [inspectRepository(requested, execute)];
+      if (matches.length === 0) throw new UsageError(`No public repositories matched ${requested}`);
+      for (const candidate of matches) {
+        if (candidate.visibility !== 'public') throw new UsageError(`Public-only monitoring cannot include ${candidate.repository}`);
+        selected.set(candidate.repository.toLowerCase(), candidate);
+      }
+    }
+  }
+  const repositories = [...selected.values()].map(({ repository }) => repository);
+  const owners = [...new Set([...selected.values()].map(({ owner }) => owner))];
   intendedPolicy['control-plane'].scope = {
-    'allowed-owners': [owner],
-    'allowed-repositories': [control.repository],
+    'allowed-owners': owners,
+    'allowed-repositories': repositories,
   };
   intendedPolicy['control-plane'].activity = {
     ...(isMapping(activity) ? activity : {}),
-    repositories: [control.repository],
+    repositories,
+    ...(publicOnly ? { 'public-only': true } : {}),
   };
 
   let applyStage = 'dashboard Pages';
@@ -334,8 +364,9 @@ async function setupNonInteractivePublicControl({
     await writeJsonAtomically(path.resolve(policyPath), intendedPolicy);
     output.write([
       `Non-interactive setup applied to ${control.repository}.`,
-      `Read and Activity scope: ${control.repository}`,
+      `Read and Activity scope: ${repositories.join(', ')}`,
       'Authentication: repository GITHUB_TOKEN (workflow-token)',
+      ...(publicOnly ? ['Public-only monitoring: no App/PAT or agent execution; unavailable evidence is partial.'] : []),
       `Dashboard Pages: public${pages.url ? ` (${pages.url})` : ''}`,
       'Campaigns: none',
       '',
@@ -344,8 +375,8 @@ async function setupNonInteractivePublicControl({
       command: 'setup',
       controlRepository: control.repository,
       visibility: control.visibility,
-      repositories: [control.repository],
-      profile: 'workflow-token',
+      repositories,
+      profile: publicOnly ? 'public-only' : 'workflow-token',
       authentication: {
         mode: 'workflow-token',
         repository: control.repository,
@@ -372,13 +403,17 @@ export async function setupCaoControlPlane({
   policyPath = DEFAULT_POLICY_PATH,
   setupAuthentication,
   UsageError = Error,
+  publicOnly = false,
+  repositories = [],
 } = {}) {
-  if (prompt === undefined && (!input.isTTY || !output.isTTY || environment.CI)) {
+  if (publicOnly || (prompt === undefined && (!input.isTTY || !output.isTTY || environment.CI))) {
     return setupNonInteractivePublicControl({
       output,
       execute,
       policyPath,
       UsageError,
+      publicOnly,
+      repositories,
     });
   }
   if (typeof setupAuthentication !== 'function') {
@@ -428,8 +463,12 @@ export async function setupCaoControlPlane({
     if (workflows !== undefined && (!isMapping(workflows) || Object.keys(workflows).length > 0)) {
       throw new Error('cao setup only configures a bare control plane with no declared standalone workflows');
     }
+    const operations = policy['control-plane'].operations;
+    if (operations !== undefined && (!isMapping(operations) || Object.keys(operations).length > 0)) {
+      throw new Error('cao setup only configures a bare control plane with no declared operations');
+    }
 
-    interactive.note(`Control repository: ${control.repository} (${control.visibility})\nNo campaign will be installed, enabled, or run.\nWildcard patterns are expanded now; only exact names are saved.`, '1 / 3  Repositories');
+    interactive.note(`Control repository: ${control.repository} (${control.visibility})\nMonitoring only; no agentic operation will be enabled or run.\nWildcard patterns are expanded now; only exact names are saved.`, '1 / 3  Repositories');
     const targetAnswer = await interactive.text(
       'Repositories CAO should read (comma-separated names or * wildcards)',
       control.repository,
@@ -512,6 +551,13 @@ export async function setupCaoControlPlane({
         label: 'Fine-grained personal access tokens',
         hint: 'User-bound; separate credentials per owner',
       }];
+    if (uniqueInspected.every(({ visibility }) => visibility === 'public')) {
+      choices.unshift({
+        value: 'public-only',
+        label: 'Public-only monitoring (no App or PAT)',
+        hint: 'Actions token; restricted evidence stays explicitly partial; no agent execution',
+      });
+    }
 
     const profile = await interactive.select('How should CAO authenticate?', choices);
     if (!choices.some((choice) => choice.value === profile)) {
@@ -522,6 +568,15 @@ export async function setupCaoControlPlane({
       'allowed-owners': owners,
       'allowed-repositories': repositories,
     };
+    if (profile === 'public-only') {
+      intendedPolicy['control-plane'].activity = {
+        repositories,
+        'public-only': true,
+      };
+    } else if (intendedPolicy['control-plane'].activity?.['public-only'] === true) {
+      intendedPolicy['control-plane'].activity.repositories = repositories;
+      delete intendedPolicy['control-plane'].activity['public-only'];
+    }
     temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'cao-setup-'));
     const intendedPolicyPath = path.join(temporaryDirectory, 'cao.json');
     await writeJsonAtomically(intendedPolicyPath, intendedPolicy);
@@ -553,7 +608,7 @@ export async function setupCaoControlPlane({
     interactive.note([
       `Control repository: ${control.repository} (${control.visibility})`,
       `Read scope: ${repositories.join(', ')}`,
-      `Review output write scope: ${control.repository}`,
+      `Review output write scope: ${profile === 'public-only' ? 'none (monitoring only)' : control.repository}`,
       `Authentication: ${profile}`,
       'Campaigns: none',
       'Dashboard Pages: GitHub Actions source; public visibility requires consent',
@@ -581,11 +636,22 @@ export async function setupCaoControlPlane({
     }
     applyStage = 'credentials';
     interactive.step?.('Connecting read and review-output credentials');
-    const authentication = await setupAuthentication(
-      profile === 'approved-app' ? 'github-app' : profile,
-      authenticationArguments,
-      { execute },
-    );
+    let authentication;
+    if (profile === 'public-only') {
+      const result = execute('gh', [
+        'variable', 'set', 'GH_AW_GITHUB_AUTH_MODE', '--repo', control.repository, '--body', 'workflow-token',
+      ], { encoding: 'utf8' });
+      if (result.error || result.status !== 0) {
+        throw new Error(`Unable to select workflow-token authentication: ${commandFailureMessage(result, 'gh variable set failed')}`);
+      }
+      authentication = { mode: 'workflow-token', repository: control.repository };
+    } else {
+      authentication = await setupAuthentication(
+        profile === 'approved-app' ? 'github-app' : profile,
+        authenticationArguments,
+        { execute },
+      );
+    }
     if (authentication?.cancelled) throw new SetupCancelled();
     applyStage = 'policy';
     interactive.step?.('Saving the exact repository scope');

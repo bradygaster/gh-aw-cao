@@ -25,6 +25,31 @@ remains gh-aw-owned.
 
 ## Workflow authoring
 
+Start from the desired outcome, target scope, and execution requirements, not
+a request to choose a pattern. Follow `docs/operation-patterns.md`: visibility
+without changing execution needs observation only; deterministic work, stages,
+approvals, fan-in, and long waits use ordinary Actions with agentic reasoning
+only where needed. Independent per-target execution, history, retries, or
+specialized workers justify a campaign. Otherwise, caller-supplied exact
+targets use direct operations; CAO-selected inventory processed in one bounded
+run uses a standalone fleet workflow. Explain the simplest suitable structure
+and ask only for genuinely missing requirements, never "which pattern?"
+
+Infer execution structure, never authority. This decision cannot widen policy,
+access, scope, output routing, or compiled capabilities, and cannot authorize
+installation, enablement, dispatch, or live execution. Preserve explicit
+reviewed live authorization and policy resolution at the exact workflow SHA.
+
+CAO's authority kernel is topology-independent. Campaigns, standalone fleet
+execution and direct operations are supported operating patterns, not distinct
+sources of authority. Direct workflows import `shared/operation.md`, declare
+their exact slug under `control-plane.operations`, and request an explicit
+target set. They must retain the CAO pre-activation output and activation gate.
+Multiple targets are review-only with a common validated destination; live
+requires one explicit target and target-bound compiled safe outputs. Direct
+operations cannot discover targets, dispatch downstream work or carry a
+dispatcher envelope. See `docs/authority-envelopes.md`.
+
 For an operational campaign, apply `skills/create-cao-campaign/SKILL.md`. It defines the CAO orchestrator/worker topology, rollout boundary, and required `.github/workflows/shared/control.md` imports.
 
 For a standalone agentic workflow, import `shared/control.md` with

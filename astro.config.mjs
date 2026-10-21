@@ -97,6 +97,7 @@ export default defineConfig({
             "agentic-*",
             "architecture",
             "authentication",
+            "authority-envelopes",
             "author-*",
             "blog/**",
             "cao-cli",
@@ -113,6 +114,7 @@ export default defineConfig({
             "orchestrators-*",
             "rollout-*",
             "setup-fine-*",
+            "setup/quickstart",
             "setup-multiple-*",
             "setup-one-*",
           ],
@@ -250,13 +252,15 @@ export default defineConfig({
           items: [
             { label: "What is Central Agentic Ops?", link: "/architecture-at-a-glance/" },
             { label: "How does CAO work?", link: "/how-cao-works/" },
+            { label: "From outcome to execution", link: "/operation-patterns/" },
             { label: "Architecture", link: "/architecture/" },
           ],
         },
         {
-          label: "Get started",
+          label: "Setup",
           items: [
-            { label: "Set up and monitor", link: "/setup-quickstarts/" },
+            { label: "Quickstart: install and monitor", link: "/setup-quickstarts/" },
+            { label: "Repo Status (optional)", link: "/setup/quickstart/" },
             { label: "Add a campaign (optional)", link: "/catalog/" },
             { label: "CAO commands", link: "/cao-cli/" },
             { label: "Authentication", link: "/authentication/" },
@@ -267,6 +271,7 @@ export default defineConfig({
           items: [
             { label: "Control plane status", link: "/cao/" },
             { label: "Admission gates", link: "/admission/" },
+            { label: "Authority envelopes", link: "/authority-envelopes/" },
             { label: "Set up the admission gate", link: "/admission-gate/" },
             { label: "Roll out a campaign", link: "/rollout-and-routing/" },
             { label: "Monitor and recover", link: "/operations/" },
