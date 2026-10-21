@@ -224,7 +224,7 @@ func (e *nativeSetupStageError) Error() string {
 	if e.policySaved {
 		return fmt.Sprintf("%s\nConfiguration was saved; run gh cao doctor and review the installed files.", e.cause)
 	}
-	return fmt.Sprintf("%s\nSetup stopped during %s; the local policy was not changed, but Pages settings or credentials may already have changed.", e.cause, e.stage)
+	return fmt.Sprintf("%s\nSetup stopped during %s; the local policy was not changed. Runtime files may have been prepared, and Pages settings or credentials may already have changed; inspect them before retrying.", e.cause, e.stage)
 }
 
 func (e *nativeSetupStageError) Unwrap() error { return e.cause }
@@ -323,7 +323,17 @@ func nativeSetup(cmd *cobra.Command, gh ghExecutor) error {
 	if result["cancelled"] == true {
 		return nil
 	}
-	_, err = fmt.Fprint(cmd.OutOrStdout(), "Monitoring configured. Automation is optional; no workflows run.\nNext: gh cao doctor, then review, commit and push the installed files.\nOptional automation: https://githubnext.github.io/gh-cao/operation-patterns/\n")
+	publication := nativeSetupMap(result["publication"])
+	if publication["status"] == "published" {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Monitoring configuration pushed. Deployment pending; setup is not waiting for Actions.\nActions: %s\nPages settings: %s\n", publication["actionsURL"], publication["pagesSettingsURL"]); err != nil {
+			return err
+		}
+		if dashboard, ok := publication["dashboardURL"].(string); ok {
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Dashboard (deployment pending): %s\n", dashboard)
+		}
+		return err
+	}
+	_, err = fmt.Fprint(cmd.OutOrStdout(), "Monitoring configured locally. No commit or push was performed.\nNext: gh cao doctor, then review, commit and push the installed files.\nOptional automation: https://githubnext.github.io/gh-cao/operation-patterns/\n")
 	return err
 }
 
@@ -363,6 +373,9 @@ func nativeSetupBoundedPolicy(policy map[string]any, repo string) error {
 }
 
 func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPrompt) (result map[string]any, err error) {
+	if err := setupCheckoutRoot(cmd.Context()); err != nil {
+		return nil, err
+	}
 	requested, _ := cmd.Flags().GetStringArray("repository")
 	publicOnly := len(requested) > 0
 	if publicOnly {
@@ -388,9 +401,19 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 		return nil, err
 	}
 	repo = controlRepo.Repository
+	if _, err := setupDestination(policyPath); err != nil {
+		return nil, err
+	}
 	policy, err := readPolicy()
+	createPolicy := errors.Is(err, os.ErrNotExist)
+	if createPolicy {
+		if _, statErr := os.Lstat(policyPath); !errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("setup refuses an unreadable existing policy: %s", policyPath)
+		}
+		policy, err = initialPolicy(repo, ""), nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("CAO policy is missing or invalid; run gh cao init or fix the policy: %w", err)
+		return nil, fmt.Errorf("CAO policy is invalid; fix the existing policy before rerunning setup: %w", err)
 	}
 	control := nativeSetupMap(policy["control-plane"])
 	if prompt == nil && nativeSetupMap(control["activity"])["public-only"] == true {
@@ -503,7 +526,7 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 		if profile == "public-only" {
 			writeScope = "none (monitoring only)"
 		}
-		if err := nativeSetupNote(cmd, "Read: %s\nWrite: %s\nAuth: %s\nApplies Pages, credentials and local policy. No commit or push.\n", strings.Join(repositories, ", "), writeScope, profile); err != nil {
+		if err := nativeSetupNote(cmd, "Read: %s\nWrite: %s\nAuth: %s\nPrepares missing monitoring runtime, Pages, credentials and local policy. Commit/push requires separate approval afterward.\n", strings.Join(repositories, ", "), writeScope, profile); err != nil {
 			return nil, err
 		}
 		apply, e := prompt.Confirm("Apply this setup?", false)
@@ -514,13 +537,24 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 			return map[string]any{"command": "setup", "cancelled": true}, nil
 		}
 	}
-	stage := "dashboard Pages"
+	stage := "runtime preparation"
 	policySaved := false
 	defer func() {
 		if err != nil {
 			err = &nativeSetupStageError{cause: err, stage: stage, policySaved: policySaved}
 		}
 	}()
+	files, err := setupRuntime(cmd, gh)
+	if err != nil {
+		return nil, err
+	}
+	if createPolicy {
+		policy["gh-aw-version"], err = nativeVersion(cmd.Context(), gh)
+		if err != nil {
+			return nil, err
+		}
+	}
+	stage = "dashboard Pages"
 	pages, err := nativeSetupConfigurePages(cmd, gh, repo)
 	if err != nil {
 		return nil, err
@@ -588,7 +622,7 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 		activity["repositories"] = repositories
 		delete(activity, "public-only")
 	}
-	if err = writePolicy(policy, false); err != nil {
+	if err = writePolicy(policy, createPolicy); err != nil {
 		return nil, err
 	}
 	policySaved = true
@@ -600,6 +634,11 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 		"command": "setup", "controlRepository": repo, "visibility": controlRepo.Visibility,
 		"repositories": repositories, "profile": profile, "authentication": authentication,
 		"dashboardPages": visibility, "campaigns": []string{},
+	}
+	stage = "optional publication"
+	result["publication"], err = setupPublish(cmd, gh, prompt, repo, pages.URL, append(files, policyPath))
+	if err != nil {
+		return result, err
 	}
 	if prompt == nil {
 		result["nonInteractive"] = true
