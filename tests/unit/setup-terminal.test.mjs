@@ -22,6 +22,7 @@ test("setup keyboard walkthrough validates scope, selects with arrows, and appli
   assert.match(result.stdout, /2 \/ 3  Connections/);
   assert.match(result.stdout, /3 \/ 3  Review and apply/);
   assert.match(result.stdout, /Configuration saved/);
+  assert.match(result.stdout, /Monitoring only; no agentic operation enabled or run/);
   assert.match(result.stdout, /"profile":"token"/);
   assert.deepEqual(f.saved()["control-plane"].scope["allowed-repositories"], ["acme/control", "acme/service"]);
   assert.deepEqual(f.calls().at(-1), ["connect", "token"]);
@@ -170,6 +171,17 @@ test("non-interactive setup refuses broader existing scope before external chang
   assert.equal(result.status, 1);
   assert.match(result.stderr, /refuses to replace existing repository scope/);
   assert.ok(!f.calls().some((args) => args[0] === "api" || args[0] === "variable"));
+  assert.deepEqual(f.saved(), f.policy);
+});
+
+test("non-interactive setup refuses declared operations before scope or credential changes", (t) => {
+  const f = fixture(t, setupModule, { controlVisibility: "PUBLIC", publicPages: true });
+  f.policy["control-plane"].operations = { audit: { enabled: false } };
+  writeFileSync(f.policyPath, JSON.stringify(f.policy));
+  const result = spawnSync(process.execPath, [f.driver], { cwd: f.root, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no declared operations/);
+  assert.ok(!f.calls().some(args => args[0] === "api" || args[0] === "variable" || args[0] === "connect"));
   assert.deepEqual(f.saved(), f.policy);
 });
 

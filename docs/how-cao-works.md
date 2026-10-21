@@ -106,8 +106,11 @@ output routing, access, and worker availability where applicable. A denied
 request or missing required fact stops or skips execution rather than widening
 scope. See [Admission Gates](admission.md) for the individual checks.
 
-CAO supports two explicit integration patterns:
+An **operation** is the work being governed; its **pattern** describes how the
+execution is organized. CAO supports three explicit integration patterns:
 
+- **Direct operations** request an explicit target set and execute one mission
+  without fleet discovery, campaign records or downstream dispatch.
 - **Standalone agentic workflows** import shared control and have their own
   policy entry. They perform their mission directly against a precomputed,
   bounded set of admitted repositories without dispatching workers.
@@ -131,6 +134,9 @@ executes and which capabilities it has.
 See [standalone workflow configuration](configuration.md#standalone-agentic-workflows),
 [Orchestrators and Workers](orchestrators-and-workers.md), and
 [Rollout and Routing](rollout-and-routing.md) for the integration details.
+Describe the outcome, target scope, and execution requirements;
+[From Outcome to Execution](operation-patterns.md) shows how guidance and
+authoring agents derive the structure rather than asking you to pick a pattern.
 
 ## Review, promote, and recover
 

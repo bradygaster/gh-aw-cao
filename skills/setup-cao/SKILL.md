@@ -7,13 +7,14 @@ metadata:
 
 # Set Up Central Agentic Ops
 
-Create or reuse a bare CAO control plane with the compiled `gh cao` extension,
-runtime, exact scope and compatible
-authentication. Leave `control-plane.campaigns` as an empty object, with
-no user-facing campaign installed or enabled, no live rollout, and no workflow
-dispatch.
+Set up monitoring with `gh cao`, the runtime and scoped authentication.
+Leave `control-plane.campaigns` as an empty object. No operation enrollment,
+live rollout or dispatch.
 
-Campaign discovery and installation are a separate task for `add-cao-campaign`.
+For later execution, follow
+[outcome-to-execution guidance](https://github.com/githubnext/gh-cao/blob/main/docs/operation-patterns.md)
+to infer structure, never authority; do not ask users to choose a pattern.
+Explain the fit; ask only for genuinely missing requirements.
 
 ## Deterministic boundary
 
@@ -37,7 +38,7 @@ Do not recreate setup logic or write policy JSON directly.
   validation is incomplete.
 - Never edit generated `.lock.yml` files directly. Preserve root `AGENTS.md`
   (consumer-owned); do not modify campaign-owned files during setup.
-- Install, enable, and execute no campaign during setup.
+- Install, enroll, enable, and execute no agentic operation during setup.
 
 ## Choose the repository role
 
@@ -56,9 +57,8 @@ control repository or selecting a non-public target.
 
 ## Preferred human flow
 
-For a separate control repository, prefer interactive setup.
-For a new repository, use the review-before-apply [setup guide](https://github.com/githubnext/gh-cao/blob/main/docs/setup-quickstarts.md#guided-setup-instead).
-The installer's `--setup` flag enters `gh cao setup` directly.
+Prefer interactive setup for a separate control repository; see the
+[setup guide](https://github.com/githubnext/gh-cao/blob/main/docs/setup-quickstarts.md#guided-setup-instead).
 
 ```bash
 curl --fail --silent --show-error --location \
@@ -66,9 +66,8 @@ curl --fail --silent --show-error --location \
   bash -s -- --create-repo --setup
 ```
 
-Interactive setup discovers the repository, exact scope, ownership, and
-visibility, offers authentication choices based on that scope, then shows its
-plan before mutation.
+Interactive setup discovers scope and visibility, offers authentication choices
+based on that scope, then shows its plan before mutation.
 Verify profile prerequisites in the authentication reference before approving;
 the prompt does not establish whether selected organizations share an
 enterprise. Do not replace it with an independent questionnaire or ad hoc
@@ -98,17 +97,16 @@ runtime copying.
    ```
 
    Confirm `.github/workflows/cao.json` parses, has no unresolved placeholders,
-   and contains an empty `control-plane.campaigns` object. Full validation runs
+   and contains an empty `control-plane.campaigns` object, with
+   `control-plane.workflows` and `control-plane.operations` absent or empty. Full validation runs
    in Actions after publication; do not replace it with inline validation.
 7. Show the exact diff. Reject campaign, live-mode, credential, generated-lock,
    campaign-owned, or unrelated changes. Ask before commit or push.
-8. Report the control repository, visibility, exact read scope, authentication
-   profile, validation, and commit status. State explicitly that no campaign was
-   installed, enabled, or run.
+8. Report repository, visibility, read scope, authentication, validation and
+   commit status. Confirm no operation was enrolled, enabled or run.
 
-Read [implementation details](references/implementation-details.md) only when
-the installer, runtime layout, generated/source distinction, or steering files
-must be inspected.
+Read [implementation details](references/implementation-details.md) for
+installer, runtime, generated/source and steering boundaries.
 
 ## Stop conditions
 
@@ -116,6 +114,7 @@ Stop without weakening boundaries for:
 
 - missing or malformed scope, or a repository that cannot be inspected;
 - a non-empty pre-existing campaign map;
+- a declared standalone workflow or direct operation, even when disabled;
 - a public control repository that could expose non-public evidence;
 - no compatible authentication, or declined/incomplete credentials;
 - setup fails after approved mutations, until you inspect policy, Pages, and

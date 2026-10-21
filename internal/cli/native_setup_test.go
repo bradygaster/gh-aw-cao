@@ -107,6 +107,13 @@ func TestNativeSetupBoundedPolicy(t *testing.T) {
 		{"standalone workflow", func(c map[string]any) { c["workflows"] = map[string]any{"audit": map[string]any{}} }, false},
 		{"empty standalone workflows", func(c map[string]any) { c["workflows"] = map[string]any{} }, true},
 		{"malformed standalone workflows", func(c map[string]any) { c["workflows"] = nil }, false},
+		{"direct operation", func(c map[string]any) { c["operations"] = map[string]any{"audit": map[string]any{}} }, false},
+		{"direct operation with empty workflows", func(c map[string]any) {
+			c["workflows"] = map[string]any{}
+			c["operations"] = map[string]any{"audit": map[string]any{}}
+		}, false},
+		{"empty operations", func(c map[string]any) { c["operations"] = map[string]any{} }, true},
+		{"malformed operations", func(c map[string]any) { c["operations"] = nil }, false},
 		{"missing campaigns", func(c map[string]any) { delete(c, "campaigns") }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -182,6 +189,75 @@ func TestNativeSetupNonInteractive(t *testing.T) {
 				if strings.Contains(call, "workflow run") || strings.Contains(call, "secret") {
 					t.Fatalf("bounded setup unexpectedly dispatched work or changed secrets: %s", call)
 				}
+			}
+		})
+	}
+}
+
+func TestNativeSetupPublicMonitoring(t *testing.T) {
+	for _, visibility := range []string{"PUBLIC", "PRIVATE", "INTERNAL"} {
+		t.Run(visibility, func(t *testing.T) {
+			nativeSetupTestDirectory(t)
+			nativeSetupTestSave(t, nativeSetupTestPolicy())
+			before, _ := os.ReadFile(policyPath)
+			cmd := nativeSetupTestCommand()
+			cmd.Flags().StringArray("repository", []string{"other/*"}, "")
+			var mutations []string
+			gh := func(_ context.Context, args ...string) (string, string, error) {
+				call := strings.Join(args, " ")
+				switch call {
+				case "auth status":
+					return "", "", nil
+				case "repo view --json nameWithOwner --jq .nameWithOwner":
+					return "org/control", "", nil
+				case "repo view org/control --json nameWithOwner,visibility":
+					return fmt.Sprintf(`{"nameWithOwner":"org/control","visibility":%q}`, visibility), "", nil
+				case "repo list other --json nameWithOwner,visibility --limit 1000":
+					return `[{"nameWithOwner":"other/public","visibility":"PUBLIC"},{"nameWithOwner":"other/private","visibility":"PRIVATE"},{"nameWithOwner":"other/internal","visibility":"INTERNAL"}]`, "", nil
+				case "repo view other/public --json nameWithOwner,visibility":
+					return `{"nameWithOwner":"other/public","visibility":"PUBLIC"}`, "", nil
+				case "api repos/org/control/pages":
+					return `{"build_type":"workflow","public":true}`, "", nil
+				case "variable set GH_AW_GITHUB_AUTH_MODE --repo org/control --body workflow-token":
+					mutations = append(mutations, call)
+					return "", "", nil
+				}
+				t.Fatalf("unexpected command (no App/PAT or target mutations allowed): %s", call)
+				return "", "", nil
+			}
+			result, err := nativeSetupControl(cmd, gh, nil)
+			if visibility != "PUBLIC" {
+				after, _ := os.ReadFile(policyPath)
+				if err == nil || len(mutations) != 0 || !bytes.Equal(before, after) {
+					t.Fatalf("non-public setup did not fail before mutation: %v", err)
+				}
+				return
+			}
+			if err != nil || result["profile"] != "public-only" {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			want := []string{"org/control", "other/public"}
+			if !reflect.DeepEqual(result["repositories"], want) {
+				t.Fatalf("scope=%v want=%v", result["repositories"], want)
+			}
+			saved, err := readPolicy()
+			if err != nil {
+				t.Fatal(err)
+			}
+			control := nativeSetupMap(saved["control-plane"])
+			if nativeSetupMap(control["activity"])["public-only"] != true || len(nativeSetupMap(control["campaigns"])) != 0 {
+				t.Fatalf("wrong observation-only policy: %#v", control)
+			}
+			// Rerunning without scope arguments preserves and revalidates enrollment.
+			repeated, err := nativeSetupControl(nativeSetupTestCommand(), gh, nil)
+			if err != nil || !reflect.DeepEqual(repeated["repositories"], want) {
+				t.Fatalf("repeat result=%#v err=%v", repeated, err)
+			}
+			guided, err := nativeSetupControl(nativeSetupTestCommand(), gh, &nativeSetupTestPrompt{
+				texts: []string{"other/public", "public-only"}, confirms: []bool{true, true},
+			})
+			if err != nil || guided["profile"] != "public-only" || !reflect.DeepEqual(guided["repositories"], want) {
+				t.Fatalf("guided result=%#v err=%v", guided, err)
 			}
 		})
 	}
@@ -567,6 +643,52 @@ func TestNativeSetupAppManifestBrowserProtocol(t *testing.T) {
 				t.Fatal("private key leaked to setup output")
 			}
 		})
+	}
+}
+
+func TestNativeSetupRefusesOperationsBeforeMutation(t *testing.T) {
+	for _, workflows := range []bool{false, true} {
+		for _, guided := range []bool{false, true} {
+			t.Run(fmt.Sprintf("workflows=%t/guided=%t", workflows, guided), func(t *testing.T) {
+				nativeSetupTestDirectory(t)
+				policy := nativeSetupTestPolicy()
+				control := nativeSetupMap(policy["control-plane"])
+				control["operations"] = map[string]any{"audit": map[string]any{"enabled": false}}
+				if workflows {
+					control["workflows"] = map[string]any{}
+				}
+				nativeSetupTestSave(t, policy)
+				before, err := os.ReadFile(policyPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gh := func(_ context.Context, args ...string) (string, string, error) {
+					switch strings.Join(args, " ") {
+					case "auth status":
+						return "", "", nil
+					case "repo view --json nameWithOwner --jq .nameWithOwner":
+						return "org/control", "", nil
+					case "repo view org/control --json nameWithOwner,visibility":
+						return `{"nameWithOwner":"org/control","visibility":"PUBLIC"}`, "", nil
+					default:
+						t.Fatalf("setup reached a mutation or unexpected read: %v", args)
+						return "", "", nil
+					}
+				}
+				var prompt nativeSetupPrompt
+				if guided {
+					prompt = &nativeSetupTestPrompt{}
+				}
+				_, err = nativeSetupControl(nativeSetupTestCommand(), gh, prompt)
+				if err == nil || !strings.Contains(err.Error(), "no declared operations") {
+					t.Fatalf("expected operation refusal, got %v", err)
+				}
+				after, err := os.ReadFile(policyPath)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("setup changed policy: %v", err)
+				}
+			})
+		}
 	}
 }
 

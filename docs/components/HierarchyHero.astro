@@ -4,12 +4,10 @@ import HeroIntro from "./HeroIntro.astro";
 import LandingSlideshow from "./LandingSlideshow.astro";
 import TerminalDemo from "./TerminalDemo.astro";
 import ThemeImage from "./ThemeImage.astro";
-import dashboardCampaignValue from "../assets/product/cao-dashboard-campaign-value-mobile.png";
-import dashboardCampaignValueLight from "../assets/product/cao-dashboard-campaign-value-mobile-light.png";
+import HeroWorkflowSnippet from "./HeroWorkflowSnippet.astro";
+import HeroControlDiagram from "./HeroControlDiagram.astro";
 import dashboardMobileOverview from "../assets/product/cao-dashboard-mobile-overview.png";
 import dashboardMobileOverviewLight from "../assets/product/cao-dashboard-mobile-overview-light.png";
-import dashboardRunHistory from "../assets/product/cao-dashboard-run-history-mobile.png";
-import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-history-mobile-light.png";
 ---
 
 <div data-slideshow-slides>
@@ -73,57 +71,113 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
     <p class="section-eyebrow">Setup, authentication, and rollout</p>
     <h2 id="terminal-title">Roll out with confidence.</h2>
     <p>
-      Bring an existing workflow, such as Daily Repo Status from Agentics, under central control.
-      Set repository scope and separate read/write credentials. Review proposed reports before authorizing live delivery.
-      Keep rollout policy and steering in your control repository, and reuse the workflow across enrolled repositories.
-      Add campaigns when you need coordinated work.
+      Start with monitoring. Describe the outcome, target scope, and execution requirements; derive the simplest structure.
+      The example adds the Dependabot campaign, pairing a central orchestrator with one-target workers.
+      Keep repository scope, read/write credentials and review/live policy explicit.{" "}
+      <a href="/gh-cao/operation-patterns/">From outcome to execution.</a>
     </p>
   </div>
   <TerminalDemo />
 </section>
 
-<section class="product-story runs-story" aria-labelledby="runs-title" data-reveal data-slideshow-slide>
+<section class="product-story maintenance-story" aria-labelledby="maintenance-title" data-reveal data-slideshow-slide>
   <div class="product-story-copy">
-    <p class="section-eyebrow">Local workflows, central visibility</p>
-    <h2 id="runs-title">Monitor what runs.</h2>
+    <p class="section-eyebrow">Maintenance</p>
+    <h2 id="maintenance-title">Less upkeep. Current workflows.</h2>
     <p>
-      See workflow health, cost, and outcomes in one dashboard. Find what needs attention, then drill into the run
-      and its evidence.
+      Offload automation upkeep. Keep gh-aw versions and workflows from their original sources current
+      across repositories, with reviewed updates instead of repeated manual maintenance.{" "}
+      <a href="/gh-cao/operations/#update-cao">Maintain your control plane.</a>
     </p>
+    <dl class="maintenance-steps">
+      <div>
+        <dt><span aria-hidden="true">01</span> gh-aw upgrades</dt>
+        <dd>
+          Upgrade gh-aw, migrate deprecated fields, refresh action versions, and recompile workflows with{" "}
+          <a href="https://github.github.com/gh-aw/setup/cli/#upgrade"><code>gh aw upgrade</code></a>.
+        </dd>
+      </div>
+      <div>
+        <dt><span aria-hidden="true">02</span> Workflow source updates</dt>
+        <dd>
+          Update one workflow or all source-tracked workflows with{" "}
+          <a href="https://github.github.com/gh-aw/setup/cli/#update"><code>gh aw update</code></a>.
+          Upstream changes merge with local edits by default.
+        </dd>
+      </div>
+      <div>
+        <dt><span aria-hidden="true">03</span> Reviewed changes</dt>
+        <dd>Prepare update pull requests for selected repositories. Validate before rollout, without widening rollout policy.</dd>
+      </div>
+    </dl>
   </div>
-  <figure class="product-frame product-shot product-shot-mobile product-shot-runs" data-slideshow-snippet="Workflow run history">
-    <ThemeImage
-      dark={dashboardRunHistory}
-      light={dashboardRunHistoryLight}
-      alt="Mobile CAO Runs view showing its compact app header and stacked workflow run chart by success, failure, cancellation, and unknown conclusion."
-      widths={[390, 780]}
-      sizes="(max-width: 42rem) calc(100vw - 3rem), 22rem"
-      loading="lazy"
-      class="product-image"
-    />
+  <figure class="product-frame product-shot maintenance-board" data-slideshow-snippet="Dashboard maintenance">
+    <picture data-theme-picture>
+      <source
+        data-theme-source="light"
+        media="(prefers-color-scheme: light)"
+        srcset="https://github.com/user-attachments/assets/657ba313-28cd-46b4-9246-ae3b4826651a"
+      />
+      <source
+        data-theme-source="dark"
+        media="(prefers-color-scheme: dark)"
+        srcset="https://github.com/user-attachments/assets/5dc87083-d2dc-4036-82fc-332ddb7bf569"
+      />
+      <img
+        src="https://github.com/user-attachments/assets/5dc87083-d2dc-4036-82fc-332ddb7bf569"
+        width="1240"
+        height="911"
+        alt="CAO dashboard Maintenance Updates page showing repositories with individual Upgrade buttons and Upgrade all. Version evidence is explicitly marked unavailable."
+        class="maintenance-image"
+        loading="lazy"
+        decoding="async"
+      />
+    </picture>
+    <figcaption>Dashboard maintenance: Upgrade one repository or Upgrade all. Unknown version evidence stays explicit.</figcaption>
   </figure>
 </section>
-
-<section class="product-story value-story reverse" aria-labelledby="value-title" data-reveal data-slideshow-slide>
+<section class="product-story snippet-story webhook-story" aria-labelledby="webhook-title" data-reveal data-slideshow-slide>
   <div class="product-story-copy">
-    <p class="section-eyebrow">Earn trust before expanding autonomy</p>
-    <h2 id="value-title">Roll out safely.</h2>
+    <p class="section-eyebrow">Events here. Workflows there.</p>
+    <h2 id="webhook-title">Webhook Gateway</h2>
     <p>
-      Review proposed actions before enabling live changes through explicit policy. Expand scope with evidence,
-      not just successful runs: execution success is not an accepted outcome.
+      Dispatch events across repositories: an event in one enrolled repository can trigger an approved workflow in another.
+      Authenticate, queue, and batch deliveries within reviewed enrollment and fresh access checks.
     </p>
+    <a class="hero-story-link" href="https://github.com/githubnext/gh-cao/blob/main/server/README.md#webhook-gateway-operations">
+      Explore the Webhook Gateway <span aria-hidden="true">→</span>
+    </a>
   </div>
-  <figure class="product-frame product-shot product-shot-mobile product-shot-value" data-slideshow-snippet="Operational value">
-    <ThemeImage
-      dark={dashboardCampaignValue}
-      light={dashboardCampaignValueLight}
-      alt="Mobile Operational Value view for githubnext/gh-cao showing AI credit per successful optimization-token-optimizer run over time."
-      widths={[390, 780]}
-      sizes="(max-width: 42rem) calc(100vw - 3rem), 22rem"
-      loading="lazy"
-      class="product-image"
-    />
-  </figure>
+  <HeroControlDiagram />
+</section>
+
+<section class="product-story snippet-story agentic-workflows-story" aria-labelledby="agentic-workflows-title" data-reveal data-slideshow-slide>
+  <div class="product-story-copy">
+    <p class="section-eyebrow">The foundation underneath CAO</p>
+    <h2 id="agentic-workflows-title">Built on Agentic Workflows</h2>
+    <p>
+      Author workflows in Markdown. GitHub Agentic Workflows runs them in GitHub Actions with declared permissions and safe outputs.
+      CAO coordinates them as campaigns with central visibility and reviewed rollout policy.
+    </p>
+    <a class="hero-story-link" href="https://github.github.com/gh-aw/">
+      Explore GitHub Agentic Workflows <span aria-hidden="true">→</span>
+    </a>
+  </div>
+  <HeroWorkflowSnippet
+    label="Illustrative example: from a prompt to a campaign to bounded repository work"
+    prompt="Roll out a Dependabot campaign across enrolled repositories. Keep it disabled and review-only."
+    filename="dependabot/aw.yml"
+    code={`name: Dependabot
+includes:
+  - operational-value.mjs
+  - operational-value/dependabot-update-planner.mjs
+  - .github/workflows/dependabot.md
+  - .github/workflows/dependabot-update-planner.md`}
+    transition="After installation, before enabling execution"
+    resultTitle="Campaign prepared for review"
+    result="A central orchestrator selects admitted repositories. Each worker handles one target."
+    caption="Campaign manifest excerpt. Reviewed policy controls scope, enablement, and review/live mode."
+  />
 </section>
 </div>
 <LandingSlideshow />
@@ -137,10 +191,10 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          entry.target.classList.add("is-visible");
-          entry.target.classList.remove("reveal-pending");
-          observer.unobserve(entry.target);
+          // Keep stories revealed above the viewport, but reset them below it.
+          const visible = entry.isIntersecting || entry.boundingClientRect.top < 0;
+          entry.target.classList.toggle("is-visible", visible);
+          entry.target.classList.toggle("reveal-pending", !visible);
         }
       },
       { rootMargin: "0px 0px -8% 0px", threshold: 0.12 },
@@ -547,8 +601,32 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
       backdrop-filter: blur(12px);
     }
 
+    .snippet-story {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .hero-story-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 2.75rem;
+      margin-top: 1rem;
+      color: var(--sl-color-text-accent);
+      font-weight: 600;
+      text-underline-offset: 0.2em;
+    }
+
+    .hero-story-link:focus-visible {
+      outline: 2px solid var(--sl-color-text-accent);
+      outline-offset: 4px;
+    }
+
     .terminal-story {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .maintenance-story {
+      grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.2fr);
     }
 
     .dispatch-story {
@@ -568,7 +646,7 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
     }
 
     .dispatch-story > p:not(.section-eyebrow) {
-      max-width: 60ch;
+      max-width: 80ch;
       margin: 0 auto;
       color: var(--cao-story-text);
       font-size: clamp(1rem, 1.4vw, 1.125rem);
@@ -577,8 +655,20 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
     }
 
     .dispatch-illustration {
-      width: min(100%, 80rem);
-      margin: 1.5rem auto 0;
+      width: min(100%, 72rem);
+      margin: 1rem auto 0;
+    }
+
+    @media (width > 72rem) {
+      .dispatch-illustration {
+        width: min(80%, 56rem);
+      }
+
+      .dispatch-illustration :global(.workflow-ecosystem) {
+        width: auto;
+        /* Unlike transform, zoom also reduces the diagram's occupied height. */
+        zoom: 0.8;
+      }
     }
 
     .product-story::before {
@@ -611,23 +701,6 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
       display: none;
     }
 
-    .product-story.reverse {
-      grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.35fr);
-    }
-
-    .product-story.reverse .product-story-copy {
-      order: 2;
-    }
-
-    .product-story.reverse .product-shot {
-      order: 1;
-    }
-
-    .product-story.reverse::before {
-      right: auto;
-      left: -8rem;
-    }
-
     @keyframes section-glow-drift {
       from {
         opacity: 0.7;
@@ -656,43 +729,57 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
         0 0 0 1px color-mix(in srgb, var(--section-accent) 28%, transparent);
     }
 
-    .product-shot-mobile {
-      display: grid;
-      min-height: 0;
-      place-items: start center;
-      background:
-        radial-gradient(circle at 50% 15%, rgba(63, 185, 80, 0.13), transparent 55%),
-        #0d1117;
+    .maintenance-board {
+      min-width: 0;
+      width: 100%;
+      max-width: 42rem;
+      justify-self: center;
+      margin: 0;
+      background: var(--cao-section-bg);
+      color: var(--cao-story-text);
     }
 
-    :global(:root[data-theme="light"]) .product-shot-mobile {
-      background:
-        radial-gradient(circle at 50% 15%, rgba(26, 127, 55, 0.1), transparent 55%),
-        #f6f8fa;
-    }
-
-    .product-shot-mobile :global(picture[data-theme-picture]) {
+    .maintenance-image {
       display: block;
       width: 100%;
-      margin-inline: auto;
+      height: auto;
     }
 
-    .product-shot-runs {
-      height: clamp(25rem, 38vw, 29rem);
-      padding: clamp(1rem, 2.25vw, 1.5rem);
+    .maintenance-board figcaption {
+      border-top: 1px solid var(--cao-section-border);
+      padding: 0.75rem 1rem;
+      font-size: 0.75rem;
+      line-height: 1.5;
     }
 
-    .product-shot-runs :global(picture[data-theme-picture]) {
-      width: min(100%, 22rem);
+    .maintenance-steps {
+      display: grid;
+      gap: 1.25rem;
+      margin: 1.5rem 0 0;
     }
 
-    .product-shot-value {
-      height: clamp(28rem, 38vw, 31rem);
-      padding: clamp(1rem, 2.25vw, 1.5rem) clamp(1rem, 3vw, 2.25rem) 0;
+    .maintenance-steps > div {
+      border-top: 1px solid var(--cao-section-border);
+      padding-top: 1rem;
     }
 
-    .product-shot-value :global(picture[data-theme-picture]) {
-      width: min(100%, 22rem);
+    .maintenance-steps dt {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      color: var(--cao-story-heading);
+      font-weight: 600;
+    }
+
+    .maintenance-steps dt span {
+      color: var(--cao-story-eyebrow);
+      font: 600 0.75rem/1.5 "Mona Sans Mono", monospace;
+    }
+
+    .maintenance-steps dd {
+      margin: 0.5rem 0 0;
+      font-size: 0.875rem;
+      line-height: 1.6;
     }
 
     .terminal-story :global(.terminal) {
@@ -807,20 +894,6 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
         top: 0.72rem;
       }
 
-      .product-shot-mobile {
-        width: 100%;
-      }
-
-      .product-shot-runs {
-        height: 25rem;
-        padding: 0.75rem;
-      }
-
-      .product-shot-value {
-        height: 32rem;
-        padding: 0.75rem 0.75rem 0;
-      }
-
       .product-story {
         width: calc(100% - 2rem);
         margin-block: 1rem;
@@ -830,14 +903,8 @@ import dashboardRunHistoryLight from "../assets/product/cao-dashboard-run-histor
     }
 
     @media (max-width: 52rem) {
-      .product-story,
-      .product-story.reverse {
+      .product-story {
         grid-template-columns: minmax(0, 1fr);
-      }
-
-      .product-story.reverse .product-story-copy,
-      .product-story.reverse .product-shot {
-        order: initial;
       }
     }
 

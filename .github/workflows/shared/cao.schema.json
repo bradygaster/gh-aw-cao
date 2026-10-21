@@ -167,6 +167,26 @@
       "propertyNames": { "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
       "additionalProperties": { "$ref": "#/$defs/workflowPolicy" }
     },
+    "operationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "max-mode": { "$ref": "#/$defs/mode" },
+        "max-repositories": { "$ref": "#/$defs/maxRepositories" },
+        "targets": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/repository" },
+          "additionalProperties": { "$ref": "#/$defs/targetPolicy" }
+        }
+      }
+    },
+    "controlOperations": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+      "additionalProperties": { "$ref": "#/$defs/operationPolicy" }
+    },
     "scope": {
       "type": "object",
       "additionalProperties": false,
@@ -188,6 +208,11 @@
       "additionalProperties": false,
       "required": ["repositories"],
       "properties": {
+        "public-only": {
+          "type": "boolean",
+          "default": false,
+          "description": "Observation-only public repository collection with the built-in workflow token; requires exact repositories and runtime public visibility checks. Restricted evidence remains partial."
+        },
         "repositories": {
           "type": "array",
           "minItems": 1,
@@ -640,6 +665,7 @@
         "defaults": { "$ref": "#/$defs/defaults" },
         "campaigns": { "$ref": "#/$defs/controlCampaigns" },
         "workflows": { "$ref": "#/$defs/controlWorkflows" },
+        "operations": { "$ref": "#/$defs/controlOperations" },
         "publishing": { "$ref": "#/$defs/publishing" },
         "marketplace": { "$ref": "#/$defs/marketplace" },
         "webhook-gateway": { "$ref": "#/$defs/webhookGateway" }

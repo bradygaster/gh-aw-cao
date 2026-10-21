@@ -32,6 +32,62 @@ the focused contracts.
 The browser never connects directly to Postgres or Redis and never receives
 database credentials. It communicates only with the same-origin HTTP(S) API.
 
+## Secret-free fleet stress simulation
+
+Run `npm run test:stress:cao` from the repository root. The dedicated
+`cao-fleet-stress.yml` Actions workflow runs daily and manually, without adding
+the full stress workload to pull requests. It simulates three days starting with 1,000 repositories and
+5,000 developers. Each developer produces 2, 6, 10, 14, or 18 PRs per day
+(p50 10, exactly 50,000 PRs/day); 10% of arrivals form a correlated daily burst.
+At each subsequent day boundary, 1% of active repositories are archived/deleted
+(alternating) and 2% are created, rounding down. Only drained repositories are
+retired: outstanding PRs are never exempted from the review SLA.
+
+The vulnerability-review campaign is a compiler-manifest fixture subscribed to
+`pull_request: ready_for_review`. The test exercises production manifest discovery,
+policy intersection, signature validation, admission, batching, durable SQLite
+queues, fencing, retry classification, and worker dispatch. The entire fleet uses
+one reviewed fixture policy, one inventory registry, and one durable queue.
+A single control repository declares the campaign for all enrolled source
+repositories, whose workflow inventories are empty. The enrollment and derived
+route ceilings are 2,048; the 1 MiB registry limit, operational storage budget,
+API limits, eight-repository discovery rounds and reviewed scope remain unchanged.
+SQLite batch rotation, capacity, recovery and retention use indexed plans so
+burst handling does not repeatedly parse the entire retained job payload set.
+Future fixture repository IDs
+are explicitly pre-enrolled but remain inactive until the simulator creates them.
+The inventory registry and live GitHub authority facts are in-memory fixtures,
+not a PostgreSQL durability or GitHub authentication benchmark.
+
+The simulator enforces shared per-installation REST budgets of 12,500 requests
+per hour and 900 points per minute (reads cost 1, writes cost 5), returning primary
+403/reset headers and secondary 429/Retry-After responses. Other GitHub abuse,
+GraphQL, and content-generation limits are not modeled. Discovery and review
+traffic consume these budgets. Signed repository lifecycle webhooks invalidate
+inventory through the production discovery-hints path. Deliberate shared-budget exhaustion and the burst
+exercise throttling, while identical webhook replays exercise deduplication.
+
+No agentic workflow, vulnerability analysis, inference, or real GitHub request
+runs. Synthetic review completion occurs two simulated minutes after dispatch,
+plus any API-quota delay; dispatch acceptance alone never counts as a review.
+Every ready PR must have exactly one completed synthetic review within 3,600
+simulated seconds, measured from its original ready time, including discovery
+and admission retries. Missing, duplicate, or late reviews fail the test.
+An injected manual time provider controls ingress, discovery, authorization,
+queue leases/retention/backoff, and simulated API windows without sleeping.
+HTTP cancellation and I/O deadlines remain wall-clock based.
+
+All HTTP clients are confined to the exact numeric-loopback simulator endpoint,
+with proxies disabled. The test reads no secrets or credentials; its public HMAC
+fixture and ephemeral App-constructor key have no external authority.
+Synthetic installation-token routes accept only positive int64 installation IDs
+and format the fixture token from the parsed number, never the raw request path.
+Set `CAO_FLEET_STRESS_REPORT_DIR` to retain `fleet-stress.json`. Actions uploads
+that report and the test log, including incomplete outcomes on failure.
+The smaller `TestGitHubSimulatorFleetSmoke` scenario runs in ordinary Go tests.
+
+## Hosted activation admission
+
 The optional [cooperative activation-admission service](ADMISSION.md) exposes
 the gh-aw OIDC-only `POST /api/admission` and compact-session
 `POST /api/conclusion` protocols on that same hosted origin. Completion populates
@@ -1106,6 +1162,24 @@ The exporter batches records and flushes at shutdown. `slog` error records
 retain their severity and active trace/span context. Only enable reviewed,
 non-sensitive namespaces when exporting to an external collector.
 
+For a local OTLP/HTTP collector, export only server debug logs without enabling
+trace or metric export:
+
+```bash
+export DEBUG=cao:server
+export CAO_OTEL_LOGS_ENABLED=true
+export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4318/v1/logs
+npm run dashboard:server:serve
+```
+
+The log-specific endpoint is a complete URL, including the collector's path.
+The shared `OTEL_EXPORTER_OTLP_ENDPOINT` instead appends `/v1/logs` and also
+enables trace and metric export. If both are set, the log-specific endpoint
+wins. Configure collector authentication through secret-managed
+`OTEL_EXPORTER_OTLP_LOGS_HEADERS` (or shared `OTEL_EXPORTER_OTLP_HEADERS`);
+log-specific headers take priority. `OTEL_SDK_DISABLED=true` disables export
+without disabling stderr logs.
+
 > [!IMPORTANT]
 > The default `serve` command remains local-only: it uses a local bearer
 > capability and intentionally rejects non-loopback listen addresses. Remote
@@ -1115,6 +1189,128 @@ non-sensitive namespaces when exporting to an external collector.
 > Azure trusted-proxy policy. PATs are not supported. The Azure Functions
 > profile is experimental: deploy it only after security review, staging
 > validation, and rollback planning for your Azure tenant.
+
+## Local Actions and OIDC simulator
+
+Run the credential-free, localhost-only Actions/admission/webhook integration:
+
+```bash
+npm run test:integration:actions-simulator
+# Equivalent without Node/npm (also suitable for a GitHub Actions run step):
+go -C server test -race ./internal/simulator ./internal/admission \
+  ./internal/webhookgateway ./cmd/cao-webhook-gateway \
+  -run '^(TestLocalActions|TestSpecLocalHost|TestGatewayAPI|TestGitHubSimulator(Gateway|Discovery)SQLite)' \
+  -count=1 -timeout=2m -v
+```
+
+The tests start real HTTP listeners on ephemeral numeric-loopback ports, use a
+private temporary SQLite gateway queue, and close every listener and database
+on completion. No GitHub credentials, `id-token: write`, Docker, PostgreSQL,
+Redis, public callback URL, or live GitHub API is required. Go dependencies
+must already be available or downloadable, as for the ordinary Go test suite.
+The Go CI `server-quality` job runs the same command in the explicitly named
+Local Actions, OIDC, admission, and webhook gateway integration step on pull
+requests and pushes. Its permissions remain `contents: read`, with no service
+containers or credentials required by this integration.
+
+The reusable implementation is in `internal/simulator/`:
+
+- `NewActionsAPI` composes the existing scenario-backed mini GitHub REST API
+  and an `OIDCBroker` on one listener without changing REST-only callers.
+- The broker binds an opaque per-run bootstrap credential to immutable claims,
+  exposes the Actions-style `/token?audience=...` response and public
+  `/.well-known/jwks`, and issues five-minute RS256 tokens from an ephemeral key.
+  Only numeric-loopback callers are accepted. HTTP callers cannot choose
+  repository, workflow, actor, or run claims. `Actions.Environment()` supplies
+  the two `ACTIONS_ID_TOKEN_REQUEST_*` variables for local OIDC clients; the map
+  contains a credential and must never be printed.
+- `Actions.Run` requests admission, validates the primary credit allowance,
+  runs a supplied local job callback, then posts `conclusion_admission` using a
+  fresh token and the **same admission audience**. Rejected admission never
+  executes the callback. Failed admitted work still attempts conclusion.
+  `Actions.Post` and `DeliverWebhook` support explicit retries and signed
+  webhook replays. Clients reject non-loopback destinations, disable proxies,
+  and do not follow redirects or silently retry requests.
+- `Trace.Events()` returns ordered stage/status events without tokens, claims,
+  bodies, secrets, or URLs. Traces cap at 10,000 events with an explicit
+  `trace.truncated` marker. Inject a fixed broker clock and use fixed run and
+  delivery identities for repeatable scenarios. Fresh cryptographic keys and
+  bootstrap credentials are intentionally random; they are not trace output.
+
+The integration runs the **production admission and conclusion HTTP handlers**
+and verifier, including real HTTP JWKS retrieval. Only a test-owned transport
+maps the verifier's fixed GitHub issuer JWKS URL to the local broker. Production
+issuer trust and constructors are unchanged; simulator keys never become
+production authority. Policy, admission-decision, and conclusion-receipt stores
+are isolated in-memory fixtures, not a substitute for PostgreSQL durability tests.
+
+An admitted job posts signed events to a real local webhook gateway ingress;
+the real SQLite queue and worker reject a bad signature, deduplicate replay,
+and finish exactly one simulated dispatch. The lifecycle trace is printed by
+the verbose test runner. Failure coverage includes expired/future tokens,
+incorrect audience/signature, malformed tokens, JWKS outage, failed bootstrap
+exchange, request/claim mismatch, current-policy denial, invalid budgets,
+redirects, and failing job callbacks. This is a protocol/job simulator, not a
+general workflow-YAML executor or a claim that upstream gh-aw JavaScript ran.
+For real PostgreSQL persistence, point the integration at a **disposable local**
+database owned by the test user (numeric loopback or a Unix socket only):
+
+```bash
+POSTGRES_URL='postgresql://postgres@127.0.0.1:5432/cao_actions_test?sslmode=disable' \
+  npm run test:integration:actions-simulator-postgres
+```
+
+This variant runs the production admission/conclusion handlers with the real
+PostgreSQL decision and receipt store, plus a PostgreSQL-backed webhook queue
+and a separately opened dispatch replica. It verifies allowance replay across
+reopen, pending-publication repair, completed-receipt deduplication, conflicting
+conclusion rejection, persistent admission revocation, and exactly one
+successful queued dispatch for duplicate signed deliveries. Canonical publication
+is a controlled test sink; this does not exercise the dashboard entity schema.
+Each run provisions a random operational namespace and removes it afterward.
+Gateway suites also create and remove private PostgreSQL schemas so their
+migrations cannot deadlock with admission writes in another test package.
+Provisioning requires the database owner's DDL privileges; never point this at
+a shared production database. Missing configuration fails the dedicated command
+instead of silently skipping; ordinary unit runs skip this variant when
+`POSTGRES_URL` is unset.
+
+The Go CI `actions-simulator-postgres` job supplies a health-checked local
+Postgres 16 service on a dynamically allocated port and runs this integration
+with the race detector on pull requests and pushes. It uses no deployed service,
+GitHub credential, or live GitHub API.
+
+### Discovered agentic workflows, webhooks, and dispatch
+
+The same commands also run shared gateway suites for SQLite and PostgreSQL.
+`NewGatewayAPI` provides an opt-in private `simulator/repo-00001` fixture with
+separate receiving and dispatch installations, repository-scoped token mints,
+numeric repository lookups, default-branch refs, commit-pinned workflow listings
+and raw lock-file reads, and observable repository-dispatch POSTs. `Publish`
+advances the synthetic default branch without mutating earlier commits. Fixture
+storage is bounded to eight revisions of 16 MiB each and 128 dispatches below
+64 KiB each. Observations contain synthetic dispatch data, not credentials;
+App JWT signatures are deliberately not verified.
+
+The discovery suites fetch compiled `gh-aw-manifest` headers through the
+production GitHub client, apply reviewed discovery policy, receive signed
+security webhooks, and run the production live-authority checks and compiler
+dispatcher over loopback HTTP. PostgreSQL also exercises the production
+discovery worker and durable registry across queue reopen; SQLite has no hosted
+registry and keeps its discovered inventory in the test while using the same
+HTTP discovery client and policy compiler. No simulator metadata grants
+production authority.
+
+Assertions cover batched minimal payloads, delivery IDs, API-version pinning,
+replay deduplication after restart, stale workflow revocation, discovery API
+outages, and non-replay of ambiguous dispatch server errors. Faults use the
+existing local `FaultProxy`, rather than replacing dispatcher outcomes. The
+separate queue suites cover concurrent replicas, capacity and database outages,
+policy disablement, and bounded retries. These tests do not execute workflow
+YAML or prove that a real GitHub Actions run started.
+
+The separately pinned upstream client conformance tests remain available via
+`GH_AW_ADMISSION_PROTOCOL_PATH` and `GH_AW_CONCLUSION_RUNTIME_DIR`.
 
 ## Ingestion reliability simulator
 
@@ -2337,6 +2533,13 @@ Collection separates three concerns that fail differently:
    projection lease, so a delivery burst cannot block the endpoint.
    Signed `issues` lifecycle events for enrolled repositories enqueue
    repository collection rather than mutating stored issue entities directly.
+   Default-branch `push` events enqueue inventory-only refreshes when added,
+   modified, or removed paths match `.github/workflows/*.lock.yml` (top-level
+   files only). Markdown sources, ordinary workflow YAML, other branches, and
+   tags do not trigger these refreshes. Truncated push commit lists conservatively
+   request refresh rather than fetching commit details in the receiver.
+   Inventory refresh and run collection have separate debounce keys, so neither
+   can suppress the other.
 2. **Collection.** Workers lease tasks and run the same
    `gh aw logs --audit` and `activity/cao.mjs` commands the Activity workflow
    runs, writing into the evidence lake. One repository is collected at a time,
@@ -2375,7 +2578,29 @@ no GitHub access: a retained lake is replayed directly.
 
 Enrollment is derived from GitHub App installations. A delivery for a
 repository outside the enrollment set is acknowledged and dropped rather than
-collected, so credential reach never widens ingestion scope.
+collected. Signed repository creation/unarchive events for a known installation
+may instead queue discovery; they never infer enrollment from payload contents.
+Installation additions and repository discovery are grouped by installation,
+with a two-second coalescing window. Background workers enumerate all pages of
+current installation coverage, reserve shared GitHub quota for each page, and
+publish enrollment only after complete enumeration. Discovery fails, rather
+than truncates, above `CAO_COLLECT_INVENTORY_LIMIT` (100,000 repositories per
+installation when unset).
+
+Installation removals and repository access withdrawals are independently queued,
+then applied by workers with durable erasure work persisted before acknowledgment.
+Repository deletion/archive transitions retain their independent lifecycle updates
+and trigger coalesced inventory projection; deletion alone does not erase retained
+history. No webhook performs GitHub calls, enrollment mutations, or projection
+inline. Refresh workers persist projection requests before acknowledging work;
+transient inventory failures keep the previous inventory and retain a pending
+refresh for the next projection interval.
+
+Configure the collection App's webhook URL as `/api/github/webhook` and subscribe
+to `push`, `repository`, `installation`, `installation_repositories`, `workflow_run`,
+and `issues` events. Existing read-only App permissions and installation coverage
+remain the scope boundary; these notifications do not authorize workflow execution
+or change CAO rollout policy.
 
 Rate limits are governed per installation. Each collection reserves budget
 before it starts and passes the reserve to the collection subprocess, so the
@@ -2386,6 +2611,17 @@ running.
 Failed collections are retried with backoff and moved to a dead-letter stream
 after the attempt limit, where they remain visible in collection status rather
 than disappearing.
+
+OpenTelemetry exports admission and refresh spans
+(`cao_dashboard.collection.webhook.admit`, `cao_dashboard.collection.refresh`)
+and `cao_dashboard.collection.refresh.count` /
+`cao_dashboard.collection.refresh.duration` and
+`cao_dashboard.collection.refresh.queue_age` (seconds), with bounded stage, kind,
+and outcome attributes. Admission outcomes distinguish queued, coalesced,
+duplicate, ignored, and failed work. Queue tasks carry only W3C `traceparent`
+correlation, never baggage or payload contents. Quota exhaustion and secondary
+limits defer discovery until the shared bucket's retry time without consuming
+its failure-attempt budget.
 
 Collection is at-least-once. Retry, deferral, blocked-repository requeue, and
 dead-letter transitions append their replacement before acknowledging the

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "yaml";
 import { issueOpenedPaths } from "../../docs/components/workflow-illustration-icons.mjs";
 
 const landingPage = readFileSync("docs/README.md", "utf8");
@@ -34,48 +35,59 @@ test("landing page presents the product through real operational surfaces", () =
   assert.match(landingPage, /Keep track of all runs, costs, and outcomes of your GitHub Agentic Workflows across repositories\. Set execution scope and rollout policy and refine workflows in review mode so you can roll out safely and confidently\./);
   assert.match(hero, /cao-dashboard-mobile-overview\.png/);
   assert.match(hero, /cao-dashboard-mobile-overview-light\.png/);
-  assert.match(hero, /cao-dashboard-run-history-mobile\.png/);
-  assert.match(hero, /cao-dashboard-run-history-mobile-light\.png/);
-  assert.match(hero, /cao-dashboard-campaign-value-mobile\.png/);
-  assert.match(hero, /cao-dashboard-campaign-value-mobile-light\.png/);
-  assert.match(hero, /product-shot-mobile product-shot-runs/);
-  assert.match(hero, /product-shot-mobile product-shot-value/);
-  assert.match(hero, /\.product-shot-runs \{[\s\S]*?height: clamp\(25rem, 38vw, 29rem\)/);
-  assert.match(hero, /\.product-shot-value \{[\s\S]*?height: clamp\(28rem, 38vw, 31rem\)/);
-  assert.match(hero, /\.product-shot-value :global\(picture\[data-theme-picture\]\) \{[\s\S]*?width: min\(100%, 22rem\)/);
+  assert.doesNotMatch(hero, /cao-dashboard-(?:run-history|campaign-value)|runs-story|value-story/);
   assert.match(hero, /ThemeImage/);
   assert.match(hero, /@media \(max-width: 42rem\) \{[\s\S]*?\.hero-callout \{[\s\S]*?display: flex/);
   assert.match(hero, /\.hero-callout \.callout-line \{[\s\S]*?display: none/);
   assert.match(hero, /Setup, authentication, and rollout/);
   assert.match(hero, /\.terminal-story \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(hero, /Roll out with confidence\./);
-  assert.match(hero, /Bring an existing workflow, such as Daily Repo Status from Agentics, under central control\./);
-  assert.match(hero, /Set repository scope and separate read\/write credentials\./);
-  assert.match(hero, /Review proposed reports before authorizing live delivery\./);
-  assert.match(hero, /Keep rollout policy and steering in your control repository/);
-  assert.match(hero, /reuse the workflow across enrolled repositories/);
+  assert.match(hero, /Start with monitoring\./);
+  assert.match(hero, /derive the simplest structure/);
+  assert.match(hero, /outcome, target scope, and execution requirements/);
+  assert.match(hero, /Dependabot campaign, pairing a central orchestrator with one-target workers/);
+  assert.match(hero, /repository scope, read\/write credentials and review\/live policy explicit/);
+  assert.match(hero, /href="\/gh-cao\/operation-patterns\/"/);
   assert.match(terminalText, /raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/install\.sh/);
   assert.equal([...terminal.matchAll(/<code>/g)].length, 3);
   assert.match(terminalText, /gh cao setup/);
-  assert.match(terminalText, /Adapt Daily Repo Status for CAO/);
+  assert.match(terminalText, /Add the Dependabot campaign to CAO/);
   assert.match(terminalText, /CAO runtime materialized and verified/);
   assert.match(terminalText, /Next: gh cao doctor/);
   assert.match(terminalText, /Then review git diff and git status, commit, and push the installed files/);
+  assert.match(terminalText, /Monitoring is configured; executing operations is optional/);
   assert.match(terminalText, /Example agent request — not a CLI command/);
   assert.match(terminal, /data-terminal-request="integration"/);
   assert.match(terminalText, /Keep policy disabled, review-only, and scoped to one repo/);
-  assert.match(terminalText, /Import shared\/control\.md as standalone/);
-  assert.match(terminalText, /Bind reads and review outputs to admitted targets/);
-  assert.match(terminalText, /Preserve upstream ownership\. Do not enable or run/);
+  assert.match(terminalText, /Install githubnext\/gh-cao\/dependabot/);
+  assert.match(terminalText, /Use its central orchestrator and one-target workers/);
+  assert.match(terminalText, /Review the campaign files and policy\. Do not enable or run/);
   assert.doesNotMatch(terminal, /data-terminal-output="rollout"|\bjq\b/);
-  assert.doesNotMatch(terminalText, /campaign|dependabot/i);
+  assert.doesNotMatch(terminalText, /Daily Repo Status|as standalone/);
   assert.doesNotMatch(terminal, /<a\b|href=/);
   assert.doesNotMatch(terminal, /result-mark|Ready to review and publish/);
   assert.doesNotMatch(terminalText, /cao\.sh|gh cao validate|gh aw run|--raw-field|integrate-cao-workflow/);
-  assert.match(hero, /Monitor what runs\./);
-  assert.match(hero, /Roll out safely\./);
-  assert.match(hero, /See workflow health, cost, and outcomes in one dashboard/);
-  assert.match(hero, /execution success is not an accepted outcome/);
+  assert.deepEqual(
+    [...hero.matchAll(/<section class="product-story ([^"]+)"/g)].map(([, classes]) => classes),
+    ["dispatch-story", "terminal-story", "maintenance-story", "snippet-story webhook-story", "snippet-story agentic-workflows-story"],
+  );
+  assert.match(hero, /aria-labelledby="maintenance-title" data-reveal data-slideshow-slide/);
+  assert.match(hero, /Less upkeep\. Current workflows\./);
+  assert.match(hero, /Offload automation upkeep/);
+  assert.match(hero, /gh-aw versions and workflows from their original sources/);
+  assert.match(hero, /href="\/gh-cao\/operations\/#update-cao"/);
+  assert.match(hero, /data-slideshow-snippet="Dashboard maintenance"/);
+  for (const label of ["gh-aw upgrades", "Workflow source updates", "Reviewed changes"]) assert.ok(hero.includes(label));
+  const maintenance = hero.match(/<section class="product-story maintenance-story"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(maintenance);
+  assert.doesNotMatch(maintenance, /campaign/i);
+  assert.match(maintenance, /gh aw upgrade/);
+  assert.match(maintenance, /gh aw update/);
+  assert.match(maintenance, /Upstream changes merge with local edits by default/);
+  assert.match(maintenance, /https:\/\/github\.com\/user-attachments\/assets\//);
+  assert.match(maintenance, /individual Upgrade buttons and Upgrade all/);
+  assert.match(maintenance, /Unknown version evidence stays explicit/);
+  assert.match(hero, /without widening rollout policy/);
   assert.doesNotMatch(hero, /https:\/\/github\.github\.com\/gh-aw\/practices\//);
   assert.doesNotMatch(hero, /One operating picture|phone-caption/);
   assert.doesNotMatch(
@@ -93,13 +105,36 @@ test("landing page keeps the hero and supporting copy concise", () => {
   assert.ok(title && wordCount(title) <= 8, "hero headline should stay within eight words");
   assert.ok(tagline && wordCount(tagline) <= 40, "hero tagline should stay within forty words");
   const paragraphs = [...hero.matchAll(/<p>\s*([\s\S]*?)<\/p>/g)];
-  assert.equal(paragraphs.length, 5);
+  assert.equal(paragraphs.length, 6);
   const terminalParagraph = hero.match(/id="terminal-title"[\s\S]*?<p>\s*([\s\S]*?)<\/p>/)?.[1];
   for (const [, paragraph] of paragraphs) {
     const budget = paragraph === terminalParagraph ? 60 : 30;
     assert.ok(wordCount(paragraph) <= budget, `supporting paragraph should stay within ${budget} words`);
   }
   assert.doesNotMatch(hero, /<ul class="story-points">/);
+});
+
+test("landing campaign example uses the real Dependabot manifest without granting rollout authority", () => {
+  const excerpt = hero.match(/filename="dependabot\/aw\.yml"\s+code=\{`([\s\S]*?)`\}/)?.[1];
+  assert.ok(excerpt, "campaign snippet should show its manifest");
+  const manifest = parse(readFileSync("dependabot/aw.yml", "utf8"));
+  assert.deepEqual(parse(excerpt), { name: manifest.name, includes: manifest.includes });
+  assert.match(hero, /Keep it disabled and review-only/);
+  assert.match(hero, /Each worker handles one target/);
+  assert.match(hero, /Reviewed policy controls scope, enablement, and review\/live mode/);
+});
+
+test("gateway hero diagram shows cross-repo dispatch without an admission section", () => {
+  const diagrams = readFileSync("docs/components/HeroControlDiagram.astro", "utf8");
+  assert.match(hero, /<HeroControlDiagram \/>/);
+  assert.doesNotMatch(hero, /Admission Gate|admission-story|admission-gate/);
+  assert.doesNotMatch(diagrams, /Admission|admission|blocked-symbol|branched/);
+  assert.match(hero, /Dispatch events across repositories/);
+  assert.match(diagrams, /acme\/service-a/);
+  assert.match(diagrams, /acme\/service-b/);
+  assert.match(diagrams, /acme\/control/);
+  assert.match(diagrams, /Runs in the destination repository, not the event source/);
+  assert.doesNotMatch(diagrams, /<script|data-slideshow-snippet/);
 });
 
 test("terminal output excerpts remain grounded in the production installer and CLI", () => {
@@ -114,7 +149,9 @@ test("terminal output excerpts remain grounded in the production installer and C
   assert.match(integration, /does not automatically add CAO\nadmission or redirect its writes/);
   assert.match(integration, /including closing older reports/);
   assert.match(integration, /additional explicitly enrolled targets through reviewed policy changes/);
-  assert.match(hero, /Add campaigns when you need coordinated work\./);
+  assert.match(hero, /From outcome to execution\./);
+  assert.match(hero, /Describe the outcome, target scope, and execution requirements/);
+  assert.doesNotMatch(hero, /Choose direct operations|Choose an operation pattern/);
 });
 
 test("landing page shows shared and local workflows with explicit ownership", () => {
@@ -123,7 +160,10 @@ test("landing page shows shared and local workflows with explicit ownership", ()
   assert.match(hero, /\.product-story \{[^}]*width: min\(calc\(100% - 2rem\), 76rem\)/);
   assert.match(hero, /\.dispatch-story \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*gap: 0\.75rem/);
   assert.match(hero, /\.dispatch-story > \.section-eyebrow \{[\s\S]*?justify-self: center/);
-  assert.match(hero, /\.dispatch-story > p:not\(\.section-eyebrow\) \{[^}]*max-width: 60ch/);
+  assert.match(hero, /\.dispatch-story > p:not\(\.section-eyebrow\) \{[^}]*max-width: 80ch/);
+  assert.match(hero, /\.dispatch-illustration \{[^}]*width: min\(100%, 72rem\);[^}]*margin: 1rem auto 0/);
+  assert.match(hero, /@media \(width > 72rem\) \{[\s\S]*?\.dispatch-illustration \{[^}]*width: min\(80%, 56rem\)/);
+  assert.match(hero, /\.dispatch-illustration :global\(\.workflow-ecosystem\) \{[^}]*width: auto;[^}]*zoom: 0\.8/);
   assert.match(hero, /@media \(min-width: 64rem\) \{[\s\S]*?\.dispatch-story h2 \{[\s\S]*?white-space: nowrap/);
   assert.match(hero, /Enterprise teams, organizations, and repository maintainers own their workflows/);
   assert.match(hero, /<WorkflowEcosystem \/>/);
@@ -298,7 +338,6 @@ test("campaign documentation preserves the animated bounded dispatch illustratio
     illustration,
     /@container \(max-width: 1180px\) \{[\s\S]*?\.flow-layout \{[\s\S]*?display: none[\s\S]*?\.mobile-flow \{[\s\S]*?display: block/,
   );
-  assert.match(hero, /width: min\(100%, 80rem\)/);
   assert.match(illustration, /operation: "Dependabot update planner"/);
   assert.match(illustration, /workflow: "Dependabot \/ Update Planner"/);
   assert.match(illustration, /repository: "github\/gh-aw"/);

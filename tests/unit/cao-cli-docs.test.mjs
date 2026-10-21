@@ -13,6 +13,7 @@ test("getting started reaches monitoring before optional campaign execution", ()
   const monitoring = gettingStarted.slice(0, optional);
   const commands = [
     "curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash",
+    "gh cao --version",
     "gh cao setup",
     "gh cao doctor",
     'git commit -m "Set up CAO monitoring"',
@@ -25,28 +26,126 @@ test("getting started reaches monitoring before optional campaign execution", ()
     assert.ok(index > previous, `${command} should follow the preceding stage`);
     previous = index;
   }
-  assert.deepEqual([...monitoring.matchAll(/^## \d\. (.+)$/gm)].map((match) => match[1]), [
+  assert.deepEqual([...monitoring.matchAll(/^## Step \d - (.+)$/gm)].map((match) => match[1]), [
     "Install CAO",
     "Connect one repository",
-    "Publish your configuration",
-    "Open your dashboard",
+    "Publish and open your dashboard",
   ]);
+  assert.match(monitoring, /\*\*Estimated time: 15 minutes\*\*/);
+  assert.match(monitoring, /:::note\[Video TODO\]/);
+  assert.ok(monitoring.indexOf(":::note[Video TODO]") < monitoring.indexOf("## Prerequisites"));
+  const install = monitoring.slice(monitoring.indexOf("## Step 1"), monitoring.indexOf("## Step 2"));
+  assert.match(install, /`gh cao` GitHub CLI extension/);
+  assert.match(install, /repository\s+runtime/);
+  assert.match(install, /required\s+`gh-aw` extension/);
+  assert.match(install, /--create-repo OWNER\/CONTROL_REPOSITORY/);
+  assert.doesNotMatch(install, /```bash\ngh extension install/);
+  assert.match(install, /supports published\s+prereleases/);
+  assert.match(install, /currently fails, even with `--pin`/);
+  assert.match(install, /:::tip\[Installation and authentication\]/);
+  assert.match(install, /```bash\ngh auth login\ngh auth status\n```/);
+  assert.match(install, /installer requires GitHub CLI sign-in/);
+  assert.doesNotMatch(install, /install-gh-aw\.sh|--scopes repo,workflow/);
+  const prerequisites = monitoring.slice(monitoring.indexOf("## Prerequisites"), monitoring.indexOf("## Step 1"));
+  assert.match(prerequisites, /Logged in to GitHub CLI[\s\S]*gh auth status[\s\S]*gh auth login/);
+  assert.match(monitoring, /## Prerequisites/);
+  assert.match(gettingStarted, /## Continue learning/);
+  assert.match(gettingStarted, /<span id="4-open-your-dashboard"><\/span>/);
+  for (const anchor of [
+    "guided-setup-instead",
+    "step-3---review-and-publish-your-configuration",
+    "step-4---wait-for-collection-and-inspect-your-dashboard",
+  ]) {
+    assert.ok(gettingStarted.includes(`<span id="${anchor}"></span>`), anchor);
+  }
   assert.ok(gettingStarted.trim().split(/\s+/).length < 1000, "first-run guide should stay concise");
   assert.doesNotMatch(monitoring, /--quickstart|gh aw run|cao\.sh (?:add|enable|quickstart)|AI credits/);
   assert.match(monitoring, /setup installs no campaign and runs no workflow/i);
   assert.match(monitoring, /does not commit or push/);
   assert.match(monitoring, /Check \*\*CAO validation\*\* in Actions/);
   assert.match(monitoring, /control-plane\.campaigns` is `\{\}`/);
+  assert.match(monitoring, /control-plane\.workflows` and\s+`control-plane\.operations` absent or `\{\}`/);
   assert.match(monitoring, /empty dashboard is expected/);
   assert.match(monitoring, /not every ordinary Actions job/);
   assert.match(monitoring, /does\s+\*\*not\*\*\s+guarantee a\s+private Pages site/);
   assert.match(monitoring, /including its Pages deployment/);
-  assert.match(monitoring, /headless setup only\s+supports the exact current public control repository/);
+  assert.match(monitoring, /authentication\.md#public-only-monitoring-quickstart/);
+  const nativeSetup = readFileSync("internal/cli/native_setup.go", "utf8");
+  for (const prompt of ["Repositories CAO should read", "Authentication", "Apply this setup?"]) {
+    assert.ok(nativeSetup.includes(prompt) && monitoring.includes(`**${prompt}`), prompt);
+  }
+  assert.match(monitoring, /public-only[\s\S]*GITHUB_TOKEN/);
+  assert.match(monitoring, /Decline for non-public evidence/);
+  assert.match(monitoring, /before retrying; do not publish an incomplete setup/);
+  assert.doesNotMatch(monitoring, /gh cao validate/);
+  assert.match(gettingStarted.slice(optional), /setup\/quickstart\.md/);
   assert.match(gettingStarted.slice(optional), /repo-assist-quickstart\.md/);
   assert.match(gettingStarted.slice(optional), /Installation is not execution/);
+  assert.match(gettingStarted.slice(optional), /operation-patterns\.md/);
+  assert.match(gettingStarted.slice(optional), /Direct operation.*authority-envelopes\.md/);
+  assert.match(gettingStarted.slice(optional), /Standalone fleet workflow.*configuration\.md#standalone-agentic-workflows/);
+  assert.match(gettingStarted.slice(optional), /None is enrolled, enabled or run by setup/);
   assert.match(gettingStarted.slice(optional), /\*\*review\*\* mode with \*\*one\s+repository\*\*/);
   assert.match(walkthrough, /monitor existing[\s\S]*?\[Set Up CAO\]\(setup-quickstarts\.md\)/);
   assert.match(docs, /\[Repo Assist walkthrough\]\(repo-assist-quickstart\.md\)/);
+});
+
+test("extension installation guidance distinguishes discovery, promotion, and runtime installation", () => {
+  assert.match(docs, /latest stable release, `v0\.1\.19`/);
+  assert.match(docs, /before\*\* selecting a `--pin` tag/);
+  assert.match(docs, /Merging source changes alone does not repair the public/);
+  assert.match(docs, /After a compatible release is latest/);
+  assert.match(docs, /gh extension upgrade gh-cao/);
+  assert.match(docs, /do not install the control-repository runtime or `gh-aw`/);
+});
+
+test("native and Node setup hand off to outcome and scope rather than pattern selection", () => {
+  for (const filename of ["internal/cli/native_setup.go", "activity/cao.mjs"]) {
+    const source = readFileSync(filename, "utf8");
+    assert.ok(source.includes("Monitoring is configured; executing operations is optional."));
+    assert.ok(source.includes("Describe the outcome, target scope, and execution requirements: https://githubnext.github.io/gh-cao/operation-patterns/"));
+    assert.doesNotMatch(source, /Add your first campaign separately|Choose an operation pattern/);
+  }
+  const skill = readFileSync("skills/setup-cao/SKILL.md", "utf8");
+  assert.match(skill, /control-plane\.workflows` and `control-plane\.operations` absent or empty/);
+  assert.match(skill, /operation-patterns\.md/);
+});
+
+test("outcome-to-execution guidance derives structures without granting authority", () => {
+  const guidance = readFileSync("docs/operation-patterns.md", "utf8");
+  const normalized = guidance.replace(/\s+/g, " ");
+  const cases = [
+    ["shared visibility", "Observe only"],
+    ["caller already knows the target", "Direct operation"],
+    ["bounded portion of an enrolled fleet", "Standalone fleet workflow"],
+    ["independent isolation and history", "Campaign"],
+    ["deployment stages, approvals, fan-in or long waits", "Ordinary GitHub Actions"],
+  ];
+  const rows = guidance.split("\n").filter((line) => line.startsWith("|"));
+  for (const [requirement, structure] of cases) {
+    assert.ok(rows.some((row) => row.includes(requirement) && row.includes(`**${structure}**`)),
+      `${requirement} should derive ${structure}`);
+  }
+  assert.match(normalized, /campaign even when the caller knows the targets/);
+  assert.match(normalized, /Repository count or a schedule alone does not require a campaign/);
+  assert.match(normalized, /Infer execution structure, never authority/);
+  assert.match(normalized, /reviewed policy decision/);
+  assert.match(normalized, /exact workflow SHA/);
+  assert.match(normalized, /Ask only for genuinely missing requirements/);
+  for (const filename of [
+    "skills/setup-cao/SKILL.md",
+    "skills/create-cao-campaign/SKILL.md",
+    "skills/add-cao-campaign/SKILL.md",
+  ]) {
+    const skill = readFileSync(filename, "utf8").replace(/\s+/g, " ");
+    assert.match(skill, /operation-patterns\.md/, filename);
+    assert.match(skill, /do not ask users to choose a pattern/, filename);
+    assert.match(skill, /genuinely missing requirements/, filename);
+  }
+  const authoring = readFileSync(".github/cao/instructions.md", "utf8");
+  assert.match(authoring, /Infer execution structure, never authority/);
+  const installation = readFileSync("skills/add-cao-campaign/SKILL.md", "utf8");
+  assert.match(installation, /Keep exact package selection and installation approval explicit/);
 });
 
 test("CAO command guide covers the operator-facing command surface", () => {

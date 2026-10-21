@@ -87,6 +87,17 @@
       "select": [{ "field": "queue" }, { "field": "tasks" }]
     },
     {
+      "name": "ingestion-webhook-status",
+      "subject": "Inspect live webhook delivery counters for the current server process.",
+      "objective": "Distinguish signature validation, acknowledgements, rejections and failures without polling GitHub.",
+      "acceptance": "Show only authorized process-local counters, including in-flight requests, duplicate acknowledgements and signed pings. Counters reset on restart, are not replica totals, and do not establish GitHub-side webhook registration or completed collection. Refresh the active subscription even without canonical data changes.",
+      "from": "webhook-status",
+      "compute": [
+        { "as": "configuration", "function": "if", "args": [{ "field": "configured" }, { "value": "Configured" }, { "value": "Not configured" }] }
+      ],
+      "limit": 1
+    },
+    {
       "name": "ingestion-health",
       "subject": "Show the current Redis-backed webhook and collection health snapshot.",
       "objective": "Determine whether the reported collection, webhook, queue, and backfill state warrants inspecting ingestion diagnostics.",
@@ -1775,6 +1786,37 @@
           }
         },
         {
+          "id": "ingestion-webhook-status",
+          "title": "Webhook counters (process-local, since restart)",
+          "requires": { "backend": "hosted", "on-unavailable": "hide" },
+          "subject": "Inspect webhook validation and HTTP outcomes observed by this server process.",
+          "objective": "Spot invalid signatures, failed admission and active webhook traffic without querying GitHub.",
+          "acceptance": "Display process-local counts and last-observed timestamps; missing or unauthorized evidence is unavailable, not zero. Acknowledged pings do not prove current GitHub registration and acknowledgements do not mean collection has completed.",
+          "description": "Live counters for this server process, refreshed every 30 seconds while this view is open. Reset on restart; not aggregated across replicas. Verified means valid HMAC, acknowledged means HTTP acceptance, and duplicate and ping counts overlap acknowledgements. A ping does not prove current GitHub-side registration.",
+          "data": { "source": "ingestion-webhook-status", "query-context": false, "limit": 1 },
+          "mark": "list",
+          "list": { "style": "entity-cards", "card": "webhook-status", "icon": "broadcast" },
+          "layout": "full",
+          "empty-message": "Live webhook counters are unavailable. No traffic or registration state can be inferred.",
+          "encoding": {
+            "columns": [
+              { "field": "configured", "type": "nominal", "title": "Configured" },
+              { "field": "received", "type": "quantitative", "title": "Received" },
+              { "field": "in-flight", "type": "quantitative", "title": "In flight" },
+              { "field": "verified", "type": "quantitative", "title": "HMAC verified" },
+              { "field": "accepted", "type": "quantitative", "title": "Acknowledged" },
+              { "field": "rejected", "type": "quantitative", "title": "Rejected" },
+              { "field": "failed", "type": "quantitative", "title": "Failed" },
+              { "field": "duplicates", "type": "quantitative", "title": "Duplicates" },
+              { "field": "pings", "type": "quantitative", "title": "Signed pings" },
+              { "field": "last-received-at", "type": "temporal", "title": "Last delivery", "format": "human-friendly-timestamp" },
+              { "field": "last-accepted-at", "type": "temporal", "title": "Last acknowledgement", "format": "human-friendly-timestamp" },
+              { "field": "last-failure-at", "type": "temporal", "title": "Last failure", "format": "human-friendly-timestamp" },
+              { "field": "last-ping-at", "type": "temporal", "title": "Last signed ping", "format": "human-friendly-timestamp" }
+            ]
+          }
+        },
+        {
           "id": "ingestion-queue-sizes",
           "title": "Server collection workload (administrators)",
           "requires": {
@@ -2374,175 +2416,6 @@
           }
         }
       ]
-    },
-    {
-      "id": "operational-value",
-      "kind": "custom",
-      "intent": "Find repositories with operational measurements and distinguish unmeasured work.",
-      "subject": "Repository-linked operational-value evidence, goals and measurement availability.",
-      "objective": "Choose a repository for outcome-measurement investigation.",
-      "acceptance": "Separate measured and unmeasured repositories, preserve native metric identity and latest observation time, and expose coverage. Missing evidence is not zero value; run success is not an outcome measure.",
-      "title": "Operational Value",
-      "description": "Choose a repository for operational-value measurement investigation.",
-      "icon": "graph",
-      "class-name": "value-page",
-      "view-mode-control": false,
-      "route": {
-        "navigation-page": "value",
-        "tab": "measurements",
-        "breadcrumbs": [{ "page": "value" }],
-        "tabs": [
-          { "id": "workflows", "label": "Workflow results", "icon": "trophy", "page": "value" },
-          { "id": "measurements", "label": "Repository measurements", "icon": "repo", "page": "operational-value" }
-        ]
-      },
-        "views": [
-          {
-            "id": "operational-value-summary",
-            "show-title": false,
-            "data": { "source": "operational-value-overview-summary" },
-            "mark": "list",
-            "list": { "style": "entity-cards", "card": "outcome-evidence-summary", "icon": "graph" },
-            "encoding": { "columns": [{ "field": "summary", "type": "nominal", "title": "Evidence readiness" }] },
-            "layout": "full",
-            "empty-message": "Repository evidence is unavailable."
-          },
-          {
-            "id": "operational-value-signals",
-            "title": "Repositories",
-            "subject": "Direction and uncertainty across measured repositories, including standalone workflow outcomes.",
-            "objective": "Find worsening or mixed outcomes, gains and evidence gaps without inspecting every timeline.",
-            "acceptance": "One count per repository, not per report. Keep insufficient evidence visible and native units separate. Retained observations do not imply freshness, complete scope, sustained gains or causality.",
-            "data": { "source": "operational-value-measured-repositories" },
-            "mark": "list",
-            "list": {
-              "style": "entity-cards",
-              "appearance": "grouped",
-              "card": "repository-outcome-signal",
-              "icon": "repo",
-              "drill": {
-                "type": "query", "page": "operational-value-repository", "query": "operational-value-plot-series",
-                "title-field": "repository-coordinate",
-                "arguments": [
-                  { "name": "organization", "field": "organization" },
-                  { "name": "repository", "field": "repository" }
-                ]
-              }
-            },
-            "layout": "full",
-            "empty-message": "No repositories have retained primary measurements. See Evidence for coverage.",
-            "encoding": { "columns": [
-              { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
-              { "field": "signal", "type": "nominal", "title": "Observed direction" },
-              { "field": "coverage-summary", "type": "nominal", "title": "Coverage" }
-            ] }
-          },
-          {
-            "id": "operational-value-unmeasured",
-            "disclosure": "supplemental",
-            "disclosure-label": "Repositories without retained measurements",
-            "description": "No retained primary measurements. Missing evidence is not zero value.",
-            "data": { "source": "operational-value-unmeasured-repositories" },
-            "mark": "list",
-            "list": { "style": "entity-cards", "card": "repository-outcome-signal", "icon": "repo" },
-            "layout": "full",
-            "empty-message": "Every inventory repository has retained primary measurements.",
-            "encoding": { "columns": [
-              { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
-              { "field": "evidence-reason", "type": "nominal", "title": "Evidence" }
-            ] }
-          }
-        ]
-    },
-    {
-      "id": "operational-value-evidence",
-      "kind": "custom",
-      "intent": "Inspect measurement coverage, latest native values and declared directions.",
-      "subject": "Retained operational-value observations and measurement definitions.",
-      "objective": "Determine what can honestly be compared before claiming improvement.",
-      "acceptance": "Preserve metric identity, native unit, direction, timestamp and coverage denominator; keep missing values unavailable and unlike metrics separate. Latest observed values do not alone establish causality or attainment.",
-      "title": "Operational Value",
-      "description": "Determine whether operational-value evidence supports a valid comparison.",
-      "icon": "graph",
-      "view-mode-control": false,
-      "route": {
-        "navigation-page": "value",
-        "breadcrumbs": [{ "page": "operational-value" }],
-        "tabs": [
-          { "id": "workflows", "label": "Workflow results", "icon": "trophy", "page": "value" },
-          { "id": "measurements", "label": "Repository measurements", "icon": "repo", "page": "operational-value" }
-        ]
-      },
-      "views": [
-          {
-            "id": "operational-value-coverage",
-            "disclosure": "supplemental",
-            "disclosure-label": "Measurement availability",
-            "subject": "Outcome measurement coverage for inventory and observed repositories.",
-            "objective": "Identify repositories with primary outcome evidence and evidence gaps.",
-            "acceptance": "Include repositories without observations and outcomes without campaigns. Not measured is not zero value. Maturity does not verify impact.",
-            "description": "Inventory and measured repositories are listed, including standalone workflow outcomes. Mature evidence is not necessarily comparable or current. No observations does not establish that a measurement contract is missing.",
-            "data": { "source": "operational-value-repository-coverage" },
-            "mark": "table",
-            "column-summaries": false,
-            "layout": "full",
-            "empty-message": "No inventory or measured repositories are available.",
-            "encoding": {
-              "columns": [
-                { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
-                { "field": "measurement-state", "type": "nominal", "title": "Outcome evidence" },
-                { "field": "measured-goals", "type": "quantitative", "title": "Measured repository goals" },
-                { "field": "mature-goals", "type": "quantitative", "title": "Mature repository goals" }
-              ]
-            }
-          },
-          {
-            "id": "operational-value-latest",
-            "title": "Latest measurements",
-            "subject": "Latest native repository outcomes and movement against comparable retained measurements.",
-            "objective": "Inspect whether measured goals are moving in the intended direction.",
-            "acceptance": "Keep repositories, measures, units and contract versions separate. Show interim results and observation timestamps. Movement is not causal attribution or a pre-adoption baseline comparison.",
-            "description": "Recent change compares complete adjacent periods, not lifetime change since adoption. Native values remain visible when comparison evidence is missing. Two points show observed change, not a sustained trend or verified impact.",
-            "data": { "source": "operational-value-latest" },
-            "mark": "table",
-            "column-summaries": false,
-            "controls": "interactive",
-            "lazy-list": true,
-            "layout": "full",
-            "empty-message": "No primary outcome measurements are retained.",
-            "encoding": { "columns": [
-              { "field": "repository-coordinate", "type": "nominal", "title": "Repository", "display": "repository-link" },
-              { "field": "value-workflow", "type": "nominal", "title": "Workflow" },
-              { "field": "operational-value-name", "type": "nominal", "title": "Goal measure" },
-              { "field": "operational-value", "type": "quantitative", "title": "Latest value" },
-              { "field": "operational-value-unit", "type": "nominal", "title": "Native unit" },
-              { "field": "native-change", "type": "quantitative", "title": "Recent change" },
-              { "field": "movement", "type": "nominal", "title": "Comparison status" },
-              { "field": "recent-comparison-period", "type": "nominal", "title": "Compared periods" },
-              { "field": "observed-at", "type": "temporal", "format": "human-friendly-timestamp", "title": "Observed" }
-            ] }
-          },
-          {
-            "id": "operational-value-direction-chart",
-            "subject": "Comparable outcome direction by repository.",
-            "objective": "Inspect direction distribution after evaluating measurement readiness.",
-            "acceptance": "Count each repository once, not native values. Omit incomparable summaries; an empty distribution is not neutral. Links open repository history directly.",
-            "disclosure": "supplemental",
-            "disclosure-label": "Comparable outcome distribution",
-            "description": "Only fully comparable repository summaries appear. Comparison blockers remain visible in Overview; no comparable evidence is not a neutral outcome.",
-            "data": { "source": "operational-value-direction-repositories", "limit": 100 },
-            "mark": "chart",
-            "chart": "horizontal-bar",
-            "layout": "full",
-            "empty-message": "No comparable outcome directions are available. Inspect the comparison reasons in Overview.",
-            "encoding": {
-              "x": { "field": "repository-coordinate", "type": "nominal", "title": "Repository" },
-              "y": { "field": "repositories", "type": "quantitative", "title": "Measured repositories" },
-              "color": { "field": "signal", "type": "nominal", "title": "Observed direction" },
-              "href": { "field": "repository-dashboard-link" }
-            }
-          }
-        ]
     },
     {
       "id": "maintenance",

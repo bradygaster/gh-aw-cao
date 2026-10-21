@@ -260,13 +260,20 @@ func nativeValidatePolicy(document map[string]any) error {
 			"allowed-owners":       nativePolicyStrings(nativeOwner, 0, math.MaxInt),
 			"allowed-repositories": nativePolicyStrings(repositoryPattern, 0, math.MaxInt),
 		}),
-		"activity": nativePolicyObject(map[string]nativePolicyRule{"repositories": nativePolicyStrings(repositoryPattern, 1, math.MaxInt)}, "repositories"),
+		"activity": nativePolicyObject(map[string]nativePolicyRule{
+			"repositories": nativePolicyStrings(repositoryPattern, 1, math.MaxInt), "public-only": nativePolicyBool,
+		}, "repositories"),
 		"inventory": nativePolicyObject(map[string]nativePolicyRule{
 			"max-scan-repositories": nativeInteger(1, 100000), "cell-count": nativeInteger(1, 1000),
 			"cell-index": nativeInteger(0, math.MaxFloat64), "batch-size": nativeInteger(1, 100000), "batch-index": nativeInteger(0, math.MaxFloat64),
 		}),
 		"web":      nativePolicyObject(map[string]nativePolicyRule{"experimental": nativePolicyBool, "favicon": nativeValidateFavicon, "host": nativeValidateHost}),
 		"defaults": nativePolicyObject(defaults), "campaigns": nativeMapping(slugPattern, nativePolicyObject(campaign)),
+		"operations": nativeMapping(slugPattern, nativePolicyObject(map[string]nativePolicyRule{
+			"enabled": nativePolicyBool, "mode": mode, "max-mode": mode,
+			"max-repositories": nativeInteger(1, 1000),
+			"targets":          nativeMapping(repositoryPattern, nativePolicyObject(map[string]nativePolicyRule{"mode": mode}, "mode")),
+		})),
 		"publishing": nativePolicyObject(map[string]nativePolicyRule{
 			"enabled": nativePolicyBool, "control-repositories": nativePolicyStrings(repositoryPattern, 0, math.MaxInt),
 			"reviewers": nativePolicyStrings(nativeLogin, 0, math.MaxInt),
@@ -324,7 +331,9 @@ func nativeValidatePolicy(document map[string]any) error {
 		}
 	}
 	campaigns, _ := c["campaigns"].(map[string]any)
+	workflowBindings := map[string]bool{}
 	for name, value := range campaigns {
+		workflowBindings[name] = true
 		if name != "activity" {
 			if _, exists := value.(map[string]any)["workflow-values"]; exists {
 				return errors.New("workflow-values is only supported for the activity campaign")
@@ -345,6 +354,19 @@ func nativeValidatePolicy(document map[string]any) error {
 				return fmt.Errorf("campaign %s workers must declare unique workflow identities", name)
 			}
 			workflows[workflow] = true
+			workflowBindings[workflow] = true
+		}
+	}
+	operations, _ := c["operations"].(map[string]any)
+	for name, value := range operations {
+		if workflowBindings[name] {
+			return fmt.Errorf("operation workflow identity %s conflicts with an existing declaration", name)
+		}
+		targets, _ := value.(map[string]any)["targets"].(map[string]any)
+		for repository := range targets {
+			if err := withinScope(repository, false); err != nil {
+				return err
+			}
 		}
 	}
 	if inventory, ok := c["inventory"].(map[string]any); ok {
