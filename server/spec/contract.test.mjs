@@ -51,7 +51,7 @@ test('agent discovery describes public GET and body-free HEAD responses', () => 
 
 test('the generated contract describes the implemented security and wire formats', () => {
   assert.equal(openapi.openapi, '3.1.0')
-  assert.equal(openapi.info.version, '2.7.0')
+  assert.equal(openapi.info.version, '2.8.0')
   for (const path of ['/api/runs/{id}/jobs', '/api/runs/{id}/sessions', '/api/sessions/{id}/events']) {
     assert.equal(openapi.paths[path], undefined)
   }
@@ -104,6 +104,24 @@ test('the generated contract describes the implemented security and wire formats
     },
     { type: 'string', format: 'date-time' }
   )
+})
+
+test('on-demand value publication preserves the original bounded envelope and administrator boundary', () => {
+  const operation = openapi.paths['/api/v1/value'].post
+  assert.ok(operation.security.some(entry => 'BearerAuth' in entry))
+  assert.ok(operation.security.some(entry => 'ApiKeyAuth' in entry))
+  assert.ok(operation.parameters.some(parameter => parameter.name === 'X-CSRF-Token'))
+  assert.equal(operation.requestBody.content['application/json'].schema.$ref, '#/components/schemas/ValuePublicationRequest')
+  assert.equal(operation.requestBody.content['application/x-ndjson'].schema.$ref, '#/components/schemas/ValuePublicationRequest')
+  assert.equal(operation.responses['200'].content['application/json'].schema.$ref, '#/components/schemas/ValuePublication')
+  for (const status of ['400', '401', '403', '404', '409', '413', '415', '503']) {
+    assert.ok(operation.responses[status], `publication describes ${status}`)
+  }
+  assert.match(operation.description, /step-up assurance/)
+  assert.match(operation.description, /survives Activity snapshot replacement/)
+  assert.match(operation.description, /No workflow discovery/)
+  assert.deepEqual(openapi.components.schemas.ValuePublicationRequest.properties.schema_version.enum, [2])
+  assert.deepEqual(openapi.components.schemas.ValuePublicationRequest.properties.kind.enum, ['operational_value_evidence'])
 })
 
 test('activation admission has its own OIDC-only, empty-denial contract', () => {
@@ -174,6 +192,38 @@ test('GitHub resource operations describe authenticated conditional reads and gr
   assert.equal(openapi.components.securitySchemes.LocalGitHubResourceSession.name, 'cao_github_local')
 })
 
+test('conclusion admission records only bounded compact sessions with OIDC-only empty responses', () => {
+  const operation = openapi.paths['/api/conclusion'].post
+  assert.deepEqual(operation.security, [{ BearerAuth: [] }])
+  assert.equal(operation.parameters.some(parameter => parameter.name === 'X-CSRF-Token'), false)
+  assert.equal(operation.requestBody.content['application/json'].schema.$ref, '#/components/schemas/ConclusionRequest')
+  assert.deepEqual(Object.keys(operation.responses), ['204', '403', '429', '503'])
+  for (const response of Object.values(operation.responses)) {
+    assert.deepEqual(response.headers['cache-control'].schema.enum, ['no-store'])
+    assert.equal(response.content, undefined)
+  }
+  const request = openapi.components.schemas.ConclusionRequest
+  assert.equal(request.required.length, 13)
+  assert.equal(request.properties.session.maxLength, 16384)
+  assert.equal(request.properties.usage_artifact_ids.maxItems, 2)
+  assert.equal(request.properties.usage_artifact_ids.items.$ref, '#/components/schemas/UsageArtifactID')
+  assert.equal(openapi.components.schemas.UsageArtifactID.pattern, '^[1-9][0-9]{0,19}$')
+  for (const [name, value] of Object.entries(openapi.components.schemas.AdmissionRequest.properties)) {
+    assert.deepEqual(request.properties[name], value)
+  }
+  const compaction = openapi.components.schemas.SessionCompaction
+  assert.equal(compaction.required.length, 6)
+  assert.deepEqual(compaction.properties.version.enum, [1])
+  assert.equal(compaction.properties.included_events.maximum, 128)
+  for (const name of ['omitted_events', 'oversized_lines']) {
+    assert.equal(compaction.properties[name].minimum, 0)
+    assert.equal(compaction.properties[name].maximum, 9007199254740991)
+  }
+  for (const schema of [request, compaction]) {
+    assert.deepEqual(schema.unevaluatedProperties, { not: {} })
+  }
+})
+
 test('hosted repository consent is explicit and server-authorized', () => {
   const login = openapi.paths['/auth/login'].get
   const consent = login.parameters.find(parameter => parameter.name === 'hosted_cli')
@@ -203,6 +253,7 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
   const pairs = [
     ['../internal/admission/protocol.go', 'Request', 'AdmissionRequest'],
     ['../internal/admission/protocol.go', 'Allowances', 'AdmissionAllowances'],
+    ['../internal/admission/conclusion_protocol.go', 'SessionCompaction', 'SessionCompaction'],
     ['../internal/server/server.go', 'queryRequest', 'QueryRequest'],
     ['../internal/server/server.go', 'queryResponse', 'QueryResponse'],
     ['../internal/query/types.go', 'Definition', 'QueryDefinition'],
@@ -212,6 +263,7 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     ['../internal/model/model.go', 'Source', 'QuerySource'],
     ['../internal/model/model.go', 'Metrics', 'QueryMetrics'],
     ['../internal/server/operations.go', 'rebuildStatus', 'RebuildStatus'],
+    ['../internal/server/value.go', 'valuePublicationRequest', 'ValuePublicationRequest'],
     ['../internal/server/logs.go', 'serverLogSnapshot', 'ServerLogSnapshot'],
     ['../internal/server/logs.go', 'serverLogRedis', 'ServerLogRedis'],
     ['../internal/server/github_resources.go', 'githubRepositoryResource', 'GitHubRepository'],
@@ -229,6 +281,10 @@ test('structured payload fields stay in sync with Go JSON tags', () => {
     const specFields = Object.keys(openapi.components.schemas[schema].properties).sort()
     assert.deepEqual(specFields, goFields, `${schema} differs from ${file}:${name}`)
   }
+  const conclusionSource = readFileSync(join(directory, '../internal/admission/conclusion_protocol.go'), 'utf8')
+  const ownFields = [...conclusionSource.match(/type ConclusionRequest struct \{([\s\S]*?)\n\}/)[1].matchAll(/`json:"([^"]+)"`/g)].map(([, name]) => name)
+  assert.deepEqual(Object.keys(openapi.components.schemas.ConclusionRequest.properties).sort(),
+    [...Object.keys(openapi.components.schemas.AdmissionRequest.properties), ...ownFields].sort())
 })
 
 test('query contracts expose bounded window operations with canonical wire names', () => {
@@ -299,14 +355,14 @@ test('the server-only MCP logs tool matches the HTTP snapshot contract', () => {
 })
 
 test('selected JSON Schemas and nullable responses are emitted', () => {
-  for (const schema of ['AdmissionRequest', 'AdmissionAllowances', 'QueryRequest', 'QueryResponse', 'QueryDefinition', 'RevisionEvent', 'WebhookAcknowledgement']) {
+  for (const schema of ['AdmissionRequest', 'AdmissionAllowances', 'ConclusionRequest', 'SessionCompaction', 'QueryRequest', 'QueryResponse', 'QueryDefinition', 'RevisionEvent', 'WebhookAcknowledgement']) {
     const document = JSON.parse(readFileSync(join(directory, 'generated/schemas', `${schema}.json`), 'utf8'))
     assert.equal(document.$schema, 'https://json-schema.org/draft/2020-12/schema')
     assert.ok(document.properties)
   }
   assert.deepEqual(
     readdirSync(join(directory, 'generated/schemas')).sort(),
-    ['AdmissionAllowances.json', 'AdmissionRequest.json', 'QueryDefinition.json', 'QueryRequest.json', 'QueryResponse.json', 'RevisionEvent.json', 'WebhookAcknowledgement.json']
+    ['AdmissionAllowances.json', 'AdmissionRequest.json', 'ConclusionRequest.json', 'QueryDefinition.json', 'QueryRequest.json', 'QueryResponse.json', 'RevisionEvent.json', 'SessionCompaction.json', 'WebhookAcknowledgement.json']
   )
   const campaign = openapi.paths['/api/v1/memory/{campaign}'].get.responses['200'].content['application/json'].schema
   assert.ok(campaign.anyOf.some(branch => branch.type === 'null'))
