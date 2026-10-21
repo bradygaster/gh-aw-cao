@@ -333,7 +333,7 @@ test("root campaign provides default control-repository agent context", () => {
   const debugSkill = readFileSync(join(root, "skills", "debug-cao", "SKILL.md"), "utf8");
 
   assert.doesNotMatch(rootManifestSource, /source: AGENTS\.md|default-AGENTS\.md/);
-  assert.equal(rootManifest.resources.length, 5);
+  assert.equal(rootManifest.resources.length, 7);
   assert.equal(rootManifest.resources.some(({ destination }) => destination.startsWith(".github/skills/")), false);
   assert.deepEqual(rootManifest.skills, [
     "skills/agentic-workflows",
@@ -434,7 +434,7 @@ test("root campaign resolves the single CAO bootstrap runtime", () => {
   assert.equal(policy.authorized, true);
   assert.equal(policy.campaign, "dependabot");
   assert.doesNotMatch(rootManifest, /\.github\/aw\/cao\//);
-  for (const path of ["control.mjs", "policy.mjs", "setup-github-apps.mjs"]) {
+  for (const path of ["control.mjs", "policy.mjs", "authority.mjs", "operations.mjs", "setup-github-apps.mjs"]) {
     assert.deepEqual(
       controlPlaneManifest.resources.find(({ destination }) =>
         destination === `.github/workflows/shared/${path}`),
@@ -496,6 +496,14 @@ test("root campaign composes its operational campaigns through manifests", () =>
     {
       source: ".github/workflows/shared/policy.mjs",
       destination: ".github/workflows/shared/policy.mjs",
+    },
+    {
+      source: ".github/workflows/shared/authority.mjs",
+      destination: ".github/workflows/shared/authority.mjs",
+    },
+    {
+      source: ".github/workflows/shared/operations.mjs",
+      destination: ".github/workflows/shared/operations.mjs",
     },
     {
       source: ".github/workflows/shared/setup-github-apps.mjs",
@@ -625,7 +633,8 @@ test("README routes zero-to-CAO requests to the setup skill", () => {
   assert.ok(existsSync(addCampaignSkillPath));
   assert.match(setupSkill, /^---\r?\nname: setup-cao\r?\n/);
   assert.match(setupSkill, /control-plane\.campaigns.*empty object/);
-  assert.match(setupSkill, /no user-facing campaign installed or enabled, no live rollout, and no workflow\s+dispatch/);
+  assert.match(setupSkill, /No operation enrollment,\s+live rollout or dispatch/);
+  assert.match(setupSkill, /Install, enroll, enable, and execute no agentic operation during setup/);
   assert.match(setupSkill, /Capability\s+is not consent/);
   assert.match(setupSkill, /Ask before repository creation or reuse, runtime installation, credential\s+configuration, commit, or push/);
   assert.match(setupSkill, /credential reach never widens policy/);

@@ -300,7 +300,7 @@ func nativeSetup(cmd *cobra.Command, gh ghExecutor) error {
 	if result["cancelled"] == true {
 		return nil
 	}
-	_, err = fmt.Fprint(cmd.OutOrStdout(), "Next: gh cao doctor\nThen review git diff and git status, commit, and push the installed files.\nCheck the CAO validation workflow in Actions after publishing.\nAdd your first campaign separately with gh cao campaigns add githubnext/gh-cao/CAMPAIGN.\n")
+	_, err = fmt.Fprint(cmd.OutOrStdout(), "Next: gh cao doctor\nThen review git diff and git status, commit, and push the installed files.\nCheck the CAO validation workflow in Actions after publishing.\nMonitoring is configured; executing operations is optional.\nChoose an operation pattern: https://githubnext.github.io/gh-cao/operation-patterns/\n")
 	return err
 }
 
@@ -313,6 +313,11 @@ func nativeSetupBoundedPolicy(policy map[string]any, repo string) error {
 	if value, exists := control["workflows"]; exists {
 		if workflows := nativeSetupMap(value); workflows == nil || len(workflows) != 0 {
 			return errors.New("non-interactive setup requires a bare control plane with no declared standalone workflows")
+		}
+	}
+	if value, exists := control["operations"]; exists {
+		if operations := nativeSetupMap(value); operations == nil || len(operations) != 0 {
+			return errors.New("non-interactive setup requires a bare control plane with no declared operations")
 		}
 	}
 	exact := func(value any, expected string) bool {
@@ -369,6 +374,11 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 			return nil, errors.New("setup only configures a bare control plane with no declared standalone workflows")
 		}
 	}
+	if value, exists := control["operations"]; exists {
+		if operations := nativeSetupMap(value); operations == nil || len(operations) != 0 {
+			return nil, errors.New("setup only configures a bare control plane with no declared operations")
+		}
+	}
 	owner := strings.Split(controlRepo.Repository, "/")[0]
 	repositories := []string{controlRepo.Repository}
 	owners := []string{owner}
@@ -382,7 +392,7 @@ func nativeSetupControl(cmd *cobra.Command, gh ghExecutor, prompt nativeSetupPro
 			return nil, err
 		}
 	} else {
-		if err := nativeSetupNote(cmd, "Control repository: %s (%s). No campaign will be installed, enabled, or run.\nWildcard patterns are expanded now; only exact names are saved.\n", repo, controlRepo.Visibility); err != nil {
+		if err := nativeSetupNote(cmd, "Control repository: %s (%s). Monitoring only; no agentic operation will be enabled or run.\nWildcard patterns are expanded now; only exact names are saved.\n", repo, controlRepo.Visibility); err != nil {
 			return nil, err
 		}
 		answer, e := prompt.Text("Repositories CAO should read (comma-separated names or * wildcards)", repo)

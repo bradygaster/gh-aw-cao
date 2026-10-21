@@ -46,6 +46,41 @@ compiled by gh-aw. No one input can widen another.
 
 ## Runtime flows
 
+### Authority envelopes and operating patterns
+
+CAO's authority kernel (`.github/workflows/shared/authority.mjs`) is independent
+of workflow roles and orchestration topology. It resolves mode/target ceilings,
+checks scope and validates versioned scoped grants. It performs no discovery,
+GitHub requests, credential acquisition or workflow dispatch. Existing campaign
+and standalone policy adapters use this same resolver while preserving their
+legacy output contracts. Campaigns remain first-class, opinionated operating
+patterns, not prerequisites for operation execution.
+
+`operations.mjs` provides the direct-operation policy and gh-aw integration
+adapter. An exact workflow slug under `control-plane.operations` can import
+`shared/operation.md` and request an explicit target or JSON target set without
+campaigns, workers, inventory cells or rollout configuration. Identity conflicts
+with existing campaign/worker/standalone declarations reject. Multiple targets
+are review-only with a common destination; live requires one `target_repo` and
+target-bound compiled safe outputs.
+
+The direct operation request, verified execution context and resolved envelope
+are distinct contracts. Version 1 binds each scoped target/mode/destination
+grant to the control repository, exact policy SHA, workflow reference, run and
+attempt. Requests cannot provide verified context or execution capabilities.
+The adapter re-resolves exact-revision policy and compares the admitted handoff
+before preparing candidates; redirected, archived, disabled or incompletely
+observed repositories block execution. Review destination privacy and scope
+checks remain independent of target allowlists.
+
+Required enforcement controls are versioned and fail closed when unsupported.
+The envelope is neither a credential nor standalone proof of provenance.
+Narrowing comparisons require independently verified inputs and cannot grant
+delegation. Direct delegation, pooled allowances, runtime-loaded plugins and
+additional execution backends are unsupported. Native gh-aw authorization,
+credential reach, tools and safe outputs remain cumulative constraints.
+See `docs/authority-envelopes.md` for the contracts and authoring example.
+
 ### Operation execution
 
 1. A schedule or manual dispatch starts an orchestrator in the control
@@ -77,8 +112,9 @@ it cannot discover extra targets or dispatch more work. No orchestrator or
 downstream workflow inventory is required. Missing inventory evidence fails
 closed. Credential reach and safe-output capabilities remain declared by gh-aw;
 CAO does not expand them for fleet execution.
-Bare setup rejects policies with declared standalone workflows before changing
-scope or authentication, just as it rejects declared operational campaigns.
+Bare setup rejects policies with declared standalone workflows or direct
+operations before changing scope or authentication, just as it rejects declared
+operational campaigns.
 
 A local debugger may manually launch one worker in request-only `debug` mode.
 Admission verifies a human `workflow_dispatch` sender with current write access
@@ -1142,7 +1178,7 @@ not copy its manifest, Copilot extension, bundled specification documents, or
 repository-only dashboard authoring skills. Materialization preserves
 pre-existing plugin resources outside its owned runtime destinations. The
 installer adds the repository-root `aw.yml` package. That manifest explicitly
-composes only the Activity, dashboard, and validation workflows, five shared
+composes only the Activity, dashboard, and validation workflows, seven shared
 control-plane resources, seven portable control-repository skills (including
 the Agentic Workflows router), one Agentic Workflows agent, and the gh-aw
 project settings. The portable router is a thin adapter to the current
