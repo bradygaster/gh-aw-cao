@@ -22,9 +22,6 @@ install → connect → dashboard. Follow the written steps below.
   2.68+. Linux, macOS, or Windows with WSL.
 - **Logged in to GitHub CLI:** verify with `gh auth status` and run
   `gh auth login` if needed.
-- **Control repository:** a separate GitHub repository where you can configure
-  Actions, credentials, and Pages. Enable Actions. CAO runs here, not in the
-  monitored repository.
 - **One repository to monitor:** choose its exact `OWNER/REPOSITORY`.
   Existing Agentic Workflow history is useful, not required.
 
@@ -36,16 +33,22 @@ separate [hosted server deployment](deployment.md).
 
 ## Step 1 - Install CAO
 
-In a clean control-repository checkout on its default branch, install the
+Use an existing repository you have permission to configure, or create a new,
+empty one. A dedicated control repository is recommended. Clone it and enter its
+root directory before installing CAO. Enable Actions. For targets in one
+organization, prefer owning the control repository there; see
+[other topologies](deployment-and-governance.md).
+
+From a clean default-branch checkout, install the
 **`gh cao` GitHub CLI extension**, **repository runtime**, and required
-`gh-aw` extension together:
+`gh-aw` extension:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash
 ```
 
-The installer verifies CLI checksums and version and supports published
-prereleases. The CLI alone is insufficient.
+The installer verifies checksums and version and supports published
+prereleases.
 
 Direct `gh extension install` currently fails, even with `--pin`: latest
 stable lacks binaries. Use the installer; see [why](cao-cli.md#github-cli-extension).
@@ -65,8 +68,7 @@ The installer requires GitHub CLI sign-in.
 gh cao --version
 ```
 
-**Ready:** `gh cao` prints its version; runtime files are installed.
-No campaign is installed or run.
+**Ready:** `gh cao` prints its version; runtime installed.
 
 <details>
 <summary>No control repository yet? Create one during installation.</summary>
@@ -87,11 +89,11 @@ Enter the new checkout and run `gh cao --version`.
 
 ## Step 2 - Connect one repository
 
+After Step 1, run in an **interactive terminal** at the **control repository's root**:
+
 ```bash
 gh cao setup
 ```
-
-Run this in an **interactive terminal**, then follow the prompts:
 
 1. At **Repositories**, enter your exact `OWNER/REPOSITORY`,
    not an organization wildcard. The control repository stays included.
