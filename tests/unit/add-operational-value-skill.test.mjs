@@ -9,6 +9,34 @@ import { pathToFileURL } from "node:url";
 const root = path.resolve(import.meta.dirname, "../..");
 const scripts = path.join(root, ".github/skills/add-operational-value/scripts");
 
+test("skill connects frozen intent, final acceptance, dated lineage and reusable reporting", () => {
+  const skill = readFileSync(path.join(root, ".github/skills/add-operational-value/SKILL.md"), "utf8");
+  assert.match(skill, /Intent defines what to measure; cadence tracks repository state/);
+  assert.match(skill, /Do not sample only at accepted outputs/);
+  assert.match(skill, /same elapsed follow-up/);
+  assert.match(skill, /right-censored at the observation cutoff/);
+  assert.match(skill, /ClosedEvent.closer/);
+  assert.match(skill, /collectEvents/);
+  assert.match(skill, /--report/);
+  assert.match(skill, /examples\/daily-file-diet.mjs/);
+  assert.match(skill, /examples\/acquire-file-diet.mjs/);
+  assert.match(skill, /gh-aw-execution/);
+  assert.match(skill, /Tracking IDs locate outputs, not accepted/);
+  assert.match(skill, /closed issues are not automatically accepted implementations/i);
+  assert.match(skill, /Missing lifecycle data is unknown, not zero/);
+  assert.match(skill, /No review triggered/);
+  assert.match(skill, /Overdue acceptance/);
+  assert.match(skill, /Do not invent alert thresholds/);
+  assert.match(skill, /automatically stage registration/);
+  assert.match(skill, /--collector PATH --if-absent/);
+  assert.match(skill, /Preserve existing registrations and explicit disables/);
+  assert.match(skill, /not.*a current-evidence/);
+  const events = JSON.parse(readFileSync(path.join(root, "tests/fixtures/operational-value/file-diet-events.json"), "utf8")).events;
+  assert.equal(events.filter(event => !event.lineage.some(edge => edge.relation === "connected")
+    && event.lineage.some(edge => edge.relation === "closed-by")).length, 26);
+  assert.ok(events.every(event => event.lineage.some(edge => edge.relation === "closed-by")));
+});
+
 test("skill uses query-first evidence without limiting history to source retention", () => {
   const skill = readFileSync(
     path.join(root, ".github/skills/add-operational-value/SKILL.md"),

@@ -186,8 +186,10 @@ restart-durable capability.
 The HTTP and MCP query boundary uses a disposable cache-aside layer for
 expensive queries with compact output. SHA-256 query identities include the
 definitions, parameters, pagination, schema, and current authorization class,
-not ingestion revisions. Each entry has a fixed five-minute lifetime; ingestion
-and data egress do not invalidate or renew it. Redis-side atomic expiry and
+not ingestion revisions for ordinary queries. Value-evidence-dependent queries
+also key by the current canonical revision so publication is visible when
+subscriptions refresh. Each entry has a fixed five-minute lifetime; ingestion
+and data egress do not renew it. Redis-side atomic expiry and
 oldest-first eviction bound both allocator-reported result/index memory and
 entry count without changing global Redis eviction policy or touching sessions
 and queues. Cached payloads retain their original evidence revision and
@@ -213,11 +215,45 @@ deduplicates GitHub webhooks, and atomically replaces the current Postgres
 sources and state. `server/spec/storage.tsp` owns the fresh-only physical
 Postgres contract. Its emitter generates the standalone
 `server/internal/postgresx/schema.sql` and matching Go column bindings.
-Eighteen canonical collections map one-to-one to entity tables containing only
+Nineteen canonical collections map one-to-one to entity tables containing only
 query-consumed fields and identity/storage keys. Scalars use native SQL types;
 required structured fields use entity-owned relational child values, not
 JSON, JSONB, or serialized row documents. Scalar entity rows are never duplicated
 in generic source storage. Compact presence bits preserve missing versus null.
+Operational Value evidence retains one bounded current packet per target
+repository, workflow and frozen contribution metric/version. Its acquired
+contract, output, acceptance, lineage, independent snapshot, quality and
+coverage facts are typed relational children, replaced atomically with their
+packet and retained independently of seven-day Run detail. The single
+`operational-value-evidence` logical source only normalizes those facts.
+Retained source identity materializes observed Repository and Workflow parents,
+never registration or activation; packet cutoff/capture provenance supplies
+source metadata without asserting complete coverage or current freshness.
+Counts, comparisons, movement and report presentation remain declarative
+queries; importing evidence grants no target authority and navigation never
+acquires evidence.
+Explicit `gh cao value publish` writes one validated original packet through
+administrator-only `POST /api/v1/value` into PostgreSQL. The namespace writer
+lock serializes publication with snapshot replacement; typed ownership metadata
+preserves the packet, fact children and required observed parents across
+replacement, without another canonical copy. Exact retries preserve the revision;
+older/conflicting captures, frozen-contract drift and immutable-history rewrites
+fail. Hosted publication requires fresh administrator OAuth assurance and CSRF;
+loopback PostgreSQL uses its existing bearer capability. SQLite and static Pages
+have no direct-publication endpoint. Upload never executes or registers code.
+Recurring acquisition requires reviewed registration for an exact repository and
+workflow under `control-plane.campaigns.activity.workflow-values`. After the
+frozen function and bounded collector pass verification, the skill stages that
+registration automatically with `value enable --if-absent`, preserving existing
+registrations and explicit `enabled: false` disables. Mere function presence
+never grants execution authority. Reviewed local
+collectors and policy deploy together. Existing Activity and hosted collection
+cycles invoke due collectors only within effective collection scope, using the
+frozen cadence and ordinary scoped read credentials. They preserve immutable
+proof and original evidence clocks; failed refreshes retain the previous capture
+without reporting a fresh success or zero. Disabling collection retains history.
+No dashboard navigation, report upload or workflow discovery creates an opt-in,
+and no per-workflow schedule or model call is introduced.
 Owner-run bootstrap initializes this schema and its weekly partitions; runtime
 opens and validates provisioned state without DDL. Daily owner-run maintenance
 keeps historical and four upcoming weeks provisioned. A fixed schema-qualified

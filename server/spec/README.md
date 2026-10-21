@@ -3,7 +3,8 @@
 `server/spec/` is the editable TypeSpec contract for the Go dashboard server.
 `main.tsp` imports independent domains: shared response/auth types, Dashboard
 Language queries and SSE, health, agent discovery, hosted sessions, canonical
-entities, repository memory, ingestion/administration, and the optional MCP HTTP
+entities, repository memory, ingestion/administration, explicit workflow-value
+publication, and the optional MCP HTTP
 transport. MCP protocol messages and tool schemas, and static dashboard assets,
 are intentionally out of scope.
 
@@ -14,7 +15,7 @@ standalone DDL for downstream implementations; the Go file supplies the same
 entity names, fields, and native types to ingestion and reads. Both are generated
 artifacts. Edit TypeSpec, never the generated SQL or bindings.
 
-Each of the fifteen canonical collections has one root table. Only fields
+Each canonical collection has one root table. Only fields
 consumed by `dashboard/site/src/data/queries/database.json` and its joins are
 retained, plus identity/storage keys. Counters use `BIGINT`, fractional measures
 use `NUMERIC`, booleans use `BOOLEAN`, timestamps use `TIMESTAMPTZ`, and identifiers
@@ -22,6 +23,21 @@ use `TEXT`. Optional-field presence costs one bit per scalar column, preserving
 absent versus explicit null. Query-required structured evidence uses entity-owned
 relational child values; no JSON, JSONB, serialized row documents, or duplicate
 generic scalar rows are stored.
+
+`operationalValueEvidence.facts` is an entity-owned typed array. The emitter
+generates its private relational child table and native scalar bindings.
+The canonical packet and all its facts publish in one transaction;
+`operational-value-evidence` projects the child facts with their original
+packet identity, source path, contract digest and capture/cutoff timestamps.
+It never stores report HTML, counts, deltas, movement or attention labels.
+Changing this physical contract requires a fresh PostgreSQL schema.
+
+`value.tsp` describes the bounded administrator publication endpoint, not a
+collector execution API. `cao_value_publications` holds typed packet ownership
+metadata only; original facts remain in the canonical entity and child tables.
+Snapshot replacement and direct publication share the namespace writer lock,
+preserving owned evidence and structural parents. Recurring collection is
+separately selected by reviewed policy and invokes only trusted local code.
 
 The `Storage` namespace describes the current source metadata, auxiliary
 sources, revision, and diagnostics scaffolding, separately from entity models.

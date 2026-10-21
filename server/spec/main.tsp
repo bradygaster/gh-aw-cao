@@ -11,6 +11,7 @@ import "./canonical.tsp";
 import "./github.tsp";
 import "./memory.tsp";
 import "./operations.tsp";
+import "./value.tsp";
 import "./mcp.tsp";
 import "./admission.tsp";
 
