@@ -60,6 +60,19 @@
       }
     },
     "campaigns": {
+      "squad-advisory": {
+        "icon": "eye",
+        "enabled": false,
+        "mode": "review",
+        "max-repositories": 1,
+        "workers": {
+          "farm-snapshot": {
+            "workflow": "squad-advisory-farm-snapshot",
+            "enabled": false,
+            "max-mode": "review"
+          }
+        }
+      },
       "dashboard": {
         "deploy": false
       },
