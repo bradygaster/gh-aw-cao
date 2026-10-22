@@ -685,6 +685,25 @@ func TestDeployAzureVerifyReportsHealthSignals(t *testing.T) {
 	}
 }
 
+func TestDeployAzureRestartUsesDefaultPauseWhenReferencesArePending(t *testing.T) {
+	fake, deps, configPath, _, _ := testAzureApplySetup(t)
+	fake.referencesStuck = true
+	deps.pause = defaultDeployAzureDeps().pause
+	loaded, err := loadDeployAzureConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err = deployAzureRestartAndAwaitReferences(ctx, deps, fake, loaded.config)
+	if err == nil || !strings.Contains(err.Error(), "Key Vault references did not resolve") {
+		t.Fatalf("pending references with default pause = %v", err)
+	}
+	if !fake.restarted || fake.referencePolls != 1 {
+		t.Fatalf("restart = %t, reference polls = %d", fake.restarted, fake.referencePolls)
+	}
+}
+
 func TestDeployAzureApplyFailsClosedWhenKeyVaultReferencesStayUnresolved(t *testing.T) {
 	fake, deps, config, plan, options := testAzureApplySetup(t)
 	fake.referencesStuck = true
