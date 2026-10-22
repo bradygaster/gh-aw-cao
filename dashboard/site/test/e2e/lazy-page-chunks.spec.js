@@ -609,7 +609,15 @@ for (const width of [390, 1440]) {
       })
     }));
     await page.setViewportSize({ width, height: 844 });
+    await page.addInitScript(() => {
+      document.addEventListener('dashboard-data', event => {
+        if (event instanceof CustomEvent && event.detail.kind === 'refresh') {
+          document.documentElement.dataset.testRefreshState = event.detail.status;
+        }
+      });
+    });
     await page.goto(`${origin}/#page-marketplace`);
+    await expect(page.locator('html')).toHaveAttribute('data-test-refresh-state', 'completed');
     const marketplace = page.locator('[data-page-id="marketplace"]');
     const cards = marketplace.locator('.entity-card-list-card');
     await expect(cards).toHaveCount(25);

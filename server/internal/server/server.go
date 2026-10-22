@@ -1851,6 +1851,9 @@ func (a *App) static(response http.ResponseWriter, request *http.Request) {
 	}
 	if strings.EqualFold(filepath.Ext(clean), ".md") {
 		response.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		if a.config.Canvas != nil {
+			response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
 	}
 	http.ServeContent(response, request, info.Name(), info.ModTime(), file)
 }
