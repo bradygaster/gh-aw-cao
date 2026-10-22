@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { startDashboardServer } from "../../dashboard/local-server.mjs";
+import { startCanvasServer } from "../../dashboard/canvas-server.mjs";
+import { writeCanvasSnapshot } from "../helpers/canvas-snapshot.mjs";
 import { maximumCliActionInputCharacters, maximumCliActionRequestBytes } from "../../dashboard/cli-action-contract.mjs";
 import { executeDashboardCommand } from "../../dashboard/cli-actions.mjs";
 import { approveDashboardCommand } from "../../com.github.copilot/extensions/cao-dashboard/approval.mjs";
@@ -32,14 +33,11 @@ async function fixture(options) {
     },
   }));
   try {
-    const preview = await startDashboardServer({
-      workingDirectory: root, siteRoot: root, catalogRoot: null, port: 0, canvas: true,
+    const preview = await startCanvasServer({
+      workingDirectory: root, siteRoot: root, catalogRoot: null, port: 0,
       cliQueueAdmission: async () => ({ concurrency: 4 }),
       output: () => {}, requestOutput: () => {}, traceOutput: () => {},
-      downloadData: async (destination) => {
-        await mkdir(destination, { recursive: true });
-        await writeFile(join(destination, "sources.json"), "{}");
-      },
+      downloadData: async (destination) => { await writeCanvasSnapshot(destination); },
       ...options,
     });
     const base = new URL(`${preview.url}/`);
@@ -148,9 +146,6 @@ test("selector lookup accepts only declared action identity and bounded text in 
     assert.equal((await testCase.lookup({ id: "add-repository", text: "octo" }, "https://untrusted.example")).status, 403);
     assert.deepEqual(calls, [{ id: "add-repository", text: "octo" }]);
   } finally { await testCase.close(); }
-  const outsideCanvas = await fixture({ canvas: false, lookupSelector: async () => { assert.fail("Not a canvas."); } });
-  try { assert.equal((await outsideCanvas.lookup({ id: "add-repository", text: "octo" })).status, 404); }
-  finally { await outsideCanvas.close(); }
 });
 
 test("selected repository is bound to fresh trusted approval before cao add runs", async () => {

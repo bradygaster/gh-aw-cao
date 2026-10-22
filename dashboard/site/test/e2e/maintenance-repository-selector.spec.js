@@ -1,8 +1,8 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { writeCanvasArtifact } from './canvas-fixture.js';
+import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
-const { startDashboardServer } = await import(new URL('../../../local-server.mjs', import.meta.url).href);
+const { startCanvasServer } = await import(new URL('../../../canvas-server.mjs', import.meta.url).href);
 
 for (const { width, height = 900, empty = false, crowded = false } of [
   { width: 1440 }, { width: 390 }, { width: 489 }, { width: 320 }, { width: 1440, empty: true },
@@ -18,9 +18,9 @@ for (const { width, height = 900, empty = false, crowded = false } of [
     const executions = [];
     /** @type {(() => void) | undefined} */
     let finishSearch;
-    const preview = await startDashboardServer({
+    const preview = await startCanvasServer({
       workingDirectory: fileURLToPath(new URL('../../../../', import.meta.url)),
-      repository: 'acme/control', canvas: true, port: 0,
+      repository: 'acme/control', port: 0,
       cliQueuePath: testInfo.outputPath('.cao', 'cli-actions.sqlite'),
       cliQueueAdmission: async () => ({ concurrency: 1 }),
       output: () => {}, requestOutput: () => {}, traceOutput: () => {},
@@ -42,7 +42,7 @@ for (const { width, height = 900, empty = false, crowded = false } of [
       },
       downloadData: async (/** @type {string} */ destination) => {
         await mkdir(destination, { recursive: true });
-        await writeFile(join(destination, 'sources.json'), JSON.stringify({
+        await writeCanvasArtifact(destination, { sources: {
           campaigns: {
             metadata: { 'as-of': new Date().toISOString(), availability: 'available', completeness: 'complete', freshness: 'fresh' },
             rows: empty ? [] : [{
@@ -60,7 +60,7 @@ for (const { width, height = 900, empty = false, crowded = false } of [
             rows: empty ? [] : [{ organization: 'acme', repository: 'control', workflow: 'demo.md', 'workflow-name': 'Demo',
               'gh-aw-version': 'v0.91.5', 'gh-aw-current-version': 'v0.91.5' }]
           }
-        }));
+        } });
       }
     });
     try {

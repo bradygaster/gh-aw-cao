@@ -76,8 +76,7 @@ cd CONTROL_REPOSITORY
 ```
 
 Choose visibility explicitly: use `--public` instead only for public evidence.
-A private control repository requires guided authentication even for public
-targets; unattended public-only setup cannot include it.
+Guided setup needs no App/PAT for a private control repository and public targets.
 
 To use an existing remote repository instead:
 
@@ -107,16 +106,16 @@ versions explicitly. See [details](cao-cli.md#guided-runtime-preparation).
 
 1. At **Repositories**, enter your exact `OWNER/REPOSITORY`,
    not an organization wildcard. The control repository stays included.
-2. Choose **Authentication** only if prompted. Confirmed all-public scope
-   (including the control repository) automatically uses `public-only` with
-   Actions' `GITHUB_TOKEN`, no App/PAT. Nonpublic scope requires credentials;
+2. Choose **Authentication** only if prompted. Confirmed public targets
+   automatically use `public-only` with Actions' `GITHUB_TOKEN`, no App/PAT,
+   even when the control repository is private. Private/internal remote targets require credentials;
    see [Authentication](authentication.md#choose-cross-repository-authentication).
 3. Review the exact read scope, output scope, and authentication, then confirm
    **Apply this setup?** Setup configures Pages and asks **Is a public dashboard
    OK?** if the site is public. Decline for non-public evidence.
 4. Store secrets in Actions, never in policy or committed files.
    Credentials do not expand scope.
-5. Review the summary, policy diff, and full-diff path.
+5. Review the one-line change summary; open the full-diff path for details.
    **“Commit and push these CAO monitoring changes? [y/N]”** optionally publishes
    reviewed CAO files and returns **deployment pending** links immediately.
 
@@ -192,7 +191,7 @@ after Activity collects new runs.
 Monitoring is enough. For automation, [derive the simplest suitable structure](operation-patterns.md)
 from your outcome and scope.
 
-Try the **[Repo Status quickstart](setup/quickstart.md)** for your first optional
+Try the **[Daily Repo Status quickstart](setup/quickstart.md)** for your first optional
 automation: one bounded report in the control repository, without repeating setup.
 Other choices include a [Direct operation](authority-envelopes.md) for supplied
 targets, a [Standalone fleet workflow](configuration.md#standalone-agentic-workflows)

@@ -172,7 +172,8 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 		"GET /repos/platform/control", "POST /graphql",
 		"GET /repos/githubnext/gh-cao/releases", "GET /repos/githubnext/gh-cao/releases/tags/" + release,
 		"GET /githubnext/gh-cao/releases/download/" + release + "/checksums.txt",
-		"POST /repos/platform/control/pages", "POST /repos/platform/control/actions/variables",
+		"POST /repos/platform/control/pages", "GET /repos/platform/control/actions/variables",
+		"GET /repos/platform/control/actions/organization-variables",
 		"POST /platform/control.git/git-receive-pack", "POST /platform/control.git/git-upload-pack",
 	} {
 		if !slices.Contains(api.Requests, required) {
@@ -181,6 +182,10 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 	}
 	count := 0
 	for _, request := range api.Requests {
+		if request == "POST /repos/platform/control/actions/variables" ||
+			strings.HasPrefix(request, "PATCH /repos/platform/control/actions/variables/") {
+			t.Errorf("fresh setup unnecessarily configured authentication: %s", request)
+		}
 		if request == "POST /repos/platform/control/pages" {
 			count++
 		}
@@ -193,7 +198,7 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 
 func bootstrapRun(t *testing.T, ctx context.Context, directory string, environment []string, name string, args ...string) string {
 	t.Helper()
-	command := exec.CommandContext(ctx, name, args...) // #nosec G204 -- executable and args are test-owned, never API input.
+	command := exec.CommandContext(ctx, name, args...) // #nosec G204,G702 -- test-owned executable/argument arrays without shell interpolation, never API input.
 	command.Dir = directory
 	if environment != nil {
 		command.Env = environment
@@ -220,13 +225,15 @@ func bootstrapEnvironment(t *testing.T, root, proxy, ca string) []string {
 		}
 	}
 	// Do not inherit user tokens, git configuration, credential helpers,
-	// extension installations, proxies, or Actions credentials.
+	// extension installations, proxies, or Actions credentials. Disable CLI
+	// telemetry before it can start background requests outside the allowlist.
 	return []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_CONFIG_HOME=" + config, "XDG_DATA_HOME=" + data,
 		"GH_CONFIG_DIR=" + filepath.Join(config, "gh"), "GH_HOST=github.com",
 		"GH_TOKEN=simulator-token-with-no-external-authority", "GH_PROMPT_DISABLED=1",
 		"GH_NO_UPDATE_NOTIFIER=1", "GH_NO_EXTENSION_UPDATE_NOTIFIER=1",
 		"GH_AW_DISABLE_UPDATE_CHECK=1",
+		"DO_NOT_TRACK=1", "GH_TELEMETRY=0",
 		"HTTPS_PROXY=" + proxy, "HTTP_PROXY=" + proxy, "ALL_PROXY=" + proxy, "NO_PROXY=",
 		"https_proxy=" + proxy, "http_proxy=" + proxy, "all_proxy=" + proxy, "no_proxy=",
 		"SSL_CERT_FILE=" + ca, "CURL_CA_BUNDLE=" + ca, "GIT_SSL_CAINFO=" + ca,
@@ -283,7 +290,7 @@ func bootstrapAssertRepository(t *testing.T, api *BootstrapAPI, private, configu
 	}
 	if configured {
 		if repo.Pages["build_type"] != "workflow" || repo.Pages["public"] != true ||
-			repo.Variables["GH_AW_GITHUB_AUTH_MODE"] != "workflow-token" || len(repo.Variables) != 1 {
+			len(repo.Variables) != 0 {
 			t.Fatalf("unexpected monitoring configuration: Pages=%v variables=%v", repo.Pages, repo.Variables)
 		}
 	} else if len(repo.Variables) != 0 {
@@ -326,15 +333,23 @@ func bootstrapAssertPolicy(t *testing.T, file string) {
 
 // The real gh and curl still address github.com and api.github.com. CONNECT
 // terminates only at this simulator; no upstream connection or DNS is possible.
-func bootstrapProxy(t *testing.T, handler http.Handler) (proxyURL, certificateFile string) {
+func bootstrapProxy(t *testing.T, handler http.Handler, additionalHosts ...string) (proxyURL, certificateFile string) {
 	t.Helper()
+	return bootstrapProxyWithRejection(t, handler, func(method, host string) {
+		t.Errorf("blocked unexpected bootstrap destination: %s %s", method, host)
+	}, additionalHosts...)
+}
+
+func bootstrapProxyWithRejection(t *testing.T, handler http.Handler, rejected func(string, string), additionalHosts ...string) (proxyURL, certificateFile string) {
+	t.Helper()
+	hosts := append([]string{"github.com", "api.github.com"}, additionalHosts...)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "CAO bootstrap simulator"},
-		DNSNames:  []string{"github.com", "api.github.com"},
+		DNSNames:  hosts,
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		KeyUsage:    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, IsCA: true, BasicConstraintsValid: true,
@@ -361,8 +376,8 @@ func bootstrapProxy(t *testing.T, handler http.Handler) (proxyURL, certificateFi
 		t.Fatal(err)
 	}
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodConnect || (r.Host != "github.com:443" && r.Host != "api.github.com:443") {
-			t.Errorf("blocked unexpected bootstrap destination: %s %s", r.Method, r.Host)
+		if r.Method != http.MethodConnect || !slices.ContainsFunc(hosts, func(host string) bool { return r.Host == host+":443" }) {
+			rejected(r.Method, r.Host)
 			http.Error(w, "simulator destination not allowed", http.StatusForbidden)
 			return
 		}

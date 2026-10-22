@@ -4,6 +4,7 @@ export default [
   {
     ignores: [
       ".cao-dashboard-preview-*/**",
+      ".tmp/**",
       "dashboard/site/**",
       "node_modules/**",
       "test-results/**",
