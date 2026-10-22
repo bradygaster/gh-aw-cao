@@ -65,18 +65,24 @@ does not update an installed binary.
 
 ## GitHub CLI extension
 
-Install the extension, enter an existing control-repository checkout, and run
-the single guided entry point:
+From an existing control-repository checkout's root, install gh-aw, the `gh cao`
+extension, and the baseline runtime with the supported root installer:
 
 ```bash
-gh extension install githubnext/gh-cao
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install-gh-cao.sh | bash -s -- --setup
 gh cao --version
-# From the control repository root:
-gh cao setup
 ```
+
+Omit `--setup` to leave guided configuration for a later `gh cao setup`.
+The installer requires Bash, curl, Git, Node.js 24+, and GitHub CLI 2.68+
+signed in for the control repository. Public tool downloads do not use that
+sign-in; see [installer behavior](#control-plane-installer).
 
 ### GitHub CLI release discovery
 
+Direct `gh extension install githubnext/gh-cao` remains an alternative for
+credentials that can access cross-organization releases. It is not the
+recommended installation path for enterprise SAML-restricted tokens.
 The latest stable release includes native binaries for GitHub CLI discovery
 (verified with `v0.1.24`). There is intentionally no root executable script:
 CAO ships a standalone Go binary, not a source-building or Node.js launcher.
@@ -84,6 +90,7 @@ GitHub CLI classifies the extension using `releases/latest` before selecting a
 `--pin` tag, so maintainers must keep complete native assets in the latest stable
 release. Do not modify immutable historical releases to repair discovery.
 
+Prefer rerunning `install-gh-cao.sh` to refresh an installer-managed extension.
 Refresh a GitHub-CLI-managed extension with:
 
 ```bash
@@ -149,12 +156,12 @@ output stays plain.
 `deploymentStatus: "pending"`. Declining or cancelling publication leaves
 configuration local. Unattended/CI setup never commits or pushes.
 
-### Legacy control-plane installer
+### Control-plane installer
 
-The compatibility installer remains available for existing scripts:
+The root installer is the primary supported installation path for both tools:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install-gh-cao.sh | bash
 ```
 
 The installer registers `gh cao` directly in GitHub CLI's data directory,
@@ -167,12 +174,24 @@ Linked/source installations are not overwritten. Release binaries use the
 macOS, and Windows on amd64 and arm64. `checksums.txt` contains their SHA-256
 digests. Downloads fail closed unless the asset's exact checksum and embedded
 version match. Verification finishes before replacing an existing binary.
+It installs `gh aw` using the upstream
+[`install-gh-aw.sh`](https://github.com/github/gh-aw/blob/main/install-gh-aw.sh),
+passing the required version and keeping upstream checksum verification enabled.
+The upstream installer runs without token environment variables or the Actions
+`INPUT_VERSION` override that would select authenticated extension installation.
+Public CAO release metadata, binaries, checksums, and the upstream installer
+are fetched anonymously, ignoring curl configuration that could inject
+authentication. No credentials are cleared from the parent environment,
+GitHub CLI configuration, or keychain. Authenticated control-repository
+creation and setup retain the operator's sign-in.
+Anonymous API rate limits or network errors fail closed; they do not trigger
+an authenticated download fallback.
 An explicit catalog source `githubnext/gh-cao@vX.Y.Z` selects the same
 extension tag, including a published prerelease with that tag; otherwise the
 installer selects the latest published CAO `vX.Y.Z` release, including prereleases
 but excluding drafts. Main/SHA and local catalog
 sources still select their own runtime revision independently.
-Node.js 24+ remains required by this legacy installer, but not by native setup
+Node.js 24+ is required by this installer, but not by native setup
 or the other Go operator commands.
 
 For local development, build with `make build` and use `./gh-cao` directly, or follow the
