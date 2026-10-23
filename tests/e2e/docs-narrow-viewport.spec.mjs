@@ -4,7 +4,6 @@ import { issueOpenedPaths, safeOutputPaths } from "../../docs/components/workflo
 const paths = [
   "./",
   "architecture-at-a-glance/",
-  "how-cao-works/",
   "setup-quickstarts/",
   "repo-assist-quickstart/",
   "setup/quickstart/",
@@ -27,13 +26,12 @@ const paths = [
 ];
 
 for (const width of [320, 1280]) {
-  test(`Repo Status quickstart has honest video status and working links at ${width}px`, async ({ page }) => {
+  test(`Daily Repo Status quickstart keeps bounded review steps and working links at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     expect((await page.goto("setup/quickstart/"))?.ok()).toBe(true);
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Repo Status quickstart");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Daily Repo Status quickstart");
     const content = page.locator(".sl-markdown-content");
-    await expect(content).toContainText("CAO recording not yet available");
-    await expect(content).toContainText("There is no video to play yet");
+    await expect(content).not.toContainText("Video TODO");
     await expect(content.locator("video, iframe")).toHaveCount(0);
     await expect(content).toContainText("safe_output_mode=\"review\"");
     await expect(content).toContainText("control-plane.workflows");
@@ -70,17 +68,8 @@ for (const colorScheme of ["light", "dark"]) {
       expect((await page.goto("operational-value-how-to/"))?.ok()).toBe(true);
       await expect(page.locator("html")).toHaveAttribute("data-theme", colorScheme);
       const content = page.locator(".sl-markdown-content");
-      const trail = content.getByRole("list", { name: "Five steps from a goal to evidence" });
-      await expect(trail.locator("li")).toHaveCount(5);
-      await expect(trail.locator("strong")).toHaveText([
-        "1. Define value", "2. Follow the output", "3. Locate acceptance", "4. Measure it", "5. State the limits",
-      ]);
-      await expect(trail.locator('svg[aria-hidden="true"][focusable="false"]')).toHaveCount(5);
-      for (const icon of await trail.locator("svg").all()) {
-        const bounds = await icon.boundingBox();
-        expect(bounds.width).toBeGreaterThanOrEqual(24);
-        expect(bounds.height).toBeGreaterThanOrEqual(24);
-      }
+      await expect(content.locator(".cao-value-trail")).toHaveCount(0);
+      await expect(content.locator(".mermaid")).toHaveCount(1);
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Define and measure workflow value");
       await expect(content).toContainText("Markdown, imports and precomputes");
       await expect(content).toContainText("value function");
@@ -90,7 +79,8 @@ for (const colorScheme of ["light", "dark"]) {
       await expect(content).toContainText("compare cohorts with equal follow-up");
       await expect(content).toContainText("Unresolved work is not automatically zero or failure");
       await expect(content.locator(".mermaid svg")).toBeVisible();
-      await expect(content.locator(".mermaid svg")).toContainText("Fixed-cadence repository snapshots");
+      await expect(content.locator(".mermaid svg")).toContainText("Repository snapshots: primary outcome");
+      await expect(content.locator(".mermaid svg")).toContainText("Accepted implementation: merged PR");
       expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(width);
       for (const link of await content.locator('a[href^="/gh-cao/"]').all()) {
         const href = await link.getAttribute("href");
@@ -125,8 +115,8 @@ test("operational value beginner guide remains readable without JavaScript", asy
     const page = await context.newPage();
     expect((await page.goto("operational-value-how-to/"))?.ok()).toBe(true);
     const content = page.locator(".sl-markdown-content");
-    await expect(content.getByRole("list", { name: "Five steps from a goal to evidence" }).locator("li"))
-      .toHaveCount(5);
+    await expect(content.getByRole("heading", { name: "Define the value function", exact: true })).toBeVisible();
+    await expect(content.locator(".cao-value-trail")).toHaveCount(0);
     await expect(content).toContainText("actual first parent");
     await expect(content.getByRole("link", { name: "github/gh-aw#55785", exact: true })).toBeVisible();
     expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(320);
@@ -167,7 +157,7 @@ for (const colorScheme of ["light", "dark"]) {
     test(`documentation matches gh-aw prose typography at ${width}px in ${colorScheme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme });
       await page.setViewportSize({ width, height: 900 });
-      expect((await page.goto("architecture-at-a-glance/"))?.ok()).toBe(true);
+      expect((await page.goto("configuration/"))?.ok()).toBe(true);
       const typography = await page.evaluate(() => {
         const selectors = {
           body: ".sl-markdown-content > p",
@@ -201,25 +191,29 @@ for (const colorScheme of ["light", "dark"]) {
   }
 }
 
-test("Setup navigation follows the user journey without duplicate authentication pages", async ({ page }) => {
+test("Setup navigation separates onboarding from gallery examples and authentication reference", async ({ page }) => {
   expect((await page.goto("getting-started/"))?.ok()).toBe(true);
 
   const introductionGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Introduction$/ }).locator("..");
   await expect(introductionGroup.getByRole("link")).toHaveText([
     "What is Central Agentic Ops?",
-    "How does CAO work?",
-    "From outcome to execution",
     "Architecture",
   ]);
 
   const setupGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Setup$/ }).locator("..");
   await expect(setupGroup.getByRole("link")).toHaveText([
-    "Quickstart: install and monitor",
-    "Daily Repo Status (optional)",
-    "Add a campaign (optional)",
-    "CAO commands",
-    "Authentication",
+    "Quick Start",
+    "Provision Credentials",
+    "Setup Compatibility",
+    "Set Up the Admission Gate",
+    "CLI Commands",
   ]);
+
+  const galleryGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Gallery$/ }).locator("..");
+  await expect(galleryGroup.getByRole("link")).toHaveText(["Campaign Catalog", "Daily Repo Status"]);
+  const referenceGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Reference$/ }).locator("..");
+  await expect(referenceGroup.getByRole("link", { name: "Authentication", exact: true }))
+    .toHaveAttribute("href", "/gh-cao/authentication/");
 });
 
 test("getting started leads from monitoring to a separate optional campaign guide", async ({ page }, testInfo) => {
@@ -233,15 +227,12 @@ test("getting started leads from monitoring to a separate optional campaign guid
     "Continue learning",
   ]);
   const content = page.locator(".sl-markdown-content");
-  await expect(content).toContainText("This guide sets up monitoring only.");
+  await expect(content).toContainText("Monitoring only: no campaign installation or new agentic work.");
   await expect(content).toContainText("An empty dashboard is expected.");
   await expect(content).not.toContainText("gh aw run");
   await expect(content).toContainText("gh cao GitHub CLI extension");
-  await expect(content).toContainText("repository runtime");
-  await expect(content.locator(".starlight-aside").first()).toContainText("recording not yet available");
-  expect(await content.locator(".starlight-aside").first().evaluate(element =>
-    Boolean(element.compareDocumentPosition(document.querySelector("h2#prerequisites")) & Node.DOCUMENT_POSITION_FOLLOWING),
-  )).toBe(true);
+  await expect(content).toContainText("baseline monitoring runtime and policy");
+  await expect(content).not.toContainText("recording not yet available");
   await expect(content.locator("video, iframe")).toHaveCount(0);
   for (const anchor of [
     "guided-setup-instead", "4-open-your-dashboard",
@@ -266,12 +257,12 @@ test("getting started leads from monitoring to a separate optional campaign guid
     await page.screenshot({ path: screenshot, fullPage: true });
     await testInfo.attach(`Getting started (${name})`, { path: screenshot, contentType: "image/png" });
   }
-  await content.getByRole("link", { name: "Repo Status quickstart", exact: true }).click();
+  await content.getByRole("link", { name: "Daily Repo Status quickstart", exact: true }).click();
   await expect(page).toHaveURL(/\/setup\/quickstart\/$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Repo Status quickstart");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Daily Repo Status quickstart");
 });
 
-test("CAO introduction presents operating capabilities and leads to how CAO works", async ({ page }, testInfo) => {
+test("CAO introduction combines purpose and operating flow and leads to architecture", async ({ page }, testInfo) => {
   expect((await page.goto("architecture-at-a-glance/"))?.ok()).toBe(true);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("What is Central Agentic Ops?");
   const content = page.locator(".sl-markdown-content");
@@ -279,18 +270,18 @@ test("CAO introduction presents operating capabilities and leads to how CAO work
   expect(text.match(/central agentic ops/gi)).toHaveLength(1);
   expect(text.trim().split(/\s+/u).length).toBeLessThanOrEqual(425);
   await expect(content.locator("p").first()).toContainText("Central Agentic Ops (CAO)");
-  await expect(content.locator("p").first()).toContainText("a system for monitoring and governing GitHub Agentic Workflows across repositories");
-  const introduction = content.locator(".sl-heading-wrapper:has(h2#what-is-cao) + p");
+  await expect(content.locator("p").first()).toContainText("a system for monitoring and governing GitHub Agentic Workflows (AWs) across repositories");
+  const introduction = content.locator("p").filter({ hasText: /^Agentic work might begin/ });
   await expect(introduction).toHaveText(/^Agentic work might begin with a single task/);
   await expect(introduction.locator("strong")).toHaveCount(0);
-  await expect(content).toContainText("GitHub Agentic Workflows (AWs) run those tasks in GitHub Actions");
+  await expect(content).toContainText("AWs run those tasks in GitHub Actions");
   await expect(content).toContainText("These AWs form the building blocks of CAO as we scale.");
-  await expect(content).toContainText("Monitoring them does not move them or change their permissions.");
+  await expect(content).toContainText("Monitoring existing workflows does not move them or change their permissions.");
   await expect(content).toContainText("CAO governs explicitly integrated workflows, not every observed AW");
   await expect(content).toContainText("A successful run is not automatically a successful outcome.");
   await expect(content.locator("h2")).toHaveText([
-    "What is CAO?",
-    "Agentic workflows, operated across repositories",
+    "How it works",
+    "A simple example",
   ]);
   const capabilities = content.getByRole("list").filter({ hasText: "Observe activity" });
   await expect(capabilities.locator(":scope > li")).toHaveCount(3);
@@ -301,7 +292,11 @@ test("CAO introduction presents operating capabilities and leads to how CAO work
   await expect(content).toContainText("live output requires explicit authorization");
   await expect(content.locator("table, pre, .mermaid")).toHaveCount(0);
   await expect(content.getByRole("heading", { name: "A simple example", exact: true })).toBeVisible();
-  await expect(content).toContainText("campaigns are one way to package and scale work, not a prerequisite.");
+  await expect(content).toContainText("Campaigns are one way to package and scale work, not a prerequisite.");
+  await expect(content).toContainText("read-only snapshot");
+  await expect(content).toContainText("Missing evidence is not a healthy zero.");
+  await expect(content).toContainText("Review is real execution");
+  await expect(content).toContainText("Missing required authority, access, or evidence fails closed.");
   await expect(content.getByRole("heading", { name: /campaign/i })).toHaveCount(0);
   const campaignLink = content.getByRole("link", { name: "Browse campaigns", exact: true });
   await expect(campaignLink).toHaveAttribute("href", "/gh-cao/catalog/");
@@ -321,8 +316,8 @@ test("CAO introduction presents operating capabilities and leads to how CAO work
   )).toBe(true);
   await expect(setupLinks.first()).toHaveAttribute("href", "/gh-cao/setup-quickstarts/");
   const next = page.locator(".pagination-links a[rel=next]");
-  await expect(next).toContainText("How does CAO work?");
-  await expect(next).toHaveAttribute("href", "/gh-cao/how-cao-works/");
+  await expect(next).toContainText("Architecture");
+  await expect(next).toHaveAttribute("href", "/gh-cao/architecture/");
 
   for (const [name, viewport] of [
     ["desktop", { width: 1280, height: 900 }],
@@ -345,43 +340,12 @@ test("CAO introduction presents operating capabilities and leads to how CAO work
     expect(response.ok(), response.url()).toBe(true);
   }
   await next.click();
-  await expect(page).toHaveURL(/\/how-cao-works\/$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("How does CAO work?");
+  await expect(page).toHaveURL(/\/architecture\/$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Architecture");
 });
 
-test("how CAO works separates observation from governed execution and leads to architecture", async ({ page }) => {
-  expect((await page.goto("how-cao-works/"))?.ok()).toBe(true);
-  const content = page.locator(".sl-markdown-content");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("How does CAO work?");
-  await expect(content).toContainText("Collection is read-only");
-  await expect(content.getByRole("heading", { name: "Read activity and follow outputs", exact: true })).toBeVisible();
-  await expect(content).toContainText("where the workflow ran");
-  await expect(content).toContainText("Unavailable");
-  await expect(content).toContainText("Partial");
-  await expect(content).toContainText("Stale");
-  await expect(content).toContainText("A successful run is not automatically a successful outcome.");
-  await expect(content).toContainText("Before an agent starts, admission checks");
-  await expect(content).toContainText("Standalone agentic workflows");
-  await expect(content).toContainText("Campaigns are one opinionated way");
-  await expect(content).toContainText("Merely hosting or observing a workflow does not opt it into CAO policy.");
-  await expect(content).toContainText("it is not a no-write simulation");
-  await expect(content).toContainText("Changing policy alone does not cancel work already in flight.");
-  await expect(content.getByRole("heading", { name: "Review, promote, and recover", exact: true })).toBeVisible();
-  await expect(content.locator(".mermaid svg")).toBeVisible();
-  await expect(content.locator(".mermaid svg")).not.toContainText("Syntax error");
-  await expect(page.locator(".pagination-links a[rel=prev]"))
-    .toHaveAttribute("href", "/gh-cao/architecture-at-a-glance/");
-
-  for (const link of await content.locator('a[href^="/gh-cao/"]').all()) {
-    const href = await link.getAttribute("href");
-    const response = await page.request.get(href);
-    expect(response.ok(), href).toBe(true);
-    const hash = new URL(href, page.url()).hash;
-    if (hash) expect(await response.text(), href).toContain(`id="${hash.slice(1)}"`);
-  }
-
-  await page.locator(".pagination-links a[rel=next]").click();
-  await expect(page).toHaveURL(/\/architecture\/$/);
+test("architecture retains authority and evidence boundaries without a duplicate introduction", async ({ page }) => {
+  expect((await page.goto("architecture/"))?.ok()).toBe(true);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Architecture");
   await expect(page.locator(".sl-markdown-content"))
     .toContainText("orchestrators and workers run from the control repository");
@@ -393,7 +357,7 @@ test("how CAO works separates observation from governed execution and leads to a
     await expect(page.locator(`[id="${id}"]`)).toHaveCount(1);
   }
   await expect(page.locator(".pagination-links a[rel=prev]"))
-    .toHaveAttribute("href", "/gh-cao/how-cao-works/");
+    .toHaveAttribute("href", "/gh-cao/architecture-at-a-glance/");
   const architecture = page.locator(".sl-markdown-content");
   await expect(architecture).toContainText(".github/workflows/cao.json is the sole persistent non-secret rollout policy");
   await expect(architecture).toContainText("target files do not grant, narrow, or veto control-plane authority");
@@ -409,11 +373,84 @@ test("how CAO works separates observation from governed execution and leads to a
   }
 });
 
+test("primary navigation follows gh-aw categories without duplicating CAO content", async ({ page }, testInfo) => {
+  await page.goto("dashboard/");
+  const sidebar = page.locator("#starlight__sidebar");
+  await expect(sidebar.locator("summary")).toHaveText([
+    "Introduction", "Setup", "Gallery", "Guides", "Dashboard", "Reference", "Troubleshooting",
+  ]);
+  await expect(sidebar.locator('.top-level a[href^="/gh-cao/"]')).toHaveCount(42);
+  await expect(sidebar.getByText("Maintain", { exact: true })).toHaveCount(0);
+  await expect(sidebar.getByText("Views", { exact: true })).toHaveCount(0);
+  const troubleshooting = sidebar.locator("summary").filter({ hasText: /^Troubleshooting$/ }).locator("..");
+  await expect(troubleshooting).toHaveJSProperty("open", false);
+  const emergencyStop = sidebar.getByRole("link", { name: "Emergency Stop", exact: true });
+  await expect(emergencyStop).toBeVisible();
+  await expect(emergencyStop.locator("xpath=ancestor::details")).toHaveCount(0);
+  await expect(emergencyStop).toHaveAttribute("href", "/gh-cao/operations/#emergency-stop");
+  await troubleshooting.locator("summary").click();
+  await expect(troubleshooting.getByRole("link", { name: "Local Worker Debugging", exact: true }))
+    .toHaveAttribute("href", "/gh-cao/local-debugging/");
+  const guides = sidebar.locator("summary").filter({ hasText: /^Guides$/ }).locator("..");
+  for (const route of ["operation-patterns", "rollout-and-routing", "operational-value-how-to", "deployment", "agent-plugin"]) {
+    await expect(guides.locator(`a[href="/gh-cao/${route}/"]`)).toHaveCount(1);
+  }
+  await expect(sidebar.getByRole("link", { name: "Sample Dashboard", exact: true }))
+    .toHaveAttribute("href", "/gh-cao/cao/");
+  for (const route of [
+    "how-cao-works", "deployment-actions-github-app", "deployment-actions-pat",
+    "dashboard-language-specification", "dashboard-view-catalog",
+  ]) {
+    await expect(sidebar.locator(`a[href="/gh-cao/${route}/"]`)).toHaveCount(0);
+  }
+  const content = page.locator(".sl-markdown-content");
+  for (const route of ["dashboard-language-specification", "dashboard-view-catalog", "dashboard-overview"]) {
+    await expect(content.locator(`a[href="/gh-cao/${route}/"]`)).toHaveCount(1);
+  }
+
+  await troubleshooting.locator("summary").click();
+  await page.evaluate(() => document.fonts.ready);
+  for (const [name, viewport] of [
+    ["desktop", { width: 1280, height: 900 }],
+    ["mobile", { width: 390, height: 844 }],
+  ]) {
+    await page.setViewportSize(viewport);
+    if (viewport.width < 800) {
+      await page.getByRole("button", { name: "Menu", exact: true }).click();
+    }
+    await expect(sidebar).toBeVisible();
+    await sidebar.locator("summary").first().scrollIntoViewIfNeeded();
+    expect(await page.locator("html").evaluate(element => element.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    const screenshot = testInfo.outputPath(`cao-navigation-${name}.png`);
+    await page.screenshot({ path: screenshot });
+    await testInfo.attach(`CAO navigation (${name})`, { path: screenshot, contentType: "image/png" });
+  }
+});
+
+test("removed guide URLs including old fragments redirect without JavaScript", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, javaScriptEnabled: false });
+  try {
+    const page = await context.newPage();
+    for (const [legacy, destination, heading] of [
+      ["how-cao-works/#review-promote-and-recover", "architecture-at-a-glance/#how-it-works", "What is Central Agentic Ops?"],
+      ["deployment-actions-github-app/#validating-the-credentials", "control-plane-authentication/#configure-private-github-apps", "Control Plane Authentication Profiles"],
+      ["deployment-actions-pat/#configuration-reference", "control-plane-authentication/#configure-a-fine-grained-token", "Control Plane Authentication Profiles"],
+    ]) {
+      await page.goto(legacy);
+      await expect(page).toHaveURL(new URL(destination, baseURL).href);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(heading);
+      await expect(page.locator(new URL(destination, baseURL).hash)).toBeInViewport();
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 for (const [route, href, expected] of [
   ["deployment/", "/gh-cao/architecture/#control-plane-and-dashboard", "are deployed separately"],
   ["deployment-and-governance/", "/gh-cao/architecture/#repository-roles-and-records", "a target-side file cannot grant, narrow, or veto the decision"],
   ["execution-and-safety/", "/gh-cao/architecture/#execution-boundaries", "this reference supplies the exact handoff and invariants"],
-  ["rollout-and-routing/", "/gh-cao/how-cao-works/#review-promote-and-recover", "commit the assigned live authority and explicit target scope in the control repository"],
+  ["rollout-and-routing/", "/gh-cao/architecture/#authority-and-admission", "commit the assigned live authority and explicit target scope in the control repository"],
 ]) {
   test(`${route} links to its consolidated introduction`, async ({ page }) => {
     expect((await page.goto(route))?.ok()).toBe(true);
@@ -846,8 +883,11 @@ for (const width of [390, 1280]) {
   });
 }
 
-test("legacy authentication profile route redirects to the consolidated guide", async ({ page }) => {
+test("credential provisioning remains separate from its runtime authentication reference", async ({ page }) => {
   await page.goto("control-plane-authentication/");
+  await expect(page).toHaveURL(/\/control-plane-authentication\/$/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Control Plane Authentication Profiles");
+  await page.locator(".sl-markdown-content").getByRole("link", { name: "Authentication", exact: true }).click();
   await expect(page).toHaveURL(/\/authentication\/$/);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Authentication");
 });
@@ -880,7 +920,7 @@ for (const width of [320, 390, 768, 1024]) {
   });
 }
 
-test("desktop documentation navigation links to the introduction and an empty blog", async ({ page }) => {
+test("desktop documentation navigation links to the introduction and published blog posts", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   expect((await page.goto("setup-quickstarts/"))?.ok()).toBe(true);
 
@@ -893,9 +933,11 @@ test("desktop documentation navigation links to the introduction and an empty bl
   await navigation.getByRole("link", { name: "Blog", exact: true }).click();
   await expect(page).toHaveURL(/\/blog\/$/);
   await expect(page).toHaveTitle(/Central Agentic Ops Blog/);
-  await expect(page.getByRole("navigation", { name: "Main", exact: true }).getByRole("link"))
-    .toHaveText(["All posts", "RSS"]);
-  await expect(page.locator('main a[href*="/blog/"]')).toHaveCount(0);
+  const blogNavigation = page.getByRole("navigation", { name: "Main", exact: true });
+  await expect(blogNavigation.getByRole("link", { name: "All posts", exact: true })).toBeVisible();
+  await expect(blogNavigation.getByRole("link", { name: "RSS", exact: true })).toBeVisible();
+  await expect(page.locator("main").getByRole("link", { name: "What counts as value from agent work?", exact: true }))
+    .toBeVisible();
 });
 
 for (const colorScheme of ["light", "dark"]) {
@@ -912,22 +954,21 @@ for (const colorScheme of ["light", "dark"]) {
   });
 }
 
-test("sidebar groups Dashboard documentation by reader task", async ({ page }) => {
+test("sidebar groups CAO-specific dashboard and intelligence documentation together", async ({ page }) => {
   expect((await page.goto("dashboard/"))?.ok()).toBe(true);
 
   const dashboardGroup = page.locator('nav[aria-label="Main"] summary').filter({ hasText: /^Dashboard$/ }).locator("..");
   await expect(dashboardGroup.locator(":scope > summary")).toHaveText("Dashboard");
   await expect(dashboardGroup.locator(":scope > ul > li > a")).toHaveText([
-    "At a glance",
-    "Data ingestion",
-    "Data model",
-    "Language",
-    "Language specification",
-    "View catalog",
+    "Overview",
+    "Intelligence",
+    "Runtime Health",
+    "Portfolio Decisions",
+    "Data Ingestion",
+    "Data Model",
+    "Dashboard Language",
   ]);
-  const viewsGroup = dashboardGroup.locator(":scope > ul > li > details");
-  await expect(viewsGroup.locator(":scope > summary")).toHaveText("Views");
-  await expect(viewsGroup.getByRole("link")).toHaveText(["Overview", "Overview components"]);
+  await expect(dashboardGroup.locator("details")).toHaveCount(0);
 });
 
 for (const { name, viewport } of [
@@ -980,7 +1021,7 @@ for (const { name, viewport } of [
 
       if (name === "desktop" || name === "mobile") {
         await page.locator(".product-shot").last().scrollIntoViewIfNeeded();
-        await expect.poll(() => page.locator(".product-image, .phone-image").evaluateAll(
+        await expect.poll(() => page.locator(".maintenance-image, .phone-image").evaluateAll(
           (images) => images.every((image) => image.complete && image.naturalWidth > 0),
         )).toBe(true);
         const rolloutStory = page.locator(".terminal-story");
@@ -1076,13 +1117,13 @@ for (const { name, viewport } of [
       await expect(maintenance.getByRole("link", { name: "Maintain your control plane." }))
         .toHaveAttribute("href", "/gh-cao/operations/#update-cao");
       await page.locator(".product-shot").last().scrollIntoViewIfNeeded();
-      await expect.poll(() => page.locator(".product-image, .phone-image, .maintenance-image").evaluateAll(
+      await expect.poll(() => page.locator(".phone-image, .maintenance-image").evaluateAll(
         (images) => images.every((image) => image.complete && image.naturalWidth > 0),
       )).toBe(true);
-      const productSources = await page.locator(".product-image, .phone-image").evaluateAll(
+      const phoneSources = await page.locator(".phone-image").evaluateAll(
         (images) => images.map((image) => image.currentSrc),
       );
-      expect(productSources.every((source) => colorScheme === "light"
+      expect(phoneSources.every((source) => colorScheme === "light"
         ? source.includes("-light.")
         : !source.includes("-light."))).toBe(true);
       const maintenanceSource = await maintenance.locator(`source[data-theme-source="${colorScheme}"]`).getAttribute("srcset");
@@ -1129,21 +1170,26 @@ test("landing product media follows a manual theme change", async ({ page }) => 
   await page.emulateMedia({ colorScheme: "dark" });
   expect((await page.goto("./"))?.ok()).toBe(true);
 
-  await expect.poll(() => page.locator(".product-image, .phone-image").evaluateAll(
+  const maintenance = page.locator(".maintenance-image");
+  await maintenance.scrollIntoViewIfNeeded();
+  await expect(maintenance).toHaveJSProperty("currentSrc",
+    await page.locator('.maintenance-board source[data-theme-source="dark"]').getAttribute("srcset"));
+  await expect.poll(() => page.locator(".phone-image").evaluateAll(
     (images) => images.every((image) => !image.currentSrc.includes("-light.")),
   )).toBe(true);
 
   await page.getByRole("button", { name: "Switch to light theme" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect.poll(() => page.locator(".product-image, .phone-image").evaluateAll(
+  await expect(maintenance).toHaveJSProperty("currentSrc",
+    await page.locator('.maintenance-board source[data-theme-source="light"]').getAttribute("srcset"));
+  await expect.poll(() => page.locator(".phone-image").evaluateAll(
     (images) => images.every((image) => image.currentSrc.includes("-light.")),
   )).toBe(true);
 });
 
 const dashboardDiagramPages = [
-  { name: "view system", path: "dashboard/" },
+  { name: "campaign execution", path: "architecture/" },
   { name: "data flow", path: "dashboard-data-ingestion/" },
-  { name: "Overview components", path: "dashboard-overview-components/" },
 ];
 
 for (const { name, path } of dashboardDiagramPages) {

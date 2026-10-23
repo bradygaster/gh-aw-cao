@@ -2,25 +2,20 @@
 title: Architecture
 description: Understand repository roles, evidence and execution boundaries, authority, and dashboard hosting.
 prev:
-  link: /gh-cao/how-cao-works/
-  label: How does CAO work?
+  link: /gh-cao/architecture-at-a-glance/
+  label: What is Central Agentic Ops?
 agent:
   type: architecture
   prominent: true
 ---
 
+<span id="objectives"></span>
+
 CAO separates evidence collection from execution authority. Observing a workflow
 does not change where it runs or who owns it. Explicitly integrated workflows
-use the control plane for policy-governed execution.
-[How does CAO work?](how-cao-works.md) follows the operating flow; this page
-explains the components and trust boundaries behind it.
-
-## Objectives
-
-- Monitor repository-local and centrally executed agentic work together.
-- Govern shared work without transferring ownership of target repositories.
-- Keep policy, credentials, execution capabilities, and evidence distinct.
-- Fail closed when required authority, access, routing, or evidence is missing.
+use the control plane for policy-governed execution. For the operating flow,
+start with [What is CAO?](architecture-at-a-glance.md#how-it-works); this page
+explains the components and trust boundaries.
 
 ## Control plane and dashboard
 
@@ -39,11 +34,10 @@ See [dashboard hosting](#evidence-and-dashboard-hosting) below and
 
 ## Mental Model
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="/gh-cao/assets/control-plane-mental-model-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="/gh-cao/assets/control-plane-mental-model-light.svg">
-  <img alt="A catalog release enters a governed control repository, where an orchestrator selects and dispatches work to a worker that emits declared safe outputs in review or live mode." src="/gh-cao/assets/control-plane-mental-model-light.svg">
-</picture>
+<div class="docs-theme-diagram">
+  <img class="docs-theme-diagram-light" alt="Campaign pattern: an orchestrator and one-target worker run in the control repository. Declared outputs go to the review repository or an authorized live target." src="/gh-cao/assets/control-plane-mental-model-light.svg">
+  <img class="docs-theme-diagram-dark" alt="Campaign pattern: an orchestrator and one-target worker run in the control repository. Declared outputs go to the review repository or an authorized live target." src="/gh-cao/assets/control-plane-mental-model-dark.svg">
+</div>
 
 The diagram shows the campaign pattern. A governed standalone workflow instead
 performs its mission directly against a bounded admitted set, without an
@@ -106,6 +100,7 @@ The [authority envelope contract](authority-envelopes.md) describes direct
 execution identity binding, scoped grants and unsupported capabilities.
 
 <span id="how-it-works"></span>
+<span id="detailed-references"></span>
 
 ## Execution boundaries
 
@@ -121,7 +116,9 @@ never credentials. Workers revalidate their authority and may only narrow it.
 Run URLs and correlation IDs support investigation; they are not independent
 proof that a particular orchestrator issued a request. See
 [Execution and Safety](execution-and-safety.md) for the handoff, invariants,
-and failure behavior.
+and failure behavior, [Orchestrators and Workers](orchestrators-and-workers.md)
+for campaign roles, and [Rollout and Routing](rollout-and-routing.md) for
+review-to-live procedures.
 
 ## Evidence and dashboard hosting
 
@@ -168,16 +165,3 @@ scoping, and repository review requirements remain separate controls.
 Independent control repositories do not share cancellation or execution locks.
 See [Governance Boundary](deployment-and-governance.md#governance-boundary).
 :::
-
-## Detailed References
-
-| Read | When you need |
-| --- | --- |
-| [What is Central Agentic Ops?](architecture-at-a-glance.md) | Purpose, capabilities, and a short example |
-| [How does CAO work?](how-cao-works.md) | Collection, evidence interpretation, execution, promotion, and recovery |
-| [Deployment and Governance](deployment-and-governance.md) | Topologies, ownership, enrollment, and reporting identities |
-| [Admission Gates](admission.md) | Pre-activation and authorized-run checks |
-| [Execution and Safety](execution-and-safety.md) | Dispatch fields, invariants, and fail-closed behavior |
-| [Orchestrators and Workers](orchestrators-and-workers.md) | Campaign selection and single-target enforcement |
-| [Rollout and Routing](rollout-and-routing.md) | Review-to-live procedures and rollback |
-| [Deployment options](deployment.md) | Dashboard hosting and infrastructure choices |
