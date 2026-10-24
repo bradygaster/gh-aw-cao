@@ -977,6 +977,7 @@
       "experimental": false,
       "parameters": [],
       "queries": [
+        "engines-models-sample-distribution",
         "engines-models-usage"
       ]
     },
@@ -5597,6 +5598,27 @@
         "backend": "sqlite",
         "requirements": [
           "transactions"
+        ]
+      }
+    },
+    {
+      "id": "engines-models-sample-distribution",
+      "subject": "Describe agent and model combinations in the seven-day statistical run sample.",
+      "objective": "Find sampled combinations to investigate without scanning the full retained run history.",
+      "acceptance": "Count unweighted selected Runs after frame selection. Keep statistical-frame-id in grouped rows and frame metadata on empty results. Zero-allocation strata are not population zeros. Preserve unknown identifiers; failure reserves can alter composition. Never mix sample counts with exact usage or infer population shares.",
+      "description": "Unweighted composition of the seven-day statistical sample; not a population estimate. Failure outcomes may be oversampled.",
+      "parameters": [],
+      "sources": [
+        "statistical-runs"
+      ],
+      "used-by-pages": [
+        "engines-models"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "statistical-runs"
         ]
       }
     },
