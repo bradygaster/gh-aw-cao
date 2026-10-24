@@ -343,7 +343,10 @@ test("Go extension setup simulator runs only on main pushes, independently witho
 test("Docker samples runtime has an independent read-only workflow", () => {
   const runtime = parse(workflow("actions-runtime.yml"));
   const contracts = parse(workflow("workflow-contracts.yml"));
-  assert.deepEqual(runtime.on.pull_request.paths, ["server/**", "!server/**/*.md"]);
+  for (const pattern of ["server/**", "!server/**/*.md", "activity/**", "dashboard/site/src/data/**",
+    "tests/helpers/actions-runtime/**", "tests/integration/*actions-runtime.test.mjs", ".github/workflows/cao-activity.yml"]) {
+    assert.ok(runtime.on.pull_request.paths.includes(pattern), pattern);
+  }
   assert.deepEqual(runtime.on.push.paths, runtime.on.pull_request.paths);
   assert.deepEqual(runtime.on.push.branches, ["main"]);
   assert.ok(Object.hasOwn(runtime.on, "workflow_dispatch"));
@@ -362,13 +365,20 @@ test("Docker samples runtime has an independent read-only workflow", () => {
   assert.equal(diagnostics.with["retention-days"], 7);
 });
 
-test("Docker samples runtime runs automatically only for server code changes", () => {
+test("Docker runtime runs automatically for simulator, Activity and shared data-boundary changes", () => {
   for (const event of ["pull_request", "push"]) {
     for (const file of [
       "server/internal/webhookgateway/worker.go",
       "server/internal/operational/postgres/webhook_schema.sql",
       "server/go.mod",
       "server/go.sum",
+      "tests/helpers/actions-runtime/runner.mjs",
+      "tests/integration/activity-actions-runtime.test.mjs",
+      "activity/collect-logs.sh",
+      "dashboard/site/src/data/model/daily-run-counts.js",
+      ".github/workflows/actions-runtime.yml",
+      ".github/workflows/cao-activity.yml",
+      ".github/workflows/shared/control.md",
     ]) {
       assert.ok(runsForFile("actions-runtime.yml", event, file), `${event}: ${file}`);
     }
@@ -377,9 +387,6 @@ test("Docker samples runtime runs automatically only for server code changes", (
       "server/internal/webhookgateway/README.md",
       "docs/glossary.md",
       "dashboard/site/src/dashboard-app.js",
-      "tests/helpers/actions-runtime/runner.mjs",
-      ".github/workflows/actions-runtime.yml",
-      ".github/workflows/shared/control.md",
       "cmd/gh-cao/main.go",
       "go.mod",
     ]) {
@@ -390,22 +397,24 @@ test("Docker samples runtime runs automatically only for server code changes", (
 
 test("pull request triggers route frontend, control, server, and test changes selectively", () => {
   const cases = [
-    ["dashboard/site/src/dashboard-app.js", ["cid.yml"]],
-    ["dashboard/site/dashboard-fragments/overview.json", ["cid.yml"]],
+    ["dashboard/site/src/dashboard-app.js", ["cgo.yml", "cid.yml"]],
+    ["dashboard/site/dashboard-fragments/overview.json", ["cgo.yml", "cid.yml"]],
     ["dashboard/site/README.md", []],
     ["docs/glossary.md", ["workflow-contracts.yml"]],
     ["docs/assets/logo-day.svg", ["cid.yml", "svg-contrast-check.yml", "workflow-contracts.yml"]],
     ["public/favicon.svg", ["cid.yml", "workflow-contracts.yml"]],
-    ["activity/dashboard-complexity.mjs", ["workflow-contracts.yml"]],
+    ["activity/dashboard-complexity.mjs", ["actions-runtime.yml", "cgo.yml", "workflow-contracts.yml"]],
     ["tests/e2e/dashboard-ingestion-scale.spec.mjs", ["workflow-contracts.yml"]],
     ["server/internal/query/query.go", ["actions-runtime.yml", "cgo.yml", "workflow-contracts.yml"]],
     ["server/spec/main.tsp", ["actions-runtime.yml", "cgo.yml", "workflow-contracts.yml"]],
+    ["scripts/run-daily-run-counts-conformance.mjs", ["cgo.yml", "workflow-contracts.yml"]],
+    ["tests/contracts/daily-run-counts.json", ["cgo.yml", "workflow-contracts.yml"]],
     ["server/README.md", ["workflow-contracts.yml"]],
-    [".github/workflows/shared/control.md", ["cao-validate.yml", "workflow-contracts.yml"]],
+    [".github/workflows/shared/control.md", ["actions-runtime.yml", "cao-validate.yml", "workflow-contracts.yml"]],
     [".github/workflows/cid.yml", ["action-lint.yml", "cid.yml"]],
-    [".github/workflows/shared/ci.yml", ["action-lint.yml", "cao-validate.yml", "workflow-contracts.yml"]],
+    [".github/workflows/shared/ci.yml", ["action-lint.yml", "actions-runtime.yml", "cao-validate.yml", "workflow-contracts.yml"]],
     [".github/workflows/actions.yml", ["action-lint.yml", "workflow-contracts.yml"]],
-    [".github/workflows/actions-runtime.yml", ["action-lint.yml", "workflow-contracts.yml"]],
+    [".github/workflows/actions-runtime.yml", ["action-lint.yml", "actions-runtime.yml", "workflow-contracts.yml"]],
     [".github/workflows/cao-evolution.lock.yml", ["cao-validate.yml", "workflow-contracts.yml"]],
   ];
   for (const [file, expected] of cases) {

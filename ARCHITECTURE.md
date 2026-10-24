@@ -330,8 +330,11 @@ fresh canonical schema rebuilt from authoritative inputs without removing
 operational audit/queue state. A fixed schema-qualified
 ANALYZE capability preserves ingestion statistics without runtime ownership.
 Bootstrap performs no legacy conversion or
-backward-compatible import. There are no persistent Postgres generations or
-separate derived projections. Redis remains reconstructable
+backward-compatible import. There are no persistent Postgres generations.
+The additive daily run-count projection, compact contribution receipts, and
+state in `specs/dashboard-data.md` §72.2 are the only persisted derived-projection
+exception; other daily metrics and computation results remain request-scoped.
+Redis remains reconstructable
 operational state, not an entity
 authority. The same server binary provides a read-only diagnostic check-up
 that inspects the runtime, Redis operations, Postgres canonical state and
@@ -1453,8 +1456,21 @@ not authorize cross-repository evidence access.
   and emit bounded, versioned results; they do not create authority or convert
   runtime success into verified outcomes or operational value.
 - Overview counters use IndexedDB-native counts or request-scoped declarative
-  queries over canonical records. No daily aggregate or computation-result
-  projection is persisted. Failure clustering and audit diagnosis execute in
+  queries over canonical records. A separate daily run-count projection and
+  compact per-Run contribution receipts support explicitly migrated additive
+  health queries; receipts survive detail eviction and replacement updates
+  subtract old contributions before adding new ones atomically. Its dimensions
+  are namespace, UTC run-start date, repository, and workflow. Existing detail
+  storage and retention are unchanged. Daily buckets and receipts retain the
+  current UTC Monday-start week and its two preceding weeks independently of
+  detail-retention overrides; backfill cannot recover already-evicted history.
+  Other daily metrics and computation-result projections are not persisted.
+  Changes to this projection, reconciliation, retention, source, or migrated
+  consumers require `POSTGRES_URL=... npm run test:conformance:daily-run-counts`
+  against an isolated PostgreSQL database whose test role can create schemas,
+  with native Chromium installed. Skipped backends or browser emulation alone
+  are not conformance; `npm run check` does not run this additional gate.
+  Failure clustering and audit diagnosis execute in
   bounded, selected-partition queries. Runtime facts evaluate orchestrators first
   and enumerate worker targets only when orchestration is eligible. Worker facts
   use one evaluation partition per target so success on one target cannot mask
