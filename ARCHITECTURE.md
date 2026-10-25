@@ -341,6 +341,80 @@ proof and original evidence clocks; failed refreshes retain the previous capture
 without reporting a fresh success or zero. Disabling collection retains history.
 No dashboard navigation, report upload or workflow discovery creates an opt-in,
 and no per-workflow schedule or model call is introduced.
+The optional Go ADX add-on (`server/internal/adxingest/`, documented in
+`server/ADX-INGEST.md`) exports bounded snapshots of already retained completed
+canonical sessions through a neutral `sessionexport.Reader`. PostgreSQL reads
+one exact-scope Run and its observations in a repeatable-read transaction,
+closed before destination I/O. This is not transactional capture of every
+intermediate publication. One immutable approved pending projection/cursor lives
+in existing protected operational state, not a second canonical store or queue
+platform; oversize/expired delivery records explicit bounded gap summaries.
+The existing OAuth host owns one confirmed exporter replica and its
+cancellation/drain lifecycle. Default-off means no destination client, token,
+worker, capture/state activity, extra GitHub acquisition or changed retention.
+The free-compatible destination uses direct streaming HTTP, explicit Entra app
+credentials, six typed tables and exact visibility checks before ready-version
+publication; curated KQL deduplicates retries and corrections. It does not require
+Blob, Event Hubs, ARM provisioning, materialized views or paid ADX features.
+`server/spec/adx.tsp` owns the closed data model and canonical source mappings;
+the repository-owned emitter generates Go projection metadata and embedded
+operator KQL together. Server-spec checks verify reproducibility and canonical
+field/type compatibility. No new PostgreSQL schema or HTTP operation is added.
+Enablement requires exact repository scope and destination/data suitability
+approval. Independent bounded retries, capacity checks, gaps and degraded status
+never make dashboard/collection readiness depend on ADX. Static Pages, local
+SQLite, volatile state and per-request workers do not export; v1 does not
+propagate deletion/withdrawal or promise physical purge or full-session coverage.
+ADX is derived analytics, never enrollment, rollout, billing or query authority.
+The local HTTP simulator validates delivery, not Kusto execution or real free
+capacity/permissions.
+
+The separately default-off unified trace option (`server/internal/adxtrace/`,
+`server/ADX-TRACES.md`) reuses co-resident collection's existing usage-artifact
+visit before lossy normalization. A staged metadata cache is committed only
+after durable approved trace admission; uncaptured attempts remain eligible
+for reacquisition within the same authorized scope. No raw trace content enters
+canonical PostgreSQL, public shards or dashboard IndexedDB. A closed versioned
+content policy, universal rights/content approval and redaction precede private
+durable capture. One file-locked worker uses an operator-verified owner-only
+durable spool, atomic fsync-backed ledger, immutable multipart trace versions,
+bounded 1 MiB streaming batches and exact deduplicated digest verification before
+ready manifests. `server/spec/trace.tsp` owns the additional nine-table contract
+and generated Go/KQL. Direct streaming and credentials reuse the existing client;
+capacity is configurable without different content models by destination tier.
+
+Full capture or frozen closed-day whole-trace probability sampling retains the
+same approved evidence. Frames describe observed acquired repository/run-attempt
+cohorts, not complete upstream populations; preserve cutoff, eligibility/source
+gaps, N/k, probabilities, weights and delivery readiness. Corrections, late
+arrivals, withdrawal and local evidence expiry invalidate frames without refill.
+Recorded episode/hop lineage is preserved, never inferred from time; harness
+and historical compiled configuration are not inferred from engine IDs or head
+SHAs. Curated KQL reconstructs verified ordered JSON and produces evidence-backed
+investigation candidates, not causal/savings claims. Offline dataset export
+requires separate training-use approval, labelled evidence, tool-schema binding,
+source/transform lineage and grouped splits; excludes reasoning by default and
+never trains or replays tools. Withdrawal blocks replay, removes private local
+content and queues newer destination tombstones and dataset invalidations;
+physical purge/backups/external copies require operator reconciliation.
+Separately approved, default-off episode/outcome export reads bounded exact-run
+canonical PostgreSQL snapshots through `sessionexport.MiningReader`, without new
+GitHub acquisition. A source namespace is frozen in the ledger; selected-attempt
+membership, exact Audit/output URL provenance and original clocks remain explicit.
+Unknown output attempts are not inferred from a selected trace: only approved
+correlated successful creation-tool results can attest the same exact URL.
+One fair bounded polling/delivery loop persists independent mining versions and
+freshness heartbeats, verifies declared fact counts and invalidates mining/dataset
+readiness on correction, source loss, expiry or withdrawal. Unrelated canonical
+revisions do not rewrite traces or invalidate semantic dataset lineage.
+Outcome datasets pin the mining version, cutoff and rule, independently reviewed
+quality, exact attempt and mined episode/output split bindings. Lifecycle
+disposition is not correctness; partial scopes and run-attempt sampling do not
+establish complete episodes or unbiased episode/output rates.
+Static, snapshot-only, admission-only, standalone collect/backfill and
+per-request hosts cannot capture traces. Destination failures cannot authorize
+collection, widen policy or replace ordinary dashboard readiness.
+
 Owner-run bootstrap initializes this schema and its UTC daily partitions; runtime
 opens and validates provisioned state without DDL. Daily owner-run maintenance
 keeps historical, current, and 28 upcoming days provisioned, expiring only
@@ -1116,7 +1190,7 @@ and removal remain authenticated and never hydrate notification payloads.
 | `dashboard/` | Dashboard campaign, report/source adapters, canvas-only authoring bridge, and shared browser UI built for Pages or the unified Go server. |
 | `server/` | Optional host-neutral Go HTTP(S) service, deployed-artifact ingester, authenticated canonical API, webhook/rebuild control, Postgres entity storage and default operational state, explicit Redis or single-process memory alternatives, server-side Dashboard Language query engine, externally hosted handler facade, container image, and Azure Functions deployment profile. |
 | `server/cmd/cao-webhook-gateway/`, `server/internal/webhookgateway/`, `server/internal/webhookgatewayhost/` | Optional isolated gateway entry point, consumer contracts and pure decisions, and host adapters; durable state extends the existing PostgreSQL operational adapter. |
-| `server/spec/` | Editable TypeSpec HTTP/SSE and fresh Postgres storage contracts; generates OpenAPI 3.1, wire JSON Schemas, standalone SQL DDL, and Go entity bindings; checks routes, payloads, and query-required table fields. |
+| `server/spec/` | Editable TypeSpec HTTP/SSE, fresh Postgres storage and optional ADX export contracts; generates OpenAPI 3.1, wire JSON Schemas, standalone SQL DDL, Go bindings and ADX setup KQL; checks routes, payloads and canonical field coverage. |
 | `dashboard/site/src/data/` | Canonical browser data model, adapters, normalization, storage, and declarative query engine. |
 | `research/` | Executable notebooks and experimental reference runtimes used to validate proposed computation semantics against canonical data; these are not dashboard production code. |
 | `specs/computations.md` | Versioned computation, bounded insight, provenance, quality, and measure contracts. |
