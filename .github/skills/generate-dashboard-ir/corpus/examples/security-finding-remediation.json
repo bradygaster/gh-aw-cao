@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "id": "security-finding-remediation",
+  "task": {
+    "actor": "Security operations repository operator",
+    "subject": "A review-mode workflow that proposes one bounded remediation issue for each newly observed high-severity workflow security finding in an enrolled repository",
+    "intent": "Help a security operator verify that high-severity workflow security findings activate the remediation-review worker, produce an accepted and traceable remediation issue when action is warranted, surface execution or output exceptions, and attain the workflow's native remediation metric without treating run success as remediation.",
+    "activationConditions": [
+      "A high-severity security-finding observation identifies an enrolled repository, the synthetic workflow, a stable finding identifier, and evidence provenance.",
+      "The finding has not already been covered by an accepted remediation issue for the same stable opportunity.",
+      "The remediation-review campaign and worker are enabled in review mode for the enrolled repository."
+    ],
+    "requiredEffects": [
+      "For one eligible security-finding opportunity, the worker emits at most one review-safe issue proposal that links the finding evidence, the attributed run, and bounded remediation guidance.",
+      "Accepted effect evidence is limited to an accepted issue outcome in the same enrolled repository with the same opportunity identity and workflow-run provenance.",
+      "Pending, rejected, or unavailable output evidence remains an actionable exception and never counts as attained remediation."
+    ],
+    "noopConditions": [
+      "The finding is not high severity, lacks stable identity or provenance, or belongs to a repository outside the accepted repository set.",
+      "An accepted remediation issue already covers the same stable opportunity.",
+      "The finding was resolved or dismissed before evaluation, or the available evidence cannot support bounded remediation guidance."
+    ],
+    "successConditions": [
+      "Every mature eligible finding opportunity has either one accepted remediation issue with matching provenance or an explicit non-attained observation.",
+      "Failed runs and non-accepted issue outputs remain visible for operator follow-up.",
+      "The direct remediation-attainment metric is preserved as a native ratio in the closed interval from zero through one, with null kept distinct from zero."
+    ],
+    "uncertainties": [
+      "A successful workflow run does not prove that a remediation issue was accepted or that the underlying security condition was fixed.",
+      "An accepted issue records a bounded remediation effect, not completed remediation or reduced security risk.",
+      "Missing, partial, or immature opportunity evidence cannot establish zero attainment."
+    ]
+  },
+  "operationalValue": {
+    "upstream": "gh-aw",
+    "opportunity": {
+      "identity": "repository plus workflow plus stable security finding identifier",
+      "subject": "One newly observed high-severity workflow security finding eligible for remediation review",
+      "binding": "Each hypothetical run may evaluate only the opportunity named by its dispatched repository, workflow, and finding identity."
+    },
+    "acceptedEvidence": [
+      "A high-severity security-finding observation with stable finding identity and an evidence or run link.",
+      "A matching accepted issue outcome carrying the same repository, workflow, opportunity identity, and attributed run provenance.",
+      "An explicit non-attained observation after the evidence cutoff when no matching accepted effect exists."
+    ],
+    "acceptedRepositories": [
+      "githubnext/gh-aw",
+      "githubnext/gh-cao"
+    ],
+    "orderedMetrics": [
+      {
+        "id": "security-remediation-attainment",
+        "unit": "ratio",
+        "direction": "higher_is_better",
+        "range": [0, 1],
+        "directDefinition": "Mature eligible finding opportunities with one accepted matching remediation issue divided by all mature eligible finding opportunities."
+      }
+    ],
+    "maturationRule": "An eligible opportunity matures at the fixed evidence cutoff 14 days after its first qualifying finding observation; an earlier accepted matching issue may establish attainment without moving the cutoff.",
+    "zeroRule": "Publish numeric zero only when at least one eligible opportunity has matured and none has accepted matching effect evidence by its cutoff.",
+    "missingEvidenceRule": "Publish null when there are no mature eligible opportunities or when stable identity, repository enrollment, finding provenance, cutoff coverage, or matching outcome provenance is unavailable or incomplete.",
+    "baseline": {
+      "kind": "attainment-only",
+      "value": null,
+      "cutoff": "The immutable first qualifying observation plus 14 days; no pre-adoption comparison is asserted."
+    },
+    "preservation": "Preserve the metric ID, order, native finite value or null, ratio unit, higher-is-better direction, cutoff, and evidence maturity exactly as published by gh-aw; do not infer completed remediation from runs or accepted issues."
+  },
+  "logicalSources": {
+    "workflows": {
+      "rows": [
+        {
+          "organization": "githubnext",
+          "repository": "gh-aw",
+          "workflow": ".github/workflows/security-finding-remediation-worker.yml",
+          "workflow-name": "Security finding remediation review",
+          "workflow-role": "worker",
+          "campaign": "security-finding-remediation",
+          "workflow-active": "true",
+          "rollout-mode": "review",
+          "observed-at": "2026-09-01T00:00:00Z",
+          "repository-link": {
+            "relation": "repository",
+            "href": "https://github.com/githubnext/gh-aw",
+            "label": "githubnext/gh-aw"
+          },
+          "workflow-link": {
+            "relation": "workflow",
+            "href": "https://github.com/githubnext/gh-aw/actions/workflows/security-finding-remediation-worker.yml",
+            "label": "Security finding remediation review"
+          }
+        },
+        {
+          "organization": "githubnext",
+          "repository": "gh-cao",
+          "workflow": ".github/workflows/security-finding-remediation-worker.yml",
+          "workflow-name": "Security finding remediation review",
+          "workflow-role": "worker",
+          "campaign": "security-finding-remediation",
+          "workflow-active": "true",
+          "rollout-mode": "review",
+          "observed-at": "2026-09-01T00:00:00Z",
+          "repository-link": {
+            "relation": "repository",
+            "href": "https://github.com/githubnext/gh-cao",
+            "label": "githubnext/gh-cao"
+          },
+          "workflow-link": {
+            "relation": "workflow",
+            "href": "https://github.com/githubnext/gh-cao/actions/workflows/security-finding-remediation-worker.yml",
+            "label": "Security finding remediation review"
+          }
+        }
+      ]
+    }
+  },
+  "dashboard": "security-finding-remediation.dashboard.yml"
+}

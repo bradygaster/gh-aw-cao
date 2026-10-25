@@ -1,0 +1,199 @@
+language-version: "0.1.0"
+dashboard:
+  id: security-finding-remediation
+  title: Security finding remediation review
+  defaults:
+    scope:
+      repositories:
+        - githubnext/gh-aw
+        - githubnext/gh-cao
+      workflows:
+        - .github/workflows/security-finding-remediation-worker.yml
+    time:
+      range: 30d
+    filters:
+      workflow: .github/workflows/security-finding-remediation-worker.yml
+  units:
+    ratio:
+      name: Attainment ratio
+      symbol: ratio
+      significant: 0.01
+      format: number
+  queries:
+    - name: high-security-finding-opportunities
+      subject: Select high-severity security findings attributed to the remediation-review worker.
+      objective: Preserve exact finding observations as activation evidence for bounded remediation opportunities.
+      acceptance: Only high-severity findings for the synthetic workflow remain, ordered by observation time.
+      from: security-findings
+      filter:
+        predicates:
+          - field: workflow
+            equals: .github/workflows/security-finding-remediation-worker.yml
+          - field: smell-severity
+            equals: high
+      order-by:
+        - field: observed-at
+          direction: asc
+        - field: smell-observation-id
+          direction: asc
+      limit: 100
+  pages:
+    - id: security-finding-remediation
+      kind: custom
+      title: Security finding remediation review
+      description: Shows high-severity finding activation, remediation issue outcomes, failed execution exceptions, and native attainment for one review worker.
+      views:
+        - id: finding-activation-history
+          subject: High-severity security findings attributed to the remediation-review worker.
+          objective: Show when eligible finding opportunities appeared and which finding types activated review.
+          acceptance: Every plotted observation retains its exact observation time, finding identity, and evidence link without implying remediation.
+          title: High-severity finding activation
+          description: Exact high-severity finding observations over time, grouped by finding type.
+          data:
+            source: high-security-finding-opportunities
+            filters:
+              workflow: .github/workflows/security-finding-remediation-worker.yml
+          mark: chart
+          chart: swimlane
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: observed-at
+              type: temporal
+              title: Observed
+            y:
+              field: smell-id
+              type: nominal
+              title: Finding type
+            href:
+              field: evidence-link
+        - id: remediation-issue-outcomes
+          subject: Issue outcomes emitted by the remediation-review worker for security-finding opportunities.
+          objective: Let operators verify accepted effects and follow up on pending or rejected remediation proposals.
+          acceptance: Each row exposes outcome state, evidence strength, repository, attributed run, and the issue link when available.
+          title: Remediation issue outcomes
+          description: Accepted, pending, rejected, and other issue outcomes remain distinct from run conclusions.
+          data:
+            source: outcomes
+            filters:
+              workflow: .github/workflows/security-finding-remediation-worker.yml
+              outcome-category: issue
+            order-by:
+              - field: observed-at
+                direction: desc
+              - field: outcome-number
+                direction: asc
+            limit: 30
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: essential
+          empty-message: No remediation issue outcomes were observed in the selected horizon.
+          encoding:
+            href:
+              field: issue-link
+              type: nominal
+            columns:
+              - field: repository
+                type: nominal
+                title: Repository
+              - field: outcome-title
+                type: nominal
+                title: Remediation issue
+                display: outcome-link
+              - field: outcome-state
+                type: ordinal
+                title: Outcome
+                display: status
+              - field: outcome-status
+                type: ordinal
+                title: Issue status
+                display: status
+              - field: outcome-number
+                type: quantitative
+                title: Number
+              - field: run-conclusion
+                type: ordinal
+                title: Run conclusion
+                display: status
+              - field: observed-at
+                type: temporal
+                title: Observed
+        - id: failed-remediation-runs
+          subject: Failed executions of the security-finding remediation-review worker.
+          objective: Surface execution exceptions that may have prevented required remediation effects.
+          acceptance: Only failed runs appear, newest first, with failure details and a direct run link.
+          data:
+            source: runs
+            filters:
+              workflow: .github/workflows/security-finding-remediation-worker.yml
+              run-conclusion: failure
+            order-by:
+              - field: started-at
+                direction: desc
+              - field: run
+                direction: asc
+            limit: 20
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: supplemental
+          empty-message: No failed remediation-review runs were observed in the selected horizon.
+          encoding:
+            href:
+              field: run-link
+              type: nominal
+            columns:
+              - field: repository
+                type: nominal
+                title: Repository
+              - field: run
+                type: nominal
+                title: Run
+                display: run-link
+              - field: failure-step
+                type: nominal
+                title: Failure step
+              - field: failure-message
+                type: nominal
+                title: Failure message
+              - field: started-at
+                type: temporal
+                title: Started
+        - id: remediation-attainment-trend
+          subject: Native security-remediation attainment observations for the remediation-review campaign.
+          objective: Show whether mature eligible opportunities attain accepted remediation effects while preserving null and native ratio semantics.
+          acceptance: Values remain in their native ratio unit, partitioned by repository, with missing observations left missing rather than replaced by zero.
+          title: Security-remediation attainment
+          description: Mean native attainment by repository and day; run success is not a substitute for this metric.
+          data:
+            source: operational-values
+            filters:
+              operational-value-definition: security-remediation-attainment
+              campaign: security-finding-remediation
+            order-by:
+              - field: observed-at
+                direction: asc
+              - field: repository
+                direction: asc
+          mark: chart
+          chart: line
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: observed-at
+              type: temporal
+              time-unit: day
+              title: Observed
+            y:
+              field: operational-value
+              type: quantitative
+              aggregate: mean
+              title: Mean attainment
+              unit: ratio
+            color:
+              field: repository
+              type: nominal
+              title: Repository
