@@ -27,7 +27,10 @@ func TestHostedQueryContentionDoesNotWaitForPublication(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				finish = release
+				finish = func() error {
+					defer func() { _ = release.Close() }()
+					return release.Deliver(func() error { return nil })
+				}
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 			defer cancel()
@@ -61,11 +64,15 @@ func TestHostedQueryContentionDoesNotWaitForPublication(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed finalization leaked its reader slot: %v", err)
 				}
+				t.Cleanup(func() { _ = release.Close() })
 				_ = finish()
 				if _, _, _, _, _, err := a.pin(t.Context(), scope, "octo/api", "123", 1); !errors.Is(err, ErrCapacity) {
 					t.Fatal("repeated finalization released a newer reader")
 				}
-				if err := release(); err != nil {
+				if err := release.Deliver(func() error { return nil }); err != nil {
+					t.Fatal(err)
+				}
+				if err := release.Close(); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -80,12 +87,13 @@ func TestHostedCanceledQueryCannotFinalizeSuccessfully(t *testing.T) {
 	}
 	scope := sessionarchive.Scope{Namespace: "private", Repositories: []string{"octo/api"}}
 	ctx, cancel := context.WithCancel(t.Context())
-	_, _, _, _, finish, err := a.pin(ctx, scope, "octo/api", "123", 1)
+	_, _, _, _, reader, err := a.pin(ctx, scope, "octo/api", "123", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	cancel()
-	if err := finish(); !errors.Is(err, context.Canceled) {
+	if err := reader.Deliver(func() error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled query finalization claimed success: %v", err)
 	}
 	if _, _, _, _, _, err := a.pin(ctx, scope, "octo/api", "123", 1); !errors.Is(err, context.Canceled) {
@@ -150,6 +158,92 @@ func TestHostedTimelineAndSummaryProtocol(t *testing.T) {
 	}
 }
 
+func TestHostedResultReaderLifetime(t *testing.T) {
+	for _, kind := range []string{"timeline", "summary"} {
+		for _, change := range []string{"none", "correction", "trace-withdrawal", "repository-withdrawal", "cancellation", "closed", "lease-loss"} {
+			t.Run(kind+"/"+change, func(t *testing.T) {
+				a, s, _ := newProtocol(t)
+				first := fixture(t, 1, "first")
+				if err := a.Publish(t.Context(), first); err != nil {
+					t.Fatal(err)
+				}
+				s.query = func(w http.ResponseWriter, _ *http.Request, _ string) {
+					if kind == "summary" {
+						m := first.Members[0]
+						respond(w, []string{"Repository", "RunId", "RunAttempt", "ProjectionId", "Events"},
+							[][]any{{m.Repository, m.RunID, m.Attempt, m.Version, m.Events}}, true)
+						return
+					}
+					var rows [][]any
+					for _, event := range fixtureEvents(first.Members[0]) {
+						rows = append(rows, []any{event})
+					}
+					respond(w, []string{"Event"}, rows, true)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				scope := sessionarchive.Scope{Namespace: "private", Repositories: []string{"octo/api"}}
+				var reader *Reader
+				var err error
+				if kind == "timeline" {
+					_, _, reader, err = a.ReadTimeline(ctx, scope, sessionarchive.TimelineRequest{
+						Repository: "octo/api", RunID: "123", Attempt: 1, Limit: 10})
+				} else {
+					_, _, reader, err = a.ReadSummaries(ctx, scope, "octo/api", 10)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = reader.Close() })
+				if a.reader.Load() != reader.pinned {
+					t.Fatal("completed query released its withdrawal-aware reader")
+				}
+				var expected error
+				switch change {
+				case "none":
+				case "correction":
+					err = a.Publish(t.Context(), fixture(t, 2, "correction"))
+				case "trace-withdrawal":
+					err = a.Publish(t.Context(), sessionarchive.Manifest{Version: 1, Generation: 2, CreatedAt: first.CreatedAt})
+					expected = ErrWithdrawn
+				case "repository-withdrawal":
+					err = a.WithdrawRepository(t.Context(), "octo/api")
+					expected = ErrWithdrawn
+				case "cancellation":
+					cancel()
+					expected = context.Canceled
+				case "closed":
+					err = reader.Close()
+					expected = context.Canceled
+				case "lease-loss":
+					a.lost.Store(true)
+					expected = ErrLease
+				default:
+					t.Fatal("unknown reader-lifetime case")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				delivered := false
+				err = reader.Deliver(func() error {
+					delivered = true
+					if a.mu.TryLock() {
+						a.mu.Unlock()
+						t.Error("delivery was not serialized with withdrawal")
+					}
+					return nil
+				})
+				if !errors.Is(err, expected) || delivered != (expected == nil) {
+					t.Fatalf("unexpected delivery: called=%t err=%v expected=%v", delivered, err, expected)
+				}
+				if err := reader.Close(); err != nil || a.reader.Load() != nil {
+					t.Fatal("response cleanup leaked its reader")
+				}
+			})
+		}
+	}
+}
+
 func TestHostedIncompleteAndUnexpectedEvidenceRejected(t *testing.T) {
 	for _, failure := range []string{"missing-event", "wrong-attempt", "wrong-version", "wrong-trace", "duplicate-sequence", "bad-payload", "partial", "missing-status", "wrong-count"} {
 		t.Run(failure, func(t *testing.T) {
@@ -199,6 +293,9 @@ func TestHostedIncompleteAndUnexpectedEvidenceRejected(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("incomplete or unselected evidence accepted")
+			}
+			if a.reader.Load() != nil {
+				t.Fatal("failed query leaked its withdrawal-aware reader")
 			}
 		})
 	}

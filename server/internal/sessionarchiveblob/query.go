@@ -305,7 +305,52 @@ func (a *Archive) verifyFile(ctx context.Context, file sessionarchive.File) erro
 	return nil
 }
 
-func (a *Archive) pin(ctx context.Context, scope sessionarchive.Scope, repository, runID string, attempt int64) (context.Context, uint64, []sessionarchive.File, []sessionarchive.Member, func() error, error) {
+type Reader struct {
+	archive *Archive
+	pinned  *reader
+	ctx     context.Context
+}
+
+func (r *Reader) Close() error {
+	r.pinned.cancel()
+	r.archive.reader.CompareAndSwap(r.pinned, nil)
+	return nil
+}
+
+// Deliver serializes the final access check and result delivery with withdrawal.
+// The callback must not call back into the archive.
+func (r *Reader) Deliver(deliver func() error) error {
+	a := r.archive
+	if !a.mu.TryLock() {
+		if err := r.ctx.Err(); err != nil {
+			return err
+		}
+		return ErrCapacity
+	}
+	defer a.mu.Unlock()
+	if err := a.ready(); err != nil {
+		return err
+	}
+	if a.reader.Load() != r.pinned {
+		return context.Canceled
+	}
+	for _, m := range r.pinned.members {
+		if slices.Contains(a.state.WithdrawnRepositories, m.Repository) {
+			return ErrWithdrawn
+		}
+		for _, f := range a.state.Fences {
+			if f.Withdrawn && f.Namespace == m.Namespace && f.Repository == m.Repository && f.RunID == m.RunID && f.Attempt == m.Attempt {
+				return ErrWithdrawn
+			}
+		}
+	}
+	if err := r.ctx.Err(); err != nil {
+		return err
+	}
+	return deliver()
+}
+
+func (a *Archive) pin(ctx context.Context, scope sessionarchive.Scope, repository, runID string, attempt int64) (context.Context, uint64, []sessionarchive.File, []sessionarchive.Member, *Reader, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 0, nil, nil, nil, err
 	}
@@ -361,57 +406,54 @@ func (a *Archive) pin(ctx context.Context, scope sessionarchive.Scope, repositor
 	pinned := &reader{members: members, cancel: cancel}
 	a.reader.Store(pinned)
 	generation := a.active.Generation
-	finish := func() error {
-		queryErr := queryCtx.Err()
-		cancel()
-		a.reader.CompareAndSwap(pinned, nil)
-		if !a.mu.TryLock() {
-			return ErrCapacity
-		}
-		defer a.mu.Unlock()
-		if err := a.ready(); err != nil {
-			return err
-		}
-		for _, m := range members {
-			for _, f := range a.state.Fences {
-				if f.Withdrawn && f.Namespace == m.Namespace && f.Repository == m.Repository && f.RunID == m.RunID && f.Attempt == m.Attempt {
-					return ErrWithdrawn
-				}
-			}
-		}
-		return queryErr
-	}
-	return queryCtx, generation, files, members, finish, nil
+	return queryCtx, generation, files, members, &Reader{archive: a, pinned: pinned, ctx: queryCtx}, nil
 }
 
 func (a *Archive) Timeline(ctx context.Context, scope sessionarchive.Scope, request sessionarchive.TimelineRequest) (uint64, []sessionarchive.Event, error) {
-	if request.RunID == "" || request.Attempt < 1 || request.Limit < 1 || request.Limit > 4096 {
-		return 0, nil, sessionarchive.ErrLimit
-	}
-	queryCtx, generation, files, members, finish, err := a.pin(ctx, scope, request.Repository, request.RunID, request.Attempt)
+	generation, events, reader, err := a.ReadTimeline(ctx, scope, request)
 	if err != nil {
 		return generation, nil, err
 	}
-	defer func() { _ = finish() }()
+	defer func() { _ = reader.Close() }()
+	if err := reader.Deliver(func() error { return nil }); err != nil {
+		return generation, nil, err
+	}
+	return generation, events, nil
+}
+
+// ReadTimeline retains withdrawal protection until the caller closes its reader.
+func (a *Archive) ReadTimeline(ctx context.Context, scope sessionarchive.Scope, request sessionarchive.TimelineRequest) (_ uint64, _ []sessionarchive.Event, _ *Reader, err error) {
+	if request.RunID == "" || request.Attempt < 1 || request.Limit < 1 || request.Limit > 4096 {
+		return 0, nil, nil, sessionarchive.ErrLimit
+	}
+	queryCtx, generation, files, members, reader, err := a.pin(ctx, scope, request.Repository, request.RunID, request.Attempt)
+	if err != nil {
+		return generation, nil, nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = reader.Close()
+		}
+	}()
 	if len(members) != 1 || members[0].Events > int64(request.Limit) {
-		return generation, nil, sessionarchive.ErrLimit
+		return generation, nil, nil, sessionarchive.ErrLimit
 	}
 	if err := a.verifyTable(queryCtx); err != nil {
-		return generation, nil, err
+		return generation, nil, nil, err
 	}
 	kql := membershipKQL(a.config.Table, files, members) +
 		"| order by Sequence asc\n| take " + strconv.Itoa(request.Limit+1) +
 		"\n| project " + strings.Join(eventNames(), ",") + "\n| project Event=pack_all()"
 	table, err := a.query(queryCtx, "/v1/rest/query", kql)
 	if err != nil {
-		return generation, nil, err
+		return generation, nil, nil, err
 	}
 	if len(table.Columns) != 1 || table.Columns[0].ColumnName != "Event" || len(table.Rows) > request.Limit {
-		return generation, nil, sessionarchive.ErrLimit
+		return generation, nil, nil, sessionarchive.ErrLimit
 	}
 	var events []sessionarchive.Event
 	if int64(len(table.Rows)) != members[0].Events {
-		return generation, nil, ErrIntegrity
+		return generation, nil, nil, ErrIntegrity
 	}
 	for i, row := range table.Rows {
 		var event sessionarchive.Event
@@ -419,7 +461,7 @@ func (a *Archive) Timeline(ctx context.Context, scope sessionarchive.Scope, requ
 		if len(raw) > 0 && raw[0] == '"' {
 			var text string
 			if json.Unmarshal(raw, &text) != nil {
-				return generation, nil, ErrIntegrity
+				return generation, nil, nil, ErrIntegrity
 			}
 			raw = json.RawMessage(text)
 		}
@@ -428,40 +470,57 @@ func (a *Archive) Timeline(ctx context.Context, scope sessionarchive.Scope, requ
 			event.ProjectionID != members[0].Version || event.TraceID != members[0].ID ||
 			event.Sequence != int64(i) || event.ContractVersion != sessionarchive.ContractVersion ||
 			!json.Valid([]byte(event.PayloadJSON)) || digest([]byte(event.PayloadJSON)) != event.ContentDigest {
-			return generation, nil, ErrIntegrity
+			return generation, nil, nil, ErrIntegrity
 		}
 		events = append(events, event)
 	}
-	if err := finish(); err != nil {
-		return generation, nil, err
+	if err := reader.Deliver(func() error { return nil }); err != nil {
+		return generation, nil, nil, err
 	}
-	return generation, events, nil
+	return generation, events, reader, nil
 }
 
 func (a *Archive) Summaries(ctx context.Context, scope sessionarchive.Scope, repository string, limit int) (uint64, []sessionarchive.Summary, error) {
-	if limit < 1 || limit > 4096 {
-		return 0, nil, sessionarchive.ErrLimit
-	}
-	queryCtx, generation, files, members, finish, err := a.pin(ctx, scope, repository, "", 0)
+	generation, summaries, reader, err := a.ReadSummaries(ctx, scope, repository, limit)
 	if err != nil {
 		return generation, nil, err
 	}
-	defer func() { _ = finish() }()
-	if err := a.verifyTable(queryCtx); err != nil {
+	defer func() { _ = reader.Close() }()
+	if err := reader.Deliver(func() error { return nil }); err != nil {
 		return generation, nil, err
+	}
+	return generation, summaries, nil
+}
+
+// ReadSummaries retains withdrawal protection until the caller closes its reader.
+func (a *Archive) ReadSummaries(ctx context.Context, scope sessionarchive.Scope, repository string, limit int) (_ uint64, _ []sessionarchive.Summary, _ *Reader, err error) {
+	if limit < 1 || limit > 4096 {
+		return 0, nil, nil, sessionarchive.ErrLimit
+	}
+	queryCtx, generation, files, members, reader, err := a.pin(ctx, scope, repository, "", 0)
+	if err != nil {
+		return generation, nil, nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = reader.Close()
+		}
+	}()
+	if err := a.verifyTable(queryCtx); err != nil {
+		return generation, nil, nil, err
 	}
 	table, err := a.query(queryCtx, "/v1/rest/query", membershipKQL(a.config.Table, files, members)+
 		"| summarize Events=count() by Repository,RunId,RunAttempt,ProjectionId\n"+
 		"| order by RunId asc,RunAttempt asc\n| take "+strconv.Itoa(limit+1))
 	if err != nil {
-		return generation, nil, err
+		return generation, nil, nil, err
 	}
 	if len(table.Columns) != 5 || len(table.Rows) > limit {
-		return generation, nil, sessionarchive.ErrLimit
+		return generation, nil, nil, sessionarchive.ErrLimit
 	}
 	var summaries []sessionarchive.Summary
 	if len(table.Rows) != len(members) {
-		return generation, nil, ErrIntegrity
+		return generation, nil, nil, ErrIntegrity
 	}
 	seen := map[string]bool{}
 	for _, row := range table.Rows {
@@ -469,7 +528,7 @@ func (a *Archive) Summaries(ctx context.Context, scope sessionarchive.Scope, rep
 		if json.Unmarshal(row[0], &summary.Repository) != nil || json.Unmarshal(row[1], &summary.RunID) != nil ||
 			json.Unmarshal(row[2], &summary.Attempt) != nil || json.Unmarshal(row[3], &summary.ProjectionID) != nil ||
 			json.Unmarshal(row[4], &summary.Events) != nil {
-			return generation, nil, ErrIntegrity
+			return generation, nil, nil, ErrIntegrity
 		}
 		var selected *sessionarchive.Member
 		for _, member := range members {
@@ -480,15 +539,15 @@ func (a *Archive) Summaries(ctx context.Context, scope sessionarchive.Scope, rep
 			}
 		}
 		if selected == nil || seen[memberKey(*selected)] || selected.Events != summary.Events {
-			return generation, nil, ErrIntegrity
+			return generation, nil, nil, ErrIntegrity
 		}
 		seen[memberKey(*selected)] = true
 		summaries = append(summaries, summary)
 	}
-	if err := finish(); err != nil {
-		return generation, nil, err
+	if err := reader.Deliver(func() error { return nil }); err != nil {
+		return generation, nil, nil, err
 	}
-	return generation, summaries, nil
+	return generation, summaries, reader, nil
 }
 
 func eventNames() []string {
