@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestSetupAdmissionSharesConfiguration(t *testing.T) {
+func TestSetupAdmissionConfiguration(t *testing.T) {
 	for _, dryRun := range []bool{false, true} {
 		calls := 0
 		root, stdout, _ := testCommand(t, func(_ context.Context, args ...string) (string, string, error) {
@@ -43,7 +43,7 @@ func TestSetupAdmissionSharesConfiguration(t *testing.T) {
 		if dryRun {
 			expectedCalls = 1
 		}
-		if report.Applied == dryRun || report.Settings.OnOutage != "block" || calls != expectedCalls {
+		if report.Command != "setup admission" || report.Applied == dryRun || report.Settings.OnOutage != "block" || calls != expectedCalls {
 			t.Fatalf("setup admission diverged: %+v calls=%d", report, calls)
 		}
 	}
@@ -57,6 +57,30 @@ func TestSetupAdmissionSharesConfiguration(t *testing.T) {
 	}
 }
 
+func TestAdmissionSetupRemoved(t *testing.T) {
+	for _, flags := range [][]string{
+		{},
+		{"--repo", "acme/project", "--url", "https://cao.example/api/admission", "--json"},
+	} {
+		root, _, _ := testCommand(t, func(context.Context, ...string) (string, string, error) {
+			t.Fatal("removed admission setup command invoked GitHub")
+			return "", "", nil
+		}, nil)
+		root.SetArgs(append([]string{"admission", "setup"}, flags...))
+		if err := root.ExecuteContext(t.Context()); err == nil {
+			t.Fatal("removed admission setup command accepted")
+		}
+	}
+	root, stdout, _ := testCommand(t, nil, nil)
+	root.SetArgs([]string{"admission", "--help"})
+	if err := root.ExecuteContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "\n  setup ") || !strings.Contains(stdout.String(), "gh cao setup admission") {
+		t.Fatalf("admission help should direct setup to the canonical command: %s", stdout)
+	}
+}
+
 func TestSetupCommandHierarchy(t *testing.T) {
 	root, _, _ := testCommand(t, nil, nil)
 	for _, tt := range []struct {
@@ -64,6 +88,7 @@ func TestSetupCommandHierarchy(t *testing.T) {
 	}{
 		{[]string{"setup"}, []string{"admission", "ado", "adx", "auth", "jira", "linear"}},
 		{[]string{"setup", "auth"}, []string{"enterprise-app", "github-app", "hosted-cli", "token"}},
+		{[]string{"admission"}, []string{"disable", "status"}},
 	} {
 		cmd, remaining, err := root.Find(tt.path)
 		if err != nil || len(remaining) != 0 {

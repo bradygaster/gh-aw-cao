@@ -130,7 +130,7 @@ gh cao setup admission --repo acme/control \
 gh cao admission status --repo acme/control --json
 ```
 
-`gh cao admission setup` is an equivalent entry point. Setup defaults the
+Setup defaults the
 audience to the endpoint and outages to `block`. Use `--audience VALUE` if the
 authority has a different registered audience. `--on-outage ignore` deliberately
 permits execution after transient failures are exhausted.
