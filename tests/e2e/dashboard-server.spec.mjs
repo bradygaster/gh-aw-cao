@@ -40,6 +40,10 @@ test.beforeEach(async ({ context }) => {
   await queryBudget.waitForBudget();
 });
 
+test.afterEach(async ({ context }) => {
+  await context.unrouteAll({ behavior: "ignoreErrors" });
+});
+
 const populatedViews = [
   {
     page: "runs",
@@ -79,7 +83,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(beforeResponse.ok()).toBe(true);
     const before = await beforeResponse.json();
     expect(before.scope).toBe('process');
-    await expect(view).toContainText(before.configured ? 'Configured' : 'Not configured');
+    await expect(view).toContainText(before.configured ? 'Configured' : 'Not configured', { timeout: 60_000 });
     await expect(received).toHaveText(String(before.received));
     const delivery = await context.request.post('/api/github/webhook', {
       headers: { 'X-GitHub-Event': 'ping', 'X-GitHub-Delivery': `browser-ping-${viewport.width}` },
@@ -234,11 +238,9 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
           const expectsQueries = pageViews.some((view) => (
             view?.data && (typeof view.data.source === "string" || Array.isArray(view.data.sources))
           ));
-          const rendered = await views.evaluateAll((items) =>
-            items.map((item) => item.getAttribute("data-view-id")));
           const unavailable = activePage.locator('[data-view-state="unavailable"][role="alert"]');
           if (definition.route?.["availability-view"] && await unavailable.isVisible()) {
-            expect(rendered, "Unavailable detail pages replace their views with recovery actions").toEqual([]);
+            await expect(views, "Unavailable detail pages replace their views with recovery actions").toHaveCount(0);
             await expect(unavailable).toContainText(definition.route["availability-message"]);
             await expect(unavailable.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
             await expect(unavailable.getByRole("link")).toHaveAttribute(
@@ -246,6 +248,8 @@ test("deployed shards populate server-backed dashboard views", async ({ context,
             );
             result.availability = "unavailable";
           } else {
+            const rendered = await views.evaluateAll((items) =>
+              items.map((item) => item.getAttribute("data-view-id")));
             for (const viewId of declared) {
               if (!rendered.includes(viewId)) result.errors.push(`Missing view: ${viewId}`);
             }

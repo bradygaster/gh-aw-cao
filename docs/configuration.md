@@ -26,7 +26,7 @@ This minimal policy enables the installed Dependabot campaign and its workers in
 {
   "$schema": "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json",
   "version": 1,
-  "gh-aw-version": "v0.92.6",
+  "gh-aw-version": "v0.93.5",
   "control-plane": {
     "scope": {
       "allowed-owners": ["acme"]
@@ -214,7 +214,7 @@ workflow slug under `control-plane.workflows`:
 ```json
 {
   "version": 1,
-  "gh-aw-version": "v0.92.6",
+  "gh-aw-version": "v0.93.5",
   "control-plane": {
     "scope": {
       "allowed-owners": ["acme"],
@@ -341,7 +341,7 @@ one environment secret name. GitHub App entries reference `app-id-secret`,
 `private-key-secret`, and `installation-id-secret`. Values stay in the trusted
 Activity or hosted resolver and are never published to the dashboard. The
 marketplace is read-only: its action copies
-`gh cao campaigns add OWNER/REPOSITORY[/PATH]@COMMIT`; it does not execute installation.
+`gh cao add OWNER/REPOSITORY[/PATH]@COMMIT`; it does not execute installation.
 See [Browse campaign packages](marketplace.md) for registry setup, backend
 behavior, troubleshooting, and the read-only dashboard flow.
 `specs/marketplace.md` defines the normalized package and failure contracts.

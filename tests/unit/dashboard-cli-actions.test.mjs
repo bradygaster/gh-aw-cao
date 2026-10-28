@@ -204,7 +204,7 @@ setInterval(() => {}, 1000);`;
 });
 
 test("CLI actions read the gh-aw compiler version from cao.json", async () => {
-  assert.equal(await resolveGhAwCompilerVersion(), "v0.92.6");
+  assert.equal(await resolveGhAwCompilerVersion(), "v0.93.5");
 });
 
 test("CLI actions parse quoted gh aw arguments without a shell", () => {
@@ -216,7 +216,7 @@ test("CLI actions parse quoted gh aw arguments without a shell", () => {
 
 test("CLI actions parse native gh cao command families without a shell", () => {
   for (const [command, args] of [
-    ["gh cao campaigns add githubnext/gh-cao/dependabot", ["campaigns", "add", "githubnext/gh-cao/dependabot"]],
+    ["gh cao add githubnext/gh-cao/dependabot", ["add", "githubnext/gh-cao/dependabot"]],
     ["gh cao campaigns mode preview repo-assist", ["campaigns", "mode", "preview", "repo-assist"]],
     ["gh cao repos add octo/repo", ["repos", "add", "octo/repo"]],
     ["gh cao query campaign-runs --param 'campaign=repo-assist'", ["query", "campaign-runs", "--param", "campaign=repo-assist"]],
@@ -366,7 +366,7 @@ test("CLI actions fall back to the pinned curl installer", async () => {
 
   assert.deepEqual(calls, [
     ["gh", ["aw", "--help"]],
-    ["gh", ["extension", "install", "github/gh-aw", "--pin", "v0.92.6"]],
+    ["gh", ["extension", "install", "github/gh-aw", "--pin", "v0.93.5"]],
     ["gh", ["aw", "--help"]],
   ]);
   assert.deepEqual(fallback, ["token-value"]);

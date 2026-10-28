@@ -5,6 +5,18 @@
   },
   "pages": [
     {
+      "id": "wizard",
+      "title": "Workflow wizard",
+      "description": "Choose a pattern and review a generation prompt for an Agentic Workflow or Campaign.",
+      "intent": "Turn an explicit automation goal into a bounded, reviewable workflow or campaign authoring request.",
+      "subject": "Author-selected requirements and pinned upstream workflow patterns, not operational authority.",
+      "objective": "Review a complete generation prompt before handing it to a coding agent.",
+      "acceptance": "Preserve explicit scope, safe outputs and success criteria; treat mined patterns as historical guidance; never install or activate generated work.",
+      "experimental": true,
+      "parameters": [],
+      "queries": []
+    },
+    {
       "id": "commands",
       "title": "Commands",
       "description": "Reconnect to a durable local command without rerunning it.",
@@ -411,6 +423,30 @@
       ]
     },
     {
+      "id": "value-measurement",
+      "title": "Native measurement",
+      "description": "Inspect an original batch assessment and its exact evidence period without inferring accepted changes or verified quality.",
+      "intent": "Inspect a native outcome measurement under its frozen evaluator.",
+      "subject": "One original canonical operational-value observation.",
+      "objective": "Keep missingness, coverage, maturity and immutable fingerprints visible.",
+      "acceptance": "Never replace null with zero or reinterpret interval results as repository snapshots.",
+      "experimental": false,
+      "parameters": [
+        {
+          "name": "measurement",
+          "required": true,
+          "description": "The measurement this page reports on.",
+          "schema": {
+            "type": "string",
+            "description": "The measurement this page reports on."
+          }
+        }
+      ],
+      "queries": [
+        "value-measurement-facts"
+      ]
+    },
+    {
       "id": "workflow-value",
       "title": "Workflow value",
       "description": "Inspect measured repository movement and open the evidence behind a workflow's result.",
@@ -431,6 +467,9 @@
         }
       ],
       "queries": [
+        "value-collection-health",
+        "value-current-measurements",
+        "value-measurement-facts",
         "value-report-summary",
         "value-workflow-results"
       ]
@@ -496,16 +535,15 @@
     {
       "id": "value",
       "title": "Value",
-      "description": "Review measured results and follow the evidence behind each workflow's contribution.",
-      "intent": "Start with repository outcomes, then inspect the workflow evidence behind a result.",
-      "subject": "Latest published workflow value reports across repositories.",
-      "objective": "Find a measured result and open its native evidence report.",
+      "description": "Inspect collection health, then review retained results at their actual capture and cutoff dates.",
+      "intent": "Distinguish collection availability from measured repository outcomes.",
+      "subject": "Reviewed Value registrations and latest retained workflow reports.",
+      "objective": "Explain missing or delayed evidence and open the native evidence that is available.",
       "acceptance": "Keep native units, direction, repository, workflow, dates and unknowns visible. No alert score, causal credit or GitHub acquisition.",
       "experimental": false,
       "parameters": [],
       "queries": [
-        "value-report-summary",
-        "value-workflow-results"
+        "value-workflow-overview"
       ]
     },
     {
@@ -918,13 +956,14 @@
       "title": "Ingestion",
       "description": "Determine whether the evidence pipeline supports reliable CAO analysis.",
       "intent": "Determine whether collection, ingestion and retained data are healthy enough for analysis.",
-      "subject": "Server collection health, API usage, ingestion queues, shards and retained transactions.",
+      "subject": "Server collection health, API usage, ingestion queues, daily run counts, shards and retained transactions.",
       "objective": "Locate evidence gaps and bottlenecks before trusting dashboard conclusions.",
       "acceptance": "Show native states, timestamps, counts, sizes and units with backend limitations; preserve failures and partial/unavailable evidence. Empty queues or tables alone do not establish successful collection.",
       "experimental": false,
       "parameters": [],
       "queries": [
         "github-api-usage",
+        "indexing-daily-run-counts",
         "indexing-database-table-counts",
         "indexing-ingestion-runs",
         "indexing-shards",
@@ -961,6 +1000,7 @@
       "experimental": false,
       "parameters": [],
       "queries": [
+        "engines-models-sample-distribution",
         "engines-models-usage"
       ]
     },
@@ -981,12 +1021,12 @@
     },
     {
       "id": "maintenance",
-      "title": "Updates",
-      "description": "Identify repositories whose compiler provenance justifies a CAO maintenance proposal.",
-      "intent": "Identify repositories whose compiler provenance warrants maintenance review.",
-      "subject": "Repository workflow compiler versions and retained update-confidence evidence.",
-      "objective": "Prioritize safe maintenance proposals using known version provenance.",
-      "acceptance": "Distinguish registration, observed version and update confidence; preserve unknown provenance and refresh guidance. Do not infer outdatedness from missing data or execute updates without approval.",
+      "title": "Compiler upgrades",
+      "description": "Review retained gh-aw compiler evidence by repository before applying upgrades.",
+      "intent": "Identify repositories whose gh-aw compiler provenance warrants maintenance review.",
+      "subject": "Repository workflow compiler versions and retained upgrade-confidence evidence.",
+      "objective": "Prioritize safe compiler upgrades using known version provenance and explain incomplete evidence.",
+      "acceptance": "Distinguish observed installed and latest-stable versions, preserve unknown provenance with a diagnostic reason, and expose upgrade actions only for known outdated evidence. Do not infer outdatedness from missing data or execute upgrades without approval.",
       "experimental": false,
       "parameters": [],
       "queries": [
@@ -2177,10 +2217,48 @@
       }
     },
     {
+      "id": "maintenance-campaign-packages",
+      "subject": "Installed campaign packages with retained source coordinates and update evidence.",
+      "objective": "Show installed/current source revisions and gate update actions on exact retained provenance.",
+      "acceptance": "Return every package. Set campaign-update-action-visible only for update-available rows with a non-empty source; missing provenance stays visible and non-actionable.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "campaigns"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "campaigns"
+        ]
+      }
+    },
+    {
+      "id": "maintenance-standalone-workflows",
+      "subject": "Standalone workflows with retained upstream provenance and update evidence.",
+      "objective": "Represent source-managed and local workflows without synthetic campaign membership.",
+      "acceptance": "Retain exact coordinates and revisions for source-managed rows; keep local or incomplete rows visible and non-actionable with an explicit reason.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "workflows"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflows"
+        ]
+      }
+    },
+    {
       "id": "maintenance-repository-versions",
       "subject": "Group installed and current gh-aw compiler versions and upgrade evidence by repository.",
       "objective": "Identify repositories with declared Markdown workflows whose retained compiler-version evidence warrants upgrade review.",
-      "acceptance": "Group Markdown workflow declarations by repository coordinate and return distinct recorded installed/current version lists plus upgrade-required and unknown flags; inspect absent or mixed version evidence rather than inferring a repository-wide installed version.",
+      "acceptance": "Group Markdown workflow declarations by repository coordinate and return distinct known installed/current version lists, distinct counts, upgrade-required evidence, and separate missing-installed/missing-latest flags. Never infer unavailable versions.",
       "description": "",
       "parameters": [],
       "sources": [
@@ -2198,8 +2276,8 @@
     {
       "id": "maintenance-repositories",
       "subject": "List each repository with recorded compiler versions and computed upgrade state.",
-      "objective": "Expose recorded compiler versions and computed upgrade state per repository, with its GitHub home URL for inspection.",
-      "acceptance": "Return repository, repository-url, version lists, upgrade-required, upgrade-state, and upgrade-action-visible. Show Upgrade for outdated or unknown evidence; hide it for known-current repositories. Visibility grants no rollout authority.",
+      "objective": "Expose recorded compiler versions, computed upgrade state, and a concise evidence diagnostic per repository, with its GitHub home URL for inspection.",
+      "acceptance": "Return repository, repository-url, known version lists, upgrade-required, upgrade-state, upgrade-status-reason, and upgrade-action-visible. Show Upgrade only when known evidence establishes an outdated compiler; missing or conflicting evidence stays visible and non-actionable.",
       "description": "",
       "parameters": [
         {
@@ -2230,7 +2308,7 @@
       "description": "",
       "parameters": [],
       "sources": [
-        "campaigns"
+        "maintenance-campaign-packages"
       ],
       "used-by-pages": [],
       "execution": {
@@ -2242,10 +2320,29 @@
       }
     },
     {
+      "id": "maintenance-standalone-updates",
+      "subject": "Expose at most one standalone workflow source update row for the Updates navigation indicator.",
+      "objective": "Determine whether retained source-managed standalone workflow metadata contains an actionable update signal for the Updates indicator.",
+      "acceptance": "Return zero or one workflow-update-action-visible row only when it is true; unmanaged local workflows and incomplete source evidence do not activate the indicator.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "maintenance-standalone-workflows"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflows"
+        ]
+      }
+    },
+    {
       "id": "maintenance-repository-upgrades",
       "subject": "Expose at most one gh-aw compiler upgrade row for the Updates navigation indicator.",
       "objective": "Determine whether repository compiler metadata contains an upgrade-required signal for the Updates indicator.",
-      "acceptance": "Return zero or one upgrade-required row only when the retained value is 1; no row does not establish that all repositories are current when version data is missing.",
+      "acceptance": "Return zero or one upgrade-action-visible row only when known retained evidence establishes an outdated compiler; missing evidence remains non-actionable and does not activate the indicator.",
       "description": "",
       "parameters": [],
       "sources": [
@@ -3076,29 +3173,48 @@
       }
     },
     {
-      "id": "repository-observed-run-counts",
-      "subject": "Count distinct retained run IDs by repository without importing event evidence.",
-      "objective": "Supply the run-volume chart without computing activity health, ingestion coverage, or workflow costs.",
-      "acceptance": "Group by organization and repository coordinate and count distinct retained run IDs, not attempts; missing runs remain missing evidence and global scope and time filters still apply.",
+      "id": "repository-daily-run-buckets",
+      "subject": "Select repository run counts by whole UTC start-day buckets.",
+      "objective": "Keep count selection independent of retained Run detail.",
+      "acceptance": "Use UTC midnight and request bounds, matching the Runs daily chart; do not fabricate sub-day totals or missing days.",
       "description": "",
       "parameters": [],
       "sources": [
-        "runs"
+        "daily-run-counts"
       ],
       "used-by-pages": [],
       "execution": {
         "local": true,
         "backend": "sqlite",
         "requirements": [
-          "runs"
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "repository-observed-run-counts",
+      "subject": "Count observed logical Runs by repository from persistent daily buckets.",
+      "objective": "Supply the run-volume chart without computing activity health, ingestion coverage, or workflow costs.",
+      "acceptance": "Sum daily totals, not attempts or retained detail. Select whole UTC start-day buckets by midnight and preserve partial or unavailable coverage.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "repository-daily-run-buckets"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
         ]
       }
     },
     {
       "id": "repository-run-inventory",
-      "subject": "Registered repositories and distinct retained workflow run IDs in the selected horizon.",
+      "subject": "Registered repositories and observed daily logical Run counts.",
       "objective": "Compare repository execution volume and choose repositories for drill-down.",
-      "acceptance": "Keep up to 100 repository identities and drill links, ordered by run count descending with repository tie-breaks. Zero means no retained runs, not proof of inactivity; preserve unavailable and partial evidence. The Table view retains the full inventory.",
+      "acceptance": "Keep top 100 identities and drill links with stable count and repository ordering. Zero means no admitted dated Runs in selected UTC buckets, not inactivity. Preserve partial coverage; unavailable daily evidence must not produce zeros. Table keeps full inventory.",
       "description": "",
       "parameters": [],
       "sources": [
@@ -3112,8 +3228,8 @@
         "local": true,
         "backend": "sqlite",
         "requirements": [
-          "repositories",
-          "runs"
+          "daily-run-counts",
+          "repositories"
         ]
       }
     },
@@ -3147,9 +3263,9 @@
     },
     {
       "id": "workflow-runtime-health-summary",
-      "subject": "Count mutually exclusive runtime conclusion classes for the selected workflow.",
-      "objective": "Identify workflows whose retained run conclusions or pending execution warrant investigation.",
-      "acceptance": "Within each organization, repository, and workflow, successful, failed, approval, pending, and other counts sum to the retained run total; missing or unrecognized conclusions are not treated as success, and runtime success is not a verified outcome.",
+      "subject": "Sum daily runtime conclusion counts for the selected workflow.",
+      "objective": "Inspect observed dated runs independently of retained detail.",
+      "acceptance": "Sum by organization/repository/workflow without adding detail; successful, failed, approval, pending, and other sum to total. Dates use UTC run start; undated evidence is incomplete and missing projection is unavailable. Pending is last-observed state, success is not a verified outcome, and sub-day filters are unsupported.",
       "description": "",
       "parameters": [
         {
@@ -3158,7 +3274,7 @@
         }
       ],
       "sources": [
-        "runs"
+        "daily-run-counts"
       ],
       "used-by-pages": [
         "workflow-runtime"
@@ -3167,7 +3283,7 @@
         "local": true,
         "backend": "sqlite",
         "requirements": [
-          "runs"
+          "daily-run-counts"
         ]
       }
     },
@@ -3338,6 +3454,82 @@
       }
     },
     {
+      "id": "value-measurement-facts",
+      "subject": "Original native primary and diagnostic observations from reviewed batch evaluators.",
+      "objective": "Keep periods, native units, evaluator identity and missingness inspectable without inventing delivery events.",
+      "acceptance": "Null is unavailable, not zero. Interval measurements are not snapshots or cumulative accepted contributions.",
+      "description": "",
+      "parameters": [
+        {
+          "name": "measurement",
+          "field": "id"
+        },
+        {
+          "name": "workflow",
+          "field": "workflow-route"
+        }
+      ],
+      "sources": [
+        "workflow-value-measurements"
+      ],
+      "used-by-pages": [
+        "value-measurement",
+        "workflow-value"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-measurement-order",
+      "subject": "Latest assessment of each workflow measure, including unavailable assessments.",
+      "objective": "Do not let an older numeric value hide a newer incomplete period.",
+      "acceptance": "Choose latest cutoff and assessment before considering value or coverage; preserve evaluator digest.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-measurement-facts"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-current-measurements",
+      "subject": "Latest native primary measurements, separately from event-ledger reports.",
+      "objective": "Expose ordinary reviewed batch results on the same Value surface.",
+      "acceptance": "Do not infer healthy outcomes, accepted implementations or complete coverage from a non-null value.",
+      "description": "",
+      "parameters": [
+        {
+          "name": "workflow",
+          "field": "workflow-route"
+        }
+      ],
+      "sources": [
+        "value-measurement-order"
+      ],
+      "used-by-pages": [
+        "workflow-value"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
       "id": "value-evidence-facts",
       "subject": "Published original evidence for frozen workflow value contracts.",
       "objective": "Keep report identity, target repository, workflow and capture together.",
@@ -3358,9 +3550,9 @@
     },
     {
       "id": "value-contracts",
-      "subject": "Latest retained report contract per repository, workflow and native measure.",
-      "objective": "Prevent old reports or versions from masking newer evidence.",
-      "acceptance": "Select the latest cutoff then capture before evaluating missing or incomplete evidence. Preserve separate measures.",
+      "subject": "One retained contract per repository, workflow and versioned native measure.",
+      "objective": "Compute each report independently before selecting current workflow results.",
+      "acceptance": "Preserve separate versions and exact report identity. Latest-version selection belongs to the workflow result query.",
       "description": "",
       "parameters": [],
       "sources": [
@@ -3372,6 +3564,135 @@
         "backend": "sqlite",
         "requirements": [
           "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-measurement-captures",
+      "subject": "Accepted complete native batch assessments, separately from collection decisions.",
+      "objective": "Expose actual retained capture clocks without advancing them on failure or partial data.",
+      "acceptance": "Only mature complete non-null primary assessments establish an accepted capture; zero remains valid.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-measurement-facts"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-contract-captures",
+      "subject": "Original capture clocks from accepted rich evidence packets.",
+      "objective": "Align capture metadata without merging measured populations.",
+      "acceptance": "This union is capture metadata only, never combined metric totals.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-contracts"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-capture-order",
+      "subject": "Actual captures across the retained measures of each workflow.",
+      "objective": "Expose the last accepted capture independently of collection decisions.",
+      "acceptance": "Select by original capture time. A deferred or failed check cannot advance evidence clocks.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-contract-captures",
+        "value-measurement-captures"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-latest-capture",
+      "subject": "One last accepted capture per workflow, not a freshness claim.",
+      "objective": "Join capture and cutoff without multiplying collection registrations.",
+      "acceptance": "Missing packets remain unavailable, never zero or an inferred successful collection.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-capture-order"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-collection-health",
+      "subject": "Reviewed registration and authoritative collection decisions, with independently retained evidence.",
+      "objective": "Explain disabled, unconfigured, deferred, failed and not-yet-captured workflows.",
+      "acceptance": "Use published collector facts, not missing result cards. Preserve decision, attempt, capture and cutoff as distinct clocks.",
+      "description": "",
+      "parameters": [
+        {
+          "name": "workflow",
+          "field": "workflow-route"
+        }
+      ],
+      "sources": [
+        "value-latest-capture",
+        "workflow-value-collections"
+      ],
+      "used-by-pages": [
+        "workflow-value"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-registered-collections",
+      "subject": "Reviewed Value registrations, including explicit disables and registrations with no report.",
+      "objective": "Make collection health visible before the first accepted packet.",
+      "acceptance": "Registration is independent of measured outcomes. No enrollment or acquisition follows from navigation.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-collection-health"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
         ]
       }
     },
@@ -3583,10 +3904,28 @@
         "value-report-delivery"
       ],
       "used-by-pages": [
-        "value",
         "value-report",
         "workflow-value"
       ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-result-order",
+      "subject": "Version ordering after independently computing each report.",
+      "objective": "Keep exact report queries partition-local without changing latest-version selection.",
+      "acceptance": "Rank cutoffs then captures within each workflow and measure. Explicit report links do not need other report facts.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-report-summary"
+      ],
+      "used-by-pages": [],
       "execution": {
         "local": true,
         "backend": "sqlite",
@@ -3608,10 +3947,9 @@
         }
       ],
       "sources": [
-        "value-report-summary"
+        "value-workflow-result-order"
       ],
       "used-by-pages": [
-        "value",
         "workflow-value"
       ],
       "execution": {
@@ -3619,6 +3957,133 @@
         "backend": "sqlite",
         "requirements": [
           "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-headline-order",
+      "subject": "Most recent current report across the measures of each workflow.",
+      "objective": "Give each workflow and repository one headline result; other measures stay on the workflow page.",
+      "acceptance": "Select by cutoff then capture. Never replace a missing result with an older or zero value.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-workflow-results"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-headlines",
+      "subject": "One headline result per workflow and repository.",
+      "objective": "Join cleanly to collection health without multiplying rows.",
+      "acceptance": "Exactly one row per workflow route.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-workflow-headline-order"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-reported-overview",
+      "subject": "Workflows with a retained headline result, with any published collection state.",
+      "objective": "Show a report even when no collection fact was published for its workflow.",
+      "acceptance": "A missing collection fact stays unknown, never an inferred registration.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-collection-health",
+        "value-workflow-headlines"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-registered-reports",
+      "subject": "Registered workflows marked with whether a headline result exists.",
+      "objective": "Separate registration from retained outcomes before selecting unreported workflows.",
+      "acceptance": "Join on workflow route only; one row per registration.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-registered-collections",
+        "value-workflow-headlines"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-unreported-overview",
+      "subject": "Registered workflows that have no retained headline result.",
+      "objective": "Keep collection health visible before the first accepted packet.",
+      "acceptance": "No result is not zero value or a healthy outcome.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-workflow-registered-reports"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
+        ]
+      }
+    },
+    {
+      "id": "value-workflow-overview",
+      "subject": "One row per workflow and repository: collection health plus its headline result trend.",
+      "objective": "Show the first-to-last trend and collection state in a single card.",
+      "acceptance": "Missing reports remain unavailable, never zero. Registration and outcome stay independent facts.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "value-workflow-reported-overview",
+        "value-workflow-unreported-overview"
+      ],
+      "used-by-pages": [
+        "value"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "operational-value-evidence",
+          "workflow-value-collections",
+          "workflow-value-measurements"
         ]
       }
     },
@@ -4642,14 +5107,151 @@
       }
     },
     {
-      "id": "runs-daily-conclusions",
-      "subject": "Aggregate workflow run conclusions by UTC day for the Runs stacked area graph.",
-      "objective": "Expose changes in observed run conclusions by day for investigation.",
-      "acceptance": "Count retained runs by started-at UTC day and recorded conclusion; an empty day or missing conclusion is not evidence of healthy execution or absence of activity.",
+      "id": "runs-daily-health-buckets",
+      "subject": "Select whole UTC start-day buckets against the requested time bounds.",
+      "objective": "Expose UTC bucket boundaries for declarative daily time selection.",
+      "acceptance": "Compute bounds from observed execution-start days only; missing request bounds remain unset and no sub-day totals or missing days are fabricated.",
       "description": "",
       "parameters": [],
       "sources": [
-        "runs"
+        "daily-run-counts"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-health-totals",
+      "subject": "Sum observed daily run health across the selected scope.",
+      "objective": "Keep daily activity counts independent of detail retention.",
+      "acceptance": "Sum only daily counts, never retained Runs. UTC start-day buckets are selected by midnight; sub-day totals are unsupported. Missing or undated evidence remains unavailable or partial.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-buckets"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-successful",
+      "subject": "Observed daily successful run counts.",
+      "objective": "Expose the successful class for the daily runtime-health chart.",
+      "acceptance": "Project successful counts from scoped daily totals without re-reading detail; runtime success does not imply accepted outcomes.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-totals"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-failed",
+      "subject": "Observed daily failed run counts.",
+      "objective": "Expose the failed class for the daily runtime-health chart.",
+      "acceptance": "Project failed counts from scoped daily totals, preserving zero counts and aggregate coverage without deriving incidents.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-totals"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-approval",
+      "subject": "Observed daily approval-required run counts.",
+      "objective": "Expose approval-required observations in the daily runtime-health chart.",
+      "acceptance": "Project approval counts from scoped daily totals without treating approval-required observations as successes or failures.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-totals"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-pending",
+      "subject": "Observed daily pending run counts.",
+      "objective": "Expose last-observed pending state in the daily runtime-health chart.",
+      "acceptance": "Project pending counts from scoped daily totals; counts describe last-observed evidence, not a live execution census.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-totals"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-other",
+      "subject": "Observed daily unclassified terminal or missing-status run counts.",
+      "objective": "Expose the remaining runtime-health class without implying success.",
+      "acceptance": "Project other counts from scoped daily totals; preserve zeros and coverage without interpreting skipped, cancelled, or unknown evidence as success.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-health-totals"
+      ],
+      "used-by-pages": [],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
+      "id": "runs-daily-conclusions",
+      "subject": "Daily observed runtime health classes for the Runs chart.",
+      "objective": "Investigate daily activity independently of retained run detail.",
+      "acceptance": "Classes sum to observed dated Runs, not attempts or verified outcomes. Pending is last-observed state; Other is not success. Select whole UTC start-day buckets by midnight, not sub-day totals. Preserve partial or unavailable coverage.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "runs-daily-approval",
+        "runs-daily-failed",
+        "runs-daily-other",
+        "runs-daily-pending",
+        "runs-daily-successful"
       ],
       "used-by-pages": [
         "runs"
@@ -4658,7 +5260,7 @@
         "local": true,
         "backend": "sqlite",
         "requirements": [
-          "runs"
+          "daily-run-counts"
         ]
       }
     },
@@ -5069,6 +5671,27 @@
       }
     },
     {
+      "id": "indexing-daily-run-counts",
+      "subject": "Inspect admitted daily logical Run counts independently of retained detail and shard receipts.",
+      "objective": "Make the daily run-count projection visible as an ingestion diagnostic.",
+      "acceptance": "Sum daily buckets by observed UTC execution-start day across repositories and workflows, without page filters, detail fallback, fabricated days or zero populations. Preserve aggregate coverage and partial or unavailable evidence; counts do not prove upstream completeness.",
+      "description": "",
+      "parameters": [],
+      "sources": [
+        "daily-run-counts"
+      ],
+      "used-by-pages": [
+        "indexing"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "daily-run-counts"
+        ]
+      }
+    },
+    {
       "id": "indexing-campaigns-table-count",
       "subject": "Count retained campaigns rows in the dashboard database.",
       "objective": "Provide the retained campaigns row count for the table-count diagnostic.",
@@ -5315,6 +5938,27 @@
         "backend": "sqlite",
         "requirements": [
           "transactions"
+        ]
+      }
+    },
+    {
+      "id": "engines-models-sample-distribution",
+      "subject": "Describe agent and model combinations in the seven-day statistical run sample.",
+      "objective": "Find sampled combinations to investigate without scanning the full retained run history.",
+      "acceptance": "Count unweighted selected Runs after frame selection. Keep statistical-frame-id in grouped rows and frame metadata on empty results. Zero-allocation strata are not population zeros. Preserve unknown identifiers; failure reserves can alter composition. Never mix sample counts with exact usage or infer population shares.",
+      "description": "Unweighted composition of the seven-day statistical sample; not a population estimate. Failure outcomes may be oversampled.",
+      "parameters": [],
+      "sources": [
+        "statistical-runs"
+      ],
+      "used-by-pages": [
+        "engines-models"
+      ],
+      "execution": {
+        "local": true,
+        "backend": "sqlite",
+        "requirements": [
+          "statistical-runs"
         ]
       }
     },

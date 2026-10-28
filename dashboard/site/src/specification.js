@@ -91,7 +91,7 @@ export const VIEW_REQUIREMENT_KEYS = ['backend', 'message', 'on-unavailable'];
 export const VIEW_BACKEND_VALUES = ['static', 'hosted'];
 export const VIEW_DATA_KEYS = ['source', 'partial-source', 'sources', 'scope', 'time', 'filters', 'arguments', 'route-field', 'limit', 'order-by', 'source-metadata', 'query-context'];
 export const VIEW_DATA_ARGUMENT_KEYS = ['name', 'field'];
-export const VIEW_ELEMENT_CONFIG_KEYS = ['body', 'sections', 'stations', 'labels', 'animate', 'sources', 'browser-first-load', 'data-status', 'view-all-page', 'view-all-label', 'label-field', 'label-badge-field', 'link-field', 'icon-field', 'fallback-icon', 'indicator-field', 'indicator-label-field', 'empty-message', 'measure-source', 'content-field', 'path-field', 'base-link-field', 'actions'];
+export const VIEW_ELEMENT_CONFIG_KEYS = ['body', 'sections', 'stations', 'labels', 'animate', 'sources', 'browser-first-load', 'data-status', 'view-all-page', 'view-all-label', 'label-field', 'label-badge-field', 'link-field', 'icon-field', 'fallback-icon', 'indicator-field', 'indicator-label-field', 'empty-message', 'measure-source', 'content-field', 'path-field', 'base-link-field', 'actions', 'wizard'];
 export const FACTORY_HEADER_SOURCE_ROLES = ['presentation', 'rhythm'];
 export const FACTORY_FLOOR_SOURCE_ROLES = ['campaigns', 'repositories', 'issues', 'value-gains'];
 export const VIEW_ELEMENT_ANIMATION_VALUES = ['number'];
@@ -120,7 +120,8 @@ export const VIEW_ELEMENT_VALUES = [
   'query-editor',
   'command-terminal',
   'storage-info',
-  'environment-defaults'
+  'environment-defaults',
+  'prompt-wizard'
 ];
 export const VIEW_CHART_VALUES = ['area', 'bar', 'dot', 'heatmap', 'histogram', 'horizontal-bar', 'line', 'pie', 'scatter', 'swimlane', 'treemap'];
 export const TREEMAP_KEYS = ['method', 'ratio', 'padding'];
@@ -397,6 +398,7 @@ export const TABLE_VALUES = [
   'grader-observations',
   'evals',
   'eval-observations',
+  'daily-run-counts',
   'usage',
   'mcp-calls',
   'mcp-servers',
@@ -414,6 +416,8 @@ export const TABLE_VALUES = [
   'findings',
   'operational-values',
   'operational-value-evidence',
+  'workflow-value-measurements',
+  'workflow-value-collections',
   'github-api-rate-limits',
   'github-api-collector-health',
   'github-api-call-stacks',
@@ -462,7 +466,18 @@ export const TABLE_VALUES = [
   'marketplace-packages'
 ];
 
+export const STATISTICAL_FIELDS = [
+  'statistical-frame-id', 'statistical-stratum', 'statistical-priority', 'statistical-population',
+  'statistical-allocation', 'statistical-weight-valid', 'statistical-probability', 'statistical-weight'
+];
+
 export const TABLE_FIELDS = {
+  'statistical-runs': [...STATISTICAL_FIELDS],
+  'statistical-tools': [...STATISTICAL_FIELDS],
+  'statistical-domains': [...STATISTICAL_FIELDS],
+  'statistical-skills': [...STATISTICAL_FIELDS],
+  'statistical-audits': [...STATISTICAL_FIELDS],
+  'daily-run-counts': ['day', 'organization', 'repository', 'workflow', 'total', 'successful', 'failed', 'approval', 'pending', 'other'],
   'routing-aggregates': [
     'routing-aggregate-version', 'organization', 'repository', 'workflow', 'run', 'run-attempt', 'run-link', 'engine',
     'routing-run-key', 'observed-at', 'pick', 'unknown-pick-model', 'routing-dashboard-link',
@@ -476,9 +491,9 @@ export const TABLE_FIELDS = {
   ],
   'marketplace-packages': ['id', 'registry-id', 'registry-name', 'registry-precedence', 'package-name', 'package-description', 'publisher', 'repository', 'repository-link', 'path', 'package-ref', 'resolved-commit', 'package-version', 'package-icon', 'package-artwork', 'package-readme', 'package-readme-path', 'package-source', 'add-command', 'stars', 'forks'],
   organizations: ['organization', 'organization-name', 'observed-at', 'organization-link'],
-  campaigns: ['id', 'campaign', 'campaign-name', 'campaign-description', 'campaign-icon', 'campaign-mode', 'campaign-enabled', 'campaign-registration', 'campaign-max-repositories', 'campaign-rollout-percent', 'campaign-monthly-ai-credit-budget', 'campaign-aic-allowance', 'campaign-worker-count', 'campaign-inventory-warnings', 'campaign-min-version', 'campaign-version', 'campaign-current-version', 'campaign-update-state', 'campaign-experimental', 'campaign-readme-path', 'campaign-readme', 'observed-at', 'campaign-link'],
+  campaigns: ['id', 'campaign', 'campaign-name', 'campaign-description', 'campaign-icon', 'campaign-mode', 'campaign-enabled', 'campaign-registration', 'campaign-max-repositories', 'campaign-rollout-percent', 'campaign-monthly-ai-credit-budget', 'campaign-aic-allowance', 'campaign-worker-count', 'campaign-inventory-warnings', 'campaign-min-version', 'campaign-source', 'campaign-version', 'campaign-current-version', 'campaign-update-state', 'campaign-experimental', 'campaign-readme-path', 'campaign-readme', 'observed-at', 'campaign-link'],
   repositories: ['id', 'organization', 'repository', 'repository-name', 'repository-coordinate', 'rollout-mode', 'observed-at', 'organization-link', 'repository-link'],
-  workflows: ['id', 'organization', 'repository', 'campaign', 'campaign-name', 'campaign-icon', 'campaign-readme-path', 'workflow', 'workflow-id', 'workflow-name', 'workflow-role', 'workflow-active', 'workflow-registry-state', 'admission-status', 'admission-reason', 'gh-aw-version', 'gh-aw-current-version', 'gh-aw-version-label', 'gh-aw-update-state', 'rollout-mode', 'max-ai-credits', 'campaign-aic-allowance', 'campaign-worker-count', 'campaign-inventory-warnings', 'inventory-ready', 'created-at', 'updated-at', 'observed-at', 'organization-link', 'repository-link', 'workflow-link', 'external-link'],
+  workflows: ['id', 'organization', 'repository', 'campaign', 'campaign-name', 'campaign-icon', 'campaign-readme-path', 'workflow', 'workflow-id', 'workflow-name', 'workflow-role', 'workflow-source-kind', 'workflow-source', 'workflow-source-version', 'workflow-source-current-version', 'workflow-source-update-state', 'workflow-active', 'workflow-registry-state', 'admission-status', 'admission-reason', 'gh-aw-version', 'gh-aw-current-version', 'gh-aw-version-label', 'gh-aw-update-state', 'rollout-mode', 'max-ai-credits', 'campaign-aic-allowance', 'campaign-worker-count', 'campaign-inventory-warnings', 'inventory-ready', 'created-at', 'updated-at', 'observed-at', 'organization-link', 'repository-link', 'workflow-link', 'external-link'],
   runs: ['id', 'organization', 'repository', 'workflow', 'run', 'run-attempt', 'run-title', 'target-repository', 'event', 'branch', 'head-sha', 'created-at', 'started-at', 'ended-at', 'updated-at', 'run-status', 'run-conclusion', 'classification', 'failure-kind', 'terminal-outcome', 'terminal-outcome-detail', 'duration', 'action-minutes', 'github-api-calls', 'safe-items-count', 'error-count', 'admission-status', 'admission-reason', 'failure-job', 'failure-message', 'failure-step', 'failure-log', 'failure-detail', 'resource', 'resource-reset-at', 'resource-wait-hours', 'rollout-mode', 'agent-id', 'agent-version', 'model-id', 'gh-aw-version', 'aic-total', 'input-tokens', 'output-tokens', 'cache-read-tokens', 'cache-write-tokens', 'reasoning-tokens', 'engine', 'engine-id', 'engine-version', 'requested-model', 'resolved-model', 'agent-runtime', 'firewall-version', 'gateway-version', 'organization-link', 'repository-link', 'workflow-link', 'run-link'],
   'overview-runs': ['id', 'organization', 'repository', 'workflow', 'workflow-name', 'workflow-role', 'campaign', 'campaign-name', 'run', 'target-repository', 'event', 'started-at', 'run-status', 'run-conclusion', 'rollout-mode'],
   domains: ['id', 'organization', 'repository', 'workflow', 'run', 'run-attempt', 'event', 'event-timestamp', 'event-source', 'event-type', 'event-summary', 'event-status', 'request-count', 'correlation-id', 'payload-ref', 'domain', 'decision', 'source-sequence', 'observed-at', 'run-link', 'engine', 'engine-version', 'requested-model', 'resolved-model', 'model-id', 'rollout-mode', 'gh-aw-version', 'run-conclusion', 'agent-id', 'agent-version', 'agent-runtime', 'organization-link', 'repository-link', 'workflow-link'],
@@ -515,14 +530,24 @@ export const TABLE_FIELDS = {
   'safe-output-performance': ['organization', 'repository', 'workflow', 'run', 'run-conclusion', 'rollout-mode', 'safe-output-kind', 'safe-output-label', 'safe-output-status', 'safe-output-count', 'observed-at', 'run-link'],
   findings: ['organization', 'repository', 'workflow', 'run', 'safe-output', 'code', 'finding-kind', 'finding-severity', 'finding-status', 'finding-summary', 'observed-at', 'engine', 'engine-version', 'requested-model', 'resolved-model', 'issue-link', 'pull-request-link', 'run-link', 'external-link', 'organization-link', 'repository-link', 'workflow-link'],
   'operational-values': ['id', 'organization', 'repository', 'repository-name', 'workflow', 'campaign', 'campaign-name', 'campaign-icon', 'evaluator-digest', 'cadence-days', 'window-start', 'window-end', 'measurement-kind', 'coverage-status', 'missing-reason', 'eligible-count', 'population-digest', 'evidence-digest', 'operational-value', 'operational-value-definition', 'operational-value-role', 'operational-value-name', 'operational-value-unit', 'operational-value-direction', 'rollup-numerator', 'rollup-denominator', 'maturity-status', 'adoption-at', 'evaluation-mode', 'workflow-slug', 'workflow-name', 'observed-at', 'organization-link', 'repository-link', 'campaign-link', 'run-link'],
+  'workflow-value-collections': [
+    'id', 'organization', 'repository', 'workflow', 'workflow-path', 'workflow-route', 'registration', 'collector',
+    'collection-state', 'reason-code', 'reason', 'checked-at', 'policy-digest', 'last-attempt-at', 'last-attempt-outcome'
+  ],
   'operational-value-evidence': [
-    'report-id', 'organization', 'repository', 'workflow', 'workflow-path', 'observed-at', 'window-start', 'window-end', 'contract-digest',
+    'report-id', 'workflow-route', 'snapshot-route', 'organization', 'repository', 'workflow', 'workflow-path', 'observed-at', 'window-start', 'window-end', 'contract-digest',
     'fact-kind', 'fact-id', 'parent-id', 'related-id', 'label', 'title', 'url', 'at', 'accepted-at', 'end-at',
     'value', 'ref', 'state', 'origin', 'scope', 'coverage-status', 'status', 'detail', 'goal', 'acceptance',
     'metric-id', 'metric-name', 'metric-unit', 'metric-direction', 'metric-version', 'metric-formula', 'result-label',
     'measurement-basis', 'snapshot-name', 'snapshot-unit', 'snapshot-direction', 'snapshot-id', 'snapshot-version',
     'snapshot-formula', 'outputs-available', 'repository-state-available', 'checks-available', 'items-available',
     'output-unit', 'implementation-unit', 'output-scope', 'output-coverage', 'workflow-name', 'cadence-days', 'maturation-days'
+  ],
+  'workflow-value-measurements': [
+    'id', 'repository', 'workflow-route', 'campaign', 'workflow-slug', 'workflow-name', 'value-id', 'value',
+    'metric-role', 'metric-name', 'metric-unit', 'metric-direction', 'evaluator-digest', 'observed-at',
+    'window-start', 'window-end', 'measurement-kind', 'maturity-status', 'coverage-status', 'missing-reason',
+    'evidence-digest', 'eligible-count', 'population-digest', 'cadence-days', 'evaluation-mode', 'adoption-at'
   ],
   'github-api-rate-limits': ['observation-id', 'operation-execution-id', 'observed-at', 'phase', 'operation', 'outcome', 'credential', 'credential-type', 'resource', 'bucket', 'maximum-lane', 'history-series', 'has-history', 'limit', 'used', 'remaining', 'remaining-percent', 'reset-at', 'minutes-to-reset', 'consumed-since-previous', 'burn-rate-per-minute', 'projected-remaining-at-reset', 'projected-exhaustion-at', 'runway-ratio', 'risk-status', 'risk-order', 'is-unhealthy', 'is-current', 'attribution-status', 'operation-consumed', 'run-link'],
   'github-api-collector-health': ['observed-at', 'operation-execution-id', 'phase', 'operation', 'outcome', 'credential', 'cache-hydrated', 'cache-bytes', 'cache-entries', 'cache-folders', 'rate-limit-error'],
@@ -582,6 +607,16 @@ TABLE_FIELDS.audits.push(
   'component', 'phase', 'telemetry-model', 'provider', 'effort', 'telemetry-engine',
   'duration-ms', 'exit-code', 'http-status', 'threshold', 'required'
 );
+
+for (const [name, source] of /** @type {const} */ ([
+  ['statistical-runs', 'runs'], ['statistical-tools', 'tools'], ['statistical-domains', 'domains'],
+  ['statistical-skills', 'skills'], ['statistical-audits', 'audits']
+])) {
+  TABLE_VALUES.push(name);
+  TABLE_FIELDS[name] = [...TABLE_FIELDS[source], ...STATISTICAL_FIELDS];
+}
+
+TABLE_FIELDS['statistical-runs'].push('sample-stratum', 'sample-probability', 'sample-weight');
 
 export const ROLLOUT_MODE_VALUES = ['review', 'live', 'unknown'];
 export const DETECTION_STATE_VALUES = ['clean', 'threat', 'degraded', 'tooling-failure', 'skipped', 'unknown'];

@@ -134,7 +134,7 @@ for (const role of ["orchestrator", "standalone"]) {
         GITHUB_WORKFLOW_REF: `acme/control/.github/workflows/${standalone ? "fleet-audit" : "dependabot"}.lock.yml@main`,
       }, "echo 'GitHub must not be called for invalid inventory limits' >&2; exit 99",
       standalone ? JSON.stringify({
-        version: 1, "gh-aw-version": "v0.92.6",
+        version: 1, "gh-aw-version": "v0.93.1",
         "control-plane": { workflows: { "fleet-audit": {} } },
       }) : controlPolicy(), effectiveOverrides);
 
@@ -419,7 +419,7 @@ esac
   assert.equal(precompute.effective_max_repos, 1);
 });
 
-test("orchestrator discovery collapses renamed repository aliases", () => {
+test("orchestrator inventory blocks renamed enrollment rather than following aliases", () => {
   const result = runPrecompute(
     {
       ROLE: "orchestrator",
@@ -449,14 +449,14 @@ esac
     }),
   );
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /\[cao] {"decision":"repository-inventory","outcome":"selected","source":"allowed_repos","repository_count":2}/);
-  assert.match(result.stdout, /\[cao] {"decision":"inventory-partition","outcome":"selected","input_count":2,"unique_count":1,"configured_cell_count":1,"cell_repository_count":1,"configured_batch_size":100000,"batch_count":1,"batch_index":0,"candidate_count":1/);
-  assert.match(result.stdout, /\[cao] {"decision":"worker-workflow","outcome":"eligible","workflow":"dependabot-update-planner"/);
-  assert.match(result.stdout, /\[cao] {"decision":"repository-cap","outcome":"resolved","candidates":1,"eligible_workers":1/);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /does not match the enrolled repository identity/);
   const precompute = JSON.parse(readFileSync("/tmp/gh-aw/agent/control-precompute.json", "utf8"));
-  assert.deepEqual(precompute.candidate_repositories.map(({ full_name }) => full_name), ["acme/target"]);
-  assert.equal(precompute.inventory_repository_count, 1);
+  assert.equal(precompute.authorized, true);
+  assert.equal(precompute.activation_ready, false);
+  assert.equal(precompute.inventory_status, "incomplete");
+  assert.deepEqual(precompute.candidate_repositories, []);
+  assert.deepEqual(precompute.worker_workflows, []);
 });
 
 test("control precompute rejects a public non-central review destination", () => {

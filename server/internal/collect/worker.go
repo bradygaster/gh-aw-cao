@@ -22,6 +22,7 @@ type Worker struct {
 	Projector      Projector
 	Enrollment     Enrollment
 	ScopeRefresher ScopeRefresher
+	Discovery      RepositoryDiscovery
 	// Consumer identifies this worker within the consumer group.
 	Consumer string
 	// BatchSize bounds how many tasks are leased at once.
@@ -117,16 +118,34 @@ func (w Worker) Run(ctx context.Context) error {
 	}
 	consumer := w.consumer()
 	workerLog.Printf("worker started projection_role=%t", w.Project)
+	if w.Discovery.Client != nil {
+		discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
+		discoveryDone := make(chan struct{})
+		go func() {
+			defer close(discoveryDone)
+			w.Discovery.Run(discoveryCtx)
+		}()
+		defer func() {
+			cancelDiscovery()
+			<-discoveryDone
+		}()
+	}
 	if w.Project {
 		projectionCtx, cancelProjection := context.WithCancel(ctx)
 		projectionDone := make(chan struct{})
+		valueDone := make(chan struct{})
 		go func() {
 			defer close(projectionDone)
 			w.projectionLoop(projectionCtx)
 		}()
+		go func() {
+			defer close(valueDone)
+			w.localValueLoop(projectionCtx)
+		}()
 		defer func() {
 			cancelProjection()
 			<-projectionDone
+			<-valueDone
 		}()
 	}
 	for ctx.Err() == nil {
@@ -172,6 +191,7 @@ func (w Worker) Run(ctx context.Context) error {
 // process handles one lease and reports whether evidence changed.
 func (w Worker) process(ctx context.Context, lease Lease) bool {
 	task := lease.Task
+	admittedInstallation := task.InstallationID
 	ctx = telemetry.ExtractTraceparent(ctx, task.Traceparent)
 	if !task.NotBefore.IsZero() && task.NotBefore.After(time.Now().UTC()) {
 		deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
@@ -208,7 +228,7 @@ func (w Worker) process(ctx context.Context, lease Lease) bool {
 		workerLog.Printf("debounce clear failed")
 		return false
 	}
-	if task.Scope != nil || task.InventoryRefresh {
+	if task.Scope != nil || task.InventoryRefresh || task.Lifecycle != "" {
 		if err := w.processRefresh(ctx, lease); err != nil {
 			workerLog.Printf("background inventory refresh failed")
 			w.retryRefresh(ctx, lease, err)
@@ -216,45 +236,68 @@ func (w Worker) process(ctx context.Context, lease Lease) bool {
 		return false
 	}
 	if w.Enrollment.Metadata != nil {
-		installationID, err := w.Enrollment.InstallationFor(ctx, task.Repository)
+		if task.Erase {
+			return w.processEnrolledErasure(ctx, lease)
+		}
+		var installationID int64
+		lookup := func(ctx context.Context) error {
+			var err error
+			installationID, err = w.Enrollment.InstallationFor(ctx, task.Repository)
+			return err
+		}
+		var err error
+		if task.Reason == "repository-discovery" {
+			err = w.Enrollment.withMutationLock(ctx, lookup)
+		} else {
+			err = lookup(ctx)
+		}
 		if err != nil {
 			workerLog.Printf("repository enrollment check failed")
-			if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
-				workerLog.Printf("task retry failed")
+			w.retryRefresh(ctx, lease, err)
+			return false
+		}
+		if installationID == 0 {
+			return w.processEnrolledErasure(ctx, lease)
+		}
+		if task.Outcome != nil && installationID != admittedInstallation {
+			if err := w.Queue.Complete(ctx, lease); err != nil {
+				workerLog.Printf("stale mined outcome acknowledgement failed")
 			}
 			return false
 		}
-		switch {
-		case task.Erase:
-			if installationID > 0 {
-				if task.InstallationID > 0 && installationID != task.InstallationID {
-					if err := w.Queue.Complete(ctx, lease); err != nil {
-						workerLog.Printf("stale erasure acknowledgement failed")
-					}
-					return false
-				}
-				lease.Task.NotBefore = time.Now().UTC().Add(backoff(max(task.Attempt, 1)))
-				if err := w.Queue.Defer(ctx, lease); err != nil {
-					workerLog.Printf("pending erasure defer failed")
-				}
-				return false
-			}
-		case installationID == 0:
-			return w.processErasure(ctx, lease)
-		default:
-			lease.Task.InstallationID = installationID
-			task = lease.Task
-		}
+		lease.Task.InstallationID = installationID
+		task = lease.Task
 	}
 	if task.Erase {
 		return w.processErasure(ctx, lease)
 	}
-	if task.Lifecycle != "" {
-		if err := w.processRepositoryLifecycle(ctx, lease); err != nil {
-			workerLog.Printf("repository lifecycle update failed")
-			w.retryRefresh(ctx, lease, err)
+	if task.Outcome != nil {
+		if task.Outcome.Repository != task.Repository {
+			w.retryRefresh(ctx, lease, errors.New("mined outcome task scope mismatch"))
+			return false
 		}
-		return false
+		if err := w.Enrollment.withMutationLock(ctx, func(ctx context.Context) error {
+			current, err := w.Enrollment.InstallationFor(ctx, task.Repository)
+			if err != nil {
+				return err
+			}
+			if current != admittedInstallation || current == 0 {
+				return errors.New("mined outcome installation ownership changed")
+			}
+			return w.Runner.Lake.recordMining(ctx, task.Repository, nil, task.Outcome)
+		}); err != nil {
+			w.retryRefresh(ctx, lease, err)
+			return false
+		}
+		// Persist projection intent before ACK: a crash cannot strand evidence.
+		if err := w.Projector.RequestProjection(ctx); err != nil {
+			w.retryRefresh(ctx, lease, err)
+			return false
+		}
+		if err := w.Queue.Complete(ctx, lease); err != nil {
+			workerLog.Printf("mined outcome acknowledgement failed")
+		}
+		return true
 	}
 	if w.Projector.Data != nil {
 		active, err := w.Projector.Data.RepositoryActive(ctx, task.Repository)
@@ -286,7 +329,36 @@ func (w Worker) process(ctx context.Context, lease Lease) bool {
 	return true
 }
 
+func (w Worker) processEnrolledErasure(ctx context.Context, lease Lease) bool {
+	changed := false
+	err := w.Enrollment.withMutationLock(ctx, func(ctx context.Context) error {
+		installationID, err := w.Enrollment.InstallationFor(ctx, lease.Task.Repository)
+		if err != nil {
+			return err
+		}
+		if installationID > 0 {
+			return w.Queue.Complete(ctx, lease)
+		}
+		changed = w.processErasure(ctx, lease)
+		return nil
+	})
+	if err != nil {
+		workerLog.Printf("erasure enrollment check failed")
+		w.retryRefresh(ctx, lease, err)
+	}
+	return changed
+}
+
 func (w Worker) processErasure(ctx context.Context, lease Lease) bool {
+	if w.Runner.Traces != nil {
+		if err := w.Runner.Traces.WithdrawRepository(ctx, lease.Task.Repository); err != nil {
+			workerLog.Printf("trace withdrawal failed")
+			if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
+				workerLog.Printf("trace withdrawal retry failed")
+			}
+			return false
+		}
+	}
 	if err := w.Runner.Lake.ForgetContext(ctx, lease.Task.Repository); err != nil {
 		workerLog.Printf("evidence erasure failed repository=%s", lease.Task.Repository)
 		if retryErr := w.Queue.Retry(ctx, lease, err); retryErr != nil {
@@ -319,18 +391,14 @@ func (w Worker) projectionLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		if err := w.Projector.CollectOutcomeEvidence(ctx); err != nil && ctx.Err() == nil {
+			workerLog.Printf("bounded outcome repair incomplete")
+		}
 		pending, err := w.Projector.PendingProjection(ctx)
 		if err != nil {
 			continue
 		}
 		if !pending {
-			revision, err := w.Projector.CollectWorkflowValues(ctx)
-			if revision > 0 && w.OnProjection != nil {
-				w.OnProjection(revision)
-			}
-			if err != nil && !errors.Is(err, ErrProjectionBusy) {
-				workerLog.Printf("opted-in workflow Value collection failed")
-			}
 			continue
 		}
 		result, err := w.Projector.Project(ctx)
@@ -342,6 +410,21 @@ func (w Worker) projectionLoop(ctx context.Context) {
 		}
 		if w.OnProjection != nil {
 			w.OnProjection(result.Revision)
+		}
+	}
+}
+
+func (w Worker) localValueLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.Projector.minInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.Projector.CollectLocalValues(ctx); err != nil && !errors.Is(err, ErrLocalValueBusy) && ctx.Err() == nil {
+				workerLog.Printf("local Value computation deferred or failed; core Activity publication is independent")
+			}
 		}
 	}
 }

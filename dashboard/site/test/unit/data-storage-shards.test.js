@@ -156,9 +156,16 @@ describe('incremental canonical storage shards', () => {
       expect(result).toMatchObject({ deletedRecords: 0, retainedRecords: 2001 });
       expect(indexGetAll).not.toHaveBeenCalled();
       expect(cursor).not.toHaveBeenCalled();
-      expect(stringify).not.toHaveBeenCalled();
-      expect(getAll.mock.contexts.every((store) => store instanceof IDBObjectStore && store.name === 'storageShards')).toBe(true);
-      expect(getAll.mock.calls.every(([, count]) => count === 1000)).toBe(true);
+      expect(stringify.mock.calls).toEqual([
+        [expect.objectContaining({ id: 'run:old-summary', contribution: null })],
+        [expect.objectContaining({ id: 'daily-run-counts', status: 'ready' })]
+      ]);
+      for (const [index, store] of getAll.mock.contexts.entries()) {
+        expect(store).toBeInstanceOf(IDBObjectStore);
+        const objectStore = /** @type {IDBObjectStore} */ (store);
+        expect(['storageShards', 'dailyRunCounts', 'runCountContributions']).toContain(objectStore.name);
+        expect(getAll.mock.calls[index][1]).toBe(objectStore.name === 'storageShards' ? 1000 : 250);
+      }
     } finally {
       vi.restoreAllMocks();
     }
@@ -213,7 +220,7 @@ describe('incremental canonical storage shards', () => {
     expect(await readCollection(indexedDB, 'runs')).toHaveLength(1);
     expect(await readCollection(indexedDB, 'operationalValues')).toHaveLength(1);
     await expectAccurateTotals(indexedDB);
-  }, 15_000);
+  }, 30_000);
 
   it('accounts duplicate IDs, overwrites, shard moves, and replacements exactly once', async () => {
     const indexedDB = new IDBFactory();

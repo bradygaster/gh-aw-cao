@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { parse } from "yaml";
 import {
@@ -12,9 +15,10 @@ import {
   verifyCaoRuntime,
 } from "../../.github/workflows/shared/materialize-cao.mjs";
 import { buildCaoRuntime } from "../../scripts/build-cao-runtime.mjs";
-import { setupTerminalFixture, walkSetupTerminal } from "../helpers/setup-terminal.mjs";
+import { assertUnknownCommandsRejectBeforeIO } from "../helpers/cao-unknown-commands.mjs";
 
 const catalog = path.resolve(import.meta.dirname, "../..");
+const executeFile = promisify(execFile);
 const revision = "1".repeat(40);
 const retiredLauncher = `#!/bin/sh
 set -eu
@@ -39,6 +43,146 @@ function unpack(t) {
   extractCaoArchive(artifact.archive, destination, true);
   return path.join(destination, "package");
 }
+
+test("the installed runtime rejects unknown commands before filesystem or database activity", (t) => {
+  assertUnknownCommandsRejectBeforeIO(unpack(t), t);
+});
+
+test("the installed runtime publishes reviewed collection health without a collector or credentials", t => {
+  const root = unpack(t);
+  for (const { source, destination } of parse(readFileSync(path.join(catalog, "aw.yml"), "utf8")).resources) {
+    const target = path.join(root, destination);
+    mkdirSync(path.dirname(target), { recursive: true });
+    cpSync(path.join(catalog, source), target, { recursive: true });
+  }
+  const policy = path.join(root, "health-policy.json");
+  writeFileSync(policy, JSON.stringify({ version: 1, "gh-aw-version": "v0.93.1", "control-plane": {
+    scope: { "allowed-repositories": ["org/repo"] }, activity: { repositories: ["org/repo"] },
+    campaigns: { activity: { "workflow-values": [
+      { repository: "org/repo", workflow: "worker", collector: "not-installed.mjs" },
+    ] } },
+  } }));
+  const output = path.join(root, "health-evidence.jsonl");
+  const result = JSON.parse(execFileSync(process.execPath, [
+    "activity/workflow-values.mjs", "--root", root, "--policy", policy, "--repository", "org/repo",
+    "--output", output, "--workspace", path.join(root, "proofs"), "--defer", "api-budget",
+  ], { cwd: root, env: { PATH: "", NODE_OPTIONS: "" }, encoding: "utf8", timeout: 30000 }));
+  assert.equal(result.deferred, 1);
+  assert.equal(result.failed, 0);
+  const { workflow_value_collection: health } = JSON.parse(readFileSync(
+    path.join(root, "health-evidence-collections.jsonl"), "utf8",
+  ));
+  assert.equal(health.registration, "enabled");
+  assert.equal(health.reasonCode, "api-budget");
+  assert.equal(health.lastAttemptAt, undefined);
+  assert.equal(existsSync(output), false);
+  assert.equal(existsSync(path.join(root, "proofs")), false);
+});
+
+test("the installed runtime retains explicit ingestion and downloadable queryable evidence", async (t) => {
+  const root = unpack(t);
+  const database = path.join(root, "snapshot.sqlite");
+  const fixture = path.join(catalog, "dashboard/site/test/fixtures/gh-aw-logs");
+  const run = args => JSON.parse(execFileSync(process.execPath, ["activity/cao.mjs", ...args], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PATH: "", NODE_OPTIONS: "" },
+    timeout: 30_000,
+  }));
+  const output = run([
+    "ingest", "--database", database, "--context", path.join(fixture, "context.json"),
+    "--logs", path.join(fixture, "run-303"), "--retention-days", "all", "--run-retention-days", "all",
+  ]);
+  assert.deepEqual(Object.keys(output).sort(), ["counts", "result"]);
+  assert.equal(output.result.updated, true);
+  assert.equal(output.counts.runs, 1);
+  assert.equal(output.counts.tools, 3);
+  assert.ok(existsSync(database));
+  const runs = run(["query", "--database", database, "--collection", "runs"]);
+  assert.equal(runs[0].id, "github:run:githubnext/gh-cao:303");
+  assert.equal(run(["query", "--database", database, "--collection", "tools"]).length, 3);
+
+  const shard = "gh-aw-logs-shards/empty.jsonl";
+  const payloads = new Map([
+    ["/gh-aw-logs.sqlite", readFileSync(database)],
+    ["/inventory-sources.json", Buffer.from('{"repositories":{"rows":[]}}\n')],
+    [`/${shard}`, Buffer.alloc(0)],
+  ]);
+  const manifest = Buffer.from(JSON.stringify(Object.fromEntries([
+    ["gh-aw-logs.sqlite", payloads.get("/gh-aw-logs.sqlite")],
+    [shard, payloads.get(`/${shard}`)],
+  ].map(([name, content]) => [name, createHash("sha256").update(content).digest("hex")]))));
+  payloads.set("/payload-hashes.json", manifest);
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    const payload = payloads.get(request.url);
+    response.writeHead(payload === undefined ? 404 : 200);
+    response.end(payload);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  }));
+  const downloaded = path.join(root, "downloaded");
+  const { stdout, stderr } = await executeFile(process.execPath, [
+    "activity/cao.mjs", "download",
+    "--url", `http://127.0.0.1:${server.address().port}/payload-hashes.json`,
+    "--output", downloaded,
+    "--manifest-sha256", createHash("sha256").update(manifest).digest("hex"),
+  ], {
+    cwd: root,
+    env: { PATH: "", NODE_NO_WARNINGS: "1" },
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  assert.equal(stderr, "");
+  const receipt = JSON.parse(stdout);
+  assert.equal(receipt.database, path.join(downloaded, "gh-aw-logs.sqlite"));
+  assert.equal(receipt.inventory, path.join(downloaded, "inventory-sources.json"));
+  assert.equal(receipt.manifest, path.join(downloaded, "payload-hashes.json"));
+  assert.deepEqual(requests.sort(), [...payloads.keys()].sort());
+  assert.deepEqual(readFileSync(path.join(downloaded, "gh-aw-logs.sqlite")), payloads.get("/gh-aw-logs.sqlite"));
+  assert.deepEqual(run([
+    "query", "--database", path.join(downloaded, "gh-aw-logs.sqlite"), "--collection", "runs",
+  ]), runs);
+});
+
+test("the packaged Activity runtime builds and preserves daily run counts without consumer dependencies", (t) => {
+  const root = unpack(t);
+  assert.ok(existsSync(path.join(root, "dashboard/site/src/data/model/daily-run-counts.js")));
+  const database = path.join(root, "daily-counts.sqlite");
+  const input = path.join(root, "run.jsonl");
+  const timestamp = new Date(Date.now() - 3 * 86_400_000).toISOString();
+  writeFileSync(input, `${JSON.stringify({
+    schema_version: 2, kind: "run", run: {
+      run_id: 42, organization: "octo", repository: "octo/demo", workflow_name: "Worker",
+      workflow_path: ".github/workflows/worker.lock.yml",
+      created_at: timestamp, started_at: timestamp, updated_at: timestamp,
+      status: "completed", conclusion: "success",
+    },
+  })}\n`);
+  const run = args => JSON.parse(execFileSync(process.execPath, ["activity/cao.mjs", ...args], {
+    cwd: root, encoding: "utf8", env: { ...process.env, PATH: "", NODE_OPTIONS: "" }, timeout: 30_000,
+  }));
+  assert.equal(run(["ingest-jsonl", "--database", database, "--input", input]).counts.runs, 1);
+  const repair = run(["repair-database", "--database", database, "--ttl-days", "1", "--run-ttl-days", "1"]);
+  assert.equal(repair.healthy, true);
+  assert.equal(repair.after.counts.runs, 0);
+  const connection = new DatabaseSync(database, { readOnly: true });
+  try {
+    const rows = connection.prepare("SELECT value FROM __idb_records WHERE store_name = ?").all("dailyRunCounts");
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].value).total, 1);
+    assert.equal(JSON.parse(rows[0].value).successful, 1);
+  } finally {
+    connection.close();
+  }
+});
 
 function fakeGithub(t, {
   expired = false,
@@ -101,9 +245,20 @@ test("producer artifact binds its production inventory to an immutable revision"
   assert.equal(metadata.revision, revision);
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.js"]);
   assert.ok(metadata.files["dashboard/site/src/vendor/yaml.LICENSE"]);
-  assert.ok(metadata.files["activity/setup-prompt.mjs"]);
+  assert.equal(metadata.files["activity/setup-prompt.mjs"], undefined);
+  for (const file of [
+    "activity/setup.mjs", "activity/upgrade-gh-aw.mjs",
+    ...["authentication", "campaigns", "gh-aw", "packages", "policy"].map(name => `activity/cli/${name}.mjs`),
+    ...["init", "setup", "setup-auth", "add", "mode", "enable", "disable", "update", "upgrade-gh-aw"]
+      .map(name => `activity/commands/${name}.mjs`),
+  ]) {
+    assert.equal(metadata.files[file], undefined, file);
+    assert.equal(existsSync(path.join(root, file)), false, file);
+  }
   assert.ok(metadata.files["activity/jsonl.mjs"]);
   assert.ok(metadata.files["activity/collect-workflow-logs.mjs"]);
+  assert.equal(metadata.files["activity/cli/repositories.mjs"], undefined);
+  assert.equal(existsSync(path.join(root, "activity/cli/repositories.mjs")), false);
   for (const file of [
     "jsonl_helpers.cjs", "json_schema_validation.cjs", "mcp_scripts_validation.cjs",
     "memory_schema_contract.cjs", "LICENSE", "source.json",
@@ -124,11 +279,6 @@ test("producer artifact binds its production inventory to an immutable revision"
   assert.equal(dashboardManifest.scripts.postinstall, "node scripts/prepare-terminal.mjs");
   assert.equal(dashboardLock.packages[""].dependencies["node-pty"], dashboardManifest.dependencies["node-pty"]);
   assert.ok(dashboardLock.packages["node_modules/node-pty"].hasInstallScript);
-  const prompt = readFileSync(path.join(root, "activity/setup-prompt.mjs"), "utf8");
-  const rootManifest = JSON.parse(readFileSync(path.join(catalog, "package.json"), "utf8"));
-  assert.equal(rootManifest.devDependencies?.["@clack/prompts"], undefined);
-  assert.match(prompt, /from 'node:readline'/);
-  assert.doesNotMatch(prompt, /Bundled dependency:|@clack\/|fast-string-width|fast-wrap-ansi|sisteransi/);
   assert.equal(existsSync(path.join(root, "node_modules")), false);
   assert.match(readFileSync(path.join(root, "dashboard/site/src/validator-dashboard.js"), "utf8"), /from '\.\/vendor\/yaml\.js'/);
   assert.doesNotMatch(readFileSync(path.join(root, "dashboard/site/src/environment-defaults.js"), "utf8"), /from ['"].*yaml/);
@@ -151,6 +301,88 @@ test("the prebuilt archive loads the Governance CLI transport with dependency-fr
   });
   assert.equal(result.ok, true);
   assert.equal(result.stdout, yaml);
+});
+
+test("the installed runtime retains executable workflow-agent evidence APIs without npm or gh cao", async (t) => {
+  const root = unpack(t);
+  const manifest = parse(readFileSync(path.join(catalog, "aw.yml"), "utf8"));
+  for (const { source, destination } of manifest.resources) {
+    const target = path.join(root, destination);
+    mkdirSync(path.dirname(target), { recursive: true });
+    cpSync(path.join(catalog, source), target);
+  }
+  const { commandHandlers } = await import(pathToFileURL(path.join(root, "activity/commands/index.mjs")));
+  const run = (args) => execFileSync(process.execPath, ["activity/cao.mjs", ...args], {
+    cwd: root,
+    env: { PATH: "", NODE_NO_WARNINGS: "1" },
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  for (const command of [
+    "queries", "query-info", "prompt", "query", "gh", "computation", "mcp", "download",
+  ]) assert.equal(typeof commandHandlers.get(command), "function", `${command} must ship registered`);
+  assert.equal(existsSync(path.join(root, "node_modules")), false);
+  assert.match(run(["--help"]), /supported evidence APIs for agents inside agentic workflows/);
+  const discovery = JSON.parse(run(["queries", "--json"]));
+  assert.ok(discovery.queries.some((query) => query.id === "campaign-runs"));
+  const info = JSON.parse(run(["query-info", "campaign-runs", "--json"]));
+  assert.equal(info.query.execution.backend, "sqlite");
+  assert.match(run(["prompt", "campaign-runs"]), /No data preview was supplied/);
+
+  const database = path.join(root, "evidence.sqlite");
+  const query = JSON.parse(run([
+    "query", "campaign-runs", "--database", database, "--param", "campaign=maintenance", "--limit", "5",
+  ]));
+  assert.deepEqual(query.rows, []);
+  assert.equal(query.metadata.availability, "empty");
+  assert.equal(query.metadata.limit, 5);
+  assert.deepEqual(query.metadata.parameters, { campaign: "maintenance" });
+  for (const resource of ["runs", "issues", "prs"]) {
+    assert.deepEqual(JSON.parse(run([
+      "gh", resource, "--database", database, "--repo", "octo/control", "--limit", "5",
+    ])), []);
+  }
+  writeFileSync(path.join(root, "inventory-sources.json"), JSON.stringify({
+    campaigns: { rows: [{ campaign: "maintenance", "observed-at": "2026-10-22T10:00:00Z" }] },
+    repositories: { rows: [{ organization: "octo", repository: "control", "observed-at": "2026-10-22T10:00:00Z" }] },
+    workflows: { rows: [] },
+  }));
+  for (const computation of ["runtime-health", "intelligence"]) {
+    const payload = JSON.parse(run(["computation", computation, "--database", database]));
+    assert.equal(payload.command, "computation");
+    assert.equal(payload.computation, computation);
+    assert.ok(payload.result);
+  }
+  assert.throws(() => run(["download", "--url", "file:///evidence.json"]), (error) => {
+    assert.equal(error.status, 1);
+    assert.match(String(error.stderr), /Dashboard data URL must use HTTP or HTTPS/);
+    return true;
+  });
+
+  const { createDatabase } = await import(pathToFileURL(path.join(root, "activity/cli/ingestion.mjs")));
+  const { MCP_PROTOCOL_VERSION, startMcpServer } = await import(pathToFileURL(path.join(root, "activity/mcp-server.mjs")));
+  const server = await startMcpServer({ indexedDB: await createDatabase(database), port: 0 });
+  t.after(() => server.stop());
+  const response = await fetch(server.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+      "Mcp-Method": "tools/call",
+      "Mcp-Name": "cao_query",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "cao_query", arguments: { id: "campaign-runs", limit: 5 } },
+    }),
+  });
+  assert.equal(response.status, 200);
+  const payload = (await response.json()).result.structuredContent;
+  assert.equal(payload.query, query.query);
+  assert.deepEqual(payload.rows, query.rows);
+  assert.equal(payload.metadata.availability, query.metadata.availability);
 });
 
 test("the prebuilt archive runs Activity session enrichment without consumer npm dependencies", (t) => {
@@ -218,20 +450,6 @@ test("verified older inventories may include a retired launcher without making i
   assert.equal(plan.resources.includes("cao.sh"), false);
   writeFileSync(filename, "tampered");
   assert.throws(() => validateCaoRuntimeArtifact(root, revision), /checksum mismatch: cao\.sh/);
-});
-
-test("the prebuilt archive runs keyboard setup without consumer npm dependencies", { skip: process.platform === "win32" }, async (t) => {
-  const root = unpack(t);
-  const fixture = setupTerminalFixture(t, path.join(root, "activity/setup.mjs"));
-  const result = await walkSetupTerminal(fixture, [
-    ["Repositories CAO should read", "\r"],
-    ["Apply this setup?", "\r"],
-  ]);
-  assert.equal(result.code, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /"cancelled":true/);
-  assert.doesNotMatch(result.stdout, /How should CAO authenticate\?/);
-  assert.deepEqual(fixture.saved(), fixture.policy);
-  assert.ok(!fixture.calls().some(([command]) => command === "connect" || command === "api"));
 });
 
 test("artifact verification rejects altered, missing and unowned runtime files", (t) => {

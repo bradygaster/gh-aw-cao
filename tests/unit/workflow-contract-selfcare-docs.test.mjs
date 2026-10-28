@@ -85,25 +85,6 @@ test("SelfCare data acquisition audit refreshes its specification", () => {
   assert.match(compiled, /specs\/data-acquisition-audit-history\.md/);
 });
 
-test("SelfCare release blogger turns the day's release into one blog post", () => {
-  const source = workflow("self-care-release-blogger.md");
-  const compiled = workflow("self-care-release-blogger.lock.yml");
-
-  assert.match(source, /^name: "SelfCare \/ Release Blogger"$/m);
-  assert.match(source, /campaign: self-care\n\s+role: worker\n\s+worker: release-blogger/);
-  assert.match(source, /safe_output_mode` is `live`/);
-  assert.match(source, /skip-if-match: 'is:pr is:open "gh-aw-workflow-id: self-care-release-blogger" in:body'/);
-  assert.match(source, /draft: true/);
-  assert.match(source, /max-patch-files: 1/);
-  assert.match(source, /allowed-files:\n\s+- "docs\/content\/docs\/blog\/\*\.md"/);
-  assert.match(source, /including pre-releases\. Ignore drafts/);
-  assert.match(source, /preceding 24 hours/);
-  assert.match(source, /npm run docs:build/);
-  assert.match(source, /GitHub Blog voice/);
-  assert.doesNotMatch(source, /^\s+(contents|issues|pull-requests): write$/m);
-  assert.match(compiled, /docs\/content\/docs\/blog\/\*\.md/);
-});
-
 test("SelfCare runs every 20 minutes", () => {
   const source = workflow("self-care.md");
   const compiled = workflow("self-care.lock.yml");
@@ -113,7 +94,7 @@ test("SelfCare runs every 20 minutes", () => {
   assert.doesNotMatch(source, /model: copilot\/gpt-5\.4/);
   assert.match(
     source,
-    /self-care-dashboard-data-schema`, `self-care-data-acquisition-audit`, `self-care-docs-maintainer`, `self-care-glossary`, `self-care-release-blogger`, and `self-care-specs-maintainer`.*preceding 24 hours/
+    /self-care-dashboard-data-schema`, `self-care-data-acquisition-audit`, `self-care-docs-maintainer`, `self-care-glossary`, and `self-care-specs-maintainer`.*preceding 24 hours/
   );
   assert.match(source, /ten most recent runs of each workflow/);
   assert.match(source, /self-care-documentation-discoverability.*preceding seven days/);
@@ -186,7 +167,7 @@ test("SelfCare accessibility checker audits the served docs site with axe-core e
   assert.match(source, /Astro preview performs the base-path routing/);
   assert.match(source, /WCAG 2\.2 Level AA/);
   assert.match(source, /playwright-cli` is a pre-installed CLI binary already on `PATH`/);
-  assert.match(source, /never call `missing_tool` for it based on assumption alone/);
+  assert.match(source, /never call `report_missing_tool` for it based on assumption alone/);
   assert.match(source, /node_modules\/\.bin\/playwright install chromium/);
   assert.match(source, /Node Playwright package launch preflight/);
   assert.match(source, /preflight-node\.log/);
@@ -209,7 +190,7 @@ test("SelfCare accessibility checker audits the served docs site with axe-core e
   assert.doesNotMatch(source, /^\s+(create-issue|add-comment|create-discussion|push-to-pull-request-branch):/m);
   assert.match(compiled, /docs\/styles\/\*\.css/);
   assert.match(compiled, /docs\/components\/\*\.astro/);
-  assert.match(compiled, /"tools":\["create_pull_request","missing_data","missing_tool","noop","report_incomplete"\]/);
+  assert.match(compiled, /"tools":\["create_pull_request","noop","report_incomplete","report_missing_data","report_missing_tool"\]/);
 });
 
 test("docs diagram generator creates one validated theme-aware SVG pair", () => {

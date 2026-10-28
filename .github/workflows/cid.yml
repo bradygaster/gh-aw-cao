@@ -39,6 +39,7 @@ on:
       - package-lock.json
       - "!dashboard/site/**/*.md"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -50,6 +51,7 @@ concurrency:
 jobs:
   pages:
     name: Go Pages and IndexedDB
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -129,8 +131,16 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: dashboard/site/package-lock.json
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
       - name: Install dependencies
         run: npm ci
+      - name: Build canvas Go host outside browser test deadlines
+        run: |
+          go -C ../../server build -o "$RUNNER_TEMP/cao-dashboard" ./cmd/cao-dashboard
+          echo "CAO_DASHBOARD_EXECUTABLE=$RUNNER_TEMP/cao-dashboard" >> "$GITHUB_ENV"
       - name: Cache Playwright browsers
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -146,6 +156,16 @@ jobs:
           npx playwright install --with-deps chromium webkit
       - name: End-to-end tests
         run: npm run test:e2e -- --shard=${{ matrix.shard }}
+      - name: Retain browser test reports and failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-browser-shard-${{ strategy.job-index }}
+          path: |
+            dashboard/site/test-results/
+            dashboard/site/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
 
   ingestion-scale:
     name: Synthetic ingestion scale test

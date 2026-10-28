@@ -52,8 +52,9 @@ test("Copilot setup stages evidence with the JavaScript runtime, not the operato
 });
 
 test("agentic and deterministic CAO workflows do not invoke the native operator extension", () => {
-  // Release packaging verifies the native product, not the agent runtime.
-  const sources = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".md") && name !== "release.md");
+  // Packaging and CLI maintenance validate the native product, not the agent runtime.
+  const productValidation = new Set(["release.md", "self-care-cli-consistency.md"]);
+  const sources = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".md") && !productValidation.has(name));
   const names = [
     ...sources,
     ...sources.map((name) => name.replace(/\.md$/, ".lock.yml")),
@@ -112,7 +113,9 @@ test("Copilot setup installs the Go lint tooling used by server CI", () => {
   assert.ok(go);
   assert.ok(lint);
   assert.equal(go.uses, ciGo.uses);
-  assert.deepEqual(go.with, ciGo.with);
+  assert.equal(go.with["go-version"], ciGo.with["go-version"]);
+  assert.notEqual(ciGo.with.cache, false, "CI reuses the server compiler and module cache");
+  assert.match(ciGo.with["cache-dependency-path"], /server\/go\.sum/);
   assert.equal(lint.run, ciSteps.find((step) => step.name === "Install golangci-lint").run);
   assert.ok(steps.indexOf(go) < steps.indexOf(lint));
 });
@@ -153,6 +156,7 @@ test("repository-local SelfCare uses organization-billed Copilot authentication"
   const workflowIds = [
     "self-care-accessibility-checker",
     "self-care-agent-discoverability",
+    "self-care-cli-consistency",
     "self-care-code-improvement",
     "self-care-dashboard-data-schema",
     "self-care-dashboard-debug-logging",
@@ -167,7 +171,6 @@ test("repository-local SelfCare uses organization-billed Copilot authentication"
     "self-care-pages-health",
     "self-care-primer-brand-checker",
     "self-care-reactive-ui-expert",
-    "self-care-release-blogger",
     "self-care-server-go-logging",
     "self-care-specs-maintainer",
     "self-care",
@@ -210,7 +213,10 @@ test("Repo Assist uses configured CAO GitHub authentication and organization-bil
     assert.doesNotMatch(source, /COPILOT_GITHUB_TOKEN/, `${workflowId}.md must not select token billing`);
 
     assert.ok(precomputeStep, `${workflowId}.lock.yml must include CAO precompute`);
-    assert.match(precomputeStep, /GH_TOKEN:.*steps\.cao_pre_activation_app_token\.outputs\.token/);
+    assert.match(precomputeStep, /CAO_CONTROL_READ_TOKEN:.*steps\.cao_pre_activation_app_token\.outputs\.token/);
+    assert.match(precomputeStep, /github-token: \$\{\{ github\.token \}\}/);
+    assert.match(precomputeStep, /CAO_READ_APP_PRIVATE_KEY:/);
+    assert.match(precomputeStep, /CAO_INVENTORY_READ_PAT:/);
     assert.match(precomputeStep, /GH_AW_GITHUB_AUTH_MODE == 'pat'/);
     assert.match(precomputeStep, /GH_AW_GITHUB_READ_PAT_REPOSITORIES/);
     assert.doesNotMatch(
@@ -242,7 +248,9 @@ test("public read-only operation uses the built-in token without widening access
   const control = workflow("shared/control.md");
   const precompute = controlPrecompute();
 
-  assert.match(control, /GH_TOKEN:.*GH_AW_GITHUB_READ_PAT_REPOSITORIES.*secrets\.GH_AW_GITHUB_READ_PAT.*secrets\.GH_AW_GITHUB_TOKEN.*github\.token/);
+  assert.match(control, /CAO_CONTROL_READ_PAT:.*GH_AW_GITHUB_READ_PAT_REPOSITORIES/);
+  assert.match(control, /CAO_LEGACY_READ_TOKEN:.*secrets\.GH_AW_GITHUB_READ_PAT.*secrets\.GH_AW_GITHUB_TOKEN/);
+  assert.match(control, /CAO_WORKFLOW_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(precompute, /\{id, full_name, archived, disabled, private, pushed_at, default_branch\}/);
   assert.match(authentication, /App or PAT is not required for a bounded `review` run when every target repository is public/);
   assert.match(authentication, /use `review` mode and keep safe outputs in the current control repository/);
@@ -261,7 +269,7 @@ test("public read-only operation uses the built-in token without widening access
   assert.match(control, /do not silently reduce the requested analysis to the subset the token can read/);
 });
 
-test("authentication prefers an optional GitHub App and retains bounded fallbacks", () => {
+test("authentication preserves explicit credential boundaries and informed PAT consent", () => {
   const authentication = readFileSync(join(root, "docs", "authentication.md"), "utf8");
   const control = workflow("shared/control.md");
   const precompute = controlPrecompute();
@@ -282,16 +290,23 @@ test("authentication prefers an optional GitHub App and retains bounded fallback
     control,
     /safe-outputs:\n\s+github-app:\n\s+client-id:[\s\S]*?ignore-if-missing: true\n\s+repositories:\n\s+- \$\{\{ env\.CAO_ROLE == 'direct' && inputs\.safe_output_mode == 'live' && inputs\.target_repo \|\| inputs\.safe_output_repo \|\| github\.repository \}\}/,
   );
-  assert.match(control, /jobs:\n\s+pre-activation:[\s\S]*?GH_AW_GITHUB_READ_PAT_REPOSITORIES[\s\S]*?GH_AW_GITHUB_AUTH_MODE == '' && secrets\.GH_AW_GITHUB_READ_PAT[\s\S]*?github\.token/);
+  assert.match(control, /CAO_READ_PAT_REPOSITORIES: \$\{\{ vars\.GH_AW_GITHUB_READ_PAT_REPOSITORIES \}\}/);
+  assert.match(control, /CAO_LEGACY_READ_TOKEN: \$\{\{ vars\.GH_AW_GITHUB_AUTH_MODE == '' && \(secrets\.GH_AW_GITHUB_READ_PAT \|\| secrets\.GH_AW_GITHUB_TOKEN\)/);
+  assert.match(control, /CAO_WORKFLOW_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(control, /name: Resolve CAO GitHub read scope[\s\S]*?CAO_READ_REPOSITORY: \$\{\{ github\.aw\.import-inputs\.read_repository \}\}/);
   assert.match(control, /name: Generate CAO target-scoped read App token[\s\S]*?owner: \$\{\{ steps\.cao_target_read_scope\.outputs\.owner \}\}/);
   assert.match(control, /permission-vulnerability-alerts: "\$\{\{ github\.aw\.import-inputs\.read_vulnerability_alerts \}\}"/);
   assert.match(control, /name: Resolve CAO target read credential[\s\S]*?GH_AW_GITHUB_READ_PAT_REPOSITORIES[\s\S]*?cao_target_read_scope\.outputs\.full_name/);
   assert.match(control, /tools:\n\s+github:[\s\S]*?github-token: \$\{\{ steps\.cao_target_read_credential\.outputs\.token \}\}/);
-  assert.match(authentication, /runtime availability precedence, not permission to choose a PAT silently/);
+  assert.match(authentication, /Select a profile explicitly rather than relying on legacy precedence/);
+  assert.match(authentication, /In `pat` mode,[\s\S]*?do not fall through to App credentials or legacy PAT\s+secrets/);
+  assert.match(authentication, /Missing cross-repository map entries and mapped secrets fail closed/);
+  assert.match(authentication, /`app` mode,[\s\S]*?fail closed instead of borrowing PAT credentials/);
   assert.match(authentication, /A PAT is not a substitute for repository or organization access/);
   assert.match(authentication, /Each token covers repositories from exactly one resource owner/);
-  assert.match(authentication, /including the Checks API/);
+  assert.match(authentication, /Every endpoint required by the installed campaign supports the chosen token/);
+  assert.match(authentication, /\[creating a check run\]\([^)]+\) requires a GitHub App, while reading checks is a different operation/);
+  assert.match(authentication, /Do not substitute a classic PAT to work around an endpoint gap/);
   assert.match(authentication, /Obtain explicit confirmation to proceed/);
   assert.match(authentication, /presence of an existing PAT secret, is not consent/);
   assert.match(authentication, /CAO installation does not require Copilot organization billing/);
@@ -466,15 +481,23 @@ test("CAO Activity workflow-token API reserves fit its standard 1000-request quo
   const steps = activity.jobs.collect.steps;
   const logs = steps.find(({ name }) => name === "Download owner-scoped agentic workflow logs");
   const inventory = steps.find(({ name }) => name === "Collect owner-scoped dashboard inventory");
-  const value = steps.find(({ name }) => name === "Compute owner-scoped operational value");
-  for (const [step, appPatReserve] of [[inventory, 2000], [logs, 2000], [value, 2000]]) {
+  const value = steps.find(({ name }) => name === "Retain Value evidence and publish collection health");
+  for (const [step, appPatReserve] of [[inventory, 2000], [logs, 2000]]) {
     assert.equal(
       step.env.REPORT_MAX_GITHUB_API_RATE_LIMIT,
       "${{ (vars.GH_AW_GITHUB_AUTH_MODE == '' || vars.GH_AW_GITHUB_AUTH_MODE == 'workflow-token') && '-100' || '-"
         + appPatReserve + "' }}",
     );
   }
-  assert.match(value.run, /--max-github-api-rate-limit "\$REPORT_MAX_GITHUB_API_RATE_LIMIT"/);
+  assert.equal(value.env.GH_TOKEN, undefined);
+  assert.equal(value.env.CAO_GITHUB_CREDENTIAL_ID, "${{ matrix.credentialRepository || matrix.owner }}");
+  assert.equal(value.env.REPORT_VALUE_API_RESERVE,
+    "${{ (vars.GH_AW_GITHUB_AUTH_MODE == '' || vars.GH_AW_GITHUB_AUTH_MODE == 'workflow-token') && '100' || '2000' }}");
+  assert.match(value.run, /reason=/);
+  assert.match(value.run, /--apiBudget/);
+  assert.match(value.run, /--apiReserve "\$REPORT_VALUE_API_RESERVE"/);
+  assert.match(value.run, /REPORT_RATE_LIMITED" == "true" \]\]; then reason=api-budget/);
+  assert.doesNotMatch(value.run, /gh api|--max-github-api-rate-limit|cao\.mjs operational-value/);
   assert.ok(inventory.run.indexOf('github-telemetry.mjs capacity "$REPORT_MAX_GITHUB_API_RATE_LIMIT"')
     < inventory.run.indexOf("cao.mjs discover-workflows"));
 });

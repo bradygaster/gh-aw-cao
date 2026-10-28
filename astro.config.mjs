@@ -2,27 +2,18 @@ import { defineConfig } from "astro/config";
 import { unified } from "@astrojs/markdown-remark";
 import starlight from "@astrojs/starlight";
 import mermaid from "astro-mermaid";
-import starlightBlog from "starlight-blog";
 import starlightGitHubAlerts from "starlight-github-alerts";
 import starlightLlmsTxt from "starlight-llms-txt";
 import starlightAgent from "./docs/plugins/starlight-agent/index.mjs";
 import rewriteDocsLinks from "./docs/rewrite-docs-links.mjs";
 
-/**
- * Builds blog author entries, defaulting each picture to the author's GitHub avatar.
- * @param {Record<string, {name: string, url: string, picture?: string}>} authors
- */
-function createAuthors(authors) {
-  return Object.fromEntries(
-    Object.entries(authors).map(([key, author]) => [key, { ...author, picture: author.picture ?? `https://github.com/${key}.png?size=200` }]),
-  );
-}
-
 export default defineConfig({
   site: "https://githubnext.github.io",
   base: "/gh-cao",
   redirects: {
-    "/control-plane-authentication": "/gh-cao/authentication/",
+    "/how-cao-works": "/gh-cao/architecture-at-a-glance/#how-it-works",
+    "/deployment-actions-github-app": "/gh-cao/control-plane-authentication/#configure-private-github-apps",
+    "/deployment-actions-pat": "/gh-cao/control-plane-authentication/#configure-a-fine-grained-token",
     "/getting-started": "/gh-cao/setup-quickstarts/",
     "/setup": "/gh-cao/setup-quickstarts/",
   },
@@ -45,26 +36,6 @@ export default defineConfig({
       favicon: "/favicon.svg",
       customCss: ["./docs/styles/branding.css"],
       plugins: [
-        starlightBlog({
-          title: "Central Agentic Ops Blog",
-          recentPostCount: 12,
-          navigation: "none",
-          authors: createAuthors({
-            mnkiefer: {
-              name: "Mara Kiefer",
-              url: "https://github.com/mnkiefer",
-            },
-            pelikhan: {
-              name: "Peli de Halleux",
-              url: "https://github.com/pelikhan",
-            },
-            copilot: {
-              name: "Copilot",
-              url: "https://github.com/features/copilot",
-              picture: "https://avatars.githubusercontent.com/in/1143301?s=200&v=4",
-            },
-          }),
-        }),
         starlightGitHubAlerts(),
         starlightAgent({
           projectName: "Central Agentic Ops",
@@ -81,7 +52,6 @@ export default defineConfig({
             "setup-quickstarts",
           ],
           demote: [
-            "blog/**",
             "operational-value/reports/**",
             "activity-cache-compression-analysis",
             "dashboard-overview-*",
@@ -99,7 +69,6 @@ export default defineConfig({
             "authentication",
             "authority-envelopes",
             "author-*",
-            "blog/**",
             "cao-cli",
             "configuration",
             "control-*",
@@ -113,6 +82,7 @@ export default defineConfig({
             "operations",
             "orchestrators-*",
             "rollout-*",
+            "setup-compatibility",
             "setup-fine-*",
             "setup/quickstart",
             "setup-multiple-*",
@@ -285,103 +255,80 @@ export default defineConfig({
           label: "Introduction",
           items: [
             { label: "What is Central Agentic Ops?", link: "/architecture-at-a-glance/" },
-            { label: "How does CAO work?", link: "/how-cao-works/" },
-            { label: "From outcome to execution", link: "/operation-patterns/" },
             { label: "Architecture", link: "/architecture/" },
           ],
         },
         {
           label: "Setup",
           items: [
-            { label: "Quickstart: install and monitor", link: "/setup-quickstarts/" },
-            { label: "Daily Repo Status (optional)", link: "/setup/quickstart/" },
-            { label: "Add a campaign (optional)", link: "/catalog/" },
-            { label: "CAO commands", link: "/cao-cli/" },
-            { label: "Authentication", link: "/authentication/" },
+            { label: "Quick Start", link: "/setup-quickstarts/" },
+            { label: "Provision Credentials", link: "/control-plane-authentication/" },
+            { label: "Setup Compatibility", link: "/setup-compatibility/" },
+            { label: "Set Up the Admission Gate", link: "/admission-gate/" },
+            { label: "CLI Commands", link: "/cao-cli/" },
           ],
         },
         {
-          label: "Run safely",
+          label: "Gallery",
           items: [
-            { label: "Control plane status", link: "/cao/" },
-            { label: "Admission gates", link: "/admission/" },
-            { label: "Authority envelopes", link: "/authority-envelopes/" },
-            { label: "Set up the admission gate", link: "/admission-gate/" },
-            { label: "Roll out a campaign", link: "/rollout-and-routing/" },
-            { label: "Monitor and recover", link: "/operations/" },
-            { label: "Emergency stop", link: "/operations/#emergency-stop" },
+            { label: "Campaign Catalog", link: "/catalog/" },
+            { label: "Daily Repo Status", link: "/setup/quickstart/" },
           ],
         },
         {
-          label: "Intelligence",
+          label: "Guides",
           items: [
-            { label: "Overview", link: "/intelligence/" },
-            {
-              label: "Computations",
-              items: [
-                { label: "Runtime health", link: "/computation-runtime-health/" },
-                { label: "Portfolio decisions", link: "/computation-intelligence/" },
-              ],
-            },
-          ],
-        },
-        {
-          label: "Deploy",
-          items: [
-            { label: "Deployment options", link: "/deployment/" },
-            { label: "GitHub Actions only", link: "/deployment-actions/" },
-            { label: "Actions with GitHub Apps", link: "/deployment-actions-github-app/" },
-            { label: "Actions with a PAT", link: "/deployment-actions-pat/" },
-            { label: "Azure", link: "/deployment-azure/" },
-            { label: "Upstash Redis", link: "/deployment-upstash/" },
-            { label: "Managed Redis", link: "/deployment-managed-redis/" },
+            { label: "From Outcome to Execution", link: "/operation-patterns/" },
+            { label: "Safe Rollout", link: "/rollout-and-routing/" },
+            { label: "Measuring Operational Value", link: "/operational-value-how-to/" },
+            { label: "Agent Analysis", link: "/agent-analysis/" },
+            { label: "Copilot Plugin and Canvas", link: "/agent-plugin/" },
+            { label: "Deployment Options", link: "/deployment/" },
+            { label: "Deployment (GitHub Actions)", link: "/deployment-actions/" },
+            { label: "Deployment (Azure)", link: "/deployment-azure/" },
+            { label: "Deployment (Upstash Redis)", link: "/deployment-upstash/" },
+            { label: "Deployment (Managed Redis)", link: "/deployment-managed-redis/" },
           ],
         },
         {
           label: "Dashboard",
           items: [
-            { label: "At a glance", link: "/dashboard/" },
-            { label: "Data ingestion", link: "/dashboard-data-ingestion/" },
-            { label: "Data model", link: "/dashboard-data-model/" },
-            { label: "Language", link: "/dashboard-language/" },
-            { label: "Language specification", link: "/dashboard-language-specification/" },
-            { label: "View catalog", link: "/dashboard-view-catalog/" },
-            { label: "WebMCP", link: "/dashboard-webmcp/" },
-            { label: "Agent analysis", link: "/agent-analysis/" },
-            { label: "Agent-readable documentation", link: "/agent-resources/" },
-            {
-              label: "Views",
-              items: [
-                { label: "Overview", link: "/dashboard-overview/" },
-                { label: "Overview components", link: "/dashboard-overview-components/" },
-              ],
-            },
+            { label: "Overview", link: "/dashboard/" },
+            { label: "Intelligence", link: "/intelligence/" },
+            { label: "Runtime Health", link: "/computation-runtime-health/" },
+            { label: "Portfolio Decisions", link: "/computation-intelligence/" },
+            { label: "Data Ingestion", link: "/dashboard-data-ingestion/" },
+            { label: "Data Model", link: "/dashboard-data-model/" },
+            { label: "Dashboard Language", link: "/dashboard-language/" },
           ],
         },
         {
           label: "Reference",
           items: [
-            { label: "Configuration", link: "/configuration/" },
+            { label: "Admission Gates", link: "/admission/" },
+            { label: "Agentic Workflow Smells", link: "/agentic-workflow-smells/" },
+            { label: "Authentication", link: "/authentication/" },
+            { label: "Authority Envelopes", link: "/authority-envelopes/" },
             { label: "CAO Activity", link: "/activity/" },
-            { label: "Campaign package marketplace", link: "/marketplace/" },
-            { label: "Operational value", link: "/operational-value/" },
-            { label: "Define and measure value", link: "/operational-value-how-to/" },
-            { label: "Deployment and governance", link: "/deployment-and-governance/" },
-            { label: "Execution and safety", link: "/execution-and-safety/" },
-            { label: "Agentic workflow smells", link: "/agentic-workflow-smells/" },
+            { label: "Campaign Package Marketplace", link: "/marketplace/" },
+            { label: "Configuration", link: "/configuration/" },
+            { label: "Deployment and Governance", link: "/deployment-and-governance/" },
+            { label: "Execution and Safety", link: "/execution-and-safety/" },
             { label: "Glossary", link: "/glossary/" },
-            { label: "Orchestrators and workers", link: "/orchestrators-and-workers/" },
+            { label: "Operational Value", link: "/operational-value/" },
+            { label: "Orchestrators and Workers", link: "/orchestrators-and-workers/" },
           ],
         },
         {
-          label: "Maintain",
+          label: "Troubleshooting",
+          collapsed: true,
           items: [
-            { label: "Add a campaign", link: "/operations/#adding-a-campaign" },
-            { label: "Add a worker", link: "/operations/#adding-a-worker" },
-            { label: "Local worker debugging", link: "/local-debugging/" },
-            { label: "Validate changes", link: "/operations/#change-validation" },
+            { label: "Monitor and Recover", link: "/operations/" },
+            { label: "Local Worker Debugging", link: "/local-debugging/" },
           ],
         },
+        { label: "Emergency Stop", link: "/operations/#emergency-stop" },
+        { label: "Sample Dashboard", link: "/cao/" },
       ],
     }),
   ],

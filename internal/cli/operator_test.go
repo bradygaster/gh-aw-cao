@@ -67,8 +67,32 @@ func TestCampaignCommandInventory(t *testing.T) {
 		names = append(names, command.Name())
 	}
 	slices.Sort(names)
-	if want := []string{"add", "disable", "enable", "mode"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"disable", "enable", "mode"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("campaign command inventory = %v, want %v", names, want)
+	}
+}
+
+func TestCampaignHelpExcludesInstallation(t *testing.T) {
+	root, stdout, _ := testCommand(t, nil, nil)
+	root.SetArgs([]string{"campaigns", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "\n  add ") {
+		t.Fatalf("campaign installation must use the root add command: %s", stdout)
+	}
+}
+
+func TestAddHelpCoversWorkflowsAndCampaignsOffline(t *testing.T) {
+	root, stdout, _ := testCommand(t, nil, nil)
+	root.SetArgs([]string{"add", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"add WORKFLOW_OR_CAMPAIGN", "gh cao add daily-repo-status", "gh cao add githubnext/gh-cao/dependabot", "gh cao add ./dependabot"} {
+		if !strings.Contains(stdout.String(), text) {
+			t.Fatalf("add help is missing %q: %s", text, stdout)
+		}
 	}
 }
 
@@ -188,7 +212,6 @@ func TestOperatorRuntimeArguments(t *testing.T) {
 		{[]string{"setup", "auth", "enterprise-app", "--repo", "owner/repo", "--read-client-id", "one", "--write-client-id", "two"}, []string{"setup-auth", "enterprise-app", "--read-client-id", "one", "--repo", "owner/repo", "--write-client-id", "two"}},
 		{[]string{"setup", "auth", "github-app", "--read-app-name", "cao-read", "--write-app-name", "cao-write", "--force", "--no-open", "--policy", "space dir/policy.json"}, []string{"setup-auth", "github-app", "--force", "--no-open", "--policy", "space dir/policy.json", "--read-app-name", "cao-read", "--write-app-name", "cao-write"}},
 		{[]string{"upgrade-gh-aw", "v1.2.3"}, []string{"upgrade-gh-aw", "v1.2.3"}},
-		{[]string{"repos", "add", "owner/repo"}, []string{"add", "--repository", "owner/repo"}},
 		{[]string{"update", "--campaign", "dependabot", "main", "--engine", "copilot"}, []string{"update", "--campaign", "dependabot", "main", "--engine", "copilot"}},
 	}
 	for _, tt := range tests {
@@ -234,6 +257,7 @@ func TestOperatorInvalidInputDoesNotExecute(t *testing.T) {
 		{"add", "--repository", "owner/*"}, {"add", "--repository", "owner/repo", "extra"},
 		{"add", "githubnext/gh-cao"}, {"add", "githubnext/gh-cao", "--force"},
 		{"campaigns", "add"}, {"campaigns", "add", "--repository", "owner/repo"},
+		{"campaigns", "add", "githubnext/gh-cao/demo"}, {"campaigns", "add", "./demo"},
 		{"repos"}, {"repos", "unknown"}, {"repos", "add"}, {"repos", "add", "owner/*"},
 		{"repos", "add", "owner/repo", "extra"}, {"repos", "add", "--repository", "owner/repo"},
 	} {

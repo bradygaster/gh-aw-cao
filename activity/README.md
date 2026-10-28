@@ -30,7 +30,7 @@ For a fresh installation whose exact `allowed-repositories` scope contains
 only the control repository, Activity uses the job's `GITHUB_TOKEN` without
 any additional secrets or variables. An unset `GH_AW_GITHUB_AUTH_MODE` or an
 explicit `workflow-token` selects this repository-local path. It reserves
-100 core API requests for both log and operational-value collection, fitting
+100 core API requests for ordinary log collection, fitting
 the standard workflow-token quota. A repository with no agentic runs still
 publishes an explicit empty snapshot. Broader repository or owner-wide scopes
 require explicit `app` or `pat` authentication; missing credentials in those
@@ -93,7 +93,24 @@ repository's retained files into bounded shards, retaining only runs whose
 workflow path ends in `.lock.yml` and their associated records. This excludes
 non-agentic Actions workflows while preserving observation precedence and
 dependent-record association. The bounded files limit peak browser parsing
-memory. Failed collections never replace the published cache. Shards containing only
+memory. Compaction automatically repairs mixed-repository shards on a best-effort
+basis by splitting records with unambiguous repository identities into the declared
+repository groups. Dependent records without a repository are associated only by
+an unambiguous run ID within the original shard. Record order is preserved, and
+the verified repository is added to those dependent records' request metadata so
+bounded shards remain attributable on subsequent compactions.
+`repairedShards` reports how many mixed shards were repaired. Contradictory identities
+within a record, unattributable records, or mixed shards containing undeclared
+repositories still fail closed without replacing the originals. Original shards
+are removed only after every group's output has been written successfully.
+After a fresh per-repository download, the collector explicitly uses
+`--exclude-out-of-scope`: records with a verified foreign repository are removed
+from its scoped shard directory, and repository-free GitHub API rate-limit
+audits in mixed shards are omitted rather than assigned to the wrong repository.
+Unattributable dependent evidence, unknown records, and contradictory identities
+still fail closed. Exclusions are counted, warned about, and mark the collection
+partial; restored-cache compaction keeps the strict default.
+Failed collections never replace the published cache. Shards containing only
 out-of-range dated records are pruned by `gh aw logs --cache-before`. CAO also
 runs `cao recycle-cache` before compaction, between repository downloads, and
 before index normalization. It expires completed runs older than 30 days across
@@ -342,9 +359,34 @@ records by `organization` and `repository`, and left-joins those query results
 in the data Web Worker. Activity collection and browser components do not
 reconstruct those relationships.
 
+## Health-first Value collection
+
+Activity publishes `workflow_value_collection` JSONL alongside retained evidence.
+The Value page and workflow Value tab show reviewed enabled/disabled registrations
+before any report exists, with actual deferral reasons and separate decision,
+attempt, accepted capture and cutoff dates. Missing reports do not establish an
+unconfigured collector. Deferrals and failures preserve accepted packets and proof.
+
+Recurring remote acquisition remains deferred pending enforceable shared-budget
+admission; a separate process does not isolate API quota. Ordinary Activity only
+performs bounded, credential-free health publication and retained-data import.
+Actual API exhaustion, fast and public-only modes preserve their existing gates.
+Recycle-only maintenance does not create a new eligible local-computation request.
+
+The separate `cao-value-local.yml` runs after successful default-branch Activity
+publication. It validates the snapshot identity and current policy digest, admits
+only the reviewed local-only standard adapter, and permits local-capable modules
+or exact versioned cache reuse without target API calls or automatic backfill.
+The job is capped at five minutes, its compute batch at two minutes and each
+adapter at thirty seconds. Completed results use a separate cache and are
+validated and scope-filtered into a later ordinary Activity snapshot.
+Activity and Dashboard do not wait for this optional job. Disabled registrations,
+campaigns and workflows stay disabled; malformed, missing or oversized optional
+results leave accepted history unchanged.
+
 ## Campaign problem clustering
 
-After canonical ingestion and operational-value collection, Activity runs
+After canonical ingestion and retained-value import, Activity runs
 `cao cluster-problems`. The command discovers one optional
 `<campaign>/problem-clustering.mjs` file in each installed top-level campaign.
 This lets campaigns contribute deterministic problem computations without

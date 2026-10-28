@@ -1,6 +1,6 @@
 ---
 title: CAO Commands
-description: Configure and inspect CAO with the Go extension, and prepare evidence with the repository-local pipeline CLI.
+description: Configure and inspect CAO with the Go extension, and use the Node Actions runtime for workflow-agent evidence APIs.
 agent:
   type: cli-reference
   prominent: true
@@ -14,9 +14,16 @@ using the CLI should follow the
 [`cao-cli` skill](https://github.com/githubnext/gh-cao/blob/main/skills/cao-cli/SKILL.md);
 agents querying activity data should use
 [`analyze-cao`](https://github.com/githubnext/gh-cao/blob/main/skills/analyze-cao/SKILL.md).
-The Go extension exposes the operator-facing command surface as `gh cao`.
-Internal Node implementations remain for Actions and parity tests, not as an
-alternative operator surface. Run policy commands from the control repository root:
+Onboarding and lifecycle administration run only in Go, not in Node wrappers.
+The Node `cao` entry point is the supported Actions runtime, including evidence
+APIs for agents inside agentic workflows, not an alternative operator surface.
+Its `queries`, `query-info`, `prompt`, `query`, `gh runs|issues|prs`,
+`computation`, `mcp`, and `download` commands and runtime dependencies remain
+installed and supported. Similar read capabilities in `gh cao` are intentional:
+operators use `gh cao`, workflow agents use `node activity/cao.mjs`, and server
+hosting/administration belongs to `cao-dashboard`. Workflow agents need not
+build, install, or invoke the Go extension. See [workflow-agent evidence](agent-analysis.md#inside-an-agentic-workflow).
+Run policy commands from the control repository root:
 
 ```bash
 gh cao --help
@@ -65,20 +72,32 @@ does not update an installed binary.
 
 ## GitHub CLI extension
 
-Install the extension, enter an existing control-repository checkout, and run
-the single guided entry point:
+Install the extension with GitHub CLI, then run guided setup from an existing
+control-repository checkout's root:
 
 ```bash
 gh extension install githubnext/gh-cao
 gh cao --version
-# From the control repository root:
 gh cao setup
 ```
 
+:::tip[SAML-token installation failure]
+If `gh extension install` fails because your token lacks cross-organization
+SAML authorization, use the [curl installer](#control-plane-installer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install-gh-cao.sh | bash -s -- --setup
+```
+
+This fallback requires Bash, curl, Git, Node.js 24+, and GitHub CLI 2.68+ signed
+in for the control repository. Public tool downloads are anonymous; stored
+credentials remain available for control-repository and runtime-provenance access.
+:::
+
 ### GitHub CLI release discovery
 
-The latest stable release includes native binaries for GitHub CLI discovery
-(verified with `v0.1.24`). There is intentionally no root executable script:
+CAO releases include native binaries for GitHub CLI discovery.
+There is intentionally no root executable script:
 CAO ships a standalone Go binary, not a source-building or Node.js launcher.
 GitHub CLI classifies the extension using `releases/latest` before selecting a
 `--pin` tag, so maintainers must keep complete native assets in the latest stable
@@ -91,11 +110,11 @@ gh extension upgrade gh-cao
 gh cao --version
 ```
 
+Rerun `install-gh-cao.sh` only for an installer-managed extension.
+
 Extension installation alone does not install the control-repository runtime
-or `gh-aw`. `gh cao setup` prepares them as needed. In `v0.1.24`, setup still
-requires prior runtime and policy preparation; unified setup requires a newer
-extension release containing this change. Merging source does not update an
-already installed binary.
+or `gh-aw`. `gh cao setup` prepares them as needed. Upgrade the extension to
+receive new commands and fixes; merging source does not update an installed binary.
 
 ### Guided runtime preparation
 
@@ -107,6 +126,16 @@ release's exact runtime provenance and file checksums, and checks all
 destinations before adding files. Existing policy is read, not replaced with a
 baseline. Invalid policy and conflicting runtime files fail closed. Complete
 runtime installs are reused; use `gh cao update --campaign root` for upgrades.
+
+Control repositories receive the curated production runtime under `activity/`,
+`dashboard/`, and `.github/`, not tests, screenshots, contributor tooling, or
+plugin files. Normal materialization downloads a prebuilt exact-SHA archive,
+without install-time npm. Stable versions use release assets; main/SHA installs
+use successful Actions artifacts retained for 90 days, waiting at most five
+minutes for an already active exact-SHA runtime build. Artifact and attestation
+access needs authenticated GitHub CLI even when public tool downloads are
+anonymous. See the [runtime provenance contract](https://github.com/githubnext/gh-cao/blob/main/specs/repository-layout-and-installation.md#41-provenance).
+Dashboard builds still install their production npm dependencies.
 
 Missing `gh-aw` is installed at the selected catalog's minimum version. Setup
 never silently upgrades an existing older or broken extension. It does not need
@@ -149,12 +178,162 @@ output stays plain.
 `deploymentStatus: "pending"`. Declining or cancelling publication leaves
 configuration local. Unattended/CI setup never commits or pushes.
 
-### Legacy control-plane installer
+### Linear, Jira, and Azure DevOps webhook setup
 
-The compatibility installer remains available for existing scripts:
+`gh cao setup linear`, `gh cao setup jira`, and `gh cao setup ado`
+(`azure-devops` is an alias) prepare an existing webhook gateway to receive
+issue-service events. These native commands work offline and print service
+configuration instructions and a secret-free gateway enrollment fragment.
+They do not provision a gateway, register a webhook with the provider, modify
+policy, upload credentials, or activate workflows.
+
+Supply your existing public HTTPS gateway URL, a unique source route, the
+provider's canonical resource prefix and native scope, exact destination
+**GitHub numeric repository IDs**, and an explicit future expiry:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install.sh | bash
+gh cao setup linear \
+  --gateway-url https://hooks.example.com \
+  --source-id linear-acme \
+  --resource-url-prefix https://linear.app/acme/issue/ \
+  --scope LINEAR_ORGANIZATION_ID \
+  --destination-repository-id 123456789 \
+  --expires-at 2030-01-01T00:00:00Z
+
+gh cao setup jira \
+  --gateway-url https://hooks.example.com \
+  --source-id jira-app \
+  --resource-url-prefix https://example.atlassian.net/rest/api/3/issue/ \
+  --scope APP \
+  --destination-repository-id 123456789 \
+  --expires-at 2030-01-01T00:00:00Z
+
+gh cao setup ado \
+  --gateway-url https://hooks.example.com \
+  --source-id ado-app \
+  --resource-url-prefix https://dev.azure.com/acme/_apis/wit/workItems/ \
+  --scope AZURE_PROJECT_ID \
+  --collection-id AZURE_COLLECTION_ID \
+  --destination-repository-id 123456789 \
+  --expires-at 2030-01-01T00:00:00Z \
+  --json --output /secure/deployment/ado-webhook-setup.json
+```
+
+Replace all example identities and choose a suitably bounded expiry. Repeat
+`--destination-repository-id` for multiple explicitly approved destinations.
+`--json` emits the preparation report for automation; `--output` saves it to
+a new mode-`0600` file without overwriting files or symlinks. Its parent directory
+must exist; restrict directory ACLs too, especially on Windows.
+`--dry-run` never creates that file. No provider API token or webhook secret is
+accepted as a flag or included in the report.
+
+Complete the printed instructions in the provider's administration interface:
+
+| Service | Webhook configuration | gh-aw trigger | Matching safe outputs |
+| --- | --- | --- | --- |
+| Linear | Workspace settings → API → Webhooks; select Issue events and the intended workspace/team scope. Use the generated receiver URL. Preserve `Linear-Signature`, `Linear-Delivery` and the signed `webhookTimestamp`; the receiver requires timestamp freshness within one minute. | `linear_issue`, scoped by `organization-id` | `linear-create-issue`, `linear-update-issue`, `linear-add-comment` |
+| Jira | Jira administration → System → WebHooks; select issue created/updated/deleted events and restrict the project. Configure a webhook secret and ensure signed deliveries include `X-Hub-Signature: sha256=…` and `X-Atlassian-Webhook-Identifier`. Unsigned webhook configurations are unsupported. | `jira_issue`, scoped by `project` | `jira-create-issue`, `jira-update-issue`, `jira-add-comment`, `jira-add-label` |
+| Azure DevOps | Project settings → Service hooks → Web Hooks; create subscriptions for `workitem.created`, `workitem.updated`, and `workitem.deleted` in the intended project. Configure HTTPS Basic authentication with username `cao` and a dedicated receive-only password. | `azure_devops_issue`, scoped by `project_id` | `ado-create-work-item`, `ado-update-work-item`, `ado-comment-on-work-item`, `ado-assign-work-item`, `ado-link-work-items`, `ado-upload-workitem-attachment` |
+
+Store the provider signing secret (or Azure hook password), 32–512 bytes, only
+in the **receive deployment's secret manager** under the generated
+`CAO_GATEWAY_SOURCE_…` name. `--secret-env` selects another valid receive-only
+name. Optional rotation uses the corresponding `_PREVIOUS` environment name.
+Never reuse outbound API credentials or place secret values in policy, generated
+reports, command arguments, workflow inputs, or committed files.
+
+Review and merge the generated source entry into the gateway policy's
+`externalSources`, preserving existing entries, choosing unique source IDs and
+secret names, and advancing the reviewed policy revision. This is gateway
+enrollment, **not** a replacement for `.github/workflows/cao.json`. Enroll each
+destination independently in managed discovery; the gateway requires fresh,
+approved compiled workflow inventory and private destinations. Restart the
+receiver after adding a source. Deploy the receiver and dispatch roles with
+their separately scoped credentials and durable operational storage before
+testing delivery. GitHub Pages is not a webhook receiver.
+
+In the destination workflow, declare the matching scoped gh-aw trigger and
+only the safe outputs required by its mission. Configure outbound credentials
+separately in GitHub Actions secrets:
+
+- **Linear:** `LINEAR_API_KEY`; issue creation also needs a trusted `team-id`
+  or `LINEAR_TEAM_ID` secret. An optional project can be fixed by `project-id`
+  or the `LINEAR_PROJECT_ID` variable.
+- **Jira:** `JIRA_USER_EMAIL` and `JIRA_API_TOKEN`. Explicitly set your own
+  trusted `JIRA_BASE_URL` through `safe-outputs.env`; never rely on an upstream
+  example tenant.
+- **Azure DevOps:** `AZURE_DEVOPS_EXT_PAT` by default, or an explicitly configured
+  supported `SYSTEM_ACCESSTOKEN`. Fix the intended organization/project and
+  output targets in reviewed workflow configuration.
+
+These names map to gh-aw v0.92.0; consult your installed compiler's
+[safe-output reference](https://github.github.com/gh-aw/reference/safe-outputs/)
+for destination options and limits. Compile changed workflows, review the
+generated locks, and keep rollout in review mode unless separately authorized.
+Neither receiving a webhook nor possessing a provider token grants CAO authority.
+Test a real scoped event, check provider delivery status and gateway admission,
+then verify the intended workflow and declared output. Setup reports preparation
+only, never successful delivery or live provider access. See the
+[external-source gateway contract](https://github.com/githubnext/gh-cao/blob/main/specs/rfc-033-webhook-gateway.md#622-independently-enrolled-external-sources)
+for authentication, normalization, expiry and dispatch requirements.
+
+### Optional ADX destination setup
+
+`gh cao setup adx` prepares the existing hosted server's **snapshot-only** ADX
+integration. It runs offline without Node.js, Azure CLI, a checkout, or GitHub
+authentication. Supply an existing public-cloud Kusto query endpoint/database,
+Entra application identity and exact canonical repository IDs already collected
+in your CAO namespace, not repository names to resolve or wildcard scope:
+
+```bash
+gh cao setup adx \
+  --endpoint https://CLUSTER.REGION.kusto.windows.net \
+  --database CaoAnalytics \
+  --tenant-id 11111111-1111-1111-1111-111111111111 \
+  --client-id 22222222-2222-2222-2222-222222222222 \
+  --repository-id EXACT_CANONICAL_REPOSITORY_ID \
+  --data-approved --single-replica \
+  --output /secure/deployment/adx-environment.json
+```
+
+Replace the example identity and scope with reviewed values. Repeat
+`--repository-id` for up to 1,000 unique IDs. Explicit `--data-approved`
+acknowledges that the corpus/use and actual destination meet applicable service
+terms, privacy and governance; `--non-personal-data` is the alternative approval
+for non-personal, non-regulated data. `--single-replica` confirms exactly one
+exporter, durable operational state and a persistent worker lifecycle.
+These acknowledgments do not verify suitability, authority, topology or access.
+
+Stdout is always a JSON environment object with string values, including
+`CAO_ADX_ENABLED=true` and explicit trace/mining disables. `--output` additionally
+creates that object as a new mode-`0600` file, never overwriting existing files
+or symlinks; its parent directory must exist. Restrict directory ACLs as well,
+especially on Windows where POSIX modes do not enforce private access.
+`--dry-run` prints the same settings but never creates the output file.
+No ambient ADX settings or credentials are read. Optional `--interval` defaults
+to `30s` (range `1s`–`1h`) and `--max-storage-bytes` defaults to 50,000,000,000
+(range 1 MiB–1 TiB).
+
+Review and apply `cao-dashboard adx schema` to the destination separately before
+deployment. Map the JSON keys to environment settings in your existing
+single-replica hosted PostgreSQL deployment; this is not a shell script or
+`gh cao deploy azure` configuration file, and setup does not apply it.
+Inject the omitted `CAO_ADX_CLIENT_SECRET` directly from the deployment secret
+manager, never a flag, reviewed policy, or committed document. The generated
+profile intentionally disables any existing traces/mining when applied; separate
+trace enablement requires its own reviewed scope, content/rights approvals and
+durable spool configuration. No resources, schema, credentials, policy,
+collection, deployment, live traces, mining or model training are changed by
+this command. See the [ADX operator contract](https://github.com/githubnext/gh-cao/blob/main/server/ADX-INGEST.md)
+and [trace contract](https://github.com/githubnext/gh-cao/blob/main/server/ADX-TRACES.md).
+
+### Control-plane installer
+
+Use the root installer as a fallback when SAML-restricted tokens prevent
+GitHub CLI extension installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/githubnext/gh-cao/main/install-gh-cao.sh | bash
 ```
 
 The installer registers `gh cao` directly in GitHub CLI's data directory,
@@ -163,17 +342,31 @@ rename. It honors `XDG_DATA_HOME` and Windows `LOCALAPPDATA`, defaulting to
 `~/.local/share/gh/extensions/gh-cao`. Rerun the installer to update this
 manually installed extension; `gh extension upgrade` does not manage it.
 Linked/source installations are not overwritten. Release binaries use the
-`gh-cao-OS-ARCH` naming convention (legacy releases use `OS-ARCH`), with `.exe` for Windows, and cover Linux,
+`gh-cao-OS-ARCH` naming convention, with `.exe` for Windows, and cover Linux,
 macOS, and Windows on amd64 and arm64. `checksums.txt` contains their SHA-256
 digests. Downloads fail closed unless the asset's exact checksum and embedded
 version match. Verification finishes before replacing an existing binary.
+It installs `gh aw` using the upstream
+[`install-gh-aw.sh`](https://github.com/github/gh-aw/blob/main/install-gh-aw.sh),
+passing the required version and keeping upstream checksum verification enabled.
+The upstream installer runs without token environment variables or the Actions
+`INPUT_VERSION` override that would select authenticated extension installation.
+Public CAO release metadata, binaries, checksums, and the upstream installer
+are fetched anonymously, ignoring curl configuration that could inject
+authentication. No credentials are cleared from the parent environment,
+GitHub CLI configuration, or keychain. Authenticated control-repository
+creation and setup retain the operator's sign-in.
+Anonymous API rate limits or network errors fail closed; they do not trigger
+an authenticated download fallback.
 An explicit catalog source `githubnext/gh-cao@vX.Y.Z` selects the same
 extension tag, including a published prerelease with that tag; otherwise the
 installer selects the latest published CAO `vX.Y.Z` release, including prereleases
 but excluding drafts. Main/SHA and local catalog
 sources still select their own runtime revision independently.
-Node.js 24+ remains required by this legacy installer, but not by native setup
+Node.js 24+ is required by this installer, but not by native setup
 or the other Go operator commands.
+
+### Command reference
 
 For local development, build with `make build` and use `./gh-cao` directly, or follow the
 [local extension installation guide](https://github.com/githubnext/gh-cao/blob/main/CONTRIBUTING.md#go-extension-development)
@@ -181,18 +374,49 @@ to invoke it as `gh cao`.
 
 | Surface | Commands | Execution |
 | --- | --- | --- |
-| Policy and workflow controls | `init`, `campaigns mode`, `campaigns enable`, `campaigns disable` | Native Go; no Node runtime required. |
+| Policy and workflow controls | `init`, `campaigns mode`, `campaigns enable`, `campaigns disable` | Native Go; `init` is optional local policy-only preparation, not runtime, Pages, or credential setup. |
 | Standalone workflow installation | `add WORKFLOW [--force] [--engine ENGINE]` | gh-aw installs and compiles; CAO registers the standalone workflow in policy. Interactive publication and first run require separate default-No approvals. |
-| Campaign installation | `campaigns add CAMPAIGN [GH_AW_ADD_OPTIONS...]` | Native Go; gh-aw owns installation records and workflow generation, Go materializes campaign resources and merges policy. No Node runtime required. |
-| Onboarding and authentication | `setup`, `setup auth github-app\|enterprise-app\|token` | Native Go, preserving separate read/write credentials and explicit repository scope. |
+| Campaign installation | `add CAMPAIGN [GH_AW_ADD_OPTIONS...]` | Native Go; gh-aw owns installation records and workflow generation, Go materializes campaign resources and merges policy. No Node runtime required. |
+| Onboarding and authentication | `setup`, `setup auth github-app\|enterprise-app\|hosted-cli\|token` | Native Go; setup prepares missing monitoring runtime and policy, Pages, scope, and authentication, preserving separate read/write and hosted-executor credentials. |
+| Issue-service webhook setup | `setup linear`, `setup jira`, `setup ado` (alias `setup azure-devops`) | Native Go; offline enrollment preparation and provider instructions, with separate receive secrets and outbound safe-output credentials. |
+| Cooperative admission | `setup admission`, `admission status`, `admission disable` | Native Go; configure admission with `setup admission`. Configures or inspects non-secret Actions variables, not server deployment or enrollment authority. |
+| Cloud deployment | `deploy azure` | Native Go; read-only preflight and planning, or explicit application of a reviewed development deployment plan. |
 | Lifecycle | `repos add OWNER/REPO`, `update`, `upgrade-gh-aw` | Native Go; gh-aw still owns workflow generation and campaign installation records. |
 | Read-only analysis | `download`, `pages`, `queries`, `query-info`, `prompt`, `query`, `gh runs\|issues\|prs`, `computation intelligence\|runtime-health`, `mcp` | Native Go with pure-Go SQLite access and declarative Dashboard Language evaluation. |
 | Workflow value | `value publish`, `value enable`, `value disable` | Publish prepared evidence to a hosted dashboard, or edit reviewed local policy for recurring collection of one workflow. |
 | Operator evidence | `evidence release` | Native Go; bounded read-only GitHub references, optional provenance verification and development Azure receipt summaries. No Node runtime or checkout required. |
 | Installation diagnostics | `doctor`, `version` | Native Go. `doctor` checks GitHub CLI, gh-aw, authentication, and basic local policy structure and compiler pin. |
-| Actions pipeline and maintainer tools | `discover-workflows`, `ingest`, `ingest-jsonl`, `audit-jsonl`, `compact-jsonl`, `recycle-cache`, `issue-status`, `hash-payloads`, `activity-stats`, `validate-activity-data`, `operational-value`, `cluster-problems`, `dashboard-complexity`, `prune-dashboard` | Invoke with `node activity/cao.mjs <command>`; not migrated to the extension. |
-| Control-plane validation | `cao-validate.yml` | Actions-only JavaScript runtime; no Go or shell-wrapper command. |
-| Node-only administration | `node activity/cao.mjs doctor`, `node activity/cao.mjs setup-auth hosted-cli` | SQLite check/repair and dedicated hosted-executor App creation; neither has an equivalent Go command. |
+| Workflow-agent evidence APIs | `download`, `pages`, `queries`, `query-info`, `prompt`, `query`, `gh runs\|issues\|prs`, `computation intelligence\|runtime-health`, `mcp` | Supported `node activity/cao.mjs <command>` APIs inside agentic workflows, including their installed runtime dependencies; intentional overlap with operator reads, not deprecated duplicates. |
+| Active ingestion and packaging | `ingest-jsonl`, `compact-jsonl`, `hash-payloads` | Node Actions pipeline: import raw or normalized JSONL into SQLite, compact raw shards per repository, and generate normalized run/record shards plus payload checksums. |
+| Manual artifact import | `ingest` | Supported `node activity/cao.mjs ingest --context FILE --logs DIRECTORY` importer for extracted gh-aw artifacts; not used by the Activity or Dashboard pipelines and not deprecated. |
+| Actions pipeline and maintainer tools | `discover-workflows`, `audit-jsonl`, `recycle-cache`, `issue-status`, `activity-stats`, `validate-activity-data`, `operational-value`, `cluster-problems`, `dashboard-complexity`, `prune-dashboard` | Invoke with `node activity/cao.mjs <command>`; not migrated to the extension. |
+| Control-plane validation | `node activity/cao.mjs validate --json` | Actions-only JavaScript runtime invoked by `cao-validate.yml`; no Go or shell-wrapper command. |
+| Node-only administration | `node activity/cao.mjs repair-database` | Mutating SQLite repair/retention; no equivalent Go command. |
+
+This table groups commands by responsibility, not by interchangeable executables.
+Inspect the executable trees with `gh cao --help`,
+`node activity/cao.mjs --help`, and `cao-dashboard --help`; use native
+subcommand help to inspect each registered child and its flags. `help` is built-in
+discovery, not another operation. `pages` remains dashboard-page discovery in both
+the operator and Node runtimes.
+
+`cao-dashboard` owns server hosting and administration, including
+`serve`, `serve-hosted`, `serve-pages`, `azure-functions`, `ingest`, `collect`,
+`backfill`, `execute-cli`, `hosted-cli queue`, `database`, `admission validate`,
+`audit`, `doctor`, `app-key-check`, `compile-queries`, `benchmark-queries`,
+`otel-smoke`, `simulate-api`, and `simulate-webhooks`. Its read-only `doctor`
+checks server state, data, queries, and collection; it is distinct from the
+operator installation `doctor` and the mutating Node `repair-database`.
+See the [server reference](https://github.com/githubnext/gh-cao/blob/main/server/README.md)
+for deployment and administration contracts.
+
+Other server binaries are separate process boundaries, not `gh cao` subcommands:
+`cao-webhook-gateway` selects isolated receive, dispatch, local, or discover roles;
+`cao-cli-quota` consumes an internal stdin/stdout scheduling protocol; and
+`cao-cli-relay` wraps a hosted workload inside its network-isolated container.
+The npm `cao` bin and `npm run dashboard:data -- <command>` invoke the same
+Node entry point, not additional command registrations. npm dashboard serving
+scripts wrap `cao-dashboard`; they do not move server operations into Node.
 
 The extension is **entirely Go** and does not execute Node.js, npm, or installed
 JavaScript modules. Its default reviewed dashboard catalog, canonical source
@@ -200,7 +424,6 @@ projections, and MCP contract are embedded from the same JSON documents used by
 the dashboard. `pages`, `queries`, `query-info`, and definition-only `prompt`
 work outside an installed control repository. Use `--dashboard FILE` to read
 an explicit dashboard document and its directory-confined fragments.
-`CAO_RUNTIME_ROOT` is no longer used by the extension.
 
 Evidence queries read the canonical `__idb_records` projection through a
 read-only SQLite connection; they do not run migrations or repair the snapshot.
@@ -213,9 +436,10 @@ gh cao setup
 gh cao setup --repository 'my-monalisa-org/*'
 gh cao setup auth github-app --help
 gh cao setup auth enterprise-app --help
+gh cao setup auth hosted-cli --help
 gh cao setup auth token --help
 gh cao add daily-repo-status
-gh cao campaigns add githubnext/gh-cao/dependabot
+gh cao add githubnext/gh-cao/dependabot
 gh cao repos add acme/example-service
 gh cao campaigns mode preview dependabot
 gh cao campaigns enable dependabot
@@ -226,16 +450,25 @@ gh cao query campaign-runs --param campaign=dependabot
 ```
 
 All help works offline, including `gh cao setup --help` and
-`gh cao campaigns --help`. Campaign controls are available only under
-`campaigns` in the extension.
+`gh cao campaigns --help`. Campaign mode and enablement controls are available
+under `campaigns`. Workflow and campaign installation use `gh cao add`.
 Repository enrollment uses `gh cao repos add OWNER/REPO`; root-level `add`
-installs standalone workflows, not repositories or campaign packages.
+installs standalone workflows or campaign packages, not repositories.
 Authentication is grouped under `gh cao setup auth`; there is no root-level
 `gh cao setup-auth` command. Run `gh cao setup` without a subcommand for guided
 control-plane setup, or configure credentials independently with
 `gh cao setup auth github-app`, `gh cao setup auth enterprise-app`, or
 `gh cao setup auth token`. Each authentication profile retains its existing
 options, dry-run behavior, credential prompts, and separate read/write scope.
+New `github-app` installations on github.com preselect the read App's control
+repository plus exact allowlist, and the write App's control repository or
+explicit `--write-repository` replacement scope. Review and approve the
+preselected repositories on GitHub. Existing installations retain **Configure**;
+GHES/data-residency hosts retain manual selection. Missing/invalid IDs, failed
+lookups, or more than 100 repositories stop preselection without widening or
+truncating access; see [limits and recovery](control-plane-authentication.md#configure-private-github-apps).
+Installation coverage is still verified, `--dry-run --repo OWNER/REPO` stays
+offline, and `--no-open` prints browser URLs.
 After wildcard expansion, guided setup skips authentication prompts when every
 remote target is confirmed public, using Actions' built-in token for public-only
 monitoring. The control repository itself may be private or internal: its own
@@ -252,15 +485,76 @@ dashboard; exact private/internal inputs fail. It enables no agent execution or
 campaigns. Review and publish the resulting exact policy. Public evidence is
 marked partial when logs/artifacts or authenticated enrichments cannot be
 guaranteed; it is not reported as complete zero activity.
-The dedicated hosted-executor App profile remains Node-only:
-`node activity/cao.mjs setup-auth hosted-cli`.
-The runtime JSON result for authentication retains `command: "setup-auth"`.
-`gh cao setup auth token --help` also works offline. `campaigns add` and `update` retain
-gh-aw option passthrough. JSON output, repeatable query parameters, stdin queries, interactive
+The dedicated hosted-executor App profile also runs natively, without a Node
+runtime or installed control checkout:
+
+```bash
+gh cao setup auth hosted-cli --repo OWNER/CONTROL \
+  --target-repository OWNER/TARGET --private-key-out /secure/bootstrap.pem
+```
+
+It creates a separate private App with exactly actions, contents, pull requests,
+and workflows write plus metadata read. Targets are explicit same-owner
+repositories, never inferred from policy. GitHub's browser flow requires creation
+and installation approval with **Only select repositories**. New github.com
+installations preselect only the control repository for review; repository-admin
+additions to an approved installation retain their browser fallback when denied.
+`--app-name`, repeatable `--target-repository`, `--no-open`, and `--dry-run` are
+supported. Dry-run prints the manifest, targets, and executor environment names
+without contacting GitHub or requiring a key destination.
+
+The private key is written to a new mode-`0600` temporary bootstrap file, never
+overwritten or printed. Import it into the `execute-cli` deployment's secret
+manager, then securely remove the file. A failed post-creation verification keeps
+the downloaded key for recovery but does not print success configuration.
+Keep it separate from dashboard login and Actions read/write credentials.
+Setup does not change policy, Actions secrets, authentication mode, or enable
+hosted execution. The retired Node profile fails before any side effects and
+directs operators to `gh cao setup auth hosted-cli`; it does not wrap Go.
+The native JSON result for authentication retains `command: "setup-auth"`.
+`gh cao setup auth token --help` also works offline. Campaign installation through
+`add` and package updates through `update` retain gh-aw option passthrough.
+JSON output, repeatable query parameters, stdin queries, interactive
 secret prompts, and command exit codes retain their existing contracts.
 There is no `gh cao run`: workflow execution still belongs to gh-aw.
 
-### Add a standalone workflow
+### Retired Node operator commands
+
+The following Node commands are removed, including their administration modules
+and JavaScript exports. They exit nonzero with native replacement guidance
+before reading stdin, parsing options, opening a database, or changing files or
+GitHub settings. Even two-argument calls cannot enter legacy ingestion.
+
+| Retired `node activity/cao.mjs` command | Native replacement |
+| --- | --- |
+| `init` | `gh cao init` |
+| `setup` | `gh cao setup` |
+| `setup-auth PROFILE` | `gh cao setup auth PROFILE` (`github-app`, `enterprise-app`, `token`, `hosted-cli`) |
+| `add CAMPAIGN` | `gh cao add CAMPAIGN` |
+| `mode MODE CAMPAIGN...` | `gh cao campaigns mode MODE CAMPAIGN...` |
+| `enable CAMPAIGN...` | `gh cao campaigns enable CAMPAIGN...` |
+| `disable CAMPAIGN...` | `gh cao campaigns disable CAMPAIGN...` |
+| `update [REF] [OPTIONS...]` | `gh cao update [REF] [OPTIONS...]` |
+| `upgrade-gh-aw VERSION` | `gh cao upgrade-gh-aw VERSION` |
+
+Repository enrollment remains `gh cao repos add OWNER/REPO`, not campaign or
+standalone workflow installation. No native operator command invokes Node as a
+bridge. This consolidation does not activate workflows, widen scope, or change
+review-mode defaults; review and publish policy changes separately.
+
+### `gh cao add WORKFLOW_OR_CAMPAIGN`
+
+`gh cao add` is the single native command for installing a standalone CAO workflow
+or a campaign package. There is no campaign-installation subcommand.
+Both installation kinds use gh-aw;
+CAO verifies and registers standalone workflows or materializes and merges
+declared campaign workers without widening policy.
+
+| Operation | Command |
+| --- | --- |
+| Install one standalone workflow | `gh cao add WORKFLOW [--force] [--engine ENGINE]` |
+| Install a campaign package | `gh cao add CAMPAIGN [GH_AW_ADD_OPTIONS...]` |
+| Enroll one exact repository | `gh cao repos add OWNER/REPO` |
 
 ```bash
 gh cao add daily-repo-status
@@ -268,15 +562,20 @@ gh cao add daily-repo-status@FULL_COMMIT_SHA
 gh cao add githubnext/gh-cao/.github/workflows/daily-repo-status.md@main
 gh cao add https://github.com/githubnext/gh-cao/blob/main/.github/workflows/daily-repo-status.md
 gh cao add ./my-report.md --force
+gh cao add githubnext/gh-cao/dependabot@FULL_COMMIT_SHA
+gh cao add ./dependabot --force
 ```
 
-Catalog names (including `githubnext/gh-cao/daily-repo-status`) resolve to CAO's
+Bare catalog workflow names resolve to CAO's
 `.github/workflows/` directory, not gh-aw's implicit `workflows/` directory.
-The former catalog name `repo-status` is a backward-compatible alias for
-`daily-repo-status`. Explicit `.md` sources are passed to gh-aw; campaign
-packages still use `gh cao campaigns add`.
-Custom install directories, renames and gh-aw publication flags are not accepted:
-the source must retain its exact standalone CAO identity.
+The published `githubnext/gh-cao/daily-repo-status` and `repo-status` shorthands
+remain workflow sources. Explicit `.md` sources and GitHub blob URLs also select
+workflow installation. Campaigns use `OWNER/REPO[/PATH][@REF]` coordinates or
+existing local directories; trailing options are passed unchanged to gh-aw.
+Missing explicit local directories fail rather than resolving remotely.
+Standalone workflows accept only `--force` and `--engine`; custom install
+directories, renames and gh-aw publication flags are not accepted because the
+source must retain its exact standalone CAO identity.
 
 After gh-aw succeeds, CAO verifies the installed standalone import and compiled
 lock, then atomically registers the workflow in `control-plane.workflows`.
@@ -287,7 +586,7 @@ repository baseline as `init`; prepare the runtime separately with `setup`.
 Failed installs do not mutate policy; files left by a partial installation are
 reported for inspection. Repeating with `--force` never resets policy.
 
-Interactive additions offer commit/push of only the installation changes using
+Interactive standalone workflow additions offer commit/push of only the installation changes using
 the same review safeguards as setup. Pre-existing edits to an installation file,
 a staged index, a non-default branch or unsynchronized remote block automated
 publication. Unrelated work is never staged. After successful publication, a
@@ -316,11 +615,12 @@ local catalog checkout. It replaces the selected campaign's resources, refreshes
 its intelligence metadata, and merges declared workers while preserving existing
 enablement, mode ceilings, campaign settings, and repository scope. It does not
 reinstall the control-plane runtime or plugin. Missing policy is initialized for
-the exact current control repository. Prepare the root runtime with `gh cao setup`,
-not `gh cao campaigns add`; review and commit generated workflows and policy together.
+the exact current control repository. Campaign installation never commits, pushes
+or dispatches work. Prepare the root runtime with `gh cao setup`, not `gh cao add`;
+review and commit generated workflows and policy together.
 
-`gh cao doctor` is deliberately **not** `node activity/cao.mjs doctor`: use the latter for
-the existing SQLite snapshot check/repair operation. Neither Activity nor
+`gh cao doctor` is deliberately **not** `node activity/cao.mjs repair-database`: use the latter for
+the existing mutating SQLite snapshot repair/retention operation. Neither Activity nor
 Dashboard Actions is switched to the Go executable.
 
 ### Publish and refresh workflow value
@@ -328,6 +628,17 @@ Dashboard Actions is switched to the Go executable.
 Run the [operational-value skill](operational-value-how-to.md) first. It defines
 the measurement contract and produces validated `*-evidence.jsonl`; publishing
 does not collect evidence, run an evaluator or enable recurring work.
+Campaign membership is not required: campaign workers and standalone workflows
+use the same canonical Value display path. Their source stays in the owning
+repository, while the evaluator, collector and publication machinery may live
+in the CAO control repository. Daily File Diet, for example, is sourced from
+`github/gh-aw` and measured by tooling in `githubnext/gh-cao`.
+
+Native schema-v2 `operational_value` envelopes carry compact measurements;
+richer schema-v2 `operational_value_evidence` envelopes carry report facts and
+drilldowns. After either form enters canonical storage through its supported
+publication path, Dashboard Language selects the latest primary result without
+workflow-specific dashboard JSON or code.
 
 ```bash
 gh cao value publish github/gh-aw daily-file-diet \
@@ -356,22 +667,29 @@ static Pages have no direct-publication endpoint; Pages uses Activity transport.
 **Collection is wired automatically by the skill** once its frozen function and
 repository-local recurring collector pass verification. It stages the exact
 pair with `value enable ... --if-absent`, preserving existing registrations and
-explicit disables. Review, commit and deploy those files to start collection.
+explicit disables. Review, commit and deploy those files to publish the reviewed
+registration; registration does not bypass collection admission.
 For manual registration or an intentional re-enable, replace `COLLECTOR_PATH.mjs`
 with that collector's actual path; an evidence file or renderer is not a
 collector:
 
 ```bash
-gh cao value enable github/gh-aw daily-file-diet --collector COLLECTOR_PATH.mjs
+gh cao value enable github/gh-aw daily-file-diet \
+  --collector COLLECTOR_PATH.mjs --api-requests 700
 gh cao value disable github/gh-aw daily-file-diet
 ```
 
 These commands edit local `.github/workflows/cao.json`; review, commit and deploy
 that policy and collector together. They do not enable the measured workflow,
 enroll repositories, upload executable code or immediately start a collection.
-The existing Activity/hosted collection cycle refreshes only registered,
-in-scope pairs when their frozen cadence is due. No new schedule or model call
-is needed. A failed refresh retains the last accepted capture without changing
+In particular, a standalone workflow's existence does not cause CAO to discover
+or schedule its evaluator; recurring collection requires this exact opt-in.
+`--api-requests` is required by the reviewed design for a collector that issues
+GitHub API requests and is omitted for a local-only collector. Activity admits
+the full ceiling only after ordinary collection and above its protected reserve;
+missing or insufficient admission publishes the actual deferral reason.
+Bounded local-only computations run outside its publication path.
+A failed refresh retains the last accepted capture without changing
 its timestamp or inventing a zero. Disable stops future collection, not history.
 An explicit disable persists even if the skill is used again.
 See the [collector contract](operational-value.md#recurring-collection-after-opt-in).
@@ -411,7 +729,7 @@ CAO and gh-aw have separate jobs:
 
 ```bash
 # Add a campaign and merge its workers into CAO policy.
-gh cao campaigns add githubnext/gh-cao/dependabot
+gh cao add githubnext/gh-cao/dependabot
 
 # Keep the campaign review-only and enable its workflows.
 gh cao campaigns mode preview dependabot
@@ -438,9 +756,9 @@ gh aw run dependabot --ref main \
 | Command | Use it to |
 | --- | --- |
 | `gh cao setup` | Prepare missing bare runtime and baseline policy, then guide scope, authentication, and Pages. No prior `init` is required. |
+| `gh cao setup linear\|jira\|ado ... [--json] [--dry-run]` | Prepare secret-free external-source enrollment and service-specific webhook instructions; does not deploy or activate the receiver. |
 | `gh cao init` | Optionally create only a local minimal review-safe policy for scripting. No runtime installation or remote configuration; refuses existing policy. |
 | `gh cao setup admission --repo OWNER/REPO --url HTTPS_URL [--dry-run]` | Configure non-secret admission variables (OIDC requires no workflow secret); `--dry-run` previews changes. |
-| `gh cao admission setup --repo OWNER/REPO --url HTTPS_URL [--dry-run]` | Configure repository admission variables for an already deployed authority; default audience is the URL and outage policy is `block`. |
 | `gh cao admission status --repo OWNER/REPO [--json]` | Read effective admission settings, including repository overrides of inherited organization variables. |
 | `gh cao admission disable --repo OWNER/REPO [--dry-run]` | Disable the cooperative gate by setting an empty repository URL, without deleting the override and reactivating organization defaults; `--dry-run` previews changes. |
 | `gh cao setup admission --all-repos --url HTTPS_URL [--dry-run]` | Configure all repositories selected by the current control repository's validated global CAO scope. |
@@ -448,9 +766,9 @@ gh aw run dependabot --ref main \
 | `gh cao setup admission --enterprise SLUG --url HTTPS_URL [--dry-run]` | Enumerate enterprise organizations and configure their organization variables, with enterprise read and per-organization Variables write access. |
 | `gh cao setup auth github-app ...` | Configure organization-owned read and write Apps. |
 | `gh cao setup auth enterprise-app ...` | Configure existing enterprise-owned Apps with policy-derived read scope and explicit `--write-repository` output scope. |
-| `node activity/cao.mjs setup-auth hosted-cli ...` | Create the dedicated least-privilege App that the dashboard server's optional `execute-cli` worker uses for single-use, repository-scoped command tokens. |
+| `gh cao setup auth hosted-cli ...` | Create the dedicated least-privilege App that the dashboard server's optional `execute-cli` worker uses for single-use, repository-scoped command tokens. |
 | `gh cao setup auth token ...` | Configure explicitly consented owner-scoped fine-grained PAT pairs when an App is unavailable. |
-| `gh cao campaigns add OWNER/REPO/CAMPAIGN` | Install one campaign and merge its declared workers into policy without broadening rollout or enabling live mode. |
+| `gh cao add OWNER/REPO/CAMPAIGN` | Install one campaign and merge its declared workers into policy without broadening rollout or enabling live mode. |
 | `gh cao repos add OWNER/REPO` | Verify GitHub CLI read access and stage one exact repository in local control-plane policy, with review-mode overrides for existing campaigns. |
 | `gh cao deploy azure --plan --config FILE --template FILE --out FILE` | Review a fresh Azure Functions deployment without writing to Azure; `--apply --plan-file FILE` then repeats preflight and refuses change-set drift. See [Azure deployment](deployment-azure.md#native-fresh-deployment-command). |
 | `gh cao update` | Upgrade gh-aw when required, update installed campaigns, and refresh worker declarations while preserving operator-owned settings. |
@@ -476,13 +794,16 @@ commits nor pushes, enables campaigns, changes rollout limits, configures
 credentials, nor expands an explicitly narrowed Activity scope. Review and commit
 the policy before activation at a reviewed workflow SHA.
 
+Repository enrollment runs entirely in the Go extension and does not require
+Node.js or installed Activity runtime files.
+
 ### Setup and manual campaign execution
 
 Use `gh cao setup` for review-before-apply configuration and optional separately
 approved publication. Setup installs no campaign or agentic execution; a push
 starts normal monitoring Actions asynchronously. To add automation
 afterward, follow the manual [Repo Assist walkthrough](repo-assist-quickstart.md)
-using `gh cao campaigns add` and `gh aw run`.
+using `gh cao add` and `gh aw run`.
 
 Without an interactive terminal or when `CI` is set, `gh cao setup` applies
 only the agent-safe public profile: exact current-repository read and Activity
@@ -701,7 +1022,22 @@ gh cao prompt campaign-runs --param campaign=dependabot --database .cao/gh-aw-lo
 
 Without `--database`, the command needs no downloaded snapshot and includes no evidence rows. With `--database FILE`, it executes the named query against that existing snapshot and includes a bounded preview; this does not grant rollout authority. Use `--dashboard FILE` to experiment with a different dashboard definition.
 
-Run `node activity/cao.mjs doctor` to validate and repair the downloaded SQLite snapshot. This is different from `gh aw doctor`, which validates the workflow installation and repository setup.
+Run `node activity/cao.mjs repair-database --database snapshot.sqlite` (or the npm
+`cao repair-database` bin) to repair a SQLite snapshot and apply retention. This
+is **not a read-only check**: it creates a backup before repair and may prune
+expired or orphaned records even when SQLite integrity is healthy. Existing
+backup filenames retain the `.doctor-backup-` prefix. The default database is
+`.cao/gh-aw-logs.sqlite`; `--ttl-days` defaults to 7 and `--run-ttl-days` defaults
+to 30 when `--ttl-days` is omitted, otherwise it follows that explicit TTL.
+Use `--ttl-days all --run-ttl-days all` to retain historical records without
+age-based pruning; structural repairs still apply.
+
+The JSON report identifies `command: "repair-database"` and retains the health,
+before/after diagnostics, repair actions, errors, and backup path. Exit status
+is 0 when healthy, 2 when the report remains unhealthy, and 1 for command errors.
+The old Node `doctor` command is rejected, not aliased. This is different from
+`gh aw doctor`, which validates the workflow installation and repository setup;
+native `gh cao doctor` and `cao-dashboard doctor` are unchanged.
 
 ## Evaluate and Evolve
 
@@ -720,7 +1056,7 @@ Data-pipeline and dashboard-maintainer commands are listed by `node activity/cao
 
 ## Review What Each Command Changed
 
-`init`, `add`, `campaigns add`, `update`, `upgrade-gh-aw`, and `campaigns mode` can change checked-in control-plane files. Review those changes and commit workflow sources, generated locks, and `.github/workflows/cao.json` together:
+`init`, `add`, `update`, `upgrade-gh-aw`, and `campaigns mode` can change checked-in control-plane files. Review those changes and commit workflow sources, generated locks, and `.github/workflows/cao.json` together:
 
 ```bash
 git status --short

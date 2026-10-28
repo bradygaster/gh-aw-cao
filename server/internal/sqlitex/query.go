@@ -5,16 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/githubnext/gh-cao/internal/dashboardquery"
 
 	"github.com/githubnext/gh-cao/server/internal/dashboardstore"
+	"github.com/githubnext/gh-cao/server/internal/logger"
 	"github.com/githubnext/gh-cao/server/internal/model"
 	"github.com/githubnext/gh-cao/server/internal/postgresx"
 	"github.com/githubnext/gh-cao/server/internal/query"
 )
+
+var statisticalLog = logger.New("cao:sqlitex:sampling")
 
 const (
 	maxSnapshotInputRows     = 500_000
@@ -44,6 +50,16 @@ func (r *reader) ExecuteSQLPlanWithOptions(ctx context.Context, definitions []qu
 		return nil, metrics, errors.New("local query exceeds max plan queries")
 	}
 	executionDefinitions, fields := projectSnapshotPlan(definitions, requested, order)
+	var valueSelections []dashboardquery.EvidenceSelection
+	for _, selection := range query.OperationalValueEvidenceSelections(definitions, requested) {
+		valueSelections = append(valueSelections, dashboardquery.EvidenceSelection{Field: selection.Field, Value: selection.Value})
+	}
+	var measurementSelections []dashboardquery.EvidenceSelection
+	for _, selection := range query.SourceEqualities(definitions, requested, "workflow-value-measurements",
+		"$operationalValues", "id", "workflow-route") {
+		measurementSelections = append(measurementSelections, dashboardquery.EvidenceSelection{Field: selection.Field, Value: selection.Value})
+	}
+	usesMeasurements := slices.Contains(order, "workflow-value-measurements")
 	state, err := r.State(ctx)
 	if err != nil {
 		return nil, metrics, err
@@ -99,7 +115,7 @@ func (r *reader) ExecuteSQLPlanWithOptions(ctx context.Context, definitions []qu
 		if _, exists := cache[name]; exists {
 			return nil
 		}
-		source, err := r.source(ctx, name, state, options, fields[name])
+		source, err := r.source(ctx, name, state, options, fields[name], valueSelections, measurementSelections, usesMeasurements)
 		if err != nil {
 			return err
 		}
@@ -133,6 +149,9 @@ func (r *reader) ExecuteSQLPlanWithOptions(ctx context.Context, definitions []qu
 			return err
 		}
 		metrics.QueryCount++
+		if postgresx.ComposeMetadata(definitions, roots, definition.Name)["availability"] == "unavailable" {
+			rows = nil
+		}
 		if err := retain(definition.Name, rows); err != nil {
 			return err
 		}
@@ -199,7 +218,129 @@ func snapshotInputs(definition query.Definition) []string {
 	return inputs
 }
 
-func (r *reader) source(ctx context.Context, name string, state dashboardstore.State, options dashboardstore.ExecutionOptions, fields snapshotFields) (model.Source, error) {
+func (r *reader) source(ctx context.Context, name string, state dashboardstore.State, options dashboardstore.ExecutionOptions, fields snapshotFields, valueSelections, measurementSelections []dashboardquery.EvidenceSelection, usesMeasurements bool) (model.Source, error) {
+	if name == "$statisticalMembership" {
+		rows, err := dashboardquery.ReadCollectionFields(ctx, r.tx, "runs",
+			[]string{"id", "owner", "repository", "githubRunId", "startedAt", "createdAt", "completedAt", "updatedAt", "status", "conclusion"},
+			dashboardquery.StatisticalMaxInputRows, dashboardquery.StatisticalMaxInputBytes)
+		if err != nil {
+			if errors.Is(err, dashboardquery.ErrSnapshotInputBudget) {
+				statisticalLog.Print("event=statistical-source status=unavailable reason=input-budget")
+				return model.Source{Source: name, Rows: []model.Row{}, Metadata: model.Metadata{
+					"source-id": name, "availability": "unavailable", "completeness": "unknown",
+					"error": "statistical candidate frame exceeds input budget",
+				}}, nil
+			}
+			return model.Source{}, err
+		}
+		// Unlike exact-source presentation clocks, sampling never falls back to
+		// the server's evaluation time when the recorded clock is absent.
+		quality := r.store.metadata["$runs"]
+		watermark, _ := quality["as-of"].(string)
+		policy := "recorded-run-as-of"
+		if watermark == "" {
+			watermark, policy = dashboardquery.CanonicalStatisticalWatermark(rows), "canonical-run-max"
+		}
+		if watermark == "" {
+			statisticalLog.Print("event=statistical-source status=unavailable reason=missing-clock")
+			return model.Source{Source: name, Rows: []model.Row{}, Metadata: model.Metadata{
+				"source-id": name, "availability": "unavailable", "completeness": "unknown",
+				"error": "statistical sampling requires a recorded canonical watermark",
+			}}, nil
+		}
+		selected, frame, err := dashboardquery.SampleStatisticalRuns(rows, dashboardquery.StatisticalOptions{
+			Context: ctx, Logf: statisticalLog.Printf,
+			Watermark: watermark, Capacity: dashboardquery.StatisticalSQLiteCapacity,
+			Complete: quality["completeness"] == "complete" && quality["availability"] != "unavailable",
+		})
+		if err != nil {
+			if errors.Is(err, dashboardquery.ErrStatisticalBudget) {
+				return model.Source{Source: name, Rows: []model.Row{}, Metadata: model.Metadata{
+					"source-id": name, "availability": "unavailable", "completeness": "unknown",
+					"error": "statistical candidate frame exceeds input budget",
+				}}, nil
+			}
+			return model.Source{}, err
+		}
+		frame["watermark-policy"] = policy
+		members := dashboardquery.StatisticalMembership(selected)
+		result := make([]model.Row, len(members))
+		for index, member := range members {
+			result[index] = model.Row(member)
+		}
+		metadata := model.Metadata{"source-id": name, "as-of": watermark, "completeness": quality["completeness"],
+			"freshness": quality["freshness"], "availability": "available", "statistical-frame": frame}
+		if quality["availability"] == "unavailable" {
+			metadata["availability"] = "unavailable"
+		}
+		return model.Source{Source: name, Rows: result, Metadata: metadata}, nil
+	}
+	if name == "daily-run-counts" || name == "$dailyRunCounts" {
+		read := dashboardquery.ReadDailyRunCounts
+		if name == "$dailyRunCounts" {
+			read = dashboardquery.ReadDailyRunCountRecords
+		}
+		rows, available, undated, err := read(ctx, r.tx, maxSnapshotInputRows, maxSnapshotWorkingBytes)
+		if err != nil {
+			return model.Source{}, err
+		}
+		metadata := model.Metadata{"source-id": name, "source-kind": "canonical", "availability": "unavailable", "completeness": "unknown", "freshness": "unknown",
+			"aggregate-version": 1, "aggregate-time-grain": "utc-run-start-day", "aggregate-coverage": "absent"}
+		if available {
+			metadata["availability"], metadata["completeness"] = "available", "partial"
+			if len(rows) == 0 {
+				metadata["availability"] = "empty"
+			}
+			metadata["undated-run-count"] = undated
+			metadata["excluded-runs"] = undated
+			metadata["retention"] = "all-admitted-dated-observations"
+			states, err := dashboardquery.ReadCollectionFields(ctx, r.tx, "dailyRunCountState",
+				[]string{"id", "coverage", "excludedRuns", "conflictedRuns", "retentionCutoff", "retentionWatermark"}, 1, 64<<10)
+			if err != nil {
+				return model.Source{}, err
+			}
+			for _, dailyState := range states {
+				if dailyState["id"] != "daily-run-counts" {
+					continue
+				}
+				if dailyState["coverage"] != nil {
+					metadata["aggregate-coverage"] = dailyState["coverage"]
+				}
+				for field, key := range map[string]string{"excluded-runs": "excludedRuns", "conflicted-runs": "conflictedRuns"} {
+					if dailyState[key] != nil {
+						metadata[field] = dailyState[key]
+					}
+				}
+				if dailyState["retentionCutoff"] == nil {
+					continue
+				}
+				cutoff, ok := dailyState["retentionCutoff"].(string)
+				if !ok {
+					return model.Source{}, errors.New("daily run count retention cutoff must be a UTC date")
+				}
+				if cutoff == "" {
+					continue
+				}
+				if _, err := time.Parse("2006-01-02", cutoff); err != nil {
+					return model.Source{}, errors.New("daily run count retention cutoff must be a UTC date")
+				}
+				metadata["retention"] = "three-utc-calendar-weeks"
+				metadata["aggregate-retention-start"] = cutoff
+				if dailyState["retentionWatermark"] != nil {
+					watermark, ok := dailyState["retentionWatermark"].(float64)
+					if !ok || math.IsNaN(watermark) || math.IsInf(watermark, 0) || watermark < 0 || watermark > 253402300799999 {
+						return model.Source{}, errors.New("daily run count retention watermark must be Unix milliseconds")
+					}
+					metadata["aggregate-retention-watermark"] = time.UnixMilli(int64(watermark)).UTC().Format(time.RFC3339Nano)
+				}
+			}
+		}
+		result := make([]model.Row, len(rows))
+		for index, row := range rows {
+			result[index] = model.Row(row)
+		}
+		return model.Source{Source: name, Rows: result, Metadata: metadata}, nil
+	}
 	if postgresx.IsRuntimeSource(name) && options.Runtime != nil {
 		return options.Runtime(ctx, name)
 	}
@@ -216,9 +357,21 @@ func (r *reader) source(ctx context.Context, name string, state dashboardstore.S
 			}
 			sort.Strings(projected)
 		}
-		rows, err := dashboardquery.ReadCollectionFields(ctx, r.tx, collection, projected, maxSnapshotInputRows, maxSnapshotWorkingBytes)
+		var rows []map[string]any
+		var err error
+		switch {
+		case collection == "operationalValueEvidence":
+			rows, err = dashboardquery.ReadEvidencePackets(ctx, r.tx, valueSelections)
+		case collection == "operationalValues" && usesMeasurements:
+			rows, err = dashboardquery.ReadMeasurements(ctx, r.tx, measurementSelections)
+		default:
+			rows, err = dashboardquery.ReadCollectionFields(ctx, r.tx, collection, projected, maxSnapshotInputRows, maxSnapshotWorkingBytes)
+		}
 		if err != nil {
 			return model.Source{}, err
+		}
+		if collection == "operationalValues" {
+			dashboardquery.MeasurementRows(rows)
 		}
 		metadata := model.Metadata{
 			"source-id": name, "completeness": "unknown", "freshness": "unknown",
@@ -228,6 +381,8 @@ func (r *reader) source(ctx context.Context, name string, state dashboardstore.S
 			metadata[key] = value
 		}
 		if collection == "operationalValueEvidence" {
+			metadata["evidence-packets-read"] = len(rows)
+			metadata["evidence-scoped-read"] = len(valueSelections) > 0
 			clocks, err := dashboardquery.OperationalValueEvidenceMetadata(rows)
 			if err != nil {
 				return model.Source{}, err
@@ -239,6 +394,7 @@ func (r *reader) source(ctx context.Context, name string, state dashboardstore.S
 			if err != nil {
 				return model.Source{}, err
 			}
+			metadata["evidence-facts-materialized"] = len(rows)
 		}
 		result := make([]model.Row, len(rows))
 		for index, row := range rows {

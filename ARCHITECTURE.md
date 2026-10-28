@@ -147,6 +147,7 @@ flowchart LR
     GoServer["Go HTTP(S) query server"]
     GitHub["GitHub / gh-aw<br/>authoritative state"]
     Compute["Versioned computations<br/>bounded insights"]
+    HostedValue["Hosted Operational Value<br/>reviewed adapters"]
     Results["Materialized computation results<br/>generation-scoped"]
     UI["Static dashboard"]
     CLI["cao CLI and agents"]
@@ -165,6 +166,8 @@ flowchart LR
     Postgres --> GoServer --> Query
     IndexedDB --> Compute --> Results --> Query
     SQLite --> Compute
+    Postgres -->|"bounded repository-scoped<br/>Dashboard Language queries"| HostedValue
+    HostedValue -->|"revision-checked canonical publication"| Postgres
     Query --> UI
     Compute --> CLI
 ```
@@ -177,8 +180,18 @@ before continuing with event shards. Raw Activity JSONL remains available only
 inside the Activity cache for audits and projection rebuilds. The deployed
 dashboard artifact contains the SQLite projection, inventory, and compacted
 normalized run and record JSONL; browser ingestion fails closed rather than
-falling back to raw Activity JSONL. Static-browser download, normalization, persistence, and queries run in a
-dedicated Web Worker. The optional Go server profile ingests the same deployed
+falling back to raw Activity JSONL. Static-browser download, normalization,
+persistence, and queries run in a dedicated Web Worker. Actions and explicitly
+selected static Operational Value
+reconstruction use the rebuildable SQLite projection. A collector-enabled
+hosted server instead runs the same reviewed JavaScript metric definitions
+against one repeatable-read, exact-enrollment PostgreSQL revision through the
+production Dashboard Language SQL boundary. It does not create, copy, open, or
+ingest an intermediate SQLite database. Completed observations replace the
+canonical `operationalValues` collection under the namespace writer lock with
+an expected-revision check; the accepted JSONL is mirrored only for cold-start
+lake recovery and is never the hosted computation input. The optional Go server
+profile ingests the same deployed
 dashboard artifact into Postgres, keeps database credentials server-side,
 compiles hosted Dashboard Language queries to parameterized SQL in the
 request's repeatable-read transaction, and returns
@@ -189,6 +202,25 @@ volatile memory adapter for an explicitly acknowledged single-process server.
 The PostgreSQL operational adapter implements durable
 deployment-scoped services in separate `cao_operational_*` tables. Operational
 adapters never store dashboard entities or execute dashboard queries.
+
+The independent `statistical-runs` query projection selects a deterministic,
+seven-day, date/outcome-stratified sample from the current canonical snapshot.
+Selection belongs to the data worker and server storage boundary, before
+consumer predicates, with separate backend capacities and explicit frame/weight
+metadata. It does not change exact sources, retention, or Operational Value.
+The Models & Agents composition chart describes sampled observations rather
+than population shares; its cost/token summaries continue using exact retained
+runs. PostgreSQL atomically persists complete sampled bundles, typed frame and
+membership metadata, source quality, and structural parents at canonical snapshot
+publication; statistical dependencies read those private, non-partitioned copies
+without changing exact dependencies. Incremental revisions mark the frozen source
+stale, never mutate sampled evidence or weights; only a complete publication
+rebuilds the seven-day frame. Admission limits reject an entire statistical
+snapshot rather than truncate bundles. SQLite and browser sampling remain query
+projections. Hot eviction and daily aggregates from the three-tier proposal remain
+separate work; persistence cannot recover evidence missing at admission or reduce
+canonical storage/downloads.
+
 The Go server is the unified local and hosted dashboard serving runtime.
 `npm run dev` and `npm run dashboard:local` build the site and invoke `serve`
 against a verified cached SQLite snapshot; `serve-hosted` retains the reviewed
@@ -277,7 +309,7 @@ deduplicates GitHub webhooks, and atomically replaces the current Postgres
 sources and state. `server/spec/storage.tsp` owns the fresh-only physical
 Postgres contract. Its emitter generates the standalone
 `server/internal/postgresx/schema.sql` and matching Go column bindings.
-Nineteen canonical collections map one-to-one to entity tables containing only
+Canonical collections map one-to-one to entity tables containing only
 query-consumed fields and identity/storage keys. Scalars use native SQL types;
 required structured fields use entity-owned relational child values, not
 JSON, JSONB, or serialized row documents. Scalar entity rows are never duplicated
@@ -294,6 +326,12 @@ source metadata without asserting complete coverage or current freshness.
 Counts, comparisons, movement and report presentation remain declarative
 queries; importing evidence grants no target authority and navigation never
 acquires evidence.
+Separate `workflowValueCollections` records retain reviewed registrations and
+bounded collection decisions through the same producer, normalization and
+browser/SQLite/PostgreSQL paths. Decisions do not advance actual-attempt,
+accepted-capture or evidence-cutoff clocks. Declarative Value queries expose
+enabled, disabled and unconfigured health before a first report; stale/conflicting
+decisions and regressed attempt history fail closed.
 Explicit `gh cao value publish` writes one validated original packet through
 administrator-only `POST /api/v1/value` into PostgreSQL. The namespace writer
 lock serializes publication with snapshot replacement; typed ownership metadata
@@ -308,21 +346,164 @@ workflow under `control-plane.campaigns.activity.workflow-values`. After the
 frozen function and bounded collector pass verification, the skill stages that
 registration automatically with `value enable --if-absent`, preserving existing
 registrations and explicit `enabled: false` disables. Mere function presence
-never grants execution authority. Reviewed local
-collectors and policy deploy together. Existing Activity and hosted collection
-cycles invoke due collectors only within effective collection scope, using the
-frozen cadence and ordinary scoped read credentials. They preserve immutable
-proof and original evidence clocks; failed refreshes retain the previous capture
-without reporting a fresh success or zero. Disabling collection retains history.
+never grants execution authority. Reviewed local collectors and policy deploy
+together. Remote collectors also declare a reviewed request ceiling. Actions
+Activity finishes ordinary owner-scoped collection first, admits the full
+ceiling only above the selected credential's protected reserve, and persists a
+secret-free grant that is consumed before every uncached REST, search, artifact
+or GraphQL request. Missing enforcement, insufficient capacity and exhaustion
+fail closed without replacing accepted evidence. Hosted cycles keep remote
+collection deferred until they provide equivalent admission. Due collectors run
+only within effective collection scope and frozen cadence. They continue from
+the retained proof/cutoff, reuse immutable receipts, merged implementations,
+snapshots and Git measurements, and refresh only the new discovery/source
+interval plus required mutable lifecycle evidence. Failed refreshes retain the
+previous capture without reporting a fresh success or zero. Disabling collection retains history.
 No dashboard navigation, report upload or workflow discovery creates an opt-in,
 and no per-workflow schedule or model call is introduced.
-Owner-run bootstrap initializes this schema and its weekly partitions; runtime
+The optional Go ADX add-on (`server/internal/adxingest/`, documented in
+`server/ADX-INGEST.md`) exports bounded snapshots of already retained completed
+canonical sessions through a neutral `sessionexport.Reader`. PostgreSQL reads
+one exact-scope Run and its observations in a repeatable-read transaction,
+closed before destination I/O. This is not transactional capture of every
+intermediate publication. One immutable approved pending projection/cursor lives
+in existing protected operational state, not a second canonical store or queue
+platform; oversize/expired delivery records explicit bounded gap summaries.
+The existing OAuth host owns one confirmed exporter replica and its
+cancellation/drain lifecycle. Default-off means no destination client, token,
+worker, capture/state activity, extra GitHub acquisition or changed retention.
+The free-compatible destination uses direct streaming HTTP, explicit Entra app
+credentials, six typed tables and exact visibility checks before ready-version
+publication; curated KQL deduplicates retries and corrections. It does not require
+Blob, Event Hubs, ARM provisioning, materialized views or paid ADX features.
+`server/spec/adx.tsp` owns the closed data model and canonical source mappings;
+the repository-owned emitter generates Go projection metadata and embedded
+operator KQL together. Server-spec checks verify reproducibility and canonical
+field/type compatibility. No new PostgreSQL schema or HTTP operation is added.
+Enablement requires exact repository scope and destination/data suitability
+approval. Independent bounded retries, capacity checks, gaps and degraded status
+never make dashboard/collection readiness depend on ADX. Static Pages, local
+SQLite, volatile state and per-request workers do not export; v1 does not
+propagate deletion/withdrawal or promise physical purge or full-session coverage.
+ADX is derived analytics, never enrollment, rollout, billing or query authority.
+The local HTTP simulator validates delivery, not Kusto execution or real free
+capacity/permissions.
+
+The separately default-off unified trace option (`server/internal/adxtrace/`,
+`server/ADX-TRACES.md`) reuses co-resident collection's existing usage-artifact
+visit before lossy normalization. A staged metadata cache is committed only
+after durable approved trace admission; uncaptured attempts remain eligible
+for reacquisition within the same authorized scope. No raw trace content enters
+canonical PostgreSQL, public shards or dashboard IndexedDB. A closed versioned
+content policy, universal rights/content approval and redaction precede private
+durable capture. One file-locked worker uses an operator-verified owner-only
+durable spool, atomic fsync-backed ledger, immutable multipart trace versions,
+bounded 1 MiB streaming batches and exact deduplicated digest verification before
+ready manifests. `server/spec/trace.tsp` owns the additional nine-table contract
+and generated Go/KQL. Direct streaming and credentials reuse the existing client;
+capacity is configurable without different content models by destination tier.
+
+Full capture or frozen closed-day whole-trace probability sampling retains the
+same approved evidence. Frames describe observed acquired repository/run-attempt
+cohorts, not complete upstream populations; preserve cutoff, eligibility/source
+gaps, N/k, probabilities, weights and delivery readiness. Corrections, late
+arrivals, withdrawal and local evidence expiry invalidate frames without refill.
+Recorded episode/hop lineage is preserved, never inferred from time; harness
+and historical compiled configuration are not inferred from engine IDs or head
+SHAs. Curated KQL reconstructs verified ordered JSON and produces evidence-backed
+investigation candidates, not causal/savings claims. Offline dataset export
+requires separate training-use approval, labelled evidence, tool-schema binding,
+source/transform lineage and grouped splits; excludes reasoning by default and
+never trains or replays tools. Withdrawal blocks replay, removes private local
+content and queues newer destination tombstones and dataset invalidations;
+physical purge/backups/external copies require operator reconciliation.
+Separately approved, default-off episode/outcome export reads bounded exact-run
+canonical PostgreSQL snapshots through `sessionexport.MiningReader`, without new
+GitHub acquisition. A source namespace is frozen in the ledger; selected-attempt
+membership, exact Audit/output URL provenance and original clocks remain explicit.
+Unknown output attempts are not inferred from a selected trace: only approved
+correlated successful creation-tool results can attest the same exact URL.
+One fair bounded polling/delivery loop persists independent mining versions and
+freshness heartbeats, verifies declared fact counts and invalidates mining/dataset
+readiness on correction, source loss, expiry or withdrawal. Unrelated canonical
+revisions do not rewrite traces or invalidate semantic dataset lineage.
+Outcome datasets pin the mining version, cutoff and rule, independently reviewed
+quality, exact attempt and mined episode/output split bindings. Lifecycle
+disposition is not correctness; partial scopes and run-attempt sampling do not
+establish complete episodes or unbiased episode/output rates.
+Static, snapshot-only, admission-only, standalone collect/backfill and
+per-request hosts cannot capture traces. Destination failures cannot authorize
+collection, widen policy or replace ordinary dashboard readiness.
+
+The independently default-off Parquet session archive
+(`server/internal/sessionarchive/`, `server/internal/sessionarchiveblob/`,
+`specs/session-archive.md`, and `server/SESSION-ARCHIVE.md`) adds private full
+approved analytics without changing PostgreSQL schemas, queries, ingestion,
+retention, or operational state. It reuses the existing approved `adxtrace`
+projection and the authorized pre-normalization acquisition visit. Local
+SQLite backfill supplies only snapshot-declared repositories; co-resident
+hosted workers supply only enrolled authorized repositories. Archive scope
+further narrows those visits. Multiple enabled destinations intersect admitted
+metadata-cache membership and fan out capture/withdrawal without another
+collector. Failed admission cannot commit an acquisition-cache skip.
+
+One private durable owner stages approved complete traces, converts explicit
+TypeSpec-generated logical rows through the checksum-pinned DuckDB v1.4.3 CLI
+into packed immutable Zstandard Parquet, verifies counts/order/integrity, and
+publishes exact projection membership through fenced generations. Local
+filesystem generations use locking and durability barriers; hosted generations
+use a Blob lease, immutable objects/manifests and conditional active publication.
+Staging acknowledgement follows durable publication, never merely conversion
+or upload. Query readers pin generations; corrections replace active
+membership, while withdrawal/authorization loss overrides pinned access and
+preserves bounded replay fences. Retention and recovery grace are independent
+of disposable source caches and dashboard detail; logical exclusion is not
+physical erasure. Publisher retries, maintenance and shutdown belong to the
+existing server's tracked lifecycle, not PostgreSQL archive state.
+
+Local trusted queries read authorized Parquet directly without persistent
+DuckDB event tables. Hosted trusted ADX queries require verified external-table
+layout, exact pinned object hashes and active membership before operations,
+and real Azure conformance bound to the destination; simulated protocol success
+does not authorize query activation. Existing HTTP authentication is necessary
+but insufficient: explicit full-trace-read approval and an exact hosted-reader
+allowlist with fresh existing strong-authentication assurance gate the private
+timeline/summary endpoints. Responses recheck authorization, are bounded to
+8 MiB/10000 rows and 30 seconds, and never expose arbitrary SQL/KQL, paths,
+credentials, or caller-selected generations. Existing dashboard query backends,
+frontend and native ADX profiles are unchanged. Persistent single-owner hosts
+are required; canvas, ephemeral/per-request hosts and distributed ownership
+are unsupported. Sampling without existing frozen membership, compaction,
+arbitrary queries, training and new acquisition remain deferred or fail closed.
+The ADR remains proposed pending its independent local/hosted acceptance gates
+and representative capacity evidence.
+
+Owner-run bootstrap initializes this schema and its UTC daily partitions; runtime
 opens and validates provisioned state without DDL. Daily owner-run maintenance
-keeps historical and four upcoming weeks provisioned. A fixed schema-qualified
+keeps historical, current, and 28 upcoming days provisioned, expiring only
+complete days at each configured retention cutoff. Weekly layouts require a
+fresh canonical schema rebuilt from authoritative inputs without removing
+operational audit/queue state. A fixed schema-qualified
 ANALYZE capability preserves ingestion statistics without runtime ownership.
+Publication refreshes native estimates before daily reconciliation and integrity
+checks. Counts, evidence clocks, and capacity accounting use source-local plans
+to avoid planner amplification across the daily partition horizon.
+Canonical snapshot, admission, and conclusion writes enforce the same
+namespace-local Run-subtree capacity boundary: 200,000 rows per Run-owned source
+and 256 MiB of combined logical typed-row bytes. After daily-count reconciliation,
+oldest complete subtrees are removed atomically, preserving newest evidence,
+structural inventory, independent Operational Value, and operational state.
+Execution status does not pin canonical detail; durable operational state
+remains independent. An oversized newest subtree fails the write without
+changing the published revision.
+Eviction marks source coverage partial and invalidates full-population sampling
+weights. This is not a physical disk/RSS cap or the full three-tier proposal.
 Bootstrap performs no legacy conversion or
-backward-compatible import. There are no persistent Postgres generations or
-separate derived projections. Redis remains reconstructable
+backward-compatible import. There are no persistent Postgres generations.
+The additive daily run-count projection, compact contribution receipts, and
+state in `specs/dashboard-data.md` §72.2 are the only persisted derived-projection
+exception; other daily metrics and computation results remain request-scoped.
+Redis remains reconstructable
 operational state, not an entity
 authority. The same server binary provides a read-only diagnostic check-up
 that inspects the runtime, Redis operations, Postgres canonical state and
@@ -577,7 +758,7 @@ dashboard data authority, policy, or rollout authority.
 The local Go `serve` command defaults to a cached canonical SQLite projection
 through the ordinary HTTP query, canonical API, diagnostics, revision
 subscriptions, and optional read-only MCP boundary.
-It reuses `.cao/gh-aw-logs.sqlite` in the checkout without network access, or
+It reuses `.cao/gh-aw-logs.sqlite` in the checkout without another download, or
 downloads deployed data on demand when the cache is missing. `--sqlite PATH`
 selects another cache with the same behavior. An explicit `--postgres-url`,
 `--source`, or `--redis-url` selects the PostgreSQL profile; database service
@@ -593,7 +774,7 @@ direct manifest URL may supply the snapshot; directory
 discovery checks its root and then `cao/` on HTTP 404. Bounded streaming,
 manifest SHA-256 verification, and canonical-version validation precede atomic
 replacement; failed acquisition preserves the old file and fails startup.
-This acquisition path does not ingest shards or relax read-only serving.
+This acquisition path does not ingest shards or relax read-only snapshot access.
 Invalid or unreadable existing caches and dangling symlinks fail closed rather
 than triggering automatic repair downloads.
 
@@ -608,6 +789,34 @@ webhook, or hosted execution capabilities. Query result caching is disabled;
 in-place commits change the revision and notify active subscriptions. Snapshot
 quality remains unknown without stronger evidence. This default local mode
 does not introduce a hosted SQLite backend or a fallback from PostgreSQL.
+Outside the internal canvas profile, SQLite's native `ATTACH DATABASE` links the
+read-only snapshot to a writable local delta (`--sqlite-overlay`, default
+snapshot path plus `.local.sqlite`). The shared overlay SQL in
+`internal/dashboardquery/overlay.sql` unions historical records with local
+upserts and deletion markers without copying snapshot records. Every HTTP
+request remains query-only. The overlay is bound to the snapshot's canonical
+content revision; a different base requires another overlay and never silently
+discards the previous delta.
+
+Local background backfill uses `GH_TOKEN`, `GITHUB_TOKEN`, or the local `gh`
+login, never a hosted App identity. It refreshes only repositories present in the
+deployed snapshot (at most 10,000), with no token-driven inventory expansion,
+rollout changes, webhooks, or hosted collector authority. Per-repository run
+watermarks overlap one day and include older unfinished runs within 30 days;
+collection is capped at 10,000 runs and five minutes per repository, and 30
+minutes per pass. The existing Activity collector/compactor and canonical
+ingester read the attached history while writing a staged copy of only the
+local delta. Failed repositories are discarded and reported independently;
+failed ingestion never changes committed data. Successful publication swaps
+local rows and tombstones transactionally, rejects a stale concurrent generation,
+and broadcasts the revision. Private per-pass evidence is removed afterward.
+Backfill starts asynchronously and repeats five minutes after each pass;
+`--backfill-interval` changes that delay and `--backfill=false` provides offline
+serving while retaining local data. Missing credentials/tools or failed refreshes
+are explicit and retry without blocking snapshot serving or claiming complete
+quality. Application shutdown cancels and joins this local work. The internal
+canvas and read-only constructor remain snapshot-only.
+
 Its fixed local evaluator profile admits 500,000 input/intermediate rows and
 50 million operations with 1 GiB working-source and 2 GiB / 2 million live
 retained-row budgets; final-consumer release discards completed DAG inputs.
@@ -728,9 +937,29 @@ Successful-Run value computations keep produced safe outputs, native
 operational-grader measurements, and efficiency evidence separate; they do not
 turn runtime success or output creation into accepted value.
 Package-level `operational-value.mjs` programs compute repository-scoped metric
-records through `cao operational-value`. Activity appends those timestamped
-records to authoritative JSONL before the canonical Operational Value collection
-is rebuilt in SQLite, IndexedDB, and the hosted Postgres entity store.
+records through `cao operational-value`. Automatic remote acquisition remains
+deferred without shared per-request API admission; separate workers are not
+separate quota. Actions Activity may admit a reviewed collector only after
+ordinary collection and only when its complete request ceiling fits above the
+protected reserve. It durably counts each uncached GitHub request before
+execution and retains accepted packets/proof on missing capacity or exhaustion.
+Hosted cycles remain deferred pending equivalent admission. Health reconciles
+the latest decision and actual attempt independently of arrival order; unknown
+attempts never erase known history.
+Bounded cache-only/local computation remains independent:
+Actions runs it only after a successful eligible Activity snapshot, while the
+hosted worker uses its own single-owner lease and verified private snapshot.
+Both use the reviewed local-only standard adapter, explicit local-capability
+modules or exact versioned cache reuse, no target credentials or automatic
+backfill, and a two-minute batch/thirty-second adapter budget. Scope, explicit
+disables, fast, public-only and API-limited gates remain enforced. A later
+ordinary snapshot imports completed results; optional work does not acquire
+the projection lease, hold a long core evidence lock, or initiate a
+compute/publication retry loop. Hosted final publication rechecks enrollment
+and the starting generation, manifest, policy and retained-result identities;
+changed inputs defer publication rather than overwrite concurrent evidence.
+Normalized timestamped records then rebuild
+the canonical Operational Value collection in every storage profile.
 Package-level `problem-clustering.mjs` programs read a private Activity SQLite
 snapshot and emit bounded problem records with actionable fix prompts through
 `cao cluster-problems`.
@@ -1027,7 +1256,7 @@ and removal remain authenticated and never hydrate notification payloads.
 | `dashboard/` | Dashboard campaign, report/source adapters, canvas-only authoring bridge, and shared browser UI built for Pages or the unified Go server. |
 | `server/` | Optional host-neutral Go HTTP(S) service, deployed-artifact ingester, authenticated canonical API, webhook/rebuild control, Postgres entity storage and default operational state, explicit Redis or single-process memory alternatives, server-side Dashboard Language query engine, externally hosted handler facade, container image, and Azure Functions deployment profile. |
 | `server/cmd/cao-webhook-gateway/`, `server/internal/webhookgateway/`, `server/internal/webhookgatewayhost/` | Optional isolated gateway entry point, consumer contracts and pure decisions, and host adapters; durable state extends the existing PostgreSQL operational adapter. |
-| `server/spec/` | Editable TypeSpec HTTP/SSE and fresh Postgres storage contracts; generates OpenAPI 3.1, wire JSON Schemas, standalone SQL DDL, and Go entity bindings; checks routes, payloads, and query-required table fields. |
+| `server/spec/` | Editable TypeSpec HTTP/SSE, fresh Postgres storage and optional ADX export contracts; generates OpenAPI 3.1, wire JSON Schemas, standalone SQL DDL, Go bindings and ADX setup KQL; checks routes, payloads and canonical field coverage. |
 | `dashboard/site/src/data/` | Canonical browser data model, adapters, normalization, storage, and declarative query engine. |
 | `research/` | Executable notebooks and experimental reference runtimes used to validate proposed computation semantics against canonical data; these are not dashboard production code. |
 | `specs/computations.md` | Versioned computation, bounded insight, provenance, quality, and measure contracts. |
@@ -1053,7 +1282,7 @@ depends on `internal/ghcli/` and the declarative assets embedded by
 `github.com/cli/go-gh/v2`, the same helper used by gh-aw. The Go command layer
 owns all extension implementation, argument validation and help. Campaign installation, policy
 initialization, campaign mode changes, and workflow enablement run natively in Go.
-`gh cao campaigns add` delegates package ownership and workflow generation to
+`gh cao add` delegates package ownership and workflow generation to
 `gh aw add`, preserves its option vector, then materializes only the selected
 campaign from its installed full `resolvedCommit` SHA or a local catalog's
 Git-tracked files. Archive extraction rejects escaping paths and links; staged
@@ -1065,12 +1294,24 @@ only the exact current control repository. Initialization refuses
 replacement, preview maps to review, and campaign declarations are fully checked
 before workflow enablement/disablement. The extension groups guided setup at
 `gh cao setup` and independent credential profiles under
-`gh cao setup auth github-app|enterprise-app|token`, with no root-level
+`gh cao setup auth github-app|enterprise-app|hosted-cli|token`, with no root-level
 `setup-auth` command. Native authentication preserves the `setup-auth` result
 contract, options, credential prompts, consent, and read/write scope boundaries.
+Dedicated hosted-executor App setup also runs natively in Go, using the shared
+manifest callback and App-authenticated installation helpers. It requests exactly
+actions, contents, pull requests and workflows write plus metadata read, requires
+explicit same-owner repositories and browser approval, rejects all-repository
+installations and verifies every requested target. Its private key is written
+exclusively to a new mode-0600 temporary bootstrap file for import into the executor's
+secret manager, never printed or passed in arguments. Hosted credentials remain
+separate from dashboard login and Actions read/write credentials. Setup never
+changes policy, authentication mode or hosted-feature gates. The retired Node
+profile fails before side effects; unreferenced Node App-creation administration is
+removed while Actions credential profiles and inspection remain in
+`.github/workflows/shared/github-apps.mjs`.
 Repository enrollment (`gh cao repos add OWNER/REPO`),
-updates, onboarding, downloads, computations, and all evidence commands
-run entirely in Go. No production command invokes Node.js, npm, or JavaScript
+updates, onboarding, downloads, computations, and all evidence commands in `gh cao`
+run entirely in Go. No extension command invokes Node.js, npm, or JavaScript
 modules; `CAO_RUNTIME_ROOT` is no longer an extension input. The default reviewed
 catalog, fragments, canonical source projections, and MCP contract are embedded
 directly from the dashboard's JSON documents, not duplicated as a second catalog.
@@ -1087,16 +1328,32 @@ and nonzero status for failed or skipped checks. Authentication may contact
 GitHub; raw authentication output and subprocess errors are never reported.
 Doctor does not replace production policy/workflow validation, grant authority,
 or invoke the Node snapshot-repair command. Actions and Node-only tools invoke
-`node activity/cao.mjs <command>` explicitly, including SQLite snapshot `doctor`
-and the unmigrated `setup-auth hosted-cli` profile. There is no shell launcher.
-Internal Node implementations remain available for Actions and parity tests,
-not as an alternative operator surface.
+`node activity/cao.mjs <command>` explicitly, including SQLite snapshot `repair-database`.
+There is no shell launcher.
+Node `cao` owns the Actions runtime, `gh cao` owns the operator interface, and
+`cao-dashboard` owns the server. Node onboarding and lifecycle implementations
+and exports are removed: `init`, `setup`, `setup-auth`, campaign `add`, `mode`,
+`enable`, `disable`, `update`, and `upgrade-gh-aw` fail with native replacement
+guidance before option parsing, stdin, or legacy two-argument ingestion.
+There are no Node compatibility wrappers or native-to-Node bridges.
+Node evidence APIs remain supported for agents inside agentic workflows.
+The registered `queries`, `query-info`, `prompt`, `query`, `gh runs|issues|prs`,
+`computation`, `mcp`, and `download` commands and their dependencies must remain
+available in the installed runtime. Similar reads in the operator extension are
+intentional; the workflow APIs are neither deprecated duplicates nor test-only
+parity implementations. They preserve canonical Dashboard Language execution,
+bounded evidence/output contracts and existing authentication boundaries, without
+granting policy authority or GitHub writes.
+`activity/authentication.mjs` retains only Actions credential profiles, naming,
+and bounded Activity collection planning, not credential provisioning.
 Root runtime upgrades remove only
 content-verified retired launchers; consumer-owned files, links, and directories
 are preserved. Verified older archives may contain the retired launcher but
 never install it.
-User-facing commands belong in the Go extension; Actions execution support
-belongs in the shipped JavaScript runtime under `activity/` and `dashboard/`.
+Human/operator commands belong in the Go extension; server hosting and
+administration belong to `cao-dashboard`. Actions execution support, including
+workflow-agent evidence APIs, belongs in the shipped JavaScript runtime under
+`activity/` and `dashboard/`.
 Agentic workflow execution and agent evidence preparation must not build,
 install, or invoke the native extension. Copilot setup stages dashboard evidence
 with `node activity/cao.mjs download`. Dedicated extension build, release, and
@@ -1156,10 +1413,9 @@ Activity and Dashboard use the standard npm `files` contract in the dedicated
 `runtime/package.json`, rather than copying their development directories
 wholesale. The producer-side `npm run runtime:pack -- DESTINATION REVISION`
 command packs with lifecycle scripts disabled, bundles the YAML parser with
-esbuild and its dependency license notices, preserves the dependency-free setup
-prompt adapter as portable source, and seals an exact-revision inventory and
-checksums. Explicit developer source packing preserves the same adapter;
-installed setup never resolves it from a consumer's node_modules.
+esbuild and its dependency license notices, and seals an exact-revision inventory
+and checksums. Neither published nor developer-packed runtimes include retired
+Node onboarding or lifecycle administration modules.
 Filesystem-relative CLI modules, workers, and build inputs remain at their
 canonical paths rather than being forced into a single-file executable.
 The conventional `cao-runtime.yml` pipeline builds on main pushes. Read-only
@@ -1220,10 +1476,21 @@ resolving explicit skill declarations, so that directory contains only the
 seven skills intended for control repositories and a contract test locks its
 exact inventory.
 Operational campaign manifests contain only their owned workflows and catalog
-resources; they do not import the root catalog package. `cao add` is the
+resources; they do not import the root catalog package. `gh cao add` is the
 supported lifecycle boundary after control-plane installation and materializes
 the selected campaign's canonical runtime without reinstalling control-plane or
 Agent Plugin resources.
+
+`gh cao add WORKFLOW_OR_CAMPAIGN` is the single workflow/campaign installation
+command, without a campaign-add subcommand or repository enrollment. Bare catalog
+workflow names, explicit `.md` sources, GitHub blob URLs and the published
+Daily Repo Status qualified shorthands select standalone installation; campaign
+coordinates and existing local directories select campaign installation with
+unchanged gh-aw options. There is no failure-driven fallback between installation kinds.
+Standalone installation delegates installation and compilation to gh-aw, verifies the exact standalone
+identity and CAO admission gate, and registers new workflows in review mode without
+widening existing policy. Repository enrollment is separate: `gh cao repos add
+OWNER/REPO` verifies one exact repository and stages review-safe policy.
 
 `npm run test:runtime-install` builds the actual producer archive and validates
 its installation commit from a fresh
@@ -1234,11 +1501,18 @@ registry access, but does not create credentials or dispatch workflows.
 
 ### Operator onboarding
 
-The primary path installs the native extension with
-`gh extension install githubnext/gh-cao`, enters an existing GitHub control
-checkout, and runs `gh cao setup` without a prerequisite `init` or installer.
-Repository creation and cloning remain explicit `gh repo create` and
-`gh repo clone` operations, not setup effects. Native
+The primary path uses `gh extension install githubnext/gh-cao`, then runs
+`gh cao setup` from an existing GitHub control checkout. Documentation presents
+the curl installer in a troubleshooting callout for SAML-token installation
+failures, not as the default installation path.
+The fallback installer uses upstream `github/gh-aw`'s `install-gh-aw.sh` for gh-aw and
+downloads the native gh-cao extension. Public tool release discovery and downloads
+are anonymous and ignore curl authentication configuration; only the upstream
+installer's child process loses token variables and the Actions `INPUT_VERSION`
+override. Stored credentials and authenticated control-repository and runtime
+provenance operations remain intact. Repository creation and cloning remain
+explicit `gh repo create` and `gh repo clone` operations or the installer's
+`--create-repo`, not native setup effects. Native
 `internal/cli/native_setup.go` owns guided scope and authentication; runtime
 preparation lives in `internal/cli/setup_runtime.go`. Setup distinguishes absent
 policy from malformed policy, constructs only a missing exact campaign-free
@@ -1272,10 +1546,9 @@ no force, additional tags or submodule pushes are allowed. Failed pushes retain
 the local commit and report recovery guidance. Declining/cancelling publication,
 headless mode and CI leave configuration local. Successful push returns Actions
 and known dashboard links marked deployment pending, never dispatching, polling
-or waiting for collection/deployment. This native publication step is not part
-of the internal Node parity implementation.
+or waiting for collection/deployment.
 
-The compatibility `install.sh` checks required tools, Node.js 24+, GitHub sign-in, and checkout-root
+The root `install-gh-cao.sh` checks required tools, Node.js 24+, GitHub sign-in, and checkout-root
 readiness before installing or upgrading anything. Repository creation and
 cloning are private-only and require an explicit `--create-repo OWNER/NAME`;
 existing clone directories are never overwritten. Bare installation ends with
@@ -1289,34 +1562,14 @@ installed campaigns fail closed. Headless repository creation still requires
 an exact `--create-repo OWNER/NAME`, and missing prerequisites fail rather than
 appearing successful. Streamed bootstrap children otherwise retain null stdin.
 
-The internal Node parity implementation `activity/setup.mjs` retains scope
-resolution and authentication orchestration for runtime tests, not a second
-operator entry point.
-`activity/setup-prompt.mjs` is a dependency-free presentation adapter built on
-Node terminal primitives. It provides keyboard prompts, inline validation,
-cancellation, and restrained elapsed progress; terminals without styling
-support, `NO_COLOR`, and `ACCESSIBLE` use plain numbered prompts without
-animation. The injectable prompt contract keeps authority decisions outside UI.
-Setup shows Repositories, Connections, and Review/apply, with default-No
-confirmation before Pages, credential, or policy changes. The Pages source is
-verified without changing visibility, with separate default-No consent to a
-public dashboard before credentials are changed. Declining or cancelling that
-consent removes only a newly created site where possible; an existing site is
-left in place with restriction/unpublication guidance. Policy is written atomically only
-after both succeed. Failures disclose possible partial external changes rather
-than claim rollback. Setup does not install campaigns or dispatch workflows;
-native commit/push requires the separate publication approval above.
-The CLI prints next actions by default and retains structured
-stdout with `setup --json`. Non-interactive setup, including setup in CI,
-requires a public control repository with empty campaigns and absent or exact
-self-only scope. It verifies public Actions-backed Pages, selects repository
-workflow-token mode, records self-only Activity scope, and writes policy last.
-Private/internal repositories and incompatible existing policy fail before
-Pages or authentication changes. A fresh bare installation remains scoped to
-the exact control repository with no campaigns before setup.
+Native setup owns terminal presentation, cancellation, explicit scope,
+public Pages consent and review/apply confirmation. `setup --json` retains
+structured stdout. Native setup/authentication and lifecycle tests exercise the
+supported operator paths without a local Node installation; Actions runtime
+tests separately enforce retired-command rejection and unchanged files.
 
 Campaign installation and execution are separate operator actions through
-`gh cao campaigns add` and `gh aw run`. Operators review and commit workflows
+`gh cao add` and `gh aw run`. Operators review and commit workflows
 and bounded review-mode policy together before dispatching work. Campaign
 installation never commits, pushes or dispatches; setup's separately approved
 publication is monitoring-only.
@@ -1375,8 +1628,21 @@ not authorize cross-repository evidence access.
   and emit bounded, versioned results; they do not create authority or convert
   runtime success into verified outcomes or operational value.
 - Overview counters use IndexedDB-native counts or request-scoped declarative
-  queries over canonical records. No daily aggregate or computation-result
-  projection is persisted. Failure clustering and audit diagnosis execute in
+  queries over canonical records. A separate daily run-count projection and
+  compact per-Run contribution receipts support explicitly migrated additive
+  health queries; receipts survive detail eviction and replacement updates
+  subtract old contributions before adding new ones atomically. Its dimensions
+  are namespace, UTC run-start date, repository, and workflow. Existing detail
+  storage and retention are unchanged. Daily buckets and receipts retain the
+  current UTC Monday-start week and its two preceding weeks independently of
+  detail-retention overrides; backfill cannot recover already-evicted history.
+  Other daily metrics and computation-result projections are not persisted.
+  Changes to this projection, reconciliation, retention, source, or migrated
+  consumers require `POSTGRES_URL=... npm run test:conformance:daily-run-counts`
+  against an isolated PostgreSQL database whose test role can create schemas,
+  with native Chromium installed. Skipped backends or browser emulation alone
+  are not conformance; `npm run check` does not run this additional gate.
+  Failure clustering and audit diagnosis execute in
   bounded, selected-partition queries. Runtime facts evaluate orchestrators first
   and enumerate worker targets only when orchestration is eligible. Worker facts
   use one evaluation partition per target so success on one target cannot mask
@@ -1459,12 +1725,20 @@ not authorize cross-repository evidence access.
   `GET /api/v1/github-quota/usage` and the `github-quota-usage` runtime source
   that the Ingestion page charts. Existing collection budgets do not use this
   service yet.
-- Signed repository lifecycle deliveries are durably queued with collection
-  work; workers preserve archived/deleted repository identities in Postgres
-  without hiding retained history. Declarative discovery excludes inactive
-  repositories, while explicit installation scope withdrawal still erases
-  evidence immediately. Retention maintenance purges inactive identities only
-  after the retention window and their references have expired.
+- Signed repository lifecycle deliveries are durably queued as independent
+  discovery hints. Workers reconcile complete authenticated installation
+  coverage, exclude archived repositories, persist erasure work before removing
+  absent coordinates from enrollment, and queue collection for verified active
+  repositories. Archive, deletion, rename, and transfer evict old repository
+  evidence and retained inventory through the existing erasure/projection path.
+  Delayed deliveries cannot restore obsolete coordinates or lifecycle states;
+  legacy lifecycle metadata cannot recreate absent canonical repositories.
+  Workers also reconcile active installation lists on startup and every hour by
+  default, configurable with `CAO_COLLECT_REPOSITORY_REFRESH_INTERVAL`,
+  coordinating replicas with an operational lease and persisted
+  admission timestamp. `cao-dashboard backfill --repositories-only` forces the
+  same repair without replaying history or scanning workflow runs; unchanged
+  repositories are not recollected by list refresh alone.
 - The ingestion reliability simulator uses strict, seeded JSON scenarios to
   generate up to 50,000 synthetic repositories and 1,000,000 workflow and
   optional issue events combined.

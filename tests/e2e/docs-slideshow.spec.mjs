@@ -5,9 +5,10 @@ const runtimeAsset = /\/slideshow\.[^/]+\.js(?:\?|$)/;
 const slideTitles = [
   "Central Agentic Ops",
   "Monitor and govern GitHub Agentic Workflows at scale.",
-  "Shared work. Clear ownership.",
+  "Shared workflows. Clear ownership.",
+  "Easy upkeep",
   "Roll out with confidence.",
-  "Less upkeep. Current workflows.",
+  "Use evidence to decide what scales.",
   "Webhook Gateway",
   "Built on Agentic Workflows",
 ];
@@ -133,10 +134,9 @@ test("expands and edits code locally without changing the original commands or n
   await page.goto("./");
   const original = await page.locator(".terminal code").allTextContents();
   await openSlideshow(page);
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
-  await expectSlide(page, 3);
+  const setupSlide = slideTitles.indexOf("Roll out with confidence.");
+  for (let index = 0; index < setupSlide; index++) await page.keyboard.press("ArrowRight");
+  await expectSlide(page, setupSlide);
   const snippet = presentation(page).getByRole("button", { name: "Expand gh cao setup", exact: true });
   await snippet.focus();
   await page.keyboard.press("Enter");
@@ -145,7 +145,7 @@ test("expands and edits code locally without changing the original commands or n
   const editor = expanded.getByRole("textbox");
   await editor.fill("gh cao doctor");
   await page.keyboard.press("Home");
-  await expectSlide(page, 3);
+  await expectSlide(page, setupSlide);
   await page.keyboard.press("Escape");
   await expect(expanded).not.toBeVisible();
   await expect(snippet).toBeFocused();
@@ -153,8 +153,8 @@ test("expands and edits code locally without changing the original commands or n
   await snippet.click();
   await expect(editor).toHaveText("gh cao setup");
   await page.getByRole("button", { name: "Close expanded snippet", exact: true }).click();
-  await page.keyboard.press("ArrowRight");
-  await expectSlide(page, 4);
+  await page.keyboard.press("ArrowLeft");
+  await expectSlide(page, slideTitles.indexOf("Easy upkeep"));
   await page.getByRole("button", { name: "Expand Dashboard maintenance", exact: true }).click();
   const maintenance = page.getByRole("dialog", { name: "Dashboard maintenance", exact: true });
   await expect(maintenance).toBeVisible();
@@ -248,7 +248,7 @@ for (const theme of ["light", "dark"]) {
         }).toBe(true);
         expect(await slide.evaluate(element => {
           const bounds = element.getBoundingClientRect();
-          return [...element.querySelectorAll("h1, h2, .docs-hero-intro, .hero-visual, .phone-preview, .product-story-copy, .terminal, .dispatch-illustration, .product-shot, .workflow-example, .control-diagram")]
+          return [...element.querySelectorAll("h1, h2, .docs-hero-intro, .hero-visual, .phone-preview, .product-story-copy, .terminal, .dispatch-illustration, .product-shot, .workflow-example, .control-diagram, .decision-loop")]
             .filter(child => child.checkVisibility())
             .every(child => {
               const content = child.getBoundingClientRect();

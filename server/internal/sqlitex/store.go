@@ -26,10 +26,14 @@ import (
 )
 
 type Store struct {
-	db          *sql.DB
-	dataVersion int64
-	state       dashboardstore.State
-	metadata    map[string]model.Metadata
+	db               *sql.DB
+	dataVersion      int64
+	state            dashboardstore.State
+	metadata         map[string]model.Metadata
+	conn             *sql.Conn
+	readGate         chan struct{}
+	snapshotRevision string
+	overlayPath      string
 }
 
 type reader struct {
@@ -61,12 +65,7 @@ func OpenWithMetadata(ctx context.Context, path string, metadata map[string]mode
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("canonical SQLite snapshot must be a regular file")
 	}
-	location := &url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
-	parameters := url.Values{"mode": {"ro"}, "_pragma": {
-		"busy_timeout(5000)", "query_only(1)", "trusted_schema(0)", "mmap_size(1073741824)",
-	}}
-	location.RawQuery = parameters.Encode()
-	db, err := sql.Open("sqlite", location.String())
+	db, err := sql.Open("sqlite", snapshotDSN(absolute))
 	if err != nil {
 		return nil, err
 	}
@@ -84,24 +83,52 @@ func OpenWithMetadata(ctx context.Context, path string, metadata map[string]mode
 	return store, nil
 }
 
+func snapshotDSN(absolute string) string {
+	// A drive letter must be in the path (file:///C:/...), not the URI authority.
+	location := &url.URL{Scheme: "file", Path: "/" + strings.TrimPrefix(filepath.ToSlash(absolute), "/")}
+	parameters := url.Values{"mode": {"ro"}, "_pragma": {
+		"busy_timeout(5000)", "query_only(1)", "trusted_schema(0)", "mmap_size(1073741824)",
+	}}
+	location.RawQuery = parameters.Encode()
+	return location.String()
+}
+
 func storeVersion(ctx context.Context, tx *sql.Tx) error {
 	var version int
 	if err := tx.QueryRowContext(ctx, `SELECT version FROM __idb_databases WHERE name=?`, dashboardquery.DatabaseName).Scan(&version); err != nil {
 		return err
 	}
-	if version != dashboardquery.DatabaseVersion {
+	if version < 44 || version > dashboardquery.DatabaseVersion {
 		return fmt.Errorf("unsupported canonical SQLite database version %d; expected %d", version, dashboardquery.DatabaseVersion)
 	}
 	return nil
 }
 
-func (s *Store) Open() bool   { return s != nil && s.db != nil }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Open() bool { return s != nil && s.db != nil }
+func (s *Store) Close() error {
+	var err error
+	if s.conn != nil {
+		err = s.conn.Close()
+	}
+	return errors.Join(err, s.db.Close())
+}
 
 func (s *Store) WithReadTransaction(ctx context.Context, fn func(context.Context, dashboardstore.Reader) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if s.readGate != nil {
+		select {
+		case s.readGate <- struct{}{}:
+			defer func() { <-s.readGate }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	begin := s.db.BeginTx
+	if s.conn != nil {
+		begin = s.conn.BeginTx
+	}
+	tx, err := begin(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("begin SQLite snapshot read: %w", err)
 	}
@@ -132,6 +159,7 @@ func (r *reader) State(ctx context.Context) (dashboardstore.State, error) {
 		return dashboardstore.State{}, err
 	}
 	state := dashboardstore.State{Counts: map[string]int{}, EvaluatedAt: time.Unix(0, 0).UTC()}
+	dailyStores := map[string]bool{}
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "schema:%d:", dashboardquery.DatabaseVersion)
 	rows, err := r.tx.QueryContext(ctx, `SELECT name FROM __idb_stores WHERE database_name=? ORDER BY name`, dashboardquery.DatabaseName)
@@ -148,6 +176,12 @@ func (r *reader) State(ctx context.Context) (dashboardstore.State, error) {
 			if canonicalCollection(name) {
 				state.Counts["$"+name] = 0
 				_, _ = fmt.Fprintf(hash, "%d:%s", len(name), name)
+			} else if dailyCollection(name) {
+				dailyStores[name] = true
+				_, _ = fmt.Fprintf(hash, "%d:%s", len(name), name)
+				if name == "dailyRunCounts" {
+					state.Counts["daily-run-counts"] = 0
+				}
 			}
 		}
 		return rows.Err()
@@ -170,6 +204,19 @@ func (r *reader) State(ctx context.Context) (dashboardstore.State, error) {
 			var name, key, value, observed string
 			if err := rows.Scan(&name, &key, &value, &observed); err != nil {
 				return err
+			}
+			if dailyCollection(name) {
+				if !dailyStores[name] {
+					return errors.New("SQLite daily records refer to an undeclared object store")
+				}
+				for _, part := range []string{name, key, value} {
+					_, _ = fmt.Fprintf(hash, "%d:%s", len(part), part)
+				}
+				if name == "dailyRunCounts" {
+					state.Counts["daily-run-counts"]++
+					state.Ready = true
+				}
+				continue
 			}
 			if !canonicalCollection(name) {
 				continue
@@ -203,6 +250,10 @@ func (r *reader) State(ctx context.Context) (dashboardstore.State, error) {
 
 func canonicalCollection(name string) bool {
 	return name == "transactions" || name == "marketplacePackages" || postgresx.IsCanonicalCollection(name)
+}
+
+func dailyCollection(name string) bool {
+	return name == "dailyRunCounts" || name == "runCountContributions" || name == "dailyRunCountState"
 }
 
 func cloneState(state dashboardstore.State) dashboardstore.State {

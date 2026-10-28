@@ -27,6 +27,14 @@ type rateLimitProvider interface {
 	RateLimit(ctx context.Context, installationID int64) (int, time.Time, error)
 }
 
+// TraceCapture receives only already-acquired repository evidence before the
+// ordinary lossy projection. It grants no additional acquisition authority.
+type TraceCapture interface {
+	PrepareCache(context.Context, string, string, string) error
+	Capture(context.Context, string, string, string) error
+	WithdrawRepository(context.Context, string) error
+}
+
 // Runner acquires one repository's evidence.
 //
 // It invokes the same `gh aw logs --audit` command and the same
@@ -44,6 +52,8 @@ type Runner struct {
 	GitHubAPIURL string
 	// WindowDays bounds the retained collection window.
 	WindowDays int
+	// Since narrows local refreshes without changing the retained evidence window.
+	Since time.Time
 	// RunLimit bounds runs collected per repository per invocation.
 	RunLimit int
 	// MaxStorageMB bounds on-disk artifact usage per invocation.
@@ -56,6 +66,7 @@ type Runner struct {
 	MaxOutputBytes int
 	Tokens         TokenProvider
 	Budget         *githubapp.Budget
+	Traces         TraceCapture
 }
 
 // runnerValidationStage identifies which prerequisite check failed during
@@ -229,8 +240,35 @@ func (r Runner) Collect(ctx context.Context, task Task) error {
 	}()
 	ctx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
-	if err := r.downloadLogs(ctx, repository, workspace, token, reserve); err != nil {
+	cachePrefix := filepath.Join(r.Lake.ShardDirectory(), r.Lake.ShardPrefix(repository))
+	if r.Traces != nil {
+		staged := filepath.Join(workspace, "trace-cache")
+		if err := os.Mkdir(staged, 0o700); err != nil {
+			return err
+		}
+		stagedPrefix := filepath.Join(staged, r.Lake.ShardPrefix(repository))
+		if err := r.Traces.PrepareCache(ctx, repository, cachePrefix, stagedPrefix); err != nil {
+			return err
+		}
+		cachePrefix = stagedPrefix
+	}
+	if err := r.downloadLogs(ctx, repository, workspace, token, reserve, cachePrefix); err != nil {
 		return err
+	}
+	if r.Traces != nil {
+		if err := r.Traces.Capture(ctx, repository, filepath.Join(workspace, "logs"),
+			cachePrefix); err != nil {
+			return fmt.Errorf("capture approved traces: %w", err)
+		}
+		if err := r.publishTraceCache(cachePrefix, repository); err != nil {
+			return err
+		}
+	}
+	if err := r.Lake.mineDownloadedInfo(ctx, repository, filepath.Join(workspace, "logs")); err != nil {
+		return fmt.Errorf("mine recorded episode evidence: %w", err)
+	}
+	if err := r.Lake.mineCachedInfo(ctx, repository); err != nil {
+		return fmt.Errorf("backfill cached episode evidence: %w", err)
 	}
 	if err := r.execute(ctx, r.node(), []string{
 		filepath.Join(r.CatalogRoot, "activity", "session-evidence.mjs"),
@@ -247,8 +285,11 @@ func (r Runner) Collect(ctx context.Context, task Task) error {
 	return nil
 }
 
-func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token string, reserve int) error {
-	shardPrefix := filepath.Join(r.Lake.ShardDirectory(), r.Lake.ShardPrefix(repository))
+func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token string, reserve int, shardPrefix string) error {
+	startDate := fmt.Sprintf("-%dd", r.windowDays())
+	if !r.Since.IsZero() {
+		startDate = r.Since.UTC().Format(time.RFC3339)
+	}
 	arguments := []string{
 		filepath.Join(r.CatalogRoot, "activity", "collect-workflow-logs.mjs"), r.gh(), "--audit",
 		"--repo", repository,
@@ -256,7 +297,7 @@ func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token s
 		"--summary-file", "",
 		"--cached-jsonl", shardPrefix + "*",
 		"--artifacts", "usage,experiment",
-		"--start-date", fmt.Sprintf("-%dd", r.windowDays()),
+		"--start-date", startDate,
 		"--cache-before", fmt.Sprintf("-%dd", r.windowDays()),
 		"--count", strconv.Itoa(r.runLimit()),
 		"--timeout", strconv.Itoa(r.requestTimeout()),
@@ -265,6 +306,56 @@ func (r Runner) downloadLogs(ctx context.Context, repository, workspace, token s
 		"--prune-older-runs",
 	}
 	return r.execute(ctx, r.node(), arguments, []string{"GH_TOKEN=" + token})
+}
+
+func (r Runner) publishTraceCache(prefix, repository string) error {
+	entries, err := os.ReadDir(filepath.Dir(prefix))
+	if err != nil {
+		return err
+	}
+	published := map[string]bool{}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), filepath.Base(prefix)) || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 64<<20 {
+			return errors.New("trace cache file exceeds publication budget")
+		}
+		destination := filepath.Join(r.Lake.ShardDirectory(), entry.Name())
+		if _, err := os.Stat(destination); err == nil {
+			// Copied files may omit uncaptured attempts for reacquisition only.
+			// gh-aw's wildcard mode writes new results to a unique new file.
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		content, err := os.ReadFile(filepath.Join(filepath.Dir(prefix), entry.Name()))
+		if err != nil {
+			return err
+		}
+		if err := WriteFileAtomic(destination, content); err != nil {
+			return err
+		}
+		published[entry.Name()] = true
+	}
+	previous, err := os.ReadDir(r.Lake.ShardDirectory())
+	if err != nil {
+		return err
+	}
+	for _, entry := range previous {
+		if strings.HasPrefix(entry.Name(), r.Lake.ShardPrefix(repository)) && strings.HasSuffix(entry.Name(), ".jsonl") && !published[entry.Name()] {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(prefix), entry.Name())); err == nil {
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if err := os.Remove(filepath.Join(r.Lake.ShardDirectory(), entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r Runner) compact(ctx context.Context, repository string) error {

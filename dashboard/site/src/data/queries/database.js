@@ -29,7 +29,11 @@ import { isGitHubQuerySource } from '../github-query-sources.js';
 import { SIMULATION_DAYS, simulationDaysSource } from './simulation-days.js';
 import { createDebug } from '../../debug.js';
 import { operationalValueEvidenceMetadata, operationalValueEvidenceRows } from '../model/operational-value-evidence.js';
+import { DAILY_RUN_COUNT_STATE_ID } from '../model/daily-run-counts.js';
 import { incrementalAggregate } from './incremental-aggregate.js';
+import { evidencePacketSelection, readEvidencePackets } from './evidence-selection.js';
+import { measurementRows, measurementSelection, readMeasurements } from './measurement-selection.js';
+import { canonicalStatisticalWatermark, sampleStatisticalRuns, STATISTICAL_INPUT_LIMITS } from './statistical-sample.js';
 
 const debugDatabase = createDebug('database');
 const monotonicNow = () => globalThis.performance?.now() ?? Date.now();
@@ -37,7 +41,7 @@ const databaseQueryIndex = dashboardQueryIndex(databaseQueries);
 const RUN_RECORD_STORES = new Set(['domains', 'tools', 'skills', 'friction', 'audits', 'issues']);
 const DIRECT_EVIDENCE_SOURCES = new Set([
   'experiments', 'experiment-assignments', 'graders',
-  'grader-observations', 'evals', 'eval-observations'
+  'grader-observations', 'evals', 'eval-observations', 'workflow-value-collections'
 ]);
 const EXTERNAL_SOURCES = new Set([
   ...SERVER_SOURCE_VALUES, 'configuration-policy', 'marketplace-registries'
@@ -47,6 +51,30 @@ const NATIVE_COUNT_FIELDS = {
   campaigns: new Set(['id', 'campaign']),
   repositories: new Set(['id', 'repository'])
 };
+
+/** @param {Record<string, unknown> | undefined} state */
+function dailyRunCountMetadata(state) {
+  const ready = state?.status === 'ready';
+  return {
+    'aggregate-version': 1,
+    'aggregate-time-grain': 'utc-run-start-day',
+    availability: ready ? 'available' : 'unavailable',
+    completeness: ready && state.coverage === 'admitted'
+      && !state.excludedRuns && !state.conflictedRuns ? 'complete' : 'partial',
+    'aggregate-coverage': state?.coverage ?? 'absent',
+    ...(state?.retentionCutoff ? {
+      'aggregate-retention-start': state.retentionCutoff,
+      'aggregate-retention-watermark': new Date(Number(state.retentionWatermark)).toISOString()
+    } : {}),
+    'excluded-runs': Number(state?.excludedRuns ?? 0),
+    'conflicted-runs': Number(state?.conflictedRuns ?? 0),
+    ...(!ready ? { 'query-diagnostic': 'Daily run count state is absent or backfill is incomplete.' }
+      : state.coverage === 'retained-v44'
+      ? { 'query-diagnostic': 'Backfill covers retained v44 runs only; previously evicted history is unavailable.' }
+      : state.excludedRuns || state.conflictedRuns
+      ? { 'query-diagnostic': 'Some runs have missing start/identity facts or unresolved equal-revision conflicts.' } : {})
+  };
+}
 /**
  * @param {Record<string, unknown>} sources
  * @param {string} sourceName
@@ -104,7 +132,13 @@ function executeDatabaseQuery(queryName, inputs, sources, metadataSource, budget
           ...(queryName === 'operational-value-evidence'
             ? { ...result.metadata, 'source-id': queryName, 'source-kind': 'database-query' }
             : queryMetadata(DIRECT_EVIDENCE_SOURCES.has(queryName) ? {} : sources, metadataSource, queryName, true)),
-          availability: result.rows.length > 0 ? 'available' : 'empty'
+          availability: result.rows.length > 0 ? 'available' : 'empty',
+          ...(queryName.startsWith('statistical-') && inputs.$statisticalMembership
+            ? {
+                'as-of': inputs.$statisticalMembership.metadata['as-of'],
+                'statistical-frame': inputs.$statisticalMembership.metadata['statistical-frame'],
+                'sample-frame': inputs.$statisticalMembership.metadata['statistical-frame']
+              } : {})
         }
   });
 }
@@ -190,6 +224,16 @@ export async function queryIndexedDatabaseSources(indexedDB, logicalSources, def
   const budget = options.budget ?? createDashboardQueryBudget(options);
   budget.checkpoint();
   const index = dashboardQueryIndex(definitions);
+  requested = [...requested];
+  if (resolveDashboardQuerySources(definitions, requested).includes('daily-run-counts')) {
+    const states = await readCollections(indexedDB, ['dailyRunCountState']);
+    const metadata = dailyRunCountMetadata(states.dailyRunCountState.find((state) => state.id === DAILY_RUN_COUNT_STATE_ID));
+    logicalSources = {
+      ...logicalSources,
+      dailyRunCounts: { source: 'dailyRunCounts', rows: [], metadata },
+      'daily-run-counts': { source: 'daily-run-counts', rows: [], metadata }
+    };
+  }
   const defects = dashboardQueryDefects(definitions);
   const countPlans = [...requested].flatMap((name) => {
     const definition = index.get(name);
@@ -1181,7 +1225,7 @@ function queryStores(name) {
  * @param {IDBFactory} indexedDB
  * @param {Record<string, unknown>} logicalSources
  * @param {string[]} sourceNames
- * @param {{ onMetrics?: (metrics: { databaseMs: number, projectionMs: number, totalMs: number, recordsRead: number, stores: string[] }) => void }} [options]
+ * @param {{ onMetrics?: (metrics: { databaseMs: number, projectionMs: number, totalMs: number, recordsRead: number, stores: string[] }) => void, checkpoint?: () => void, statisticalCapacity?: number, evidenceSelection?: ReturnType<typeof import('./evidence-selection.js').evidencePacketSelection>, measurementSelection?: ReturnType<typeof measurementSelection> }} [options]
  */
 export async function queryDatabaseSources(indexedDB, logicalSources, sourceNames, options = {}) {
   const startedAt = monotonicNow();
@@ -1191,19 +1235,87 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
   const requested = new Set(sourceNames);
   const databaseRequested = resolveDashboardQuerySources(databaseQueries, requested)
     .filter((name) => databaseQueryIndex.has(name) && !Object.hasOwn(SYNTHETIC_SOURCE_FIELDS, name));
-  const stores = [...new Set(databaseRequested.flatMap(queryStores))];
+  const statisticalNames = new Set(databaseRequested.filter((name) => name.startsWith('statistical-')));
+  const statisticalRequested = statisticalNames.size > 0;
+  const exactStores = new Set(resolveDashboardQuerySources(databaseQueries, requested, statisticalNames)
+    .filter((name) => !statisticalNames.has(name)).flatMap(queryStores));
+  let statisticalError = '';
+  if (statisticalRequested) {
+    options.checkpoint?.();
+    const counts = await countCollections(indexedDB, ['runs']);
+    if (counts.runs > STATISTICAL_INPUT_LIMITS.rows) {
+      statisticalError = 'Statistical candidate frame exceeds input row budget';
+      debugDatabase({ event: 'statistical-source', status: 'unavailable', reason: 'input-budget', inputCount: counts.runs });
+    }
+  }
+  const unavailableStatistical = new Set(statisticalError
+    ? statisticalNames : []);
+  const activeQueries = statisticalError
+    ? resolveDashboardQuerySources(databaseQueries, requested, unavailableStatistical)
+      .filter((name) => !unavailableStatistical.has(name)) : databaseRequested;
+  const stores = [...new Set(activeQueries.flatMap(queryStores))];
   const transactionRequested = stores.includes('transactions');
-  const collectionStores = /** @type {Array<typeof import('../storage/indexeddb.js').ENTITY_STORES[number]>} */ (
-    stores.filter((name) => name !== 'transactions')
+  const collectionStores = /** @type {Array<typeof import('../storage/indexeddb.js').DATABASE_STORES[number]>} */ (
+    stores.filter((name) => name !== 'transactions' && name !== 'operationalValueEvidence'
+      && !(name === 'operationalValues' && databaseRequested.includes('workflow-value-measurements')))
   );
+  if (stores.includes('dailyRunCounts')) collectionStores.push('dailyRunCountState');
   const databaseStartedAt = monotonicNow();
   /** @type {[Record<string, Record<string, unknown>[]>, Record<string, unknown>[]]} */
   const [collections, transactions] = await Promise.all([
-    collectionStores.length > 0 ? readCollections(indexedDB, collectionStores) : {},
+    collectionStores.length > 0 ? readCollections(indexedDB, collectionStores, {
+      checkpoint: options.checkpoint,
+      ...(statisticalRequested ? { bounds: {
+        stores: new Set(collectionStores.filter((store) => !exactStores.has(store))),
+        rows: STATISTICAL_INPUT_LIMITS.rows, bytes: STATISTICAL_INPUT_LIMITS.bytes,
+        onLimit: () => {
+          statisticalError = 'Statistical source exceeds input budget';
+          for (const name of statisticalNames) unavailableStatistical.add(name);
+          debugDatabase({ event: 'statistical-source', status: 'unavailable', reason: 'input-budget' });
+        }
+      } } : {})
+    }) : {},
     transactionRequested ? readTransactions(indexedDB) : []
   ]);
+  if (stores.includes('operationalValueEvidence')) {
+    collections.operationalValueEvidence = await readEvidencePackets(indexedDB, options.evidenceSelection ?? null, options.checkpoint);
+  }
+  if (stores.includes('operationalValues') && databaseRequested.includes('workflow-value-measurements')) {
+    collections.operationalValues = await readMeasurements(indexedDB, options.measurementSelection ?? null, options.checkpoint);
+  }
+  if (collections.operationalValues) collections.operationalValues = measurementRows(collections.operationalValues);
   const databaseMs = monotonicNow() - databaseStartedAt;
   const sources = namedSources(logicalSources);
+  /** @type {import('../../presenter.js').LogicalSourceInput | undefined} */
+  let statisticalMembership;
+  if (statisticalRequested && !statisticalError) {
+    const rawRuns = /** @type {import('../../presenter.js').LogicalSourceInput | undefined} */ (sources.runs);
+    const runMetadata = queryMetadata(sources, 'runs', 'runs', rawRuns?.metadata?.availability !== 'unavailable');
+    try {
+      const sample = await sampleStatisticalRuns(collections.runs ?? [], {
+        capacity: options.statisticalCapacity,
+        watermark: runMetadata['as-of'] || canonicalStatisticalWatermark(collections.runs ?? []),
+        complete: runMetadata.completeness === 'complete'
+          && runMetadata.availability !== 'unavailable',
+        checkpoint: options.checkpoint
+      });
+      sample.frame['watermark-policy'] = runMetadata['as-of'] ? 'recorded-run-as-of' : 'canonical-run-max';
+      statisticalMembership = {
+        source: '$statisticalMembership',
+        rows: sample.rows.map((row) => ({
+          id: row.id, organization: row.owner, repository: row.repository, run: String(row.githubRunId),
+          ...Object.fromEntries(Object.entries(row).filter(([field]) => field.startsWith('statistical-')))
+        })),
+        metadata: { ...runMetadata, 'as-of': sample.frame.watermark, 'statistical-frame': sample.frame }
+      };
+    } catch (error) {
+      if (error instanceof DashboardQueryCancelledError) throw error;
+      statisticalMembership = {
+        source: '$statisticalMembership', rows: [],
+        metadata: { ...runMetadata, availability: 'unavailable', error: String(error) }
+      };
+    }
+  }
   /** @type {Record<string, import('../../presenter.js').LogicalSourceInput>} */
   const result = {};
   /** @type {Map<string, import('../../presenter.js').LogicalSourceInput>} */
@@ -1213,6 +1325,12 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
   const resolveSource = (name) => {
     const cached = resolved.get(name);
     if (cached) return cached;
+    if (unavailableStatistical.has(name)) {
+      return {
+        source: name, rows: [],
+        metadata: { ...queryMetadata(sources, 'runs', name, false), error: statisticalError }
+      };
+    }
     if (name === SIMULATION_DAYS) {
       return simulationDaysSource();
     }
@@ -1230,9 +1348,21 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
       };
     }
     if (visiting.has(name)) throw new Error(`Cyclic canonical database query: ${name}`);
+    if (name === 'daily-run-counts') {
+      const state = collections.dailyRunCountState?.find((record) => record.id === DAILY_RUN_COUNT_STATE_ID);
+      const metadata = dailyRunCountMetadata(state);
+      if (metadata.availability === 'unavailable') {
+        return unavailableResult(definition, /** @type {import('../../presenter.js').SourceMetadata} */ ({
+          ...queryMetadata(sources, name, name, false), ...metadata
+        }),
+          String(metadata['query-diagnostic']));
+      }
+      sources.dailyRunCounts = { metadata };
+    }
     visiting.add(name);
     const inputs = Object.fromEntries(queryInputNames(definition).map((input) => {
       if (!input.startsWith('$')) return [input, resolveSource(input)];
+      if (input === '$statisticalMembership' && statisticalMembership) return [input, statisticalMembership];
       const store = input.slice(1);
       if (!Object.hasOwn(collections, store) && store !== 'transactions') {
         throw new Error(`Canonical query "${name}" requires an undeclared store: ${store}`);
@@ -1242,7 +1372,11 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
         rows: store === 'transactions' ? transactions
           : store === 'operationalValueEvidence' ? operationalValueEvidenceRows(collections[store]) : collections[store],
         metadata: store === 'operationalValueEvidence'
-          ? { ...queryMetadata(sources, store, store, true), ...operationalValueEvidenceMetadata(collections[store]) }
+          ? { ...queryMetadata(sources, store, store, true), ...operationalValueEvidenceMetadata(collections[store]),
+              'evidence-packets-read': collections[store].length,
+              'evidence-scoped-read': Boolean(options.evidenceSelection?.length),
+              'evidence-facts-materialized': collections[store].reduce((count, packet) => count
+                + (Array.isArray(packet.facts) ? packet.facts.length : 0), 0) }
           : queryMetadata(sources, store, store, true)
       }];
     }));
@@ -1276,7 +1410,7 @@ export async function queryDatabaseSources(indexedDB, logicalSources, sourceName
 /**
  * @param {IDBFactory} indexedDB
  * @param {Record<string, unknown>} sources
- * @param {{ ingest?: boolean, storage?: StorageManager, sourceNames?: string[], queries?: unknown[], signal?: AbortSignal, budget?: import('./declarative.js').QueryBudget }} [options]
+ * @param {{ ingest?: boolean, storage?: StorageManager, sourceNames?: string[], queries?: unknown[], signal?: AbortSignal, budget?: import('./declarative.js').QueryBudget, statisticalCapacity?: number }} [options]
  */
 export async function loadDatabaseQuerySources(indexedDB, sources, options = {}) {
   if (options.ingest) await ingestDashboardSources(indexedDB, sources, { storage: options.storage, signal: options.signal });
@@ -1292,7 +1426,11 @@ export async function loadDatabaseQuerySources(indexedDB, sources, options = {})
   const declared = dashboardQueryIndex(queries);
   const required = resolveDashboardQuerySources(queries, remaining, nativeNames)
     .filter((name) => !nativeNames.has(name) && !declared.has(name));
-  const database = await queryDatabaseSources(indexedDB, sources, required);
+  const database = await queryDatabaseSources(indexedDB, sources, required, {
+    checkpoint: () => budget.checkpoint(), statisticalCapacity: options.statisticalCapacity,
+    evidenceSelection: evidencePacketSelection(queries, remaining),
+    measurementSelection: measurementSelection(queries, remaining)
+  });
   return {
     ...Object.fromEntries(sourceNames.filter((name) => nativeNames.has(name) || !declared.has(name)).map((name) => [
       name, native[name] ?? database[name]

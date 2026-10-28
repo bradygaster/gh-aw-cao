@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,28 @@ import (
 	"github.com/githubnext/gh-cao/server/internal/query"
 	"github.com/githubnext/gh-cao/server/internal/testutil"
 )
+
+func TestSnapshotDSNUsesLocalFilePaths(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{"/tmp/snapshot #1.sqlite", "/tmp/snapshot #1.sqlite"},
+		{"C:/Users/developer/Local Data/snapshot #1.sqlite", "/C:/Users/developer/Local Data/snapshot #1.sqlite"},
+		{"//localhost/share/snapshot.sqlite", "//localhost/share/snapshot.sqlite"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			location, err := url.Parse(snapshotDSN(test.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if location.Scheme != "file" || location.Host != "" || location.Path != test.want ||
+				location.Fragment != "" || location.Query().Get("mode") != "ro" {
+				t.Fatalf("invalid local read-only snapshot URI: %s", location)
+			}
+		})
+	}
+}
 
 func TestSnapshotSQLProjectionPreservesJSONAndFullRecordBudgets(t *testing.T) {
 	path := testutil.SQLiteSnapshot(t, map[string][]model.Row{"repositories": {{
@@ -263,6 +286,32 @@ func TestSnapshotFailsClosed(t *testing.T) {
 	cancel()
 	if _, err := store.State(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled read: %v", err)
+	}
+}
+
+func TestSnapshotAcceptsAdditiveDatabaseVersions(t *testing.T) {
+	for version := 44; version <= dashboardquery.DatabaseVersion; version++ {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			path := testutil.SQLiteSnapshot(t, nil)
+			writer, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.ExecContext(t.Context(), `UPDATE __idb_databases SET version=?`, version); err != nil {
+				_ = writer.Close()
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(t.Context(), path)
+			if err != nil {
+				t.Fatalf("additive database version %d was rejected: %v", version, err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

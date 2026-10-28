@@ -3,19 +3,23 @@ title: Data ingestion
 description: Understand how Central Agentic Ops collects, normalizes, retains, and projects dashboard data.
 ---
 
-Data ingestion moves operational evidence from GitHub Actions into the browser
-dashboard and local tools. Read this page to understand collection boundaries,
+Data ingestion moves operational evidence from GitHub Actions into dashboard
+backends and local tools. Read this page to understand collection boundaries,
 retention, failure behavior, and the available `cao` commands. For entity
 identities and relationships, use the [Data model](dashboard-data-model.md).
 For where the dashboard is served, see [Deployment options](deployment.md).
 
 ## Data flow
 
-Agentic workflows produce Actions logs. The Activity workflow collects a bounded snapshot into published JSONL. Consumers apply the shared model rules to build two separate projections: SQLite supports agents and command-line tools, while IndexedDB supports the browser dashboard.
+Agentic workflows produce Actions logs. The Activity workflow collects a bounded
+snapshot into published JSONL. Consumers apply the shared model rules to build
+separate projections: SQLite supports local Go serving, agents, and command-line
+tools; IndexedDB supports static Pages in the browser; hosted Go deployments
+ingest into PostgreSQL. These are independent backends, not a fallback chain.
 
 <div class="docs-theme-diagram">
-  <img class="docs-theme-diagram-light" alt="Agentic workflow logs are collected by Activity into JSONL, then the shared data model produces SQLite for agents and CLI tools or IndexedDB for dashboard views" src="/gh-cao/assets/dashboard-data-flow-light.svg">
-  <img class="docs-theme-diagram-dark" alt="Agentic workflow logs are collected by Activity into JSONL, then the shared data model produces SQLite for agents and CLI tools or IndexedDB for dashboard views" src="/gh-cao/assets/dashboard-data-flow-dark.svg">
+  <img class="docs-theme-diagram-light" alt="Activity collects workflow evidence into a snapshot. The shared canonical model feeds SQLite for local Go, CLI and agents; IndexedDB for static Pages; and PostgreSQL for hosted Go queries." src="/gh-cao/assets/dashboard-data-flow-light.svg">
+  <img class="docs-theme-diagram-dark" alt="Activity collects workflow evidence into a snapshot. The shared canonical model feeds SQLite for local Go, CLI and agents; IndexedDB for static Pages; and PostgreSQL for hosted Go queries." src="/gh-cao/assets/dashboard-data-flow-dark.svg">
 </div>
 
 SQLite and IndexedDB are rebuildable projections. Neither is the source for the
@@ -52,72 +56,30 @@ missing artifacts from an existing successful
 run, and invalid restored snapshots still fail rather than being treated as
 normal startup.
 
-## Canvas administrative actions
+<span id="canvas-administrative-actions"></span>
 
-The shared CLI executor is packaged in `dashboard/cli-actions.mjs` for the
-trusted Copilot canvas bridge. Ordinary Go local serving and static Pages
-previews do not execute local commands. There is no standalone Node admin server.
-
-Canvas previews refresh the latest stable gh-aw release from GitHub when
-downloading their data. The **Latest** compiler version and upgrade state use
-this current release, not the release recorded in an older published snapshot.
-Installed versions and their observation times remain snapshot evidence.
-If release discovery fails, startup reports an error rather than presenting
-the snapshot's stale release as current.
-
-Open the dashboard in a trusted Copilot canvas to use dashboard-declared CLI
-actions. The internal loopback-only authoring bridge requires paired execution
-and approval callbacks supplied by the host; a web page cannot grant execution.
-
-Each action opens a command-review dialog and requires explicit confirmation
-for every run. Once the server durably queues the approved command, the dashboard
-opens its full-page console with a **Back to Commands** navigation button.
-The console shows live stdout and stderr in a scrollable, read-only terminal
-with the executed command on its first line, ANSI colors, progress updates,
-selection, and scrollback. HTTP and HTTPS
-URLs in terminal output open in a separate tab without opener access.
-Stderr and command failure messages use the terminal's error color.
-The last HTTPS pull-request URL in retained command output becomes the durable
-command result. GitHub Enterprise hosts, custom ports, and path prefixes are
-supported; embedded credentials are rejected and query strings and fragments
-are excluded. **Open pull request** opens that result in a separate tab.
-**Copy** copies the pull-request URL when available, otherwise the command
-transcript. Copying never cancels or reruns the command.
-The console stays visible after completion, failure, timeout, or cancellation
-until the user navigates away. Back navigation and output disconnection only
-detach the browser; they do not cancel execution. Reopening a command from
-**Commands** replays its retained output without starting another command.
-Terminal input is disabled: commands must not require interactive keyboard input. The terminal
-emulator is an interaction-only extension of the existing declarative
-`cli-actions` contract, not a dashboard data query or an arbitrary shell.
-
-Commands run in the canvas's working directory with the local GitHub CLI
-credentials and the existing supported-command allowlist, without shell
-interpolation. Actions using `gh aw` may install the pinned extension first.
-The server admits queued commands within its concurrency and quota limits.
-**Cancel** dismisses the approval dialog without starting anything. The console
-offers **Copy** instead of a cancellation button and **Retry command** for failed
-or timed-out work. Starting another action requires fresh confirmation in the
-web interface, not an additional confirmation in the Copilot app.
-Keep the capability URL private and
-do not expose or forward the canvas bridge to other users. Canvas execution does not
-change CAO rollout policy or grant remote workflow authority.
+Canvas command execution is separate from ingestion. Ordinary Go local serving
+and static Pages previews cannot execute local commands. See
+[Run approved commands](agent-plugin.md#run-approved-commands) and
+[Compiler-version evidence](agent-plugin.md#compiler-version-evidence) for the
+approval and evidence boundaries.
 
 ## Hosted server data pipeline
 
 Server-backed deployments keep the browser isolated from both databases. The
 Go server verifies the same published payload, normalizes inventory metadata
 onto canonical records, and transactionally replaces the current dashboard
-sources in PostgreSQL. Dashboard Language queries execute against PostgreSQL,
-using parameterized SQL for proven plans and the bounded Go evaluator for other
-supported shapes.
+sources in PostgreSQL. Dashboard Language queries execute as bounded,
+parameterized SQL in a repeatable-read transaction. Unsupported query shapes
+fail explicitly; the hosted path has no Go row-evaluator fallback.
 
-Redis is not a dashboard database. It stores operational state such as sessions,
-rate limits, webhook and collection queues, delivery deduplication, distributed
-coordination, GitHub quota observations, pending token revocations, and bounded
-resolver caches. It does not store dashboard entity rows, query indexes, or
-persistent dashboard projections. If PostgreSQL is unavailable, dashboard data
-is unavailable even when Redis is healthy.
+Operational storage is a separate contract for sessions, queues, rate limits,
+deduplication, coordination, revocation retries, audit records, and caches.
+PostgreSQL is the default; Redis is an explicitly selected alternative for
+supported capabilities, not a dashboard entity database. Protected operational
+state is not disposable evidence-cache data. If canonical PostgreSQL storage is
+unavailable, dashboard data remains unavailable even when Redis is healthy.
+See the [server operational-storage contract](https://github.com/githubnext/gh-cao/blob/main/specs/server-operational-storage.md).
 
 ## Completeness and duplicates
 
@@ -136,27 +98,48 @@ Cached JSONL can repeat the same run in later snapshots. These are repeated obse
 Audit a JSONL source without changing a database:
 
 ```bash
-cao audit-jsonl
+node activity/cao.mjs audit-jsonl
 ```
 
 The report separates raw observations, unique raw runs, enriched observations, unique enriched runs, repeated observations, unenriched runs, and the canonical record counts that ingestion will produce.
+
+### Simulated Activity integration
+
+Run `npm run test:integration:actions-runtime` with Docker, Go, the repository's
+Node dependencies, the pinned gh-aw compiler, and a pulled `node:24-bookworm`
+image. Alongside the staged workflow samples, this runs the unmodified
+`cao-activity.yml` job graph with real collection and ingestion commands against
+a loopback-only GitHub simulator inside a network-isolated Docker container.
+No live GitHub credential or inference service is used. Downloads of
+checksum-verified runner tools happen before the container starts.
+
+The Activity case checks the published SQLite digest and daily-run counts,
+cache replay without double counting, higher-attempt corrections, and
+recycle-only reconstruction without GitHub API reads. It also executes the
+shipped workflow-health query after detail expiry, proving that daily counts
+survive independently. The collector's admitted evidence is not a complete
+population of every run returned by GitHub; skipped or unavailable evidence
+must not be represented as healthy zero counts.
+
+This test is also required by the
+[`daily-run-counts` cross-backend conformance suite](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md#daily-run-count-conformance).
 
 ## Create a historical archive
 
 For a full-detail local archive, collect into `_activity/gh-aw-history.jsonl`, then audit and ingest it with unbounded retention:
 
 ```bash
-cao audit-jsonl \
+node activity/cao.mjs audit-jsonl \
   --input _activity/gh-aw-history.jsonl
 
-cao ingest-jsonl \
+node activity/cao.mjs ingest-jsonl \
   --database _activity/gh-aw-history.sqlite \
   --input _activity/gh-aw-history.jsonl \
   --retention-days all
 
-cao doctor \
+node activity/cao.mjs repair-database \
   --database _activity/gh-aw-history.sqlite \
-  --ttl-days all
+  --ttl-days all --run-ttl-days all
 ```
 
 "Full" means all run summaries discoverable in the selected range plus every artifact still available from GitHub. Expired artifacts remain visible as unenriched runs rather than being silently counted as complete.
@@ -181,8 +164,11 @@ failed resolutions appear in the Model routing Problems view once per run, with
 an unknown time unless the session clock is recorded, and per-run resolution roles
 stay on the run page. Routed sessions are expected
 to lack these events, and legacy sessions report no resolution evidence rather
-than failure. Canonical schema 34 / IndexedDB version 44 rebuild older browser
-projections; hosted PostgreSQL needs a fresh generated schema with the new
+than failure. Canonical schema 36 adds retained Campaign and Workflow
+source-maintenance provenance. IndexedDB version 47 preserves versions 44, 45,
+and 46 through an additive upgrade and rebuilds incompatible older browser
+projections. Hosted PostgreSQL
+needs a fresh generated schema with the new
 Audit columns and compact Run routing aggregates. Ingestion derives the aggregate
 with shared Dashboard Language accounting, retains request evidence needed by
 run-page views, and drops unused inventory and generic proxy events.
@@ -191,18 +177,38 @@ The activity shard manifest is the dashboard's published operational input. The 
 
 The complete normative [cached gh-aw JSONL mapping](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md) describes source fields, canonical entities, identity, ownership, and accounting.
 
-The canonical model is version 34. The browser database is
-`gh-aw-cao-dashboard-data`, IndexedDB version 44. Its canonical stores are
+The canonical model is version 36. The browser database is
+`gh-aw-cao-dashboard-data`, IndexedDB version 47. Its canonical stores are
 `campaigns`, `repositories`, `workflows`, `runs`, `domains`, `tools`, `skills`,
-`friction`, `audits`, `issues`, `operationalValues`, `operationalValueEvidence`, `marketplacePackages`,
+`friction`, `audits`, `issues`, `operationalValues`, `operationalValueEvidence`, `workflowValueCollections`, `marketplacePackages`,
 `experiments`, `experimentAssignments`, `graders`, `graderObservations`,
 `evals`, and `evalObservations`;
 all use `id` as the key.
-The `transactions` store records
-ingestion outcomes and is indexed by `createdAt`. The disposable
-Overview aggregates are computed by request-scoped queries over canonical runs
-rather than stored separately. Because the database is derived state, physical schema
-upgrades rebuild every store from authoritative dashboard inputs.
+The `transactions` store records ingestion outcomes and is indexed by
+`createdAt`; `storageShards` holds disposable storage accounting. The separate
+`dailyRunCounts`, `runCountContributions`, and `dailyRunCountState` projection
+stores use `id` keys without secondary indexes. They hold UTC
+day/Repository/Workflow counters, per-logical-Run reconciliation receipts, and
+coverage/readiness, backfill checkpoints, and retention state respectively.
+[Daily counts](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md#722-additive-daily-run-counts)
+are the only persisted daily projection; other Overview metrics remain
+request-scoped queries.
+
+Upgrading version 44 or 45 with a `runs` store creates only missing stores and
+preserves existing canonical records and projection state. Newly created daily
+state starts `backfilling` with `retained-v44` or `retained-v45` coverage.
+Backfill reconciles at most 250 retained Runs per transaction and commits its
+checkpoint with the contributions, so interruption can resume without double
+counting. Coverage remains partial because already-evicted history cannot be
+reconstructed. Other older databases rebuild all stores from authoritative inputs.
+New databases initialize daily state as `ready` with `admitted` coverage.
+
+Daily counts and compact receipts retain the current UTC Monday-start week and
+its two preceding weeks, independently of detail cleanup. Reconciliation
+atomically replaces a Run's contribution; detail eviction does not subtract
+counts. A monotonic retention watermark prevents expired weeks from reopening.
+Unavailable projection state must not be treated as zero counts or fall back
+to retained detail.
 
 Experiment assignments and eval observations come from the unified session when it contains them. Otherwise, ingestion accepts gh-aw's explicit current-run `assignments.json` artifact (including the compact `usage/experiment/` layout and prefixed artifact directories) and a supplied `evals.jsonl`. Collection requests the `usage,experiment,graders` artifact sets without widening repository scope or collection budgets. Before retaining these artifacts, collection verifies repository, run ID, and attempt against `aw_info.json`; a mismatch skips that evidence. Unified assignments, including an explicitly empty map, take precedence, and cumulative experiment state counts never infer a run's variant. The Experiments page shows retained assignment variants with run evidence links, and the Evals ledger shows `YES`, `NO`, and `UNKNOWN` answers distinctly; `UNKNOWN` is not a failed eval.
 
@@ -218,6 +224,21 @@ outside the 30-day window, pruning orphaned descendants and unreferenced
 structural parents. The effective retention horizon is the later of the browser
 clock and the newest incoming observation, so a slow clock cannot prune
 current producer data.
+
+Browser IndexedDB and Node.js SQLite ingestion also discard a failed Run's raw
+`failureLog` excerpt once a later completed success is known in the same
+repository/workflow, target, event, branch, and rollout mode. Cancellation and
+incomplete outcomes do not prove recovery. Only the excerpt is removed: Run
+summaries, failure signatures/messages, cost and reliability facts, and all
+run-linked metric and comparison evidence keep their existing retention.
+Re-importing an older shard cannot restore a pruned excerpt for the same attempt.
+Unresolved excerpts follow the existing detail window and database size cap.
+A separate archive with `--retention-days all` preserves full detail. This does
+not prune hosted PostgreSQL, published shards, or GitHub artifacts.
+The saving is retained diagnostic bytes and reduced storage pressure, not fewer
+GitHub API calls, downloaded artifacts, or workflow executions. Cleanup itself
+adds a bounded maintenance scan when excerpts are present; no execution-time
+reduction is assumed.
 
 Every merged batch must satisfy these relationships:
 
@@ -302,35 +323,71 @@ SQL uses the versioned `gh-aw-cao.dashboard-sql-export` interchange contract. Da
 
 ## Use local SQLite
 
-Node.js 24 can run the same ingestion and query layer against a persistent
-SQLite file. The local adapter stores IndexedDB metadata and JSON records in
+Use the native `gh cao` extension for operator queries and the Node.js 24
+Actions runtime for ingestion and repair. Run the `node activity/cao.mjs`
+examples from a checkout containing the installed runtime. The local adapter
+stores IndexedDB metadata and JSON records in
 `__idb_databases`, `__idb_stores`, `__idb_indexes`, and `__idb_records`; those
 tables are an emulation detail, not canonical entity tables. The browser
-continues to use native IndexedDB.
+uses native IndexedDB only in the static Pages profile.
 
-Ingest an extracted gh-aw log directory with its run context:
+### Manual artifact import
+
+`node activity/cao.mjs ingest` is a supported manual importer for an extracted gh-aw artifact
+directory and its run context. It is not used by the Activity or Dashboard
+pipelines and is not deprecated:
 
 ```bash
-cao ingest \
+node activity/cao.mjs ingest \
   --database /tmp/cao-dashboard.sqlite \
   --context dashboard/site/test/fixtures/gh-aw-logs/context.json \
   --logs dashboard/site/test/fixtures/gh-aw-logs/run-303
 ```
 
-Alternatively, ingest schema-v2 JSONL produced by `gh aw logs`:
+The positional form `node activity/cao.mjs CONTEXT_JSON LOG_DIRECTORY` is no
+longer supported. Unknown commands, including two-argument calls, fail with a
+usage error before reading inputs, creating temporary files, or opening SQLite.
+Use `node activity/cao.mjs ingest --context FILE --logs DIRECTORY` instead.
+
+Explicit `ingest` persists its SQLite projection at `--database FILE`, defaulting
+to `.cao/gh-aw-logs.sqlite`, and emits `{result, counts}` as JSON. It does not
+emit the retired `{result, runs, records}` envelope or delete the database after
+returning. Query the prepared database separately for canonical records.
+
+By default, explicit ingestion retains runs for 30 days and run-linked detail
+for seven days. The retired positional form kept all runs and seven-day detail
+in a disposable database. To retain that history policy with explicit ingestion,
+pass `--retention-days 7 --run-retention-days all`; database lifecycle remains
+the caller's responsibility. Use `--retention-days all --run-retention-days all`
+when historical detail must also be retained.
+
+### Active JSONL pipeline
+
+The Activity and Dashboard pipelines use `compact-jsonl`, `hash-payloads`,
+and `ingest-jsonl`. Collection compacts raw cached shards per repository with
+`compact-jsonl` and imports them into collection-scoped SQLite with `ingest-jsonl`.
+Indexing uses `hash-payloads` to normalize and consolidate raw evidence into
+run/record shards, `ingest-jsonl` to build the published SQLite projection,
+and `hash-payloads` again to produce the final payload checksum manifest.
+`hash-payloads` is therefore a normalization and packaging command, not just
+a checksum utility.
+
+To import schema-v2 JSONL produced by `gh aw logs` manually:
 
 ```bash
-cao ingest-jsonl \
+node activity/cao.mjs ingest-jsonl \
   --database /tmp/cao-dashboard.sqlite \
   --input-dir .cao/gh-aw-logs-shards
 ```
 
 Pass `--context CONTEXT_JSON` when JSONL `github_api_rate_limit` records should become canonical Audits. Without an owning collection Repository, Workflow, and Run, those records remain unmapped.
 
+### Download and query a snapshot
+
 Download the JSONL and SQLite projection published by the deployed CAO Pages site:
 
 ```bash
-cao download
+gh cao download
 ```
 
 This writes `.cao/payload-hashes.json`, the published compacted
@@ -342,7 +399,7 @@ downloads the published files unchanged; it does not run ingestion locally.
 Query a canonical collection:
 
 ```bash
-cao query \
+gh cao query \
   --collection runs \
   --where conclusion=failure \
   --limit 20
@@ -351,27 +408,30 @@ cao query \
 Use the gh-like query surface for familiar GitHub CLI-shaped commands:
 
 ```bash
-cao gh runs --repo OWNER/REPOSITORY --workflow WORKFLOW --status failure --since 2026-09-01 --until 2026-09-15
-cao gh issues --repo OWNER/REPOSITORY --workflow WORKFLOW --since 2026-09-01 --until 2026-09-15
-cao gh prs --repo OWNER/REPOSITORY --workflow WORKFLOW --since 2026-09-01 --until 2026-09-15
+gh cao gh runs --repo OWNER/REPOSITORY --workflow WORKFLOW --status failure --since 2026-09-01 --until 2026-09-15
+gh cao gh issues --repo OWNER/REPOSITORY --workflow WORKFLOW --since 2026-09-01 --until 2026-09-15
+gh cao gh prs --repo OWNER/REPOSITORY --workflow WORKFLOW --since 2026-09-01 --until 2026-09-15
 ```
 
 `-R`, `-w`, `-s`, and `-L` alias `--repo`, `--workflow`, `--status`, and `--limit`. The default limit is 30. Date-only `--until` values include the entire date. Issue and pull request results come from canonical Issue records created by `safe_output.result` observations.
 
-Diagnose and repair the local database:
+Repair the local database and apply retention (not a read-only check):
 
 ```bash
-cao doctor \
+node activity/cao.mjs repair-database \
   --database /tmp/cao-dashboard.sqlite
 ```
 
-The doctor reports SQLite integrity, foreign-key and schema health, table and transaction counts, malformed records, and relationship errors. It applies the default seven-day run-linked detail and 30-day Run and Operational Value windows (or explicit `--ttl-days` and `--run-ttl-days` overrides), removes malformed and orphaned derived records, repairs metadata, and runs SQLite maintenance. Before changing data, it creates a timestamped `.doctor-backup-*.sqlite` backup next to the database.
+The repair report includes SQLite integrity, foreign-key and schema health, table and transaction counts, malformed records, and relationship errors. The command applies the default seven-day run-linked detail and 30-day Run windows (or explicit `--ttl-days` and `--run-ttl-days` overrides), keeps at least a year of Operational Values, removes malformed and orphaned derived records, repairs metadata, and runs SQLite maintenance. Retention may prune records even without corruption. Before changing data, it creates a timestamped `.doctor-backup-*.sqlite` backup next to the database. Use `--ttl-days all --run-ttl-days all` to disable age-based pruning. The retired Node `doctor` command is rejected; native Go doctor commands are unchanged.
 
 To let an agent read the same snapshot through dashboard pages and named
 queries, instead of through collections, see
 [Agent analysis](agent-analysis.md).
 
-Run `cao help` for the collection list and full command syntax. The SQLite file remains local derived state and does not change the static dashboard's deployment boundary.
+Run `gh cao --help` for operator commands or `node activity/cao.mjs --help`
+for the Actions runtime. See [CAO Commands](cao-cli.md#command-reference) for
+their intentional read-only overlap. SQLite remains local derived state and
+does not change the static dashboard's deployment boundary.
 
 ### Choose a local serving mode
 
@@ -396,8 +456,55 @@ evidence. Preparation reuses Activity normalization and the production Dashboard
 build; it does not simulate GitHub collection, Actions permissions or Pages
 infrastructure. Relative Go server paths resolve from `server/`.
 
+### Local SQLite overlay and backfill
+
+Local `dashboard:local` serving keeps the downloaded snapshot read-only. Go
+attaches it to a separate writable delta (default: the snapshot path plus
+`.local.sqlite`; choose another file with `--sqlite-overlay PATH`). Queries read
+the union, where local upserts and deletion markers take precedence. The overlay
+is bound to the snapshot's canonical content revision; after replacing the
+snapshot with different data, choose a new overlay file. A mismatched overlay
+fails closed and is preserved rather than applied to the wrong base.
+
+A background backfill starts with the server and repeats five minutes after each
+pass (`--backfill-interval` changes the delay). It authenticates with `GH_TOKEN`,
+`GITHUB_TOKEN`, or the local `gh` login, and requires Node.js and the `gh aw`
+extension. It refreshes only repositories already present in the snapshot (at
+most 10,000); credentials never add targets or change rollout policy. Each
+repository collection is capped at 10,000 runs and five minutes, and a pass at 30
+minutes. This is a recent-evidence refresh, not an exhaustive archive. Failed
+repositories are reported independently and failed ingestion leaves committed
+data unchanged. Use `--backfill=false` for offline serving; existing local data
+stays visible. The Copilot canvas profile remains snapshot-only.
+
 SQLite initialization failures stop startup rather than falling back to IndexedDB.
-Only the internal canvas authoring bridge retains the `dataBackend: "sqlite"`
-or `"indexeddb"` canvas input.
+The [Copilot canvas](agent-plugin.md#open-a-copilot-canvas) also uses Go/SQLite;
+it has no `dataBackend` selector. Choose the separate Pages simulation when you
+need to exercise browser IndexedDB.
+
+### Query the private session archive
+
+> [!WARNING]
+> **Experimental:** The session archive is a proposed, default-off analytics store. Passing its interface does not mean either deployment scenario has met its acceptance gates.
+
+The Go server can optionally archive unified agent sessions as private, immutable Parquet evidence. It is separate from the dashboard SQLite/PostgreSQL data, has no frontend, and never joins automatically with dashboard queries. Existing dashboard queries, overlays, and IndexedDB behavior don't change.
+
+| Scenario | Storage | Query engine |
+| --- | --- | --- |
+| Local persistent server | Private Parquet files on the filesystem | Pinned DuckDB CLI |
+| Hosted persistent server | Private Blob objects | Approved Azure Data Explorer (ADX) external-table queries, only after destination conformance evidence exists |
+
+Enable the local archive with `CAO_SESSION_ARCHIVE_ENABLED=true`. Also set `CAO_SESSION_ARCHIVE_DURABLE_STORAGE`, `CAO_SESSION_ARCHIVE_DIRECTORY`, `CAO_SESSION_ARCHIVE_NAMESPACE`, `CAO_SESSION_ARCHIVE_DUCKDB`, an exact comma-separated `CAO_SESSION_ARCHIVE_REPOSITORIES` list, and a private (no group or world permissions) `CAO_SESSION_ARCHIVE_POLICY` file. Only full capture is supported. Enabling the archive doesn't grant collection authority; it narrows the repositories that existing collection already permits. Unenrolling a repository withdraws its archived sessions.
+
+Authenticated callers use two endpoints. Reading full traces requires an explicit grant beyond normal dashboard membership.
+
+| Endpoint | Use |
+| --- | --- |
+| `GET /api/v1/session-archive/status` | Reports whether the archive is available, with bounded counters |
+| `POST /api/v1/session-archive/query` | Runs a trusted `timeline` or `summary` template, or a local-only `session-query`, for one approved repository |
+
+`timeline` needs a positive GitHub run ID and attempt; `summary` rejects them. Requests are limited to 4096 bytes, and responses to 8 MiB and 10,000 rows. A `session-query` takes a Dashboard Language `query` over `archive-events` and doesn't accept SQL, joins, or `PayloadJSON`. Exceeding a budget returns an error rather than partial results, and archive queries never fall back to dashboard queries. The hosted ADX adapter doesn't yet run `session-query`.
+
+For the full contract, see the [Private unified-session archive specification](https://github.com/githubnext/gh-cao/blob/main/specs/session-archive.md).
 
 For normative requirements and failure behavior, see the [Dashboard Data Architecture Specification](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md).

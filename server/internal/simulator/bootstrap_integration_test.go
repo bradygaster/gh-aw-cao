@@ -47,23 +47,7 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 	const release = "v0.0.1"
 	binary := filepath.Join(root, "gh-cao")
 	bootstrapRun(t, ctx, catalog, nil, "go", "build", "-mod=readonly", "-ldflags=-X main.version="+release, "-o", binary, "./cmd/gh-cao")
-	executable, err := os.ReadFile(binary) // #nosec G304 -- binary just built in t.TempDir.
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Only the native platform is executable. Other assets satisfy the release
-	// completeness contract but are never downloaded.
-	assets := map[string][]byte{}
-	for _, platform := range []string{"darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64", "windows-amd64.exe", "windows-arm64.exe"} {
-		assets["gh-cao-"+platform] = []byte("unused platform fixture")
-	}
-	assets["gh-cao-"+runtime.GOOS+"-"+runtime.GOARCH] = executable
-	var checksums strings.Builder
-	for name, content := range assets {
-		fmt.Fprintf(&checksums, "%x  %s\n", sha256.Sum256(content), name)
-	}
-	assets["checksums.txt"] = []byte(checksums.String())
-	api := NewBootstrapAPI(release, assets)
+	api := NewBootstrapAPI(release, bootstrapReleaseAssets(t, binary))
 	git, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +65,21 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 			t.Logf("simulator requests: %v; unsupported: %v", api.Requests, api.Unhandled)
 		}
 	})
-	proxy, ca := bootstrapProxy(t, api)
+	proxy, ca := bootstrapProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "raw.githubusercontent.com" {
+			if r.Method != http.MethodGet || r.URL.Path != "/github/gh-aw/main/install-gh-aw.sh" {
+				t.Errorf("unexpected upstream installer request: %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			api.mu.Lock()
+			api.Requests = append(api.Requests, r.Method+" "+r.URL.Path)
+			api.mu.Unlock()
+			_, _ = w.Write([]byte(bootstrapAWInstaller))
+			return
+		}
+		api.ServeHTTP(w, r)
+	}), "raw.githubusercontent.com")
 	environment := bootstrapEnvironment(t, root, proxy, ca)
 	bootstrapInstallAW(t, environment)
 	remote := filepath.Join(root, "remotes", "platform", "control.git")
@@ -91,7 +89,7 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	bootstrapRun(t, ctx, workspace, environment, "bash", filepath.Join(catalog, "install.sh"), catalog, "--create-repo", "platform/control")
+	bootstrapRun(t, ctx, workspace, environment, "bash", filepath.Join(catalog, "install-gh-cao.sh"), catalog, "--create-repo", "platform/control")
 	consumer := filepath.Join(workspace, "control")
 	bootstrapAssertRepository(t, api, true, false)
 	for _, name := range []string{
@@ -123,7 +121,7 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 	// Explicitly select the documented public-monitoring profile on fixture
 	// data only, then exercise the installer's --setup path and idempotency.
 	bootstrapRun(t, ctx, consumer, environment, "gh", "api", "-X", "PATCH", "repos/platform/control", "-F", "private=false")
-	bootstrapRun(t, ctx, consumer, environment, "bash", filepath.Join(catalog, "install.sh"), catalog, "--setup")
+	bootstrapRun(t, ctx, consumer, environment, "bash", filepath.Join(catalog, "install-gh-cao.sh"), catalog, "--setup")
 	bootstrapAssertRepository(t, api, false, true)
 	bootstrapAssertPolicy(t, policyFile)
 	configured, err := os.ReadFile(policyFile) // #nosec G304 -- fixed installed filename in t.TempDir.
@@ -152,10 +150,11 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 	if err != nil || string(clonedPolicy) != string(configured) {
 		t.Fatalf("fresh clone did not receive the deployed policy: %v", err)
 	}
+	testBootstrapInstallerCompatibility(t, ctx, catalog, consumer, environment, api)
 	api.mu.Lock()
 	api.Assets["checksums.txt"] = []byte(strings.Repeat("0", 64) + "  gh-cao-" + runtime.GOOS + "-" + runtime.GOARCH + "\n")
 	api.mu.Unlock()
-	corrupt := exec.CommandContext(ctx, "bash", filepath.Join(catalog, "install.sh"), catalog, "--create-repo", "platform/corrupt") // #nosec G204 -- current checkout's installer and fixed test arguments.
+	corrupt := exec.CommandContext(ctx, "bash", filepath.Join(catalog, "install-gh-cao.sh"), catalog, "--create-repo", "platform/corrupt") // #nosec G204 -- current checkout's installer and fixed test arguments.
 	corrupt.Dir, corrupt.Env = workspace, environment
 	output, err = corrupt.CombinedOutput()
 	if err == nil || !strings.Contains(string(output), "checksum verification failed") {
@@ -194,6 +193,22 @@ func TestCAOBootstrapIntegration(t *testing.T) {
 		t.Errorf("Pages was created %d times, want exactly once", count)
 	}
 	t.Logf("real installer, release verification, repository creation, setup and Git publication completed through %d simulated requests", len(api.Requests))
+}
+
+func bootstrapReleaseAssets(t *testing.T, binary string) map[string][]byte {
+	t.Helper()
+	executable := setupRead(t, binary)
+	assets := map[string][]byte{}
+	for _, platform := range []string{"darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64", "windows-amd64.exe", "windows-arm64.exe"} {
+		assets["gh-cao-"+platform] = []byte("unused platform fixture")
+	}
+	assets["gh-cao-"+runtime.GOOS+"-"+runtime.GOARCH] = executable
+	var checksums strings.Builder
+	for name, content := range assets {
+		fmt.Fprintf(&checksums, "%x  %s\n", sha256.Sum256(content), name)
+	}
+	assets["checksums.txt"] = []byte(checksums.String())
+	return assets
 }
 
 func bootstrapRun(t *testing.T, ctx context.Context, directory string, environment []string, name string, args ...string) string {

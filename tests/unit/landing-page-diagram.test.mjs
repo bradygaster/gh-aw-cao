@@ -32,13 +32,12 @@ test("landing page presents the product through real operational surfaces", () =
   assert.doesNotMatch(headerLinks, /label: "Dashboard"/);
   assert.match(landingPage, /title: Central Agentic Ops \(CAO\)/);
   assert.match(landingPage, /Monitor and govern GitHub Agentic Workflows at scale\./);
-  assert.match(landingPage, /Keep track of all runs, costs, and outcomes of your GitHub Agentic Workflows across repositories\. Set execution scope and rollout policy and refine workflows in review mode so you can roll out safely and confidently\./);
+  assert.match(landingPage, /Keep track of all runs, costs, and outcomes of your GitHub Agentic Workflows across repositories\. Set execution scope and rollout policy, refine workflows in review mode, and roll out with confidence\./);
   assert.match(hero, /cao-dashboard-mobile-overview\.png/);
   assert.match(hero, /cao-dashboard-mobile-overview-light\.png/);
-  assert.doesNotMatch(hero, /cao-dashboard-(?:run-history|campaign-value)|runs-story|value-story/);
+  assert.doesNotMatch(hero, /cao-dashboard-(?:run-history|campaign-value)|runs-story/);
   assert.match(hero, /ThemeImage/);
-  assert.match(hero, /@media \(max-width: 42rem\) \{[\s\S]*?\.hero-callout \{[\s\S]*?display: flex/);
-  assert.match(hero, /\.hero-callout \.callout-line \{[\s\S]*?display: none/);
+  assert.doesNotMatch(hero, /hero-callout|phone-float/);
   assert.match(hero, /Setup, authentication, and rollout/);
   assert.match(hero, /\.terminal-story \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.match(hero, /Roll out with confidence\./);
@@ -66,28 +65,27 @@ test("landing page presents the product through real operational surfaces", () =
   assert.doesNotMatch(terminalText, /Daily Repo Status|as standalone/);
   assert.doesNotMatch(terminal, /<a\b|href=/);
   assert.doesNotMatch(terminal, /result-mark|Ready to review and publish/);
-  assert.doesNotMatch(terminalText, /cao\.sh|gh cao validate|gh aw run|--raw-field|integrate-cao-workflow/);
+  assert.doesNotMatch(terminalText, /(?<![\w-])cao\.sh|gh cao validate|gh aw run|--raw-field|integrate-cao-workflow/);
   assert.deepEqual(
     [...hero.matchAll(/<section class="product-story ([^"]+)"/g)].map(([, classes]) => classes),
-    ["dispatch-story", "terminal-story", "maintenance-story", "snippet-story webhook-story", "snippet-story agentic-workflows-story"],
+    ["dispatch-story", "maintenance-story", "terminal-story", "decision-story", "snippet-story webhook-story", "snippet-story agentic-workflows-story"],
   );
   assert.match(hero, /aria-labelledby="maintenance-title" data-reveal data-slideshow-slide/);
-  assert.match(hero, /Less upkeep\. Current workflows\./);
-  assert.match(hero, /Offload automation upkeep/);
-  assert.match(hero, /gh-aw versions and workflows from their original sources/);
-  assert.match(hero, /href="\/gh-cao\/operations\/#update-cao"/);
+  assert.match(hero, /One control plane/);
+  assert.match(hero, /Easy upkeep/);
+  assert.match(hero, /Centralize agentic workflow maintenance to keep every enrolled repository up to date and secure\./);
   assert.match(hero, /data-slideshow-snippet="Dashboard maintenance"/);
-  for (const label of ["gh-aw upgrades", "Workflow source updates", "Reviewed changes"]) assert.ok(hero.includes(label));
+  for (const label of ["gh-aw upgrades", "Workflow source updates"]) assert.ok(hero.includes(label));
   const maintenance = hero.match(/<section class="product-story maintenance-story"[\s\S]*?<\/section>/)?.[0];
   assert.ok(maintenance);
-  assert.doesNotMatch(maintenance, /campaign/i);
   assert.match(maintenance, /gh aw upgrade/);
   assert.match(maintenance, /gh aw update/);
-  assert.match(maintenance, /Upstream changes merge with local edits by default/);
+  assert.match(maintenance, /Version pins keep installs reproducible/);
+  assert.match(maintenance, /3-way merges preserve local customizations/);
+  assert.doesNotMatch(maintenance, /campaign|gh cao update/i);
   assert.match(maintenance, /https:\/\/github\.com\/user-attachments\/assets\//);
   assert.match(maintenance, /individual Upgrade buttons and Upgrade all/);
   assert.match(maintenance, /Unknown version evidence stays explicit/);
-  assert.match(hero, /without widening rollout policy/);
   assert.doesNotMatch(hero, /https:\/\/github\.github\.com\/gh-aw\/practices\//);
   assert.doesNotMatch(hero, /One operating picture|phone-caption/);
   assert.doesNotMatch(
@@ -105,13 +103,57 @@ test("landing page keeps the hero and supporting copy concise", () => {
   assert.ok(title && wordCount(title) <= 8, "hero headline should stay within eight words");
   assert.ok(tagline && wordCount(tagline) <= 40, "hero tagline should stay within forty words");
   const paragraphs = [...hero.matchAll(/<p>\s*([\s\S]*?)<\/p>/g)];
-  assert.equal(paragraphs.length, 6);
+  assert.equal(paragraphs.length, 7);
   const terminalParagraph = hero.match(/id="terminal-title"[\s\S]*?<p>\s*([\s\S]*?)<\/p>/)?.[1];
   for (const [, paragraph] of paragraphs) {
     const budget = paragraph === terminalParagraph ? 60 : 30;
     assert.ok(wordCount(paragraph) <= budget, `supporting paragraph should stay within ${budget} words`);
   }
   assert.doesNotMatch(hero, /<ul class="story-points">/);
+});
+
+test("README routes detailed tasks without rebuilding their chapter structure", () => {
+  const readme = readFileSync("README.md", "utf8");
+  assert.ok([...readme.matchAll(/^## /gm)].length <= 4);
+  assert.doesNotMatch(readme, /^### /m);
+  for (const anchor of [
+    "project-status-and-scope", "github-cli-extension", "agent-plugin-and-requirements",
+    "github-pages-setup", "agent-analysis", "contributing", "maintainers", "support",
+  ]) {
+    assert.ok(readme.includes(`id="${anchor}"`), `retain #${anchor} without a duplicate chapter`);
+  }
+  for (const guide of ["cao-cli", "agent-plugin", "agent-analysis", "deployment-actions"]) {
+    assert.ok(readme.includes(`docs/${guide}.md`), `${guide} must remain discoverable`);
+  }
+});
+
+test("landing keeps real snapshots without a duplicate fictional evidence board", () => {
+  assert.doesNotMatch(hero, /HeroEvidenceStory|evidence-storyboard/);
+  assert.match(hero, /Example Overview snapshot/);
+  assert.match(hero, /Runtime signals and grader observations are not verified improvements/);
+  assert.match(hero, /Example snapshot\. Dashboard maintenance/);
+  assert.match(hero, /id="evidence-title"/);
+  assert.match(hero, /id="decision-title"/);
+  assert.match(hero, /review\/live policy explicit/);
+  assert.match(hero, /Reviewed policy controls scope, enablement, and review\/live mode/);
+});
+
+test("the original operational-value storyboard retains evidence, human judgment, and reviewed decisions", () => {
+  const story = hero.match(/<section class="product-story decision-story"[\s\S]*?<\/section>/)?.[0];
+  const decision = readFileSync("docs/components/HeroDecisionLoop.astro", "utf8");
+  assert.ok(story);
+  assert.match(story, /<HeroDecisionLoop \/>/);
+  for (const stage of ["Run", "Observe", "Review", "Refine", "Expand", "Pause"]) {
+    assert.ok(decision.includes(`<strong>${stage}</strong>`));
+  }
+  assert.match(decision, /Human judgment\.<br \/>Reviewed policy\./);
+  assert.match(decision, /Accepted outcomes\? Reliable execution\?/);
+  assert.match(decision, /Cost justified by the evidence\?/);
+  assert.match(decision, /Next run follows the reviewed decision/);
+  assert.match(decision, /Decision framework, not automatic optimization/);
+  assert.match(decision, /Successful runs alone do not demonstrate value/);
+  assert.match(story, /href="\/gh-cao\/operational-value-how-to\/"/);
+  assert.doesNotMatch(decision, /<img|<svg|<script/);
 });
 
 test("landing campaign example uses the real Dependabot manifest without granting rollout authority", () => {
@@ -137,12 +179,15 @@ test("gateway hero diagram shows cross-repo dispatch without an admission sectio
   assert.doesNotMatch(diagrams, /<script|data-slideshow-snippet/);
 });
 
-test("terminal follows extension onboarding and matches the production CLI", () => {
+test("terminal prefers GitHub CLI installation and matches the production CLI", () => {
   const setup = readFileSync("internal/cli/native_setup.go", "utf8");
   const installation = "gh extension install githubnext/gh-cao";
   assert.ok(terminalText.includes(installation));
   assert.ok(readFileSync("README.md", "utf8").includes(installation));
-  assert.doesNotMatch(terminal, /raw\.githubusercontent\.com.*install\.sh|\bgh cao init\b/);
+  assert.doesNotMatch(terminal, /install-gh-cao\.sh|\bgh cao init\b/);
+  const readme = readFileSync("README.md", "utf8");
+  assert.ok(readme.indexOf(installation) < readme.indexOf("curl -fsSL"));
+  assert.match(readme, /> \*\*SAML-token installation failure:\*\*/);
   assert.match(terminal, /existing control repository checkout/);
   assert.match(terminal, /separately offer reviewed publication; declining leaves files local/);
   const setupExcerpt = terminal.match(/data-terminal-output="setup">([^<]+)<\/pre>/)?.[1];
@@ -163,7 +208,7 @@ test("terminal follows extension onboarding and matches the production CLI", () 
 
 test("landing page shows shared and local workflows with explicit ownership", () => {
   assert.match(hero, /One workflow ecosystem/);
-  assert.match(hero, /Shared work\. Clear ownership\./);
+  assert.match(hero, /Shared workflows\. Clear ownership\./);
   assert.match(hero, /\.product-story \{[^}]*width: min\(calc\(100% - 2rem\), 76rem\)/);
   assert.match(hero, /\.dispatch-story \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*gap: 0\.75rem/);
   assert.match(hero, /\.dispatch-story > \.section-eyebrow \{[\s\S]*?justify-self: center/);
@@ -172,7 +217,7 @@ test("landing page shows shared and local workflows with explicit ownership", ()
   assert.match(hero, /@media \(width > 72rem\) \{[\s\S]*?\.dispatch-illustration \{[^}]*width: min\(80%, 56rem\)/);
   assert.match(hero, /\.dispatch-illustration :global\(\.workflow-ecosystem\) \{[^}]*width: auto;[^}]*zoom: 0\.8/);
   assert.match(hero, /@media \(min-width: 64rem\) \{[\s\S]*?\.dispatch-story h2 \{[\s\S]*?white-space: nowrap/);
-  assert.match(hero, /Enterprise teams, organizations, and repository maintainers own their workflows/);
+  assert.match(hero, /Enrolled repositories benefit from enterprise-, organization-, and repository-owned workflows working side by side/);
   assert.match(hero, /<WorkflowEcosystem \/>/);
   assert.doesNotMatch(hero, /DispatchIllustration/);
   assert.match(hero, /aria-describedby="dispatch-description"/);
@@ -482,6 +527,5 @@ test("landing terminal uses accessible CSS motion without a JavaScript player", 
   assert.match(terminal, /--terminal-bg: #0d1117/);
   assert.match(terminal, /background: var\(--terminal-bg\)/);
   assert.match(terminal, /class="syntax-command"/);
-  assert.match(terminal, /class="syntax-command">gh<\/span> extension install/);
-  assert.match(terminal, /class="syntax-url"/);
+  assert.match(terminal, /class="syntax-command">gh<\/span> extension install githubnext\/gh-cao/);
 });

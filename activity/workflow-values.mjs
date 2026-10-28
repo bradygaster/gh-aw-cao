@@ -4,18 +4,28 @@
 // The return value is the original schema-v2 operational_value_evidence envelope.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadPolicyFile } from '../.github/workflows/shared/policy.mjs';
 import { validateOperationalValueEvidence } from '../dashboard/site/src/data/model/operational-value-evidence.js';
+import { GithubApiBudgetError, prepareGithubApiBudget } from './github-api-budget.mjs';
+import { assertValueHistory } from './workflow-value-history.mjs';
+import { readReviewedValueEvidence } from './workflow-value-evidence.mjs';
+import { createValueArchiveProvider, valueArchiveAccessFromEnvironment } from './value-session-archive.mjs';
+import {
+  readValueEnvelopes, saveValueCollectionDecisions, valueCollectionDecision, VALUE_DEFERRALS,
+  workflowValueSelections, workflowValueStatusContext, writeValueEnvelopes,
+  valueRepositoryInScope,
+} from './workflow-value-status.mjs';
+
+export { assertValueHistory } from './workflow-value-history.mjs';
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_BATCH_BYTES = 32 * 1024 * 1024;
 const DAY = 86400000;
 const modulePath = new URL(import.meta.url);
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
-const json = (value) => JSON.stringify(value, Object.keys(value).sort());
 
 export async function confinedCollector(root, collector) {
   if (typeof collector !== 'string' || !/^[A-Za-z0-9._/-]+\.mjs$/.test(collector)
@@ -36,48 +46,10 @@ export function workflowValueRegistrations(document, repositories) {
   if (!control) throw new Error('Control policy is required');
   const activity = control.campaigns?.activity;
   if (activity?.enabled === false) return [];
-  const enrolled = control.activity?.repositories ?? [];
-  const scope = control.scope ?? {};
-  return (activity?.['workflow-values'] ?? []).filter((entry) =>
-    entry.enabled !== false
-    && repositories.some((repository) => same(repository, entry.repository))
-    && enrolled.some((repository) => same(repository, entry.repository))
-    && (!scope['allowed-repositories'] || scope['allowed-repositories'].some((repository) => same(repository, entry.repository)))
-    && (!scope['allowed-owners'] || scope['allowed-owners'].some((owner) => same(owner, entry.repository.split('/')[0]))));
+  return workflowValueSelections(document, repositories).filter(entry => entry.enabled !== false);
 }
 
-export function assertValueHistory(previous, packet) {
-  if (!previous) return;
-  if (previous.id !== packet.id || previous.contractDigest !== packet.contractDigest
-    || Date.parse(packet.observedAt) <= Date.parse(previous.observedAt)
-    || Date.parse(packet.windowStart) > Date.parse(previous.windowStart)
-    || Date.parse(packet.windowEnd) < Date.parse(previous.windowEnd)) throw new Error('Frozen contract, capture or history conflict');
-  const key = (fact) => JSON.stringify([fact['fact-kind'], fact['parent-id'] ?? '', fact['fact-id']]);
-  const incoming = new Map(packet.facts.map((fact) => [key(fact), fact]));
-  for (const old of previous.facts) {
-    const kind = old['fact-kind'];
-    if (!['contract', 'implementation', 'snapshot', 'snapshot-item', 'output'].includes(kind)
-      && !kind.startsWith('implementation-')) continue;
-    const next = incoming.get(key(old));
-    if (!next) throw new Error('Accepted evidence history was removed');
-    const left = { ...old }, right = { ...next };
-    if (kind === 'contract') {
-      for (const field of ['outputs-available', 'repository-state-available', 'checks-available']) {
-        if (old[field] === true && next[field] !== true) throw new Error('Evidence availability was revoked');
-        delete left[field]; delete right[field];
-      }
-      delete left['output-coverage']; delete right['output-coverage'];
-    }
-    if (kind === 'output' || kind === 'implementation') {
-      if (old.origin !== next.origin && !(old.origin === 'corroborated' && next.origin === 'receipt-verified')) throw new Error('Accepted origin changed');
-      delete left.origin; delete right.origin;
-    }
-    if (kind === 'output') { delete left.state; delete right.state; }
-    if (json(left) !== json(right)) throw new Error('Immutable accepted evidence changed');
-  }
-}
-
-export async function collectWorkflowValue(request) {
+export async function collectWorkflowValue(request, { archiveAccess, archiveReader, signal } = {}) {
   const filename = await confinedCollector(request.root, request.entry.collector);
   const { definition, collectValueEvidence } = await import(pathToFileURL(filename).href);
   const { repository, workflow } = request.entry;
@@ -93,6 +65,10 @@ export async function collectWorkflowValue(request) {
     throw new Error('Collector must export an exact frozen definition and collectValueEvidence');
   }
   const previous = request.previous;
+  const archive = createValueArchiveProvider({
+    repository: repository.toLowerCase(), access: archiveAccess ?? valueArchiveAccessFromEnvironment(),
+    reader: archiveReader, signal,
+  });
   if (previous) {
     validateOperationalValueEvidence(previous);
     const header = previous.facts.find((fact) => fact['fact-kind'] === 'contract');
@@ -109,7 +85,7 @@ export async function collectWorkflowValue(request) {
   try {
     const envelope = await collectValueEvidence({
       repository, workflow, observedAt: request.observedAt, database: request.database,
-      previous, workspace: { directory: request.workspace, scratch },
+      previous, workspace: { directory: request.workspace, scratch }, archive,
     });
     if (Buffer.byteLength(JSON.stringify(envelope)) > MAX_BYTES || envelope?.schema_version !== 2
       || envelope?.kind !== 'operational_value_evidence'
@@ -119,7 +95,8 @@ export async function collectWorkflowValue(request) {
     const packet = validateOperationalValueEvidence(envelope.operational_value_evidence);
     const contract = packet.facts.find((fact) => fact['fact-kind'] === 'contract');
     if (!same(packet.repository, repository) || packet.workflow !== workflow
-      || Date.parse(packet.observedAt) > Date.parse(request.observedAt)
+      || Date.parse(packet.observedAt) > Date.now()
+      || Date.parse(packet.windowEnd) > Date.parse(request.observedAt)
       || contract['cadence-days'] !== cadence) throw new Error('Collector evidence identity or frozen cadence mismatch');
     const coverage = packet.facts.filter((fact) => fact['fact-kind'] === 'coverage');
     if (coverage.some((fact) => fact['coverage-status'] !== 'complete')) throw new Error('Collection incomplete; retaining last accepted evidence');
@@ -130,25 +107,16 @@ export async function collectWorkflowValue(request) {
   }
 }
 
-async function readPrevious(filename) {
-  try {
-    return (await readFile(filename, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  }
-}
-
-async function executeCollector(request, timeout) {
+async function executeCollector(request, timeout, environment = {}) {
   return new Promise((resolve) => {
     // Hosted Go owns the encompassing process group; Actions owns this worker's
     // separate group so a timed-out git/gh descendant cannot outlive collection.
     const detached = process.platform !== 'win32' && process.env.CAO_WORKFLOW_VALUE_SHARED_PROCESS_GROUP !== '1';
     const child = spawn(process.execPath, [modulePath.pathname, '--worker'], {
-      detached, stdio: ['pipe', 'pipe', 'pipe'], env: process.env,
+      detached, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...environment },
     });
-    const chunks = [];
-    let bytes = 0, errors = 0, failed = false;
+    const chunks = [], errorChunks = [];
+    let bytes = 0, errors = 0, failed = false, timedOut = false;
     const terminate = () => {
       try {
         if (child.pid) process.kill(detached ? -child.pid : child.pid, 'SIGKILL');
@@ -156,7 +124,7 @@ async function executeCollector(request, timeout) {
         if (error.code !== 'ESRCH') failed = true;
       }
     };
-    const timer = setTimeout(() => { failed = true; terminate(); }, timeout);
+    const timer = setTimeout(() => { failed = true; timedOut = true; terminate(); }, timeout);
     child.stdout.on('data', (chunk) => {
       bytes += chunk.length;
       if (bytes > MAX_BYTES) { failed = true; terminate(); }
@@ -165,12 +133,17 @@ async function executeCollector(request, timeout) {
     child.stderr.on('data', (chunk) => {
       errors += chunk.length;
       if (errors > 16384) { failed = true; terminate(); }
+      else errorChunks.push(chunk);
     });
     child.on('error', () => { failed = true; });
     child.on('close', (status) => {
       clearTimeout(timer);
       terminate();
-      resolve({ status: failed ? -1 : status, stdout: Buffer.concat(chunks).toString('utf8') });
+      resolve({
+        status: failed ? -1 : status, timedOut,
+        stdout: Buffer.concat(chunks).toString('utf8'),
+        stderr: Buffer.concat(errorChunks).toString('utf8'),
+      });
     });
     child.stdin.on('error', () => {});
     child.stdin.end(JSON.stringify(request));
@@ -178,21 +151,98 @@ async function executeCollector(request, timeout) {
 }
 
 export async function runWorkflowValues(options) {
+  const now = options.now ?? (() => new Date().toISOString());
   const policy = loadPolicyFile(options.policy);
-  const entries = workflowValueRegistrations(policy, options.repositories);
-  const retained = await readPrevious(options.previous ?? options.output);
-  const result = { collected: 0, skipped: 0, warnings: [] };
+  if (options.defer && !VALUE_DEFERRALS.has(options.defer)) throw new Error('Invalid Value deferral reason');
+  const previousEnvelopes = await readValueEnvelopes(options.previous ?? options.output);
+  for (const envelope of previousEnvelopes) {
+    if (envelope.schema_version !== 2 || envelope.kind !== 'operational_value_evidence') {
+      throw new Error('Invalid retained workflow Value evidence envelope');
+    }
+    validateOperationalValueEvidence(envelope.operational_value_evidence);
+  }
+  let retained = previousEnvelopes.filter(envelope =>
+    valueRepositoryInScope(policy, options.repositories, envelope.operational_value_evidence.repository));
+  const imported = [];
+  const accepted = new Map(retained.map((envelope) => [envelope.operational_value_evidence.id, envelope]));
+  for (const entry of workflowValueRegistrations(policy, options.repositories)) {
+    if (!entry.evidence) continue;
+    const result = await readReviewedValueEvidence({
+      root: options.root, entry,
+      retained: [...accepted.values()].map((envelope) => envelope.operational_value_evidence),
+    });
+    if (result.updated) {
+      accepted.set(result.envelope.operational_value_evidence.id, result.envelope);
+      imported.push(result.envelope);
+    }
+  }
+  retained = [...accepted.values()];
+  const health = await workflowValueStatusContext(options, policy, retained);
+  if (options.localRequest) {
+    if (!options.snapshot) throw new Error('Local Value request requires a snapshot identity');
+    await mkdir(path.dirname(options.localRequest), { recursive: true });
+    await writeFile(`${options.localRequest}.pending`, JSON.stringify([{
+      schemaVersion: 1, snapshot: options.snapshot, policyDigest: health.policyDigest,
+      eligible: !health.activityDisabled && options.defer === 'shared-budget-unavailable',
+      reason: health.activityDisabled ? 'activity-disabled' : options.defer,
+      repositories: options.repositories.filter(repository => valueRepositoryInScope(policy, options.repositories, repository, true)),
+    }]) + '\n', { mode: 0o600 });
+    await rename(`${options.localRequest}.pending`, options.localRequest);
+  }
+  const result = { imported: imported.length, collected: 0, skipped: 0, deferred: 0, failed: 0, warnings: [] };
   const fresh = [];
   let freshBytes = 0;
-  for (const entry of entries) {
+  const startedAt = Date.now();
+  const batchTimeout = options.batchTimeout ?? Infinity;
+  for (const entry of health.targets) {
+    const checkedAt = now();
+    const decision = (state, reasonCode, attempt = {}) =>
+      valueCollectionDecision(health, entry, { state, reasonCode, observedAt: checkedAt, ...attempt });
+    if (!entry.collector || entry.enabled === false || health.activityDisabled) {
+      const disabled = entry.enabled === false || Boolean(entry.collector) && health.activityDisabled;
+      decision(disabled ? 'disabled' : 'unconfigured',
+        entry.enabled === false ? 'disabled' : disabled ? 'activity-disabled' : 'unconfigured');
+      continue;
+    }
+    const defer = options.defer || (Date.now() - startedAt >= batchTimeout ? 'batch-budget' : '');
+    if (defer) {
+      decision('deferred', defer);
+      result.deferred++;
+      continue;
+    }
+    if (entry['api-requests']) {
+      if (!options.apiBudget || !Number.isSafeInteger(Number(options.apiReserve))
+        || Number(options.apiReserve) < 0) {
+        decision('deferred', 'shared-budget-unavailable');
+        result.deferred++;
+        continue;
+      }
+      try {
+        prepareGithubApiBudget({
+          filename: options.apiBudget,
+          requested: entry['api-requests'],
+          reserve: Number(options.apiReserve),
+          execute: options.apiExecute,
+        });
+      } catch (error) {
+        const reason = error instanceof GithubApiBudgetError ? error.reasonCode : 'budget-unavailable';
+        decision('deferred', reason);
+        result.deferred++;
+        result.warnings.push(`${entry.repository}/${entry.workflow}: ${error.message}; previous evidence retained`);
+        continue;
+      }
+    }
     const reserve = Number(process.env.CAO_GITHUB_API_MIN_REMAINING
       ?? Math.abs(Number(process.env.REPORT_MAX_GITHUB_API_RATE_LIMIT ?? 0)));
-    if (reserve > 0) {
+    if (!entry['api-requests'] && reserve > 0) {
       const budget = spawnSync('gh', ['api', 'rate_limit', '--jq', '.resources.core.remaining'], {
         encoding: 'utf8', timeout: 30000, maxBuffer: 16384, env: process.env,
       });
       const remaining = Number(budget.stdout?.trim());
       if (budget.status !== 0 || !budget.stdout?.trim() || !Number.isSafeInteger(remaining) || remaining <= reserve) {
+        decision('deferred', budget.status === 0 && budget.stdout?.trim() && Number.isSafeInteger(remaining)
+          ? 'api-budget' : 'budget-unavailable');
+        result.deferred++;
         result.warnings.push(`${entry.repository}/${entry.workflow}: API budget unavailable or exhausted; previous evidence retained`);
         continue;
       }
@@ -208,7 +258,12 @@ export async function runWorkflowValues(options) {
       observedAt: options.observedAt ?? new Date().toISOString(), database: options.database,
       workspace: path.resolve(options.workspace, identity),
     };
-    const child = await executeCollector(request, options.timeout ?? 120000);
+    const attemptAt = now();
+    const child = await executeCollector(request, Math.min(options.timeout ?? 600000,
+      Math.max(1, batchTimeout - (Date.now() - startedAt))), entry['api-requests'] ? {
+      CAO_GITHUB_API_BUDGET_FILE: path.resolve(options.apiBudget),
+    } : {});
+    const attempt = { observedAt: now(), lastAttemptAt: attemptAt };
     try {
       for (const entry of await readdir(request.workspace)) {
         if (entry.startsWith('.scratch-')) await rm(path.join(request.workspace, entry), { recursive: true, force: true });
@@ -217,6 +272,10 @@ export async function runWorkflowValues(options) {
       if (error.code !== 'ENOENT') throw error;
     }
     if (child.status !== 0 || child.error) {
+      decision('failed', child.timedOut ? 'timeout'
+        : child.stderr.includes('api-budget') ? 'api-budget' : 'collector-failed',
+      { ...attempt, lastAttemptOutcome: 'failed' });
+      result.failed++;
       result.warnings.push(`${entry.repository}/${entry.workflow}: collector failed, incomplete or budget exhausted; previous evidence retained`);
       continue;
     }
@@ -226,18 +285,21 @@ export async function runWorkflowValues(options) {
         validateOperationalValueEvidence(envelope.operational_value_evidence);
         freshBytes += Buffer.byteLength(child.stdout);
         if (freshBytes > MAX_BATCH_BYTES) {
+          decision('failed', 'batch-budget', { ...attempt, lastAttemptOutcome: 'failed' });
           result.warnings.push('Workflow Value batch evidence budget exhausted; remaining accepted evidence retained');
-          break;
+          result.failed++;
+          continue;
         }
         fresh.push(envelope);
         result.collected++;
       } else result.skipped++;
+      decision('available', envelope ? 'captured' : 'not-due', { ...attempt, lastAttemptOutcome: 'available' });
     } catch {
+      decision('failed', 'invalid-evidence', { ...attempt, lastAttemptOutcome: 'failed' });
+      result.failed++;
       result.warnings.push(`${entry.repository}/${entry.workflow}: invalid collector output; previous evidence retained`);
     }
   }
-  if (!fresh.length && !options.previous) return result;
-  await mkdir(path.dirname(options.output), { recursive: true });
   // Packets are cumulative: compact superseded captures, never accepted facts.
   const latest = new Map();
   for (const envelope of [...retained, ...fresh]) {
@@ -245,10 +307,15 @@ export async function runWorkflowValues(options) {
     const previous = latest.get(key)?.operational_value_evidence;
     if (!previous || Date.parse(previous.observedAt) <= Date.parse(envelope.operational_value_evidence.observedAt)) latest.set(key, envelope);
   }
-  const output = options.previous ? fresh : [...latest.values()];
-  const staged = `${options.output}.pending`;
-  await writeFile(staged, output.map((value) => JSON.stringify(value)).join('\n') + (output.length ? '\n' : ''), { mode: 0o600 });
-  await rename(staged, options.output);
+  const changed = new Set([...imported, ...fresh].map((envelope) => envelope.operational_value_evidence.id));
+  const compacted = [...latest.values()];
+  const output = options.previous
+    ? compacted.filter((envelope) => changed.has(envelope.operational_value_evidence.id))
+    : compacted;
+  if (options.previous || JSON.stringify(output) !== JSON.stringify(previousEnvelopes)) {
+    await writeValueEnvelopes(options.output, output);
+  }
+  await saveValueCollectionDecisions(health);
   return result;
 }
 
@@ -269,7 +336,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
       const options = { repositories: [] };
       for (let i = 2; i < process.argv.length; i += 2) {
         const key = process.argv[i].slice(2), value = process.argv[i + 1];
-        if (!value || !['root', 'policy', 'database', 'output', 'workspace', 'repository', 'previous', 'observedAt'].includes(key)) throw new Error('Invalid workflow-values option');
+        if (!value || !['root', 'policy', 'database', 'output', 'workspace', 'repository', 'previous', 'observedAt', 'defer', 'inventory', 'healthOutput', 'localRequest', 'snapshot', 'apiBudget', 'apiReserve'].includes(key)) throw new Error('Invalid workflow-values option');
         if (key === 'repository') options.repositories.push(value);
         else options[key] = value;
       }
@@ -277,8 +344,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
       for (const warning of result.warnings) process.stderr.write(`::warning::${warning}\n`);
       process.stdout.write(`${JSON.stringify(result)}\n`);
     }
-  } catch {
-    process.stderr.write('Workflow Value collection failed; existing evidence retained\n');
+  } catch (error) {
+    const reason = error instanceof GithubApiBudgetError ? `: ${error.reasonCode}` : '';
+    process.stderr.write(`Workflow Value collection failed${reason}; existing evidence retained\n`);
     process.exitCode = 1;
   }
 }

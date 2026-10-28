@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -17,7 +19,7 @@ func TestLocalCanvasUsesSharedHandlerAndPrivateAdapter(t *testing.T) {
 	var calls int
 	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Path != adapterPrefix+"/__query_designer" || r.Header.Get("Authorization") != "" ||
+		if (r.URL.Path != adapterPrefix+"/__query_designer" && r.URL.Path != adapterPrefix+"/__copilot_session") || r.Header.Get("Authorization") != "" ||
 			r.Header.Get("Cookie") != "" {
 			t.Errorf("unexpected adapter request: %s", r.URL.Path)
 		}
@@ -42,7 +44,7 @@ func TestLocalCanvasUsesSharedHandlerAndPrivateAdapter(t *testing.T) {
 		handler.ServeHTTP(response, req)
 		return response
 	}
-	for _, path := range []string{"/api/v1/diagnostics", "/", "/__query_designer"} {
+	for _, path := range []string{"/api/v1/diagnostics", "/", "/__query_designer", "/__copilot_session"} {
 		if got := request("GET", path, "", nil).Code; got != http.StatusNotFound {
 			t.Fatalf("uncapable route returned %d", got)
 		}
@@ -75,20 +77,41 @@ func TestLocalCanvasUsesSharedHandlerAndPrivateAdapter(t *testing.T) {
 	if err := json.Unmarshal(query.Body.Bytes(), &result); err != nil || len(result.Sources["repositories"].Rows) != 2 {
 		t.Fatalf("canonical query result: %v", err)
 	}
-	for _, path := range []string{"/api/v1/query", "/__query_designer"} {
+	for _, path := range []string{"/api/v1/query", "/__query_designer", "/__copilot_session"} {
 		if got := request("POST", prefix+path, "https://untrusted.example", nil).Code; got != http.StatusForbidden {
 			t.Fatalf("cross-origin request returned %d", got)
 		}
 	}
-	if got := request("POST", prefix+"/__query_designer", "http://127.0.0.1:8080", nil).Code; got != http.StatusAccepted || calls != 1 {
-		t.Fatalf("adapter routing: %d %d", got, calls)
+	for index, path := range []string{"/__query_designer", "/__copilot_session"} {
+		if got := request("POST", prefix+path, "http://127.0.0.1:8080", nil).Code; got != http.StatusAccepted || calls != index+1 {
+			t.Fatalf("adapter routing %s: %d %d", path, got, calls)
+		}
 	}
 	adapter.Close()
-	if got := request("POST", prefix+"/__query_designer", "http://127.0.0.1:8080", nil).Code; got != http.StatusBadGateway {
-		t.Fatalf("adapter outage returned %d", got)
+	for _, path := range []string{"/__query_designer", "/__copilot_session"} {
+		if got := request("POST", prefix+path, "http://127.0.0.1:8080", nil).Code; got != http.StatusBadGateway {
+			t.Fatalf("adapter outage %s returned %d", path, got)
+		}
 	}
 	if got := request("GET", prefix+"/api/v1/diagnostics", "", nil).Code; got != http.StatusOK {
 		t.Fatalf("adapter outage affected canonical data: %d", got)
+	}
+}
+
+func TestLocalCanvasMarkdownUsesPlainTextRegardlessOfSystemMIME(t *testing.T) {
+	app, _ := newSQLiteTestApp(t, false)
+	app.config.Canvas = &LocalCanvasConfig{
+		Prefix:     "/" + strings.Repeat("a", 48),
+		AdapterURL: "http://127.0.0.1:1234/" + strings.Repeat("b", 48),
+	}
+	if err := os.WriteFile(filepath.Join(app.config.SiteDirectory, "guide.md"), []byte("# Guide\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	app.static(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/guide.md", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+		response.Body.String() != "# Guide\n" {
+		t.Fatalf("canvas markdown response: %d %s %q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
 	}
 }
 

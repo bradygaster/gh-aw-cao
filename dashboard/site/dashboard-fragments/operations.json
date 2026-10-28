@@ -404,6 +404,19 @@
       ]
     },
     {
+      "name": "indexing-daily-run-counts",
+      "subject": "Inspect admitted daily logical Run counts independently of retained detail and shard receipts.",
+      "objective": "Make the daily run-count projection visible as an ingestion diagnostic.",
+      "acceptance": "Sum daily buckets by observed UTC execution-start day across repositories and workflows, without page filters, detail fallback, fabricated days or zero populations. Preserve aggregate coverage and partial or unavailable evidence; counts do not prove upstream completeness.",
+      "from": "daily-run-counts",
+      "aggregate": {
+        "by": ["day"],
+        "values": [{ "field": "total", "as": "runs", "reducer": "sum" }]
+      },
+      "select": [{ "field": "day", "as": "date" }, { "field": "runs" }],
+      "order-by": [{ "field": "date", "direction": "asc" }]
+    },
+    {
       "name": "indexing-campaigns-table-count",
       "subject": "Count retained campaigns rows in the dashboard database.",
       "objective": "Provide the retained campaigns row count for the table-count diagnostic.",
@@ -756,6 +769,35 @@
           "field": "payloadHash",
           "as": "payload-hash"
         }
+      ]
+    },
+    {
+      "name": "engines-models-sample-distribution",
+      "subject": "Describe agent and model combinations in the seven-day statistical run sample.",
+      "objective": "Find sampled combinations to investigate without scanning the full retained run history.",
+      "acceptance": "Count unweighted selected Runs after frame selection. Keep statistical-frame-id in grouped rows and frame metadata on empty results. Zero-allocation strata are not population zeros. Preserve unknown identifiers; failure reserves can alter composition. Never mix sample counts with exact usage or infer population shares.",
+      "description": "Unweighted composition of the seven-day statistical sample; not a population estimate. Failure outcomes may be oversampled.",
+      "from": "statistical-runs",
+      "compute": [
+        {
+          "as": "summary",
+          "function": "concat",
+          "args": [
+            { "field": "agent-id" },
+            { "value": " / " },
+            { "field": "model-id" }
+          ]
+        }
+      ],
+      "aggregate": {
+        "by": ["summary", "statistical-frame-id"],
+        "values": [
+          { "field": "run", "as": "sampled-runs", "reducer": "count" }
+        ]
+      },
+      "order-by": [
+        { "field": "sampled-runs", "direction": "desc" },
+        { "field": "summary", "direction": "asc" }
       ]
     },
     {
@@ -1727,7 +1769,7 @@
       "id": "indexing",
       "kind": "custom",
       "intent": "Determine whether collection, ingestion and retained data are healthy enough for analysis.",
-      "subject": "Server collection health, API usage, ingestion queues, shards and retained transactions.",
+      "subject": "Server collection health, API usage, ingestion queues, daily run counts, shards and retained transactions.",
       "objective": "Locate evidence gaps and bottlenecks before trusting dashboard conclusions.",
       "acceptance": "Show native states, timestamps, counts, sizes and units with backend limitations; preserve failures and partial/unavailable evidence. Empty queues or tables alone do not establish successful collection.",
       "title": "Ingestion",
@@ -1772,6 +1814,23 @@
               "type": "quantitative",
               "title": "Rows"
             }
+          }
+        },
+        {
+          "id": "indexing-daily-run-counts",
+          "title": "Observed daily runs",
+          "subject": "Inspect the daily run-count projection by UTC execution-start day.",
+          "objective": "Compare admitted daily logical Run volume independently of retained detail and per-shard input counts.",
+          "acceptance": "Show observed day totals only, preserving partial coverage and unavailable projection state. Counts do not establish complete upstream collection or verified outcomes.",
+          "description": "Daily logical Run counts across all repositories and workflows, by observed UTC execution-start day, not import or shard date. Counts survive detail eviction and do not count attempts separately. Undated runs are excluded; missing days are not measured zeroes. Partial coverage does not reconstruct evicted history, and admitted counts do not prove complete upstream collection.",
+          "data": { "source": "indexing-daily-run-counts", "query-context": false },
+          "mark": "chart",
+          "chart": "line",
+          "layout": "full",
+          "empty-message": "No dated daily Run observations are available. Collection coverage remains unknown.",
+          "encoding": {
+            "x": { "field": "date", "type": "temporal", "format": "human-friendly-timestamp", "time-unit": "day", "title": "UTC execution-start day" },
+            "y": { "field": "runs", "type": "quantitative", "title": "Observed logical Runs" }
           }
         },
         {
@@ -2137,17 +2196,17 @@
       "views": [
         {
           "id": "engines-models-distribution",
-          "title": "Agent and model distribution",
-          "subject": "Compare observed run counts by agent and model combination.",
-          "objective": "Identify the combinations to examine in run-level evidence.",
-          "acceptance": "The distribution describes observed usage only, not quality or model preference.",
-          "description": "Distribution of observed workflow runs by agent and model combination.",
+          "title": "Agent and model sample composition",
+          "subject": "Compare sampled run counts by agent and model combination.",
+          "objective": "Identify sampled combinations to examine in run-level evidence.",
+          "acceptance": "Counts describe the seven-day sample only, not population usage, model preference, or quality; failure outcomes may be oversampled.",
+          "description": "Seven-day statistical sample, not population totals or shares. Failure outcomes may be oversampled. Exact retained-run usage remains below.",
           "data": {
-            "source": "engines-models-usage"
+            "source": "engines-models-sample-distribution"
           },
           "mark": "chart",
           "chart": "pie",
-          "empty-message": "No agent or model usage metadata is available.",
+          "empty-message": "No eligible completed runs are available in the seven-day statistical sample.",
           "layout": "full",
           "encoding": {
             "x": {
@@ -2156,9 +2215,9 @@
               "title": "Agent / model"
             },
             "y": {
-              "field": "runs",
+              "field": "sampled-runs",
               "type": "quantitative",
-              "title": "Runs"
+              "title": "Sampled runs"
             }
           }
         },
@@ -2433,34 +2492,35 @@
     {
       "id": "maintenance",
       "kind": "custom",
-      "intent": "Identify repositories whose compiler provenance warrants maintenance review.",
-      "subject": "Repository workflow compiler versions and retained update-confidence evidence.",
-      "objective": "Prioritize safe maintenance proposals using known version provenance.",
-      "acceptance": "Distinguish registration, observed version and update confidence; preserve unknown provenance and refresh guidance. Do not infer outdatedness from missing data or execute updates without approval.",
-      "title": "Updates",
+      "intent": "Identify repositories whose gh-aw compiler provenance warrants maintenance review.",
+      "subject": "Repository workflow compiler versions and retained upgrade-confidence evidence.",
+      "objective": "Prioritize safe compiler upgrades using known version provenance and explain incomplete evidence.",
+      "acceptance": "Distinguish observed installed and latest-stable versions, preserve unknown provenance with a diagnostic reason, and expose upgrade actions only for known outdated evidence. Do not infer outdatedness from missing data or execute upgrades without approval.",
+      "title": "Compiler upgrades",
       "navigation-label": "Updates",
       "navigation-indicator": {
         "label": "updates available",
         "any": [
           "maintenance-campaign-updates",
+          "maintenance-standalone-updates",
           "maintenance-repository-upgrades"
         ]
       },
       "icon": "tools",
       "class-name": "maintenance-page",
-      "description": "Identify repositories whose compiler provenance justifies a CAO maintenance proposal.",
+      "description": "Review retained gh-aw compiler evidence by repository before applying upgrades.",
       "route": {
         "tab": "repositories",
         "tabs": [
-          { "id": "repositories", "label": "Repositories", "icon": "repo", "page": "maintenance" },
-          { "id": "campaigns", "label": "Campaigns", "icon": "workflow", "page": "maintenance-campaigns" }
+          { "id": "repositories", "label": "Compiler upgrades", "icon": "repo", "page": "maintenance" },
+          { "id": "campaigns", "label": "Workflow updates", "icon": "workflow", "page": "maintenance-campaigns" }
         ]
       },
       "views": [
         {
           "id": "maintenance-repositories",
-          "title": "Repositories",
-          "description": "Installed and current gh-aw compiler versions observed for each repository. Select a repository to open its GitHub home page.",
+          "title": "Repository compiler status",
+          "description": "Installed and latest stable gh-aw compiler versions observed for each repository, including why retained evidence is unavailable.",
           "data": {
             "source": "maintenance-repositories"
           },
@@ -2488,6 +2548,11 @@
                 "type": "nominal",
                 "title": "Upgrade",
                 "display": "status"
+              },
+              {
+                "field": "upgrade-status-reason",
+                "type": "nominal",
+                "title": "Evidence"
               }
             ]
           },
@@ -2496,8 +2561,6 @@
             "style": "entity-cards",
             "card": "maintenance-repository",
             "icon": "repo",
-            "action": "upgrade-repository",
-            "action-context": ["repository"],
             "actions": ["add-repository"]
           }
         }
@@ -2506,32 +2569,32 @@
     {
       "id": "maintenance-campaigns",
       "kind": "custom",
-      "intent": "Identify installed campaign packages requiring a version and provenance review.",
-      "subject": "Campaign package registrations, versions and update-confidence evidence.",
-      "objective": "Choose evidence-backed campaign maintenance without expanding rollout.",
-      "acceptance": "Keep installed/source version identity and confidence distinct from active registration; report unknown provenance. Updating must preserve campaign ownership and reviewed policy and require explicit operational approval.",
-      "title": "Updates",
-      "description": "Identify campaign packages whose version provenance justifies a CAO maintenance proposal.",
+      "intent": "Identify campaign packages and standalone workflow sources requiring a version and provenance review.",
+      "subject": "Campaign package and standalone workflow source coordinates, revisions and update-confidence evidence.",
+      "objective": "Choose evidence-backed workflow-source maintenance without inventing campaign membership or expanding rollout.",
+      "acceptance": "Keep campaign packages and standalone workflows separate, retain exact source coordinates, and report local or unknown provenance without an executable action. Every update requires explicit operational approval.",
+      "title": "Workflow updates",
+      "description": "Review campaign packages and standalone workflow sources without inventing campaign membership.",
       "icon": "tools",
       "class-name": "maintenance-page",
       "route": {
         "navigation-page": "maintenance",
         "tab": "campaigns",
         "tabs": [
-          { "id": "repositories", "label": "Repositories", "icon": "repo", "page": "maintenance" },
-          { "id": "campaigns", "label": "Campaigns", "icon": "workflow", "page": "maintenance-campaigns" }
+          { "id": "repositories", "label": "Compiler upgrades", "icon": "repo", "page": "maintenance" },
+          { "id": "campaigns", "label": "Workflow updates", "icon": "workflow", "page": "maintenance-campaigns" }
         ]
       },
       "views": [
         {
           "id": "maintenance-campaigns",
-          "title": "CAO packages",
-          "description": "Installed campaign revisions and the latest catalog revisions observed for this control repository. Unknown update confidence does not mean the package is current.",
+          "title": "Campaign packages",
+          "description": "Installed campaign packages with exact retained package coordinates and upstream revision evidence.",
           "data": {
-            "source": "campaigns"
+            "source": "maintenance-campaign-packages"
           },
           "mark": "list",
-          "empty-message": "No CAO campaign packages were observed.",
+          "empty-message": "No campaign packages were observed.",
           "encoding": {
             "columns": [
               {
@@ -2567,9 +2630,58 @@
           "list": {
             "style": "entity-cards",
             "card": "maintenance-campaign",
-            "icon": "workflow",
-            "action": "update-repository",
-            "action-context": ["campaign"]
+            "icon": "workflow"
+          }
+        },
+        {
+          "id": "maintenance-standalone-workflows",
+          "title": "Standalone workflows",
+          "description": "Source-managed standalone workflows can update from their exact retained source. Local workflows remain visible and non-actionable.",
+          "data": {
+            "source": "maintenance-standalone-workflows"
+          },
+          "mark": "list",
+          "empty-message": "No standalone workflow sources were observed.",
+          "encoding": {
+            "columns": [
+              {
+                "field": "workflow-name",
+                "type": "nominal",
+                "title": "Workflow"
+              },
+              {
+                "field": "workflow-source",
+                "type": "nominal",
+                "title": "Source"
+              },
+              {
+                "field": "workflow-source-version",
+                "type": "nominal",
+                "title": "Installed"
+              },
+              {
+                "field": "workflow-source-current-version",
+                "type": "nominal",
+                "title": "Latest"
+              },
+              {
+                "field": "workflow-update-state",
+                "type": "nominal",
+                "title": "Update",
+                "display": "status"
+              },
+              {
+                "field": "workflow-update-status-reason",
+                "type": "nominal",
+                "title": "Evidence"
+              }
+            ]
+          },
+          "layout": "full",
+          "list": {
+            "style": "entity-cards",
+            "card": "maintenance-standalone-workflow",
+            "icon": "workflow"
           }
         }
       ]

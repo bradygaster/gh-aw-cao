@@ -20,7 +20,6 @@ import (
 	"github.com/githubnext/gh-cao/server/internal/model"
 	"github.com/githubnext/gh-cao/server/internal/postgresconn"
 	"github.com/githubnext/gh-cao/server/internal/query"
-	"github.com/githubnext/gh-cao/server/internal/sqlbuilder"
 )
 
 var storeLog = logger.New("cao:postgresx:store")
@@ -38,6 +37,8 @@ type Store struct {
 	config              *pgx.ConnConfig
 	namespace           string
 	linkedRetentionDays int
+	dailyCounts         bool
+	runCapacity         runCapacity
 	stopMaintenance     context.CancelFunc
 	maintenanceDone     sync.WaitGroup
 }
@@ -125,6 +126,10 @@ func openConfig(ctx context.Context, config *pgx.ConnConfig, provision bool, nam
 		return nil, fmt.Errorf("postgres storage contract check failed: %w", err)
 	}
 	if provision {
+		if err := initializeDailyCounts(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("provision daily outcome capability: %w", err)
+		}
 		if err := initializeStatistics(ctx, db); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("provision native statistics capability: %w", err)
@@ -141,6 +146,17 @@ func openConfig(ctx context.Context, config *pgx.ConnConfig, provision bool, nam
 		return nil, err
 	}
 	store := &Store{db: db, config: config.Copy(), namespace: namespace, linkedRetentionDays: linkedRetention}
+	store.dailyCounts, err = dailyCapability(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if store.dailyCounts {
+		if err := store.backfillDailyOnce(ctx); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	if !provision {
 		if err := store.checkProvisionedPartitions(ctx, time.Now(), retention, linkedRetention); err != nil {
 			_ = db.Close()
@@ -285,26 +301,36 @@ func (r *readTransaction) State(ctx context.Context) (State, error) {
 	if state.Revision == 0 {
 		return state, nil
 	}
-	var counts []string
-	for _, source := range tableNames() {
-		counts = append(counts, fmt.Sprintf("WHEN '%s' THEN (SELECT count(*) FROM %s WHERE namespace=$1)",
-			source, query.SQLIdentifier(entityTables[source].name)))
-	}
-	statement, args, err := sqlbuilder.Build("SELECT collection,CASE collection {} END FROM cao_quality WHERE namespace={} ORDER BY collection",
-		sqlbuilder.Fragment(strings.Join(counts, " ")), r.store.namespace)
-	if err != nil {
-		return State{}, err
-	}
-	rows, err := r.tx.QueryContext(ctx, statement, args...)
+	rows, err := r.tx.QueryContext(ctx, "SELECT collection FROM cao_quality WHERE namespace=$1 ORDER BY collection", r.store.namespace)
 	if err != nil {
 		return State{}, fmt.Errorf("read native counts: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	var collections []string
 	for rows.Next() {
 		var name string
-		var count int
-		if err := rows.Scan(&name, &count); err != nil {
+		if err := rows.Scan(&name); err != nil {
 			return State{}, err
+		}
+		collections = append(collections, name)
+	}
+	if err := rows.Err(); err != nil {
+		return State{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return State{}, err
+	}
+	// Separate plans avoid a CASE of partitioned subqueries whose bind-time
+	// planning cost grows far faster than the number of retained rows.
+	for _, name := range collections {
+		table, exists := entityTables[name]
+		if !exists {
+			return State{}, fmt.Errorf("unknown native quality collection %q", name)
+		}
+		var count int
+		if err := r.tx.QueryRowContext(ctx, "SELECT count(*) FROM "+query.SQLIdentifier(table.name)+" WHERE namespace=$1",
+			r.store.namespace).Scan(&count); err != nil {
+			return State{}, fmt.Errorf("read native count for %s: %w", name, err)
 		}
 		state.Counts[name] = count
 	}

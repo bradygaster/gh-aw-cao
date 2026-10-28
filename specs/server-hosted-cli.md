@@ -281,7 +281,7 @@ deployment, migration, or rollout by itself.
 1. The executor MUST authenticate as the hosted CLI GitHub App, configured
    with `CAO_HOSTED_CLI_APP_ID` and `CAO_HOSTED_CLI_PRIVATE_KEY` or its
    `_FILE` or `_BASE64` variant. The App SHOULD be created with
-   `cao setup-auth hosted-cli`, which requests only actions, contents,
+   native Go `gh cao setup auth hosted-cli`, which requests only actions, contents,
    pull requests, and workflows write, plus metadata read.
    Operators MUST store the App private key in the executor deployment's
    managed secret store and expose it only to `execute-cli`, preferably through
@@ -289,6 +289,10 @@ deployment, migration, or rollout by itself.
    is temporary bootstrap material, not durable secret storage; operators
    MUST import it into the vault and remove the local copy. The key MUST NOT
    be configured on the `serve-hosted` process.
+   Setup MUST preserve explicit same-owner repository scope, browser approval,
+   and selected-repository verification without changing rollout policy or
+   enabling hosted execution. Existing key files MUST NOT be overwritten.
+   The retired Node `setup-auth hosted-cli` profile MUST fail before side effects.
 2. Each command MUST use an installation token minted for exactly its target
    repository, with the narrowest permissions its plan requires.
 3. The broker MUST verify the grant GitHub returns. If the response omits the
@@ -374,9 +378,12 @@ runtime path; managed secret storage MUST NOT be represented as managed signing.
    target. The bootstrap MUST disable Git templates and pass the planned
    program and arguments as positional parameters to the fixed entrypoint, never interpolate
    them into shell source. This bootstrap grants no host execution or
-   repository-discovery authority. A CAO campaign update MUST be translated to a native `gh-aw update`
-   command scoped to the configured control repository and the catalog-selected
-   CAO package. The container image reference MUST be recorded in the audit
+   repository-discovery authority. A campaign-package or standalone-workflow
+   source update MUST be translated to a native `gh-aw update` command scoped to
+   the configured control repository and the exact retained GitHub source
+   coordinate selected from canonical maintenance evidence. The executor MUST
+   NOT discover, substitute, or widen that source coordinate. The container
+   image reference MUST be recorded in the audit
    event for command start.
 8. Linux-image profiles MUST use a read-only root filesystem, drop all Linux
    capabilities, enable `no-new-privileges`, and apply process and memory
@@ -872,8 +879,13 @@ workload termination in this model.
 - `server/internal/hostedcli/telemetry_test.go`: command and token spans and
   metrics exist, the subprocess receives a valid `TRACEPARENT`, and no span
   carries a token or actor.
-- `tests/unit/setup-hosted-cli-app.test.mjs`: least-privilege App manifest and
-  helper safety.
+- `internal/cli/setup_hosted_cli_test.go`: native least-privilege App setup,
+  browser approval, explicit installation scope, credential storage and failures.
+- `server/internal/simulator/setup_hosted_cli_integration_test.go`: installed
+  extension without Node, real gh and App JWTs, manifest/browser approval, selected
+  repository additions and failures through the isolated GitHub simulator.
+- `tests/integration/cao-runtime-installation.test.mjs`: installed runtime rejects
+  the retired Node profile while retaining Actions credential inspection.
 
 ## 10. Security considerations
 

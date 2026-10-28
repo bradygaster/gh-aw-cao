@@ -31,6 +31,8 @@ func SQLiteSnapshot(t testing.TB, sources map[string][]model.Row) string {
 		CREATE TABLE __idb_databases(name TEXT PRIMARY KEY, version INTEGER NOT NULL);
 		CREATE TABLE __idb_stores(database_name TEXT NOT NULL,name TEXT NOT NULL,key_path TEXT NOT NULL,
 			PRIMARY KEY(database_name,name));
+		CREATE TABLE __idb_indexes(database_name TEXT NOT NULL,store_name TEXT NOT NULL,name TEXT NOT NULL,key_path TEXT NOT NULL,
+			PRIMARY KEY(database_name,store_name,name));
 		CREATE TABLE __idb_records(database_name TEXT NOT NULL,store_name TEXT NOT NULL,
 			record_key TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(database_name,store_name,record_key));
 	`); err != nil {
@@ -41,7 +43,7 @@ func SQLiteSnapshot(t testing.TB, sources map[string][]model.Row) string {
 	}
 	for _, name := range []string{
 		"campaigns", "repositories", "workflows", "runs", "domains", "tools", "skills", "friction", "audits", "issues",
-		"operationalValues", "operationalValueEvidence", "marketplacePackages", "experiments", "experimentAssignments", "graders", "graderObservations",
+		"operationalValues", "operationalValueEvidence", "workflowValueCollections", "marketplacePackages", "experiments", "experimentAssignments", "graders", "graderObservations",
 		"evals", "evalObservations", "transactions",
 	} {
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO __idb_stores VALUES (?,?,'id')`, dashboardquery.DatabaseName, name); err != nil {

@@ -23,6 +23,8 @@ and the implementation under `activity/`.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Activity cache publication
+  accDescr: Activity restores the previous snapshot, collects logs once, ingests SQLite and saves refreshed evidence. Consumers restore that shared snapshot instead of collecting independently.
   participant Activity as CAO Activity
   participant Cache as Actions cache
   participant Consumer as Consumer
@@ -83,6 +85,15 @@ payloads so clients can detect unchanged data before downloading them.
 Dashboard ingestion checks the sidecar first, then falls back to ETag validation
 and finally a downloaded-content hash when neither server-side identity is
 usable.
+
+Shard compaction automatically repairs mixed-repository shards on a best-effort
+basis. It splits records with unambiguous repository identities into the declared
+repository groups, associates repository-less dependent records only by an
+unambiguous run ID within the original shard, preserves record order, and adds the
+verified repository to those records' request metadata. `repairedShards` reports
+how many mixed shards were repaired. Contradictory identities, unattributable
+records, and undeclared repositories still fail closed without replacing the
+original shards, which are removed only after every group's output is written.
 
 Run-information shards are intentionally small and become queryable before
 event ingestion completes. This improves time to first useful render, but does

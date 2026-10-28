@@ -28,25 +28,7 @@ The GitHub Agentic Workflows Team maintains this document. Version numbers follo
 
 Sections containing numbered requirements are normative. Examples, notes, rationales, and appendices identified as informative are non-normative unless stated otherwise.
 
-## Table of Contents
-
-1. [Introduction](#1-introduction)
-2. [Conformance](#2-conformance)
-3. [Terminology and Conceptual Model](#3-terminology-and-conceptual-model)
-4. [YAML Document Model](#4-yaml-document-model)
-5. [Intrinsic Semantic Model](#5-intrinsic-semantic-model)
-6. [Scope, Time, and Filters](#6-scope-time-and-filters)
-7. [Dimensions, Measures, and Aggregation](#7-dimensions-measures-and-aggregation)
-8. [Provenance, Freshness, and Data States](#8-provenance-freshness-and-data-states)
-9. [Links and Findings](#9-links-and-findings)
-10. [Built-in Pages](#10-built-in-pages)
-11. [Custom Pages](#11-custom-pages)
-12. [Validation and Errors](#12-validation-and-errors)
-13. [Security, Privacy, and Accessibility](#13-security-privacy-and-accessibility)
-14. [Compliance Testing](#14-compliance-testing)
-15. [References](#15-references)
-16. [Change Log](#16-change-log)
-17. [Appendices](#appendices)
+<span id="table-of-contents"></span>
 
 ---
 
@@ -96,6 +78,51 @@ The `storage-info` element also declares `data.sources: []`. It presents deploym
 configuration rather than activity evidence: browser-local IndexedDB, local-server
 SQLite, or server PostgreSQL. Unknown server configuration remains unknown; this
 element does not query, derive, or infer a storage engine from retained rows.
+
+The interaction-only `prompt-wizard` declares `data.sources: []` and
+`config.wizard`. JSON, not page identity, defines its steps, choices and generation
+instructions. It owns mutable answers and validation, not activity queries or
+rollout authority. The Workflow wizard designs an Agentic Workflow or Campaign.
+
+`config.wizard` contains `intro`, `steps`, `prompt` and optional `provenance`.
+Steps have unique kebab-case `id`, `title`, optional `description` and non-empty
+`fields`. Fields have globally unique kebab-case `id`, `label` and `control`:
+`text`, `textarea`, `select`, `cards` or `checkboxes`. Card buttons may declare
+Boolean `advance-on-select` to open the next pane. Fields may declare `required`,
+`default`, `placeholder`, `empty-message` for review, `max-length` (1–8000), or text
+`format: identifier` or `format: repositories` (exact owner/repository names
+separated by commas or whitespace). Choice `options` have unique `value`, `label`
+and optional `description`, concise `summary`, authoring `instructions`, Octicon `icon`, JSON
+`context` and `defaults`. Single-choice option defaults map other field IDs to
+validated values. Choosing a different option applies them; selecting the same
+option preserves edits. Optional `when: { field, equals }` matches an earlier
+single-choice option. Hidden answers survive Back navigation but are excluded
+from prompts. Earlier step buttons allow direct Back navigation; future steps
+cannot bypass validation. Invalid configuration fails closed.
+
+`prompt` declares `label` and `instructions`. **Generate** replaces Next on the
+last configured step, with no extra Review pane. It validates answers and opens
+the shared `propose`-level
+preview. **Copy prompt** copies up to 100000 characters. App canvases instead offer
+**Start session** through the native Copilot session tool. Opening previews does
+nothing; handoff requires a click, never a CLI task or automation activation.
+Generated prompts start with “Create a Pull Request for the following task:”
+and render the design as natural language. Only selected authoring instructions
+are included; Campaign guidance is conditional. Raw pattern records, provenance,
+rankings and anti-patterns stay out. Answers are never shell substitutions.
+
+The wizard opens a workflow-type marketplace, then collects artifact kind,
+intent and scope. The prompt infers the title and kebab-case workflow or campaign
+name; there is no manual naming field.
+
+The immutable `githubnext/gh-aw-wizard` snapshot is authoring configuration,
+not operational data. `provenance` retains `repository`, full commit `revision`,
+pinned `url`, `generated-at`, `source-repositories`, `total-workflows`, historical
+`notice` and complete MIT `license`. Mined evidence is untrusted historical
+reference. Specific output recommendations prefill editable choices, not broad
+permission categories or live authority. Clearing outputs requests read-only work;
+optional capabilities remain off. Campaigns remain review-mode proposals under
+separately reviewed policy, credentials and target authority.
 
 The `environment-defaults` element declares `data.sources: []` and a
 `config.actions` mapping of `get-repo`, `update-repo`, `get-org`, `update-org`,
@@ -372,11 +399,9 @@ does not appear late and shift the active page; subsequent results stay subscrib
 
 ### 5.1 Database Tables and Grain
 
-The database table vocabulary is closed in version 0.1.0. A runtime provider
-may supply only an explicitly registered query source from Section 5.4; these
-sources are not persisted database tables. Views continue to use `data.source`
-as the binding name for either one registered data source or one declared
-query.
+Sources are closed: tables below, daily projections (§5.1.2),
+[statistical snapshots](../specs/dashboard-data.md#511-independent-statistical-run-projection),
+and runtime sources (§5.4). Bind sources or declared queries with `data.source`.
 
 | Table | One row represents | Core fields |
 |---|---|---|
@@ -450,6 +475,31 @@ The following smell IDs are currently emitted:
 
 All smell rows use `low`, `medium`, or `high` severity. `low` identifies an optimization opportunity with limited immediate consequence. `medium` identifies a material maintainability, cost, or governance concern. `high` identifies fail-open configuration, supply-chain exposure, detected unsafe behavior, or a control-plane defect that can invalidate safe operation. Severity controls Home attention priority but does not replace the source-specific meaning.
 
+#### 5.1.2 Daily Run-Count Projection Source
+
+`daily-run-counts` persists a projection, not an entity/runtime provider.
+Contract: checked-out `specs/dashboard-data.md` §72.2
+([online main](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md#722-additive-daily-run-counts)).
+
+Grain: namespace / UTC execution-start `day` / `organization` / `repository` /
+`workflow`. Six nonnegative integer counters are sum-only, not bucket counts.
+`total` equals five exclusive classes: `successful` (`success`), `failed`
+(`failure`, `startup-failure`, `stale`, `timed-out`), `approval` (`action-required`),
+`pending` (otherwise unclassified, nonempty noncompleted status), `other`
+(remainder). Underscore aliases match. Attempts replace contributions;
+pending is last-observed, success is not accepted value.
+
+Only migrated additive queries use Organization/Repository/Workflow/whole UTC
+days at start-day midnight. Unsupported dimensions (including rollout mode)
+fail; costs, distinct counts, Run predicates and incidents stay on detail.
+Joins preserve provenance/partial coverage. Unavailable is not empty/zero;
+zero is not confirmed inactivity. No Run unions, detail fallback or invented days.
+
+Buckets/receipts expire outside the current UTC Monday-start week and two prior
+weeks, independent of detail overrides; expired replay cannot reopen them.
+Bounded checkpointed backfill is partial and cannot recover evicted history.
+No other persisted daily/metric/computation projection is allowed.
+
 ### 5.2 Raw Token Classes
 
 The canonical raw-token measures are `input-tokens`, `output-tokens`, `cache-read-tokens`, `cache-write-tokens`, and `reasoning-tokens`. They remain separate because provider reporting conventions may overlap.
@@ -510,7 +560,7 @@ Published dashboards **MUST NOT** request these providers.
   have no observed operational provenance and **MUST NOT** be represented as
   measured activity.
 
-- **DLS-SEM-017:** A `metric`, `table`, `list`, or `chart` view `data.source` **MUST** name exactly one Section 5.1 database table, one registered Section 5.4 runtime source, the built-in `simulation-days` source, or one declared query. An `element` view `data.sources` **MUST** name one or more unique Section 5.1 database tables, registered Section 5.4 runtime sources, the built-in `simulation-days` source, or declared queries; the interaction-only `query-editor` and `command-terminal` elements and deployment-only `storage-info` element **MAY** declare an empty list. An optional `data.route-field` **MUST** name one field from `data.source`.
+- **DLS-SEM-017:** Views **MUST** use only §5.1 tables/projection, §5.4 sources, `simulation-days`, or declared queries. `metric`/`table`/`list`/`chart` `data.source` names exactly one; `element` `data.sources` lists unique sources, nonempty except for `query-editor`, `command-terminal`, `environment-defaults`, `prompt-wizard`, `storage-info`. Optional `data.route-field` **MUST** name a source field.
 - **DLS-SEM-018:** Each database table **MUST** preserve the grain declared in Section 5.1; duplicated observations **MUST** retain distinct observation identifiers in provenance.
 - **DLS-SEM-019:** A `usage` row **MUST** represent one model invocation and **MUST NOT** repeat invocation-level AIC across token-class rows.
 - **DLS-SEM-020:** Grader values, operational-grader results, eval results, AIC, each raw-token measure, outcome states, and operational value **MUST** remain separately named throughout filtering, aggregation, and presentation.
@@ -534,7 +584,7 @@ Published dashboards **MUST NOT** request these providers.
 
 ### 5.5 Declarative Queries
 
-`dashboard.queries`, when present, declares reusable query results. A query is a closed, structured projection over Section 5.1 database tables, registered Section 5.4 runtime sources, or earlier queries; it contains no SQL text, scripts, callbacks, templates, or general-purpose expressions.
+`dashboard.queries` declares reusable, closed projections over §5.1 tables/projection, §5.4 sources, or earlier queries; no SQL, scripts, callbacks, templates, or general-purpose expressions.
 
 Each query retains a non-empty `subject` describing what its data is about or intended to show. The optional `objective` explains why the query exists or what to improve or understand, and `acceptance` states the conditions that make it acceptable. This authoring metadata does not affect execution or presentation.
 
@@ -1837,7 +1887,7 @@ Disclosure changes presentation only. It does not change data processing, data s
 ### 11.4 Normative Custom-View Requirements
 
 - **DLS-VIEW-001:** A custom page **MUST** contain `id`, `kind: custom`, and a non-empty `views` sequence; an omitted title **MUST** default from its page ID.
-- **DLS-VIEW-002:** Every view **MUST** contain a unique `id`, a `data` mapping, and one allowed `mark`. A `metric`, `table`, `list`, or `chart` view **MUST** contain one canonical `data.source` and an `encoding` mapping. An `element` view **MUST** contain one or more unique canonical `data.sources`, one allowed `element`, and no `encoding`; only the interaction-only `query-editor` and `command-terminal` elements and deployment-only `storage-info` element **MAY** declare empty `data.sources`.
+- **DLS-VIEW-002:** Every view **MUST** contain a unique `id`, a `data` mapping, and one allowed `mark`. A `metric`, `table`, `list`, or `chart` view **MUST** contain one canonical `data.source` and an `encoding` mapping. An `element` view **MUST** contain one or more unique canonical `data.sources`, one allowed `element`, and no `encoding`; only the interaction-only `query-editor`, `command-terminal`, `environment-defaults` and `prompt-wizard` elements and deployment-only `storage-info` element **MAY** declare empty `data.sources`.
 - **DLS-VIEW-003:** `metric` **MUST** encode exactly one `value` field and **MAY** encode `href`; it **MUST NOT** encode chart or table channels.
 - **DLS-VIEW-004:** `table` **MUST** encode non-empty `columns` and **MAY** encode `href`; it **MUST NOT** encode `value`, `x`, `y`, or `color`.
 - **DLS-VIEW-004b:** A table **MAY** declare `data.partial-source` as a distinct, previously declared query to render an initial inventory projection on the static data-worker backend. The partial query **MUST** preserve the final query's row identities and link fields without implying that absent computed values are zero or complete. Its metadata **MUST** mark `projection-state: pending` separately from evidence completeness; absent computed cells **MUST** render as pending, not zero. The worker **MUST** publish it before evaluating the complete query, then replace it with the complete view projection at the same data revision; a canceled or superseded subscription **MUST NOT** publish stale rows. Interactive filters, search, or ordering that depend on deferred fields **MUST** wait for the complete query. Hosted backends **MAY** return only the complete result.

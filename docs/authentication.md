@@ -5,16 +5,26 @@ description: Choose and configure the least-privilege GitHub credential for your
 
 Authentication controls what CAO *can reach*. The checked-in `.github/workflows/cao.json` policy controls what CAO *may operate on*. A credential never expands policy.
 
+This page owns runtime credential selection, permission ceilings, verification,
+and rotation. Use [Control Plane Authentication Profiles](control-plane-authentication.md)
+to create or reuse credentials, and [Set Up CAO](setup-quickstarts.md) for the
+complete monitoring installation.
+
 ## Control Repository Visibility
 
 Public and private control repositories are supported. Their contents inherit that visibility, including policy, workflow runs, operational metadata, dashboard data, and review outputs.
 
 Use a private control repository whenever the target or required evidence is private or internal. Use a public control repository only when all review material may be public.
 
+See [setup combinations and verification](setup-compatibility.md) for the
+visibility/owner matrix, effective operator capabilities, PAT limitations,
+GHE.com data residency, and the distinction between simulator and live evidence.
+
 ## Choose Cross-Repository Authentication
 
 | Your run | Use |
 | --- | --- |
+| Monitor the control repository or confirmed public remote targets | Built-in Actions `GITHUB_TOKEN`, with explicit public-only policy for remote targets |
 | Private targets in one organization | Organization-owned private GitHub Apps |
 | Targets across organizations in one enterprise | Enterprise-owned private GitHub Apps |
 | Apps are unavailable and the required APIs are PAT-compatible | One fine-grained PAT pair per resource owner |
@@ -32,7 +42,14 @@ Apps use short-lived, installation-scoped tokens and do not depend on one person
 
 ## Configure Your Profile
 
-Run these commands from the control repository.
+<span id="reuse-approved-apps"></span>
+<span id="automated-app-setup"></span>
+
+Run credential setup from the control repository:
+[reuse approved Apps](control-plane-authentication.md#reuse-approved-apps),
+[create private Apps](control-plane-authentication.md#configure-private-github-apps),
+or [configure owner-scoped PATs](control-plane-authentication.md#configure-a-fine-grained-token).
+The sections below explain runtime behavior, not provisioning.
 
 ### Policy
 
@@ -43,16 +60,152 @@ App-token action's `permission-*` inputs at compile time. Undeclared permissions
 remain empty strings. Do not route these values through runtime step outputs:
 gh-aw strict-mode validation must be able to inspect the declared scopes.
 
-The supported control-plane credentials are:
+### Pre-activation inventory credentials
 
-| Priority | Credential | Configuration |
-| --- | --- | --- |
-| 1 | Read-only GitHub App | Repository variable `GH_AW_GITHUB_READ_APP_ID` and repository secret `GH_AW_GITHUB_READ_APP_PRIVATE_KEY` |
-| 1 | Write-capable GitHub App | Repository variable `GH_AW_GITHUB_WRITE_APP_ID` and repository secret `GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY` |
-| 2 | Owner-scoped read-only fine-grained PAT | Repository secret `GH_AW_GITHUB_READ_PAT_<OWNER>` selected through `GH_AW_GITHUB_READ_PAT_REPOSITORIES` |
-| 2 | Owner-scoped write-capable fine-grained PAT | Repository secret `GH_AW_GITHUB_WRITE_PAT_<OWNER>` selected through `GH_AW_GITHUB_WRITE_PAT_REPOSITORIES` |
-| 3 | Legacy fine-grained PAT fallback | Repository secret `GH_AW_GITHUB_TOKEN` |
-| 4 | Runtime fallback | Repository-provided `GITHUB_TOKEN` for control-repository operations it can authorize |
+Admission reads policy at the exact `github.workflow_sha` with the control
+repository's job token. After admission, shared control resolves the selected
+read profile and creates **separate control and inventory Octokit clients**.
+Changing `GH_TOKEN` does not change a github-script client.
+
+The pre-activation App action remains restricted to the control repository with
+`Actions: read` and `Contents: read`. Inventory uses independently minted,
+read-only tokens for only the explicit admitted target, or the exact
+`allowed-repositories` enrollment. Tokens are grouped by owner and split into
+batches of at most 500 repository names; no installation-wide token is minted.
+They are revoked after precompute, including on failure. Credentials stay in
+Actions execution wiring, never in `cao.json`, dispatch inputs or artifacts.
+The later worker/agent read tokens and target-bound safe outputs are unchanged.
+
+Owner-wide discovery is not supported by this pre-activation credential path.
+Provide an explicit in-scope `target_repo` or commit exact enrollment. The
+optional shared-control import `inventory_exclude_control: true` narrows fleet
+inventory before token creation and rejects an explicit control target. It does
+not replace a worker's own target restrictions or grant new policy authority.
+Existing campaign target-mode overrides still apply; a `targets` mode override
+map is not a repository allowlist.
+
+In explicit `app` mode, missing credentials or denied installation access never
+fall through to a PAT or workflow token. In `pat` mode, the control repository
+and each target need exact read-secret mappings. Shared control narrows scheduled
+orchestrators in explicit `pat` mode to the control repository, so every
+campaign can continue bounded local work without treating another repository's
+PAT as a fallback. Manual runs without a target, and any custom workflow that
+overrides this default to request fleet inventory, must map every enrolled
+repository to the selected read PAT secret; multi-secret fleets are explicitly
+unsupported in this path. Use explicit targets or the App profile for remote
+repositories. Unset mode retains legacy precedence, selecting one profile before
+making requests; a partially configured App fails closed. Public metadata reads
+with the workflow token do not establish private target reach.
+
+Required inventory is **all-or-nothing**. An incomplete fleet retains the
+admission artifact and an `authorized: true` policy decision, but records
+`activation_ready: false`, an incomplete inventory status and sanitized
+diagnostics in `cao-control-precompute`. The precompute step fails and emits
+`authorized=false` to the existing activation gate: no agent or dispatch runs.
+A complete, empty partition remains a legitimate no-op. Renamed or redirected
+repositories require reviewed enrollment updates rather than following aliases.
+Diagnostics distinguish
+missing credentials, malformed/out-of-scope enrollment, denied permission,
+capacity and service failures where the API permits. A 404 can mean repository
+identity, token scope, installation access or organization restrictions; it
+does not alone prove absent installation membership.
+
+### Recover from `pat-fleet-unsupported`
+
+This is a credential-configuration failure, not a policy denial. Shared-control
+scheduled orchestrators avoid it by defaulting to bounded local work, but
+retrying the same fleet run, reducing `max_repos`, or changing only
+`GH_AW_GITHUB_AUTH_MODE` will not restore remote inventory.
+
+**Unblock one run without changing authentication:** dispatch the failed
+orchestrator with one explicitly enrolled target. For the ESLint Factory failure
+in `githubnext/gh-cao`, run:
+
+```bash
+gh workflow run eslint-rules.lock.yml --repo githubnext/gh-cao \
+  -f target_repo=github/gh-aw -f safe_output_mode=review -f max_repos=1
+gh run list --repo githubnext/gh-cao --workflow eslint-rules.lock.yml --limit 5
+```
+
+Inspect the new run's precompute summary before relying on its results. This uses
+the target's existing PAT mapping and the separate control PAT; both secrets must
+still be valid and have the required read access. Repeat the dispatch with
+`target_repo=githubnext/gh-cao` to handle that repository separately. These
+commands do not repair subsequent scheduled fleet runs or widen policy.
+
+**Restore scheduled fleet inventory:** configure approved Apps covering the
+whole enrolled scope:
+
+```bash
+gh cao setup --repo githubnext/gh-cao
+```
+
+Choose the approved private GitHub App authentication path. Because this scope
+spans `github` and `githubnext`, a private organization-owned App for just one
+owner is insufficient. Use approved enterprise-owned Apps installed in both
+organizations, if available, following
+[enterprise-owned App setup](control-plane-authentication.md#enterprise-owned-apps).
+An authorized App administrator must supply the credentials and approve the
+installations; do not simply change the mode variable before provisioning them.
+If no approved cross-owner App is available, keep using explicit targeted runs;
+the current scheduled mixed-PAT fleet cannot run as configured.
+
+After setup, verify runtime access without starting campaign work:
+
+```bash
+gh workflow run cao-validate.yml --repo githubnext/gh-cao -f verify-credentials=true
+gh run list --repo githubnext/gh-cao --workflow cao-validate.yml --limit 5
+```
+
+Open the resulting validation run and inspect the credential-verification job,
+summary, and `cao-credential-verification` artifact; a successful dispatch of the
+validation workflow alone is not proof of credential access. Only after all
+required checks pass, start a fresh fleet run in review mode:
+
+```bash
+gh workflow run eslint-rules.lock.yml --repo githubnext/gh-cao -f safe_output_mode=review
+```
+
+For another control repository or campaign, replace the repository and workflow
+names above with its exact coordinates. Do not remap different owners to one
+fine-grained PAT secret or remove enrolled repositories just to bypass the gate.
+
+### Explicit runtime credential verification
+
+`gh cao doctor` checks local tools, policy/compiler configuration and the
+**operator's** GitHub CLI login. It does not prove workflow App access.
+After publishing reviewed product/runtime changes, explicitly request a
+read-only check in the existing CAO validation workflow:
+
+```bash
+gh workflow run cao-validate.yml -f verify-credentials=true
+```
+
+This resolves policy at the workflow SHA and reuses runtime credential
+resolution to check control-source/workflow access and every exactly enrolled
+target's metadata, Actions and Contents read reach. Disabled campaigns need not
+be activated for verification. To inspect the write App's `Issues: write`
+installation prerequisite on the enrolled target destinations rather than the
+control review destination:
+
+```bash
+gh workflow run cao-validate.yml -f verify-credentials=true \
+  -f output-mode=live -f output-permission=issues
+```
+
+These options select diagnostic checks, not live authority. The write App is
+used only for read-only installation/permission inspection; no write token,
+issue, dispatch or activation is produced. The ordinary validation issue
+reporter is disabled for this invocation. Inspect the sanitized
+`cao-credential-verification` artifact and job summary. PAT/workflow-token output
+write permissions cannot be established by these read checks and are reported
+as unverified. Even a passing App prerequisite check leaves **issue publication
+unverified**: an actual bounded safe-output canary requires separate authority.
+
+### Runtime credential selection
+
+The [credential reference](#credential-reference) lists the variable and secret
+names. Select a profile explicitly rather than relying on legacy precedence.
 
 `GH_AW_GITHUB_AUTH_MODE` explicitly selects `app`, `pat`, or the repository-local
 `workflow-token` mode. With no mode configured, Activity uses `GITHUB_TOKEN`
@@ -73,7 +226,12 @@ Missing cross-repository map entries and mapped secrets fail closed. In
 `app` mode, missing App IDs, private keys, installations, or repository grants
 likewise fail closed instead of borrowing PAT credentials.
 
-The committed root `aw.yml` intentionally has no `config` block so normal installation remains compatible with non-interactive `gh aw add`. See [Control Plane Authentication Profiles](control-plane-authentication.md) for private organization Apps, private enterprise Apps, and the fine-grained token fallback; follow Automated App setup below to configure both credential pairs.
+App tokens are narrowed to the declared job or safe-output handler permissions.
+A PAT cannot be narrowed per job: each use has the token's full permissions,
+so its stored read/write ceilings must already be least-privilege.
+
+The committed root `aw.yml` intentionally has no `config` block so normal
+installation remains compatible with non-interactive `gh aw add`.
 
 ### Repository-provided token fallback
 
@@ -84,11 +242,12 @@ data, authenticated enrichments, or write APIs.
 
 ### Public-only monitoring quickstart
 
-Install `gh cao` with `gh extension install githubnext/gh-cao`, then run
-`gh cao setup` from an existing control-repository checkout; it prepares missing
-bare runtime and policy itself. Confirmed public remote targets
-skip authentication selection, not review or public Pages consent.
-The control repository may be private or internal: its own job token can read it.
+Complete [Set Up CAO](setup-quickstarts.md) for interactive installation and
+publication. The unattended shortcut below has a narrower visibility contract.
+
+Confirmed public remote targets skip authentication selection, not review or
+public Pages consent. The control repository may be private or internal: its
+own job token can read it.
 Unknown visibility or failed lookups never qualify. For unattended setup:
 
 ```bash
@@ -190,132 +349,12 @@ exact allowlist. The field accepts exact `OWNER/REPOSITORY` coordinates only.
 Omitting it preserves the fail-closed rule: workflow-token mode rejects broader
 collection scope rather than inferring a control-repository-only subset.
 
-### Reuse approved Apps
+<span id="multiple-organizations-in-one-enterprise"></span>
 
-If private read/write Apps are already approved, use
-`gh cao setup auth github-app --repo OWNER/CONTROL --read-client-id READ-ID --write-client-id WRITE-ID`
-instead of registering replacements. Add `--dry-run` to preview exact scopes.
-Setup prompts securely for the keys and verifies App identity, permission
-ceilings, and selected repositories using the App's own credentials, without
-requiring the operator to list every organization installation. Repository
-administrators can extend an approved installation to their repositories where
-organization policy permits, even if the App has organization permissions.
-New installations still require the appropriate approval. Approval does not
-supply private keys: an authorized App credential manager must provide them
-through the secure prompts. A rerun with stored client IDs prompts for the same
-keys again instead of forcing App replacement.
+### Multi-owner runtime credentials
 
-Repository-administrator enrollment of approved Apps is available on GitHub.com
-and GHES 3.24 or later. An organization owner must still approve new
-installations with organization-level permissions, repository administration,
-or repository creation, and organization policy can restrict installation
-changes to owners.
-
-GitHub's separate provisioning permissions,
-`repository_creation:write` and `installation_repositories:write`, allow
-repository creation without broad administration and exact-repository
-installation management with fine-grained credentials. CAO deliberately does
-not add either permission to its runtime Apps or PATs and does not automatically
-enroll repositories. Installation changes never expand the reviewed policy.
-See the [GitHub App improvements announcement](https://github.blog/changelog/2026-10-13-github-app-improvements-for-least-privilege-and-management/).
-
-### Automated App setup
-
-Use this path when the control repository and every target belong to one organization.
-
-Install the `gh cao` extension with `gh extension install githubnext/gh-cao`.
-GitHub App setup runs natively in the extension; it does not require Node.js or
-a checked-out setup script.
-
-Before setup, add every private target and alternate review repository to the exact allowlist in `.github/workflows/cao.json`:
-
-```json
-{
-  "control-plane": {
-    "scope": {
-      "allowed-owners": ["acme"],
-      "allowed-repositories": ["acme/example-service"]
-    }
-  }
-}
-```
-
-The helper reads `allowed-repositories`; it does not expand `allowed-owners` into a repository list. It adds the control repository automatically.
-
-Preview the two private App manifests and exact repository selections:
-
-```bash
-gh cao setup auth github-app \
-  --repo acme/central-agentic-ops \
-  --dry-run
-```
-
-Then create and configure the Apps:
-
-```bash
-gh cao setup auth github-app \
-  --repo acme/central-agentic-ops
-```
-
-Choose **Only select repositories** and select only those printed by the command. CAO stores client IDs as repository variables and sends private keys directly to Actions secrets.
-
-Automated setup installs the read App on the control repository and every exact
-allowlisted evidence source. The write App defaults to only the control
-repository. Repeat `--write-repository OWNER/REPO` to replace that default with
-approved output destinations; do not add write access merely because a
-repository supplies read evidence. Existing manually installed credentials can
-also be stored directly, but the verified setup path is preferred:
-
-```bash
-gh variable set GH_AW_GITHUB_READ_APP_ID \
-  --repo acme/central-agentic-ops \
-  --body '<read-app-client-id>'
-gh secret set GH_AW_GITHUB_READ_APP_PRIVATE_KEY \
-  --repo acme/central-agentic-ops \
-  < read-app-private-key.pem
-
-gh variable set GH_AW_GITHUB_WRITE_APP_ID \
-  --repo acme/central-agentic-ops \
-  --body '<write-app-client-id>'
-gh secret set GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY \
-  --repo acme/central-agentic-ops \
-  < write-app-private-key.pem
-```
-
-To inspect all GitHub App setup options:
-
-```bash
-gh cao setup auth github-app --help
-```
-
-### Multiple organizations in one enterprise
-
-[GitHub App manifests cannot create enterprise-owned Apps](https://docs.github.com/en/enterprise-cloud@latest/apps/sharing-github-apps/registering-a-github-app-from-a-manifest). Create read and write Apps in enterprise settings, install both on selected repositories in every enrolled organization, then run:
-
-```bash
-gh cao setup auth enterprise-app \
-  --repo acme/central-agentic-ops \
-  --read-client-id '<read-app-client-id>' \
-  --write-client-id '<write-app-client-id>' \
-  --dry-run
-
-gh cao setup auth enterprise-app \
-  --repo acme/central-agentic-ops \
-  --read-client-id '<read-app-client-id>' \
-  --write-client-id '<write-app-client-id>'
-```
-
-The command prompts for each private key. Never put a private key in a command argument. Enterprise ownership alone does not grant repository access; each organization installation is still required.
-
-The CLI reads `control-plane.scope.allowed-repositories` from `.github/workflows/cao.json`, groups the control repository and exact allowed repositories by owner, and verifies a selected-repository installation for each account. The manifest helper creates private organization-owned Apps only, so every selected repository must belong to the control repository organization. For multiple organizations in one enterprise, manually create enterprise-owned private Apps because GitHub App manifests do not support enterprise-owned App creation. Install them separately on each enrolled organization, then run `gh cao setup auth enterprise-app` to store their client IDs and interactively enter their private keys. Installation IDs and tokens are not stored in policy or dispatch inputs. gh-aw selects the correct installation from the target owner and repository at runtime.
-
-On a GitHub Enterprise Cloud data-residency hostname, export `GH_HOST` before
-running setup. The helper uses that host for repository API calls and all App
-registration, installation, and settings URLs. On every host, it mints a
-short-lived installation token from the newly created App key and verifies the
-exact selected repositories before completing setup.
-
-Enterprise ownership does not grant repository access or widen CAO policy. The App still has no access until each organization approves a selected-repository installation, and shared control still enforces the exact checked-in allowlist. Confirm the read App has no write permission and install the write App only where approved safe outputs may write. Public Apps are unsupported; replace an earlier public App with private organization- or enterprise-owned Apps after reviewing credential rotation.
+Installation IDs and tokens are never stored in policy or dispatch inputs.
+gh-aw selects the installation from the target owner and repository at runtime.
 
 When read-only workflow steps need `GH_TOKEN`, the selected authentication mode
 determines the profile. App mode uses the imported read App token. PAT mode maps
@@ -348,6 +387,8 @@ inventory discovery and each repository log invocation. It stops at the
 configured reserve without waiting for reset or switching credentials. App
 installation collection jobs retain independent, parallel execution.
 
+<span id="api-capacity"></span>
+
 ## API Capacity Admission
 
 Before activation, shared control checks the primary REST API capacity of the exact credential selected for control precompute. The check uses GitHub's `GET /rate_limit` endpoint, which [does not consume primary rate-limit capacity](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#checking-the-status-of-your-rate-limit). Admission reserves at least 100 core requests and raises that requirement for broader configured inventory scans.
@@ -370,6 +411,8 @@ Follow this order:
 2. For long-lived cross-repository automation, configure the least-privilege GitHub App profile. Follow [GitHub's guide to authenticated App requests in Actions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow). Shared control requests only `Actions: read` and `Contents: read` for pre-activation and still applies the checked-in CAO scope.
 3. If an App cannot be installed and the exact scope is PAT-compatible, use separate owner-scoped read-only and write-capable fine-grained PATs only after informed consent. Follow [GitHub's fine-grained PAT guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token), restrict each token to its required repositories and permissions, set expirations, and let `gh cao setup auth token` store the protected Actions secrets and non-secret repository maps.
 
+<span id="fine-grained-pat-fallback-1"></span>
+
 ## Fine-Grained PAT Fallback
 
 A PAT is not a substitute for repository or organization access. It can only exercise access already held by the user who created it, and it becomes unusable when that user loses the underlying access. Lack of organization-owner permission to install an App does not by itself make a PAT viable.
@@ -379,7 +422,7 @@ Before offering a PAT fallback, verify all of these conditions:
 1. The user can select the target organization as the PAT resource owner and already has the required access to every enrolled repository.
 2. Organization and enterprise policy permits fine-grained PATs, and any required organization approval can be obtained before the first run.
 3. Each token covers repositories from exactly one resource owner. A multi-owner control plane requires a separate read token and, when writes are approved, a separate write token for every represented owner.
-4. Every API required by the installed campaign supports fine-grained PATs. Fine-grained PATs do not currently support every endpoint, including the Checks API; do not replace a required App with a classic PAT to work around an endpoint gap.
+4. Every endpoint required by the installed campaign supports the chosen token. Check endpoint-specific requirements: for example, [creating a check run](https://docs.github.com/en/rest/checks/runs#create-a-check-run) requires a GitHub App, while reading checks is a different operation. Do not substitute a classic PAT to work around an endpoint gap.
 5. The PAT can be limited to the exact enrolled repositories, campaign-required permissions, and an explicit expiration and rotation owner.
 
 If any condition fails, stop and recommend obtaining a GitHub App installation, narrowing or splitting the scope, or involving an organization owner. Do not present a PAT as an access bypass.
@@ -436,36 +479,8 @@ Grant only permissions required by installed campaigns. The current full catalog
 
 A campaign-only installation should narrow these permissions to that campaign's workflows. Fine-grained PATs should be limited to the same repositories and permissions.
 
-Preview the owner-scoped PAT configuration:
-
-```bash
-gh cao setup auth token \
-  --repo acme/central-agentic-ops \
-  --write-repository acme/approved-output-repository \
-  --dry-run
-```
-
-Then configure the profile:
-
-```bash
-gh cao setup auth token \
-  --repo acme/central-agentic-ops \
-  --write-repository acme/approved-output-repository
-```
-
-The command prompts for every owner/role token without echoing it, stores
-owner-scoped secrets, writes repository-to-secret-name variables, and sets
-`GH_AW_GITHUB_AUTH_MODE=pat` last. Do not include a token directly in the
-command. `GH_AW_GITHUB_READ_PAT`, `GH_AW_GITHUB_WRITE_PAT`, and
-`GH_AW_GITHUB_TOKEN` remain deprecated compatibility fallbacks for existing
-installations whose authentication mode is unset.
-
-If setup is interrupted after storing one or more tokens, rerun the same
-command. The helper verifies existing repository secret names and asks whether
-to keep each one without reading its value. It prompts for missing or replaced
-owner/role tokens, then writes the complete maps and selects PAT mode. Use
-`--keep-existing` for an unattended resume or `--replace-existing` when
-intentionally rotating every configured token.
+For owner-scoped token creation, secure prompts, interrupted setup, and
+repository maps, follow [Configure a fine-grained token](control-plane-authentication.md#configure-a-fine-grained-token).
 
 ### Migrate from the legacy PAT
 
@@ -479,52 +494,16 @@ Do not copy one broad legacy token into both new secrets. Create independent tok
 
 Use a disposable tag, branch, or equivalent repository-standard probe and always clean it up. Do not perform a write probe against an unapproved production repository.
 
-### Fine-grained PAT fallback
-
-A PAT is not a substitute for repository or organization access. Use one only when:
-
-- the user already has access to every selected repository;
-- every token has one resource owner, with separate owner-scoped token pairs for a multi-owner allowlist;
-- organization policy permits the token and any required approval is complete;
-- every campaign API supports it, including the Checks API when the campaign requires checks;
-- repository selection, permissions, expiration, and rotation owner are explicit.
-
-Explain that the PAT is user-bound, longer-lived than an App token, API-limited, and manually rotated. Obtain explicit confirmation to proceed. Inability to install an App, or the presence of an existing PAT secret, is not consent.
-
-```bash
-gh cao setup auth token \
-  --repo acme/central-agentic-ops
-```
-
-For PATs:
-
-1. Create replacement read and write fine-grained PATs with the same or narrower repository access for each affected owner.
-2. Replace the corresponding `GH_AW_GITHUB_READ_PAT_<OWNER>` and `GH_AW_GITHUB_WRITE_PAT_<OWNER>` secrets.
-3. Validate read access and safe-output writes independently.
-4. Revoke the previous PATs.
-
-Enter the token only at the `gh secret set` prompt. Never use a classic PAT.
+<span id="validation"></span>
 
 ## Validate Before Activation
 
-Run one campaign with:
-
-```text
-max_repos=1
-rollout_percent=100
-safe_output_mode=review
-```
-
-Verify that:
-
-- the credential covers enrolled repositories and no unrelated repositories;
-- the read App has no write permissions;
-- the write App is installed only where approved outputs need it;
-- repository discovery and evidence reads succeed;
-- output reaches the intended private review repository;
-- the target repository does not change.
-
-Repeat this check whenever scope, campaign APIs, output mode, or review destination changes.
+Use the [activation checklist](control-plane-authentication.md#validate-before-activation)
+to prove read access, approved output routing, and a bounded `review` run before
+any explicit live promotion. Local `gh cao doctor` is not runtime credential
+proof; start with [read-only runtime verification](#explicit-runtime-credential-verification).
+Any write-and-cleanup probe needs separate authority for its exact destination.
+Recheck when scope, campaign APIs, mode, or review destination changes.
 
 ## Model Inference Is Separate
 
@@ -534,50 +513,37 @@ For this reason, verifying it up front is completely optional: most user tokens 
 
 ## Credential Reference
 
-CAO resolves available target-access credentials in this order:
+These are configuration references, not an unconditional fallback chain.
+The explicit [runtime mode](#runtime-credential-selection) selects the profile.
 
-| Priority | Credential | Configuration |
+| Name | Location | Purpose |
 | --- | --- | --- |
-| 1 | Read App | `GH_AW_GITHUB_READ_APP_ID` and `GH_AW_GITHUB_READ_APP_PRIVATE_KEY` |
-| 1 | Write App | `GH_AW_GITHUB_WRITE_APP_ID` and `GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY` |
-| 2 | Owner-scoped fine-grained PATs | `GH_AW_GITHUB_AUTH_MODE=pat`, repository maps, and `GH_AW_GITHUB_{READ,WRITE}_PAT_<OWNER>` |
-| 3 | Legacy PAT fallback | `GH_AW_GITHUB_READ_PAT`, `GH_AW_GITHUB_WRITE_PAT`, or `GH_AW_GITHUB_TOKEN` when no explicit mode is set |
-| 4 | Workflow token | `GITHUB_TOKEN` |
-
-This is runtime availability precedence, not permission to choose a PAT silently. Setup must validate the intended profile rather than relying on fallback.
+| `GH_AW_GITHUB_AUTH_MODE` | Actions variable | `app`, `pat`, or `workflow-token` |
+| `GH_AW_GITHUB_READ_APP_ID`, `GH_AW_GITHUB_WRITE_APP_ID` | Actions variables | Separate App client IDs |
+| `GH_AW_GITHUB_READ_APP_PRIVATE_KEY`, `GH_AW_GITHUB_WRITE_APP_PRIVATE_KEY` | Actions secrets | Corresponding PEM private keys |
+| `GH_AW_GITHUB_READ_PAT_<OWNER>`, `GH_AW_GITHUB_WRITE_PAT_<OWNER>` | Actions secrets | Separate owner-scoped fine-grained tokens |
+| `GH_AW_GITHUB_READ_PAT_REPOSITORIES`, `GH_AW_GITHUB_WRITE_PAT_REPOSITORIES` | Actions variables | Exact repository-to-secret-name JSON maps |
+| `GITHUB_TOKEN` | Provided by Actions | Bounded repository-local access and approved public-only monitoring |
+| `GH_AW_GITHUB_READ_PAT`, `GH_AW_GITHUB_WRITE_PAT`, `GH_AW_GITHUB_TOKEN` | Legacy Actions secrets | Compatibility only for shared-control workflows with no explicit mode; not used by Activity |
 
 Tokens are resolved inside each run. They never belong in policy, dispatch inputs, prompts, logs, safe outputs, or review bundles.
 
-### API capacity
+<span id="rotation-and-incidents"></span>
 
-Before discovery, shared control checks the selected credential's REST API capacity and stops if it cannot preserve the required reserve.
+### Rotation and revocation
 
-Reduce requests with [conditional requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests): persist the response `ETag` and send it as `If-None-Match`. Use [GraphQL](https://docs.github.com/en/graphql/guides/using-graphql-with-github-actions) when one bounded query can replace many REST calls. Do not poll while rate-limited.
-
-### Rotation and incidents
-
-For Apps, add replacement keys, validate review runs, revoke old keys, and recheck installations. For PATs, replace the affected owner-scoped read or write secret, validate its repository boundary, then revoke the previous token.
+For Apps, add replacement keys, validate bounded review runs, revoke old keys,
+and recheck installations; App private keys do not expire automatically.
+For PATs, create replacements with the same or
+narrower access, replace the affected owner's read/write secrets, validate read
+and approved safe-output access separately, then revoke the previous tokens.
+Track PAT approval and expiration yourself; CAO does not rotate credentials or
+warn before expiry. Audit-log activity is attributed to the App identity or
+the PAT owner's user account, respectively.
 
 :::danger[Suspected exposure]
 Cancel active runs and revoke the credential first. Disabling a campaign does not revoke its App installation or PAT. Inspect logs and outputs, rotate credentials, and resume only in `review` mode.
 :::
-
-## Validation
-
-Before promotion, verify:
-
-- App-only authentication when an App is configured;
-- separate read-token minting for each enrolled organization when using enterprise-owned Apps;
-- write-App installation only on approved safe-output repositories, including a reversible write-and-cleanup probe;
-- PAT-only authentication only when the App is intentionally absent, the fallback is eligible, and the operator explicitly consented;
-- expected precedence when both are configured;
-- target repository coverage;
-- organization PAT policy, approval state, resource-owner scope, expiration, and required API compatibility when using a PAT;
-- read operations for repository and workflow discovery, plus a negative assertion that the read credential cannot perform the selected write probe;
-- write operations only through the write credential and only in an approved safe-output repository, including cleanup of any reversible probe;
-- absence of `GH_AW_GITHUB_TOKEN` after a split-PAT migration has passed without the compatibility fallback;
-- a review output in the intended control repository without credential material;
-- authentication-profile review whenever target scope, campaign API requirements, mode, or review destination changes.
 
 ## Offline dashboard access
 

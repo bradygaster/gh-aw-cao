@@ -5,9 +5,9 @@ description: Promote one campaign from review through limited and scheduled live
 
 Roll out each campaign independently. Begin with one explicit target in `review`, inspect the proposal in the private review repository, and allow target writes only after that bounded scenario succeeds.
 
-For the overall lifecycle, start with
-[Review, promote, and recover](how-cao-works.md#review-promote-and-recover).
-This page supplies the campaign-specific policy fields and procedures.
+Review is real execution, not a no-write simulation. Verify
+[authority and admission](architecture.md#authority-and-admission) before
+following the campaign-specific policy fields and procedures below.
 
 ## Promotion at a Glance
 
@@ -18,8 +18,6 @@ This page supplies the campaign-specific policy fields and procedures.
 5. Increase limits only from observed evidence.
 
 Set the campaign's checked-in `enabled` field to `false` whenever authentication, routing, output quality, cost, or provenance is uncertain. Resume in `review` after correcting the issue.
-
-![A control plane promotes bounded campaigns from review to live across organization repositories.](assets/control-plane-scale.svg)
 
 ```text
 review --approve--> limited live --observe--> scheduled live

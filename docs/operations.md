@@ -22,6 +22,7 @@ linked from [deployment options](deployment.md).
 | Need | Start here |
 | --- | --- |
 | Check scheduled runs | [Routine monitoring](#routine-monitoring) |
+| Publish a finished review issue to its target | [Publishing reviewed campaign issues](#publishing-reviewed-campaign-issues) |
 | Investigate cancelled or incomplete work | [Queuing and resource exhaustion](#queuing-and-resource-exhaustion) |
 | Stop one worker, one campaign, or everything | [Emergency stop](#emergency-stop) |
 | Respond to an unsafe output or exposed credential | [Incident response](#incident-response) |
@@ -162,7 +163,17 @@ The optional Ops Publish add-on turns an explicit human label into a determinist
 
 Enable `control-plane.publishing` in `.github/workflows/cao.json`, declare its `reviewers` and optional `control-repositories`, and create the `ops:publish-to-target` label. Applying the label to an eligible bot-authored review issue validates the originating worker run, derives its target and campaign from trusted run metadata, enforces checked-in scope and target-owned campaign authority, creates the target issue with provenance, and closes the review issue.
 
-This path supports issue outputs only. It does not transfer issues, publish pull requests or comments, or apply artifact-backed review bundles. GitHub issue transfer is not used because it is limited to repositories under one owner and cannot transfer a private issue to a public repository. See the add-on's `README.md` for installation, credentials, and failure behavior.
+Once review is finished, apply **`ops:publish-to-target`** to the **review issue**:
+
+```bash
+gh issue edit ISSUE_NUMBER \
+  --repo OWNER/REVIEW_REPO \
+  --add-label "ops:publish-to-target"
+```
+
+Replace `ISSUE_NUMBER` with the review issue number and `OWNER/REVIEW_REPO` with the repository that holds it, not the target repository. A successful publication recreates the reviewed issue in its validated target repository, posts the target URL on the review issue, and closes the review issue. **It does not rerun the agent or change campaign mode.**
+
+This path supports issue outputs only. It does not transfer issues, publish pull requests or comments, or apply artifact-backed review bundles. GitHub issue transfer is not used because it is limited to repositories under one owner and cannot transfer a private issue to a public repository. See the [Ops Publish add-on guide](https://github.com/githubnext/gh-cao/blob/main/ops-publish/README.md) for installation, credentials, and failure behavior.
 
 ## Publishing Pages Reports
 
@@ -255,11 +266,13 @@ attempt. A newer explicit credit measurement, including zero, takes precedence
 over a preserved summary.
 
 Open **Value** in the sidebar for published workflow results, then select a card
-to inspect its native evidence report. A workflow's **Value** tab opens its own
-results. Reports keep intent, safe outputs, accepted implementations and
-independent repository snapshots separate; snapshot drill-downs expose the exact
-retained items counted. See [Operational Value](operational-value.md) for the
-measurement and publication contract.
+to inspect its native evidence report. Value is not a permanent workflow tab;
+the top-level destination is the single discovery surface. Collection-health
+cards may open a workflow-scoped detail page, while reports keep intent, safe
+outputs, accepted implementations and independent repository snapshots separate.
+Snapshot drill-downs expose the exact retained items counted. See
+[Operational Value](operational-value.md) for the measurement and publication
+contract.
 
 The legacy **Operational Value** page, its **Repository measurements** tab and
 repository drill-downs are no longer shipped. Existing canonical observations
@@ -325,7 +338,7 @@ acquisition. Opening the dashboard performs queries, not collection or API calls
 
 The Actions and hosted collectors carry retained compact observations forward
 for **365 days**, independently of the run collection window. Browser storage,
-the SQLite projection and doctor also keep a year of outcomes without retaining
+the SQLite projection and `repair-database` also keep a year of outcomes without retaining
 extra run details; an explicitly longer SQLite run archive remains longer.
 At weekly cadence this is about 52 observation instants per repository and
 measure, rather than a copy of every run. Select a wider dashboard time window

@@ -1,29 +1,132 @@
 {
   "queries": [
     {
+      "name": "value-measurement-facts",
+      "subject": "Original native primary and diagnostic observations from reviewed batch evaluators.",
+      "objective": "Keep periods, native units, evaluator identity and missingness inspectable without inventing delivery events.",
+      "acceptance": "Null is unavailable, not zero. Interval measurements are not snapshots or cumulative accepted contributions.",
+      "from": "workflow-value-measurements",
+      "time": { "range": "all" },
+      "compute": [
+        { "as": "measurement-marker", "function": "literal", "args": [{ "value": 1 }] },
+        { "as": "measurement-missing", "function": "equals-any", "args": [{ "field": "value" }, { "value": null }] },
+        { "as": "known-measurement", "function": "concat", "args": [{ "field": "value" }, { "value": " " }, { "field": "metric-unit" }] },
+        { "as": "measurement-label", "function": "if", "args": [{ "field": "measurement-missing" }, { "value": "Not measured" }, { "field": "known-measurement" }] },
+        { "as": "measurement-context", "function": "concat", "args": [{ "field": "repository" }, { "value": " · " }, { "field": "workflow-name" }] }
+      ]
+    },
+    {
+      "name": "value-measurement-order",
+      "subject": "Latest assessment of each workflow measure, including unavailable assessments.",
+      "objective": "Do not let an older numeric value hide a newer incomplete period.",
+      "acceptance": "Choose latest cutoff and assessment before considering value or coverage; preserve evaluator digest.",
+      "from": "value-measurement-facts",
+      "window": [{
+        "operation": "change", "field": "measurement-marker", "as": "older-measurement", "mode": "absolute",
+        "groupby": ["repository", "workflow-route", "workflow-slug", "campaign", "value-id"],
+        "order-by": [{ "field": "window-end", "direction": "desc" }, { "field": "observed-at", "direction": "desc" }]
+      }]
+    },
+    {
+      "name": "value-current-measurements",
+      "subject": "Latest native primary measurements, separately from event-ledger reports.",
+      "objective": "Expose ordinary reviewed batch results on the same Value surface.",
+      "acceptance": "Do not infer healthy outcomes, accepted implementations or complete coverage from a non-null value.",
+      "from": "value-measurement-order",
+      "filter": { "predicates": [{ "field": "older-measurement", "equals": "unknown" }, { "field": "metric-role", "equals": "primary" }] }
+    },
+    {
       "name": "value-evidence-facts",
       "subject": "Published original evidence for frozen workflow value contracts.",
       "objective": "Keep report identity, target repository, workflow and capture together.",
       "acceptance": "Read canonical evidence only. No GitHub acquisition, HTML loading or fabricated evidence on navigation.",
       "from": "operational-value-evidence",
-      "time": { "range": "all" },
-      "compute": [
-        { "as": "workflow-route", "function": "concat", "args": [{ "field": "organization" }, { "value": "/" }, { "field": "repository" }, { "value": ":" }, { "field": "workflow-path" }] }
-      ]
+      "time": { "range": "all" }
     },
     {
       "name": "value-contracts",
-      "subject": "Latest retained report contract per repository, workflow and native measure.",
-      "objective": "Prevent old reports or versions from masking newer evidence.",
-      "acceptance": "Select the latest cutoff then capture before evaluating missing or incomplete evidence. Preserve separate measures.",
+      "subject": "One retained contract per repository, workflow and versioned native measure.",
+      "objective": "Compute each report independently before selecting current workflow results.",
+      "acceptance": "Preserve separate versions and exact report identity. Latest-version selection belongs to the workflow result query.",
       "from": "value-evidence-facts",
       "filter": { "predicates": [{ "field": "fact-kind", "equals": "contract" }] },
+      "compute": [{ "as": "report-marker", "function": "literal", "args": [{ "value": 1 }] }]
+    },
+    {
+      "name": "value-measurement-captures",
+      "subject": "Accepted complete native batch assessments, separately from collection decisions.",
+      "objective": "Expose actual retained capture clocks without advancing them on failure or partial data.",
+      "acceptance": "Only mature complete non-null primary assessments establish an accepted capture; zero remains valid.",
+      "from": "value-measurement-facts",
+      "filter": { "predicates": [
+        { "field": "metric-role", "equals": "primary" }, { "field": "measurement-missing", "equals": false },
+        { "field": "coverage-status", "equals": "complete" }, { "field": "maturity-status", "equals": "matured" }
+      ] },
       "compute": [{ "as": "report-marker", "function": "literal", "args": [{ "value": 1 }] }],
+      "select": [
+        { "field": "workflow-route" }, { "field": "observed-at" }, { "field": "window-end" },
+        { "field": "id", "as": "capture-id" }, { "field": "report-marker" }
+      ]
+    },
+    {
+      "name": "value-contract-captures",
+      "subject": "Original capture clocks from accepted rich evidence packets.",
+      "objective": "Align capture metadata without merging measured populations.",
+      "acceptance": "This union is capture metadata only, never combined metric totals.",
+      "from": "value-contracts",
+      "select": [
+        { "field": "workflow-route" }, { "field": "observed-at" }, { "field": "window-end" },
+        { "field": "report-id", "as": "capture-id" }, { "field": "report-marker" }
+      ]
+    },
+    {
+      "name": "value-capture-order",
+      "subject": "Actual captures across the retained measures of each workflow.",
+      "objective": "Expose the last accepted capture independently of collection decisions.",
+      "acceptance": "Select by original capture time. A deferred or failed check cannot advance evidence clocks.",
+      "from": "value-contract-captures",
+      "union": ["value-measurement-captures"],
       "window": [{
-        "operation": "change", "field": "report-marker", "as": "older-report", "mode": "absolute",
-        "groupby": ["organization", "repository", "workflow", "metric-id"],
-        "order-by": [{ "field": "window-end", "direction": "desc" }, { "field": "observed-at", "direction": "desc" }, { "field": "report-id", "direction": "desc" }]
+        "operation": "change", "field": "report-marker", "as": "later-capture", "mode": "absolute",
+        "groupby": ["workflow-route"],
+        "order-by": [{ "field": "observed-at", "direction": "desc" }, { "field": "capture-id", "direction": "desc" }]
       }]
+    },
+    {
+      "name": "value-latest-capture",
+      "subject": "One last accepted capture per workflow, not a freshness claim.",
+      "objective": "Join capture and cutoff without multiplying collection registrations.",
+      "acceptance": "Missing packets remain unavailable, never zero or an inferred successful collection.",
+      "from": "value-capture-order",
+      "filter": { "predicates": [{ "field": "later-capture", "equals": "unknown" }] }
+    },
+    {
+      "name": "value-collection-health",
+      "subject": "Reviewed registration and authoritative collection decisions, with independently retained evidence.",
+      "objective": "Explain disabled, unconfigured, deferred, failed and not-yet-captured workflows.",
+      "acceptance": "Use published collector facts, not missing result cards. Preserve decision, attempt, capture and cutoff as distinct clocks.",
+      "from": "workflow-value-collections",
+      "time": { "range": "all" },
+      "joins": [{
+        "source": "value-latest-capture", "type": "left",
+        "on": [{ "left": "workflow-route", "right": "workflow-route" }],
+        "fields": [{ "field": "observed-at", "as": "captured-at" }, { "field": "window-end", "as": "evidence-cutoff" }]
+      }],
+      "compute": [
+        { "as": "workflow-context", "function": "concat", "args": [{ "field": "workflow" }, { "value": " · " }, { "field": "organization" }, { "value": "/" }, { "field": "repository" }] },
+        { "as": "capture-missing", "function": "equals-any", "args": [{ "field": "captured-at" }, { "value": null }] },
+        { "as": "evidence-state", "function": "if", "args": [{ "field": "capture-missing" }, { "value": "No retained capture" }, { "value": "Retained evidence available" }] }
+      ],
+      "order-by": [{ "field": "organization", "direction": "asc" }, { "field": "repository", "direction": "asc" }, { "field": "workflow", "direction": "asc" }]
+    },
+    {
+      "name": "value-registered-collections",
+      "subject": "Reviewed Value registrations, including explicit disables and registrations with no report.",
+      "objective": "Make collection health visible before the first accepted packet.",
+      "acceptance": "Registration is independent of measured outcomes. No enrollment or acquisition follows from navigation.",
+      "from": "value-collection-health",
+      "filter": { "predicates": [{ "field": "registration", "in": ["enabled", "disabled"] }] },
+      "limit": 1000
     },
     {
       "name": "value-snapshots",
@@ -34,7 +137,6 @@
       "filter": { "predicates": [{ "field": "fact-kind", "equals": "snapshot" }] },
       "compute": [
         { "as": "snapshot-marker", "function": "literal", "args": [{ "value": 1 }] },
-        { "as": "snapshot-route", "function": "concat", "args": [{ "field": "report-id" }, { "value": "|" }, { "field": "fact-id" }] },
         { "as": "encoded-snapshot", "function": "url-encode", "args": [{ "field": "snapshot-route" }] },
         { "as": "snapshot-href", "function": "concat", "args": [{ "value": "#page-value-snapshot?snapshot=" }, { "field": "encoded-snapshot" }] }
       ],
@@ -47,7 +149,7 @@
       "acceptance": "Strictly use retained snapshot time. A post-adoption snapshot is not a pre-adoption baseline.",
       "from": "value-snapshots",
       "window": [{ "operation": "change", "field": "snapshot-marker", "as": "earlier-snapshot", "mode": "absolute",
-        "groupby": ["report-id"], "order-by": [{ "field": "at", "direction": "asc" }] }]
+        "groupby": ["report-id", "workflow-route"], "order-by": [{ "field": "at", "direction": "asc" }] }]
     },
     {
       "name": "value-first-snapshot",
@@ -64,7 +166,7 @@
       "acceptance": "Preserve the latest retained snapshot even if unchanged.",
       "from": "value-snapshots",
       "window": [{ "operation": "change", "field": "snapshot-marker", "as": "later-snapshot", "mode": "absolute",
-        "groupby": ["report-id"], "order-by": [{ "field": "at", "direction": "desc" }] }]
+        "groupby": ["report-id", "workflow-route"], "order-by": [{ "field": "at", "direction": "desc" }] }]
     },
     {
       "name": "value-last-snapshot",
@@ -81,7 +183,7 @@
       "acceptance": "Count distinct validated output facts. Tracking corroboration is not an applied receipt.",
       "from": "value-evidence-facts",
       "filter": { "predicates": [{ "field": "fact-kind", "equals": "output" }] },
-      "aggregate": { "by": ["report-id"], "values": [
+      "aggregate": { "by": ["report-id", "workflow-route"], "values": [
         { "field": "fact-id", "as": "retained-outputs", "reducer": "count" },
         { "field": "fact-id", "as": "receipt-outputs", "reducer": "count", "filter": { "predicates": [{ "field": "origin", "equals": "receipt-verified" }] } }
       ] }
@@ -104,7 +206,7 @@
         { "as": "previous-candidate", "function": "if", "args": [{ "field": "before-previous" }, { "value": 0 }, { "field": "value" }] },
         { "as": "previous-effect", "function": "if", "args": [{ "field": "before-current" }, { "field": "previous-candidate" }, { "value": 0 }] }
       ],
-      "aggregate": { "by": ["report-id"], "values": [
+      "aggregate": { "by": ["report-id", "workflow-route"], "values": [
         { "field": "fact-id", "as": "accepted-implementations", "reducer": "count" },
         { "field": "value", "as": "known-result", "reducer": "sum" },
         { "field": "current-effect", "as": "known-recent", "reducer": "sum" },
@@ -138,7 +240,7 @@
         { "as": "covered-current", "function": "if", "args": [{ "field": "positive-current" }, { "field": "current-duration" }, { "value": 0 }] },
         { "as": "covered-previous", "function": "if", "args": [{ "field": "positive-previous" }, { "field": "previous-duration" }, { "value": 0 }] }
       ],
-      "aggregate": { "by": ["report-id"], "values": [
+      "aggregate": { "by": ["report-id", "workflow-route"], "values": [
         { "field": "duration", "as": "covered-duration", "reducer": "sum" },
         { "field": "covered-current", "as": "covered-current", "reducer": "sum" },
         { "field": "covered-previous", "as": "covered-previous", "reducer": "sum" }
@@ -151,9 +253,9 @@
       "acceptance": "Absent output context is unknown. Missing coverage withholds complete totals and recent zero, retaining labelled known subtotals.",
       "from": "value-contracts",
       "joins": [
-        { "source": "value-output-counts", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }], "fields": [{ "field": "retained-outputs", "as": "retained-outputs" }, { "field": "receipt-outputs", "as": "retained-receipts" }] },
-        { "source": "value-implementation-counts", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }], "fields": [{ "field": "accepted-implementations", "as": "retained-implementations" }, { "field": "known-result", "as": "known-result" }, { "field": "known-recent", "as": "known-recent" }, { "field": "known-previous", "as": "known-previous" }] },
-        { "source": "value-covered-durations", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }], "fields": [{ "field": "covered-duration", "as": "covered-duration" }, { "field": "covered-current", "as": "covered-current" }, { "field": "covered-previous", "as": "covered-previous" }] }
+        { "source": "value-output-counts", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "workflow-route", "right": "workflow-route" }], "fields": [{ "field": "retained-outputs", "as": "retained-outputs" }, { "field": "receipt-outputs", "as": "retained-receipts" }] },
+        { "source": "value-implementation-counts", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "workflow-route", "right": "workflow-route" }], "fields": [{ "field": "accepted-implementations", "as": "retained-implementations" }, { "field": "known-result", "as": "known-result" }, { "field": "known-recent", "as": "known-recent" }, { "field": "known-previous", "as": "known-previous" }] },
+        { "source": "value-covered-durations", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "workflow-route", "right": "workflow-route" }], "fields": [{ "field": "covered-duration", "as": "covered-duration" }, { "field": "covered-current", "as": "covered-current" }, { "field": "covered-previous", "as": "covered-previous" }] }
       ],
       "compute": [
         { "as": "start-ms", "function": "timestamp", "args": [{ "field": "window-start" }] },
@@ -182,8 +284,8 @@
       "acceptance": "This first/last snapshot comparison is not the adjacent-period alert policy, a pre-adoption baseline or causal workflow credit. One snapshot is not zero change.",
       "from": "value-report-delivery",
       "joins": [
-        { "source": "value-first-snapshot", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }], "fields": [{ "field": "value", "as": "reference-value" }, { "field": "at", "as": "reference-at" }] },
-        { "source": "value-last-snapshot", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }], "fields": [{ "field": "value", "as": "current-value" }, { "field": "at", "as": "current-at" }, { "field": "snapshot-href", "as": "current-snapshot-href" }] }
+        { "source": "value-first-snapshot", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "workflow-route", "right": "workflow-route" }], "fields": [{ "field": "value", "as": "reference-value" }, { "field": "at", "as": "reference-at" }] },
+        { "source": "value-last-snapshot", "type": "left", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "workflow-route", "right": "workflow-route" }], "fields": [{ "field": "value", "as": "current-value" }, { "field": "at", "as": "current-at" }, { "field": "snapshot-href", "as": "current-snapshot-href" }] }
       ],
       "compute": [
         { "as": "same-snapshot", "function": "equals-any", "args": [{ "field": "reference-at" }, { "field": "current-at" }] },
@@ -222,12 +324,118 @@
       ]
     },
     {
+      "name": "value-workflow-result-order",
+      "subject": "Version ordering after independently computing each report.",
+      "objective": "Keep exact report queries partition-local without changing latest-version selection.",
+      "acceptance": "Rank cutoffs then captures within each workflow and measure. Explicit report links do not need other report facts.",
+      "from": "value-report-summary",
+      "window": [{
+        "operation": "change", "field": "report-marker", "as": "older-report", "mode": "absolute",
+        "groupby": ["organization", "repository", "workflow", "workflow-route", "metric-id"],
+        "order-by": [{ "field": "window-end", "direction": "desc" }, { "field": "observed-at", "direction": "desc" }, { "field": "report-id", "direction": "desc" }]
+      }]
+    },
+    {
       "name": "value-workflow-results",
       "subject": "Current published report results per native measure.",
       "objective": "Expose the latest coherent packet on the workflow Value tab.",
       "acceptance": "Never replace missing facts with an older measured version. Explicit report links retain their own version.",
-      "from": "value-report-summary",
+      "from": "value-workflow-result-order",
       "filter": { "predicates": [{ "field": "older-report", "equals": "unknown" }] }
+    },
+    {
+      "name": "value-workflow-headline-order",
+      "subject": "Most recent current report across the measures of each workflow.",
+      "objective": "Give each workflow and repository one headline result; other measures stay on the workflow page.",
+      "acceptance": "Select by cutoff then capture. Never replace a missing result with an older or zero value.",
+      "from": "value-workflow-results",
+      "window": [{ "operation": "change", "field": "report-marker", "as": "older-headline", "mode": "absolute",
+        "groupby": ["workflow-route"],
+        "order-by": [{ "field": "window-end", "direction": "desc" }, { "field": "observed-at", "direction": "desc" }, { "field": "report-id", "direction": "desc" }] }]
+    },
+    {
+      "name": "value-workflow-headlines",
+      "subject": "One headline result per workflow and repository.",
+      "objective": "Join cleanly to collection health without multiplying rows.",
+      "acceptance": "Exactly one row per workflow route.",
+      "from": "value-workflow-headline-order",
+      "filter": { "predicates": [{ "field": "older-headline", "equals": "unknown" }] }
+    },
+    {
+      "name": "value-workflow-reported-overview",
+      "subject": "Workflows with a retained headline result, with any published collection state.",
+      "objective": "Show a report even when no collection fact was published for its workflow.",
+      "acceptance": "A missing collection fact stays unknown, never an inferred registration.",
+      "from": "value-workflow-headlines",
+      "joins": [{
+        "source": "value-collection-health", "type": "left",
+        "on": [{ "left": "workflow-route", "right": "workflow-route" }],
+        "fields": [
+          { "field": "collection-state", "as": "overview-state" },
+          { "field": "reason", "as": "overview-reason" }
+        ]
+      }],
+      "compute": [
+        { "as": "overview-title", "function": "concat", "args": [{ "field": "organization" }, { "value": "/" }, { "field": "repository" }, { "value": " \u00b7 " }, { "field": "workflow-label" }] },
+        { "as": "overview-evidence", "function": "literal", "args": [{ "value": "Retained evidence available" }] }
+      ],
+      "select": [
+        { "field": "workflow-route" }, { "field": "overview-title" }, { "field": "overview-state" },
+        { "field": "overview-reason" }, { "field": "overview-evidence" },
+        { "field": "observed-at", "as": "overview-captured" }, { "field": "window-end", "as": "overview-cutoff" },
+        { "field": "change-label", "as": "trend-label" }, { "field": "movement", "as": "trend-movement" },
+        { "field": "snapshot-name", "as": "trend-measure" }, { "field": "report-href", "as": "overview-href" }
+      ]
+    },
+    {
+      "name": "value-workflow-registered-reports",
+      "subject": "Registered workflows marked with whether a headline result exists.",
+      "objective": "Separate registration from retained outcomes before selecting unreported workflows.",
+      "acceptance": "Join on workflow route only; one row per registration.",
+      "from": "value-registered-collections",
+      "joins": [{
+        "source": "value-workflow-headlines", "type": "left",
+        "on": [{ "left": "workflow-route", "right": "workflow-route" }],
+        "fields": [{ "field": "report-id", "as": "headline-report" }]
+      }],
+      "compute": [
+        { "as": "has-report", "function": "equals-any", "args": [{ "field": "headline-report" }, { "value": null }] }
+      ]
+    },
+    {
+      "name": "value-workflow-unreported-overview",
+      "subject": "Registered workflows that have no retained headline result.",
+      "objective": "Keep collection health visible before the first accepted packet.",
+      "acceptance": "No result is not zero value or a healthy outcome.",
+      "from": "value-workflow-registered-reports",
+      "filter": { "predicates": [{ "field": "has-report", "equals": true }] },
+      "compute": [
+        { "as": "overview-title", "function": "concat", "args": [{ "field": "organization" }, { "value": "/" }, { "field": "repository" }, { "value": " \u00b7 " }, { "field": "workflow" }] },
+        { "as": "trend-label", "function": "literal", "args": [{ "value": "No retained result" }] },
+        { "as": "trend-movement", "function": "literal", "args": [{ "value": "No result to compare" }] },
+        { "as": "trend-measure", "function": "literal", "args": [{ "value": "Not available" }] },
+        { "as": "encoded-workflow", "function": "url-encode", "args": [{ "field": "workflow-route" }] },
+        { "as": "overview-href", "function": "concat", "args": [{ "value": "#page-workflow-value?workflow=" }, { "field": "encoded-workflow" }] }
+      ],
+      "filter": { "predicates": [{ "field": "has-report", "equals": true }] },
+      "select": [
+        { "field": "workflow-route" }, { "field": "overview-title" },
+        { "field": "collection-state", "as": "overview-state" },
+        { "field": "reason", "as": "overview-reason" }, { "field": "evidence-state", "as": "overview-evidence" },
+        { "field": "captured-at", "as": "overview-captured" }, { "field": "evidence-cutoff", "as": "overview-cutoff" },
+        { "field": "trend-label" }, { "field": "trend-movement" }, { "field": "trend-measure" },
+        { "field": "overview-href" }
+      ]
+    },
+    {
+      "name": "value-workflow-overview",
+      "subject": "One row per workflow and repository: collection health plus its headline result trend.",
+      "objective": "Show the first-to-last trend and collection state in a single card.",
+      "acceptance": "Missing reports remain unavailable, never zero. Registration and outcome stay independent facts.",
+      "from": "value-workflow-reported-overview",
+      "union": ["value-workflow-unreported-overview"],
+      "order-by": [{ "field": "overview-title", "direction": "asc" }],
+      "limit": 1000
     },
     {
       "name": "value-intent-sources",
@@ -310,10 +518,45 @@
       "acceptance": "Only retained items are shown. Missing item evidence must not look like an empty measured population.",
       "from": "value-evidence-facts",
       "filter": { "predicates": [{ "field": "fact-kind", "equals": "snapshot-item" }] },
-      "joins": [{ "source": "value-snapshots", "type": "inner", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "parent-id", "right": "fact-id" }], "fields": [{ "field": "snapshot-route", "as": "snapshot-route" }, { "field": "at", "as": "snapshot-at" }] }]
+      "joins": [{ "source": "value-snapshots", "type": "inner", "on": [{ "left": "report-id", "right": "report-id" }, { "left": "parent-id", "right": "fact-id" }, { "left": "snapshot-route", "right": "snapshot-route" }], "fields": [{ "field": "at", "as": "snapshot-at" }] }]
     }
   ],
   "pages": [
+    {
+      "id": "value-measurement", "kind": "custom", "title": "Native measurement", "icon": "graph",
+      "description": "Inspect an original batch assessment and its exact evidence period without inferring accepted changes or verified quality.",
+      "intent": "Inspect a native outcome measurement under its frozen evaluator.",
+      "subject": "One original canonical operational-value observation.",
+      "objective": "Keep missingness, coverage, maturity and immutable fingerprints visible.",
+      "acceptance": "Never replace null with zero or reinterpret interval results as repository snapshots.",
+      "route": { "hash-query-parameter": "measurement", "navigation-page": "value", "breadcrumbs": [{ "page": "value" }] },
+      "views": [{
+        "id": "native-measurement", "title": "Measured outcome",
+        "data": { "source": "value-measurement-facts", "arguments": [{ "name": "measurement", "field": "id" }], "time": { "range": "all" }, "query-context": false },
+        "mark": "list", "list": { "style": "entity-cards", "card": "workflow-measurement", "icon": "graph" },
+        "encoding": { "columns": [{ "field": "measurement-label", "type": "nominal", "title": "Value" }] }, "layout": "full"
+      }, {
+        "id": "native-measurement-evidence", "title": "Period and evidence identity",
+        "data": { "source": "value-measurement-facts", "arguments": [{ "name": "measurement", "field": "id" }], "time": { "range": "all" }, "query-context": false },
+        "mark": "table", "layout": "full",
+        "encoding": { "columns": [
+          { "field": "metric-name", "type": "nominal", "title": "Measure" },
+          { "field": "measurement-label", "type": "nominal", "title": "Value" },
+          { "field": "metric-direction", "type": "nominal", "title": "Direction" },
+          { "field": "maturity-status", "type": "nominal", "title": "Maturity" },
+          { "field": "coverage-status", "type": "nominal", "title": "Coverage" },
+          { "field": "missing-reason", "type": "nominal", "title": "Evidence gap" },
+          { "field": "window-start", "type": "temporal", "title": "Window start", "format": "human-friendly-timestamp" },
+          { "field": "window-end", "type": "temporal", "title": "Window end", "format": "human-friendly-timestamp" },
+          { "field": "observed-at", "type": "temporal", "title": "Assessed at", "format": "human-friendly-timestamp" },
+          { "field": "metric-role", "type": "nominal", "title": "Role" },
+          { "field": "evaluator-digest", "type": "nominal", "title": "Frozen evaluator" },
+          { "field": "evidence-digest", "type": "nominal", "title": "Original evidence digest" },
+          { "field": "eligible-count", "type": "quantitative", "title": "Eligible population" },
+          { "field": "population-digest", "type": "nominal", "title": "Population identity" }
+        ] }
+      }]
+    },
     {
       "id": "workflow-value", "kind": "custom", "title": "Workflow value", "icon": "trophy",
       "description": "Inspect measured repository movement and open the evidence behind a workflow's result.",
@@ -321,14 +564,17 @@
       "subject": "Frozen workflow value measurements and their published evidence.",
       "objective": "See native outcome movement at a glance without confusing it with workflow activity.",
       "acceptance": "Cards and reports use the same evidence packet. Show comparison dates, direction and unavailable evidence; never imply causal credit or acquire evidence on navigation.",
-      "route": { "hash-query-parameter": "workflow", "navigation-page": "value", "tab": "value", "breadcrumbs": [{ "page": "value" }],
-        "tabs": [
-          { "id": "insights", "label": "Insights", "icon": "graph", "page": "workflow-runtime" },
-          { "id": "reports", "label": "Reports", "icon": "issue-opened", "page": "workflow-detail" },
-          { "id": "value", "label": "Value", "icon": "trophy", "page": "workflow-value" },
-          { "id": "runs", "label": "Runs", "icon": "play", "page": "workflow-runs" }
-        ] },
+      "route": { "hash-query-parameter": "workflow", "navigation-page": "value", "breadcrumbs": [{ "page": "value" }] },
       "views": [{
+        "id": "workflow-value-collection-health", "title": "Collection health",
+        "subject": "The selected workflow's published registration and collection decision.",
+        "objective": "Separate acquisition health from retained repository outcomes.",
+        "acceptance": "Show actual reasons and separate clocks. Absent collection facts are unknown, not proof of absent registration.",
+        "data": { "source": "value-collection-health", "arguments": [{ "name": "workflow", "field": "workflow-route" }], "query-context": false, "time": { "range": "all" } },
+        "mark": "list", "list": { "style": "entity-cards", "card": "workflow-value-collection", "icon": "pulse" },
+        "encoding": { "columns": [{ "field": "workflow-context", "type": "nominal", "title": "Workflow" }] },
+        "layout": "full", "empty-message": "Collection status has not been published for this workflow. Missing status does not prove that collection is unconfigured."
+      }, {
         "id": "workflow-value-cards", "title": "Repository outcomes",
         "subject": "Direction-aware native changes for this workflow's measured repository problems.",
         "objective": "Open the evidence behind one compact result card.",
@@ -338,7 +584,14 @@
         "list": { "style": "entity-cards", "card": "workflow-value-result", "icon": "trophy",
           "drill": { "type": "query", "page": "value-report", "query": "value-report-summary", "title-field": "snapshot-name", "arguments": [{ "name": "report", "field": "report-id" }] } },
         "encoding": { "columns": [{ "field": "change-label", "type": "nominal", "title": "Observed change" }] },
-        "layout": "full", "empty-message": "No value evidence has been published for this workflow. Configure a frozen measurement with /add-operational-value; missing evidence is not zero value."
+        "layout": "full", "empty-message": "No accepted Value evidence is retained for this workflow. See collection health above; missing evidence is not zero value."
+      }, {
+        "id": "workflow-native-measurements", "title": "Native measurements",
+        "data": { "source": "value-current-measurements", "route-field": "workflow-route", "query-context": false, "time": { "range": "all" } },
+        "mark": "list", "list": { "style": "entity-cards", "card": "workflow-measurement", "icon": "graph",
+          "drill": { "type": "query", "page": "value-measurement", "query": "value-measurement-facts", "title-field": "metric-name", "arguments": [{ "name": "measurement", "field": "id" }] } },
+        "encoding": { "columns": [{ "field": "measurement-label", "type": "nominal", "title": "Value" }] },
+        "layout": "full", "empty-message": "No native batch measurements are retained for this workflow."
       }]
     },
     {
@@ -371,23 +624,24 @@
     },
     {
       "id": "value", "kind": "custom", "title": "Value", "icon": "trophy",
-      "description": "Review measured results and follow the evidence behind each workflow's contribution.",
-      "intent": "Start with repository outcomes, then inspect the workflow evidence behind a result.",
-      "subject": "Latest published workflow value reports across repositories.",
-      "objective": "Find a measured result and open its native evidence report.",
+      "description": "Inspect collection health, then review retained results at their actual capture and cutoff dates.",
+      "intent": "Distinguish collection availability from measured repository outcomes.",
+      "subject": "Reviewed Value registrations and latest retained workflow reports.",
+      "objective": "Explain missing or delayed evidence and open the native evidence that is available.",
       "acceptance": "Keep native units, direction, repository, workflow, dates and unknowns visible. No alert score, causal credit or GitHub acquisition.",
       "views": [{
-        "id": "value-results", "title": "Workflow results", "show-title": false,
-        "subject": "Direction-aware results from published frozen evidence packets.",
-        "objective": "Open a result's intent, output, acceptance and independent measurement trail.",
-        "acceptance": "Use the same latest-packet selector and reusable card as the workflow shortcut. Missing reports are unconfigured, never zero value or healthy.",
-        "data": { "source": "value-workflow-results", "query-context": false, "time": { "range": "all" } },
+        "id": "value-workflows", "title": "Workflows", "show-title": false,
+        "description": "Optional acquisition must leave capacity for Activity. A recent status check does not make retained measurements fresh.",
+        "subject": "One card per workflow and repository: collection state and its headline result trend.",
+        "objective": "Open retained evidence directly, while workflows without a report open collection detail.",
+        "acceptance": "Never infer opt-in, successful capture or zero value from missing reports.",
+        "data": { "source": "value-workflow-overview", "query-context": false, "time": { "range": "all" } },
         "mark": "list",
-        "list": { "style": "entity-cards", "card": "workflow-value-result", "icon": "trophy",
-          "drill": { "type": "query", "page": "value-report", "query": "value-report-summary", "title-field": "workflow-name", "arguments": [{ "name": "report", "field": "report-id" }] } },
-        "encoding": { "columns": [{ "field": "change-label", "type": "nominal", "title": "Observed change" }] },
+        "list": { "style": "entity-cards", "card": "workflow-value-overview", "icon": "trophy",
+          "drill": { "type": "external", "field": "overview-href" } },
+        "encoding": { "columns": [{ "field": "overview-title", "type": "nominal", "title": "Workflow" }] },
         "layout": "full",
-        "empty-message": "No workflow value reports have been published. Use /add-operational-value to define a frozen measure and publish evidence."
+        "empty-message": "No reviewed Value registrations are present in the published collection inventory. If that inventory is unavailable, configuration is unknown."
       }]
     }
   ]

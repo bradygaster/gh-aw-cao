@@ -32,6 +32,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/githubnext/gh-cao/server/internal/admission"
+	"github.com/githubnext/gh-cao/server/internal/adxingest"
+	"github.com/githubnext/gh-cao/server/internal/adxtrace"
 	"github.com/githubnext/gh-cao/server/internal/audit"
 	"github.com/githubnext/gh-cao/server/internal/dashboardstore"
 	"github.com/githubnext/gh-cao/server/internal/githubapp"
@@ -44,6 +46,8 @@ import (
 	"github.com/githubnext/gh-cao/server/internal/postgresx"
 	"github.com/githubnext/gh-cao/server/internal/query"
 	"github.com/githubnext/gh-cao/server/internal/repositorymemory"
+	"github.com/githubnext/gh-cao/server/internal/sessionarchive"
+	"github.com/githubnext/gh-cao/server/internal/sessionarchiveblob"
 	"github.com/githubnext/gh-cao/server/internal/sqlitex"
 	"github.com/githubnext/gh-cao/server/internal/telemetry"
 )
@@ -91,8 +95,13 @@ type Config struct {
 	Logger               *log.Logger
 	// Audit records security audit events for administrator and hosted CLI
 	// operations; nil disables them (local mode and tests).
-	Audit     *audit.Logger
-	Admission *AdmissionConfig
+	Audit              *audit.Logger
+	Admission          *AdmissionConfig
+	ADX                *adxingest.Config
+	ADXTraces          *adxtrace.Config
+	SessionArchive     *sessionarchive.Config
+	SessionArchiveBlob *sessionarchiveblob.Config
+	SessionArchiveRead *SessionArchiveReadAccess
 	// RateLimits overrides inbound request rate limits; the zero value keeps
 	// the production defaults.
 	RateLimits RateLimitConfig
@@ -107,6 +116,7 @@ type App struct {
 	ownedOperational operational.Store
 	database         dashboardstore.Store
 	ownedDatabase    dashboardstore.Store
+	localBackfill    *localSQLiteBackfill
 	closeDatabase    sync.Once
 	closeError       error
 	databaseQueries  []query.Definition
@@ -139,6 +149,9 @@ type App struct {
 	hostedCLI        *hostedCLI
 	valuePublisher   operationalValuePublisher
 	admission        *admission.Service
+	adx              *adxingest.Worker
+	adxTraces        *adxtrace.Worker
+	sessionArchive   *sessionArchiveService
 }
 
 func New(ctx context.Context, store operational.Store, config Config) (*App, error) {
@@ -153,6 +166,16 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	if config.Database == nil || isPostgres && postgresDatabase == nil || localSQLite && sqliteDatabase == nil {
 		return nil, errors.New("dashboard database is required")
 	}
+	adxConfig, err := resolveADXConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	config.ADX = &adxConfig
+	traceConfig, err := resolveTraceConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	config.ADXTraces = &traceConfig
 	if localSQLite {
 		if err := validateLocalSQLiteConfig(config); err != nil {
 			return nil, err
@@ -347,6 +370,24 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		}
 		app.mcp = handler
 	}
+	if config.ADX.Enabled {
+		worker, err := newADXWorker(config, services, capabilities)
+		if err != nil {
+			return nil, err
+		}
+		app.adx = worker
+	}
+	if config.ADXTraces.Enabled {
+		worker, err := newTraceWorker(ctx, config, app.Collector())
+		if err != nil {
+			return nil, err
+		}
+		app.adxTraces = worker
+		app.Collector().runner.Traces = worker
+	}
+	if err := app.configureSessionArchive(ctx); err != nil {
+		return nil, fmt.Errorf("configure session archive: %w", err)
+	}
 	return app, nil
 }
 
@@ -417,6 +458,18 @@ func (a *App) start(startupCtx, runtimeCtx context.Context) error {
 	}
 	a.startContext = runCtx
 	a.stop = cancel
+	if a.localBackfill != nil {
+		a.startTask(func() { a.localBackfill.run(runCtx, a.config.Logger, a.hub.Broadcast) })
+	}
+	if a.adx != nil {
+		a.startTask(func() { a.adx.Run(runCtx) })
+	}
+	if a.adxTraces != nil {
+		a.startTask(func() { a.adxTraces.Run(runCtx) })
+	}
+	if a.sessionArchive != nil {
+		a.startTask(func() { a.sessionArchive.run(runCtx) })
+	}
 	if a.services.Backend != nil {
 		a.startTask(func() { a.runRedisMaintenance(runCtx, redisMaintenanceInterval) })
 	}
@@ -519,10 +572,13 @@ func (a *App) Stop(ctx context.Context) error {
 			return err
 		}
 	}
-	if a.ownedDatabase != nil || a.ownedOperational != nil {
+	if a.ownedDatabase != nil || a.ownedOperational != nil || a.sessionArchive != nil {
 		a.closeDatabase.Do(func() {
+			if a.sessionArchive != nil {
+				a.closeError = a.sessionArchive.backend.Close()
+			}
 			if a.ownedDatabase != nil {
-				a.closeError = a.ownedDatabase.Close()
+				a.closeError = errors.Join(a.closeError, a.ownedDatabase.Close())
 			}
 			if a.ownedOperational != nil {
 				a.closeError = errors.Join(a.closeError, a.ownedOperational.Close())
@@ -692,6 +748,8 @@ func (a *App) Handler() http.Handler {
 	register("GET /llms.txt", a.llms)
 	register("GET /api/v1/events", a.events)
 	register("POST /api/v1/query", a.query)
+	register("GET /api/v1/session-archive/status", a.sessionArchiveStatus)
+	register("POST /api/v1/session-archive/query", a.sessionArchiveQuery)
 	register("POST /api/v1/value", a.publishValue)
 	register("POST /api/admission", a.activationAdmission)
 	register("POST /api/conclusion", a.conclusionAdmission)
@@ -1848,6 +1906,12 @@ func (a *App) static(response http.ResponseWriter, request *http.Request) {
 	if info.IsDir() || filepath.Base(clean) == "index.html" {
 		a.serveIndex(response, request, "")
 		return
+	}
+	if strings.EqualFold(filepath.Ext(clean), ".md") {
+		response.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		if a.config.Canvas != nil {
+			response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
 	}
 	http.ServeContent(response, request, info.Name(), info.ModTime(), file)
 }

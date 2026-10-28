@@ -13,7 +13,7 @@ function passedCase(repositories) {
     status: { repositories, status: "success" },
     report: {
       repositories, runsPerDay: 1, horizonDays: 7, expectedRuns: expected, queuedRuns: expected,
-      counts: { $runs: expected, $repositories: repositories, $workflows: repositories },
+      counts: { $runs: Math.min(expected, 200_000), $repositories: repositories, $workflows: repositories },
       backfillDurationMs: 125800, webhooksDuringBackfill: 100,
       webhooks: { failed: 0, accepted: 120, attempts: 120, retries: 2 },
     },
@@ -38,6 +38,7 @@ test("missing and malformed completion evidence never reports success", () => {
     (entries) => entries.pop(),
     (entries) => { entries[2].report = null; },
     (entries) => { entries[2].report.queuedRuns--; },
+    (entries) => { entries[2].report.counts.$runs++; },
     (entries) => { entries[2].report.webhooksDuringBackfill = 0; },
     (entries) => { entries[2].report.webhooks.failed = 1; },
     (entries) => { entries[2].status.status = "failure"; },
@@ -67,10 +68,25 @@ test("artifact reader preserves separate case directories and exposes missing ar
 
 test("full stress workflow is daily-only and keeps issue-write outside the test jobs", () => {
   const workflow = fs.readFileSync(".github/workflows/backfill-stress.yml", "utf8");
-  assert.match(workflow, /cron: "23 4 \* \* \*"/);
-  assert.doesNotMatch(workflow, /workflow_dispatch|pull_request:|push:/);
+  assert.match(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /pull_request:|push:/);
+  const daily = fs.readFileSync(".github/workflows/ci-daily.yml", "utf8");
+  assert.match(daily, /uses: \.\/\.github\/workflows\/backfill-stress\.yml/);
   assert.match(workflow, /repositories: \[1000, 10000, 50000\]/);
   assert.match(workflow, /needs: backfill-stress/);
   assert.match(workflow, /issues: write/);
   assert.doesNotMatch(workflow.split("  report:")[0], /issues: write/);
+});
+
+test("daily stress includes the complete monthly agent budget scenario", () => {
+  const workflow = fs.readFileSync(".github/workflows/backfill-stress.yml", "utf8");
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  assert.match(workflow, /monthly-budget-stress:/);
+  assert.match(workflow, /30 days, 10000 repositories, \$25000\/day synthetic agent budget/);
+  assert.match(workflow, /npm run test:stress:monthly-budget/);
+  assert.match(workflow, /name: postgres-monthly-budget-stress/);
+  assert.match(workflow, /FAILED \/ INCOMPLETE: no completed monthly report/);
+  assert.doesNotMatch(workflow.split("  backfill-stress:")[0], /secrets\.|continue-on-error:/);
+  assert.equal(pkg.scripts["test:stress:monthly-budget"],
+    "CAO_MONTHLY_BUDGET_STRESS=1 go -C server test ./internal/postgresx -run '^TestMonthlyBudgetStress$' -count=1 -timeout=40m -v");
 });

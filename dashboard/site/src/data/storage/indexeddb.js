@@ -1,4 +1,5 @@
 import { relationshipErrors } from '../model/schema.js';
+import { DAILY_RUN_COUNT_STORES, DAILY_RUN_COUNT_STATE_ID, evictDailyRunCounts, reconcileDailyRunCountsBatch } from '../model/daily-run-counts.js';
 import { pruneCanonicalRecord } from '../model/fields.js';
 import { BROWSER_RETENTION_WINDOWS_MS, recordTimestamp, RETENTION_TIMESTAMPS as RETENTION_TIMESTAMP_FIELDS } from './retention.js';
 import { scopedStorageKey } from '../../storage-scope.js';
@@ -18,7 +19,7 @@ import {
 const debug = createDebug('data:indexeddb');
 
 export const DATABASE_NAME = 'gh-aw-cao-dashboard-data';
-export const DATABASE_VERSION = 44;
+export const DATABASE_VERSION = 47;
 /** @type {Set<(versions: { oldVersion: number, newVersion: number }) => void>} */
 const upgradeListeners = new Set();
 
@@ -52,11 +53,12 @@ export const ENTITY_STORES = /** @type {const} */ ([
   'issues',
   'operationalValues',
   'operationalValueEvidence',
+  'workflowValueCollections',
   'marketplacePackages',
   'experiments', 'experimentAssignments', 'graders', 'graderObservations', 'evals', 'evalObservations'
 ]);
 export const TRANSACTION_STORE = 'transactions';
-export const DATABASE_STORES = /** @type {const} */ ([...ENTITY_STORES, TRANSACTION_STORE, STORAGE_SHARD_STORE]);
+export const DATABASE_STORES = /** @type {const} */ ([...ENTITY_STORES, TRANSACTION_STORE, STORAGE_SHARD_STORE, ...DAILY_RUN_COUNT_STORES]);
 export const CANONICAL_DATABASE_SCHEMA = /** @type {Record<
  * string, { keyPath: string, indexes: Record<string, string | string[]> }
  * >} */ ({
@@ -135,6 +137,10 @@ export const CANONICAL_DATABASE_SCHEMA = /** @type {Record<
     keyPath: 'id',
     indexes: { byRepository: 'repositoryId', byWorkflow: 'workflowId' }
   },
+  workflowValueCollections: {
+    keyPath: 'id',
+    indexes: { byRepository: 'repositoryId', byWorkflow: 'workflowId' }
+  },
   marketplacePackages: {
     keyPath: 'id',
     indexes: {
@@ -155,7 +161,10 @@ export const CANONICAL_DATABASE_SCHEMA = /** @type {Record<
   storageShards: {
     keyPath: 'id',
     indexes: {}
-  }
+  },
+  dailyRunCounts: { keyPath: 'id', indexes: {} },
+  runCountContributions: { keyPath: 'id', indexes: {} },
+  dailyRunCountState: { keyPath: 'id', indexes: {} }
 });
 for (const storeName of ENTITY_STORES) {
   if (Object.hasOwn(RETENTION_TIMESTAMP_FIELDS, storeName)) {
@@ -179,7 +188,6 @@ const INGESTION_LOCK_ACQUIRE_TIMEOUT_MS = INGESTION_LOCK_LEASE_MS + 30_000;
 const INGESTION_LOCK_RETRY_DELAY_MS = 25;
 const INGESTION_LOCK_WAITING_NOTICE_DELAY_MS = 500;
 const MAX_QUERY_INDEX_LOOKUPS = 32;
-const RECORD_OVERHEAD_BYTES = 512;
 const RETENTION_TIMESTAMPS = new Set([
   'runs',
   'domains',
@@ -200,6 +208,7 @@ const RUN_LINKED_STORES = /** @type {const} */ ([
   'issues', 'experimentAssignments', 'graderObservations', 'evalObservations'
 ]);
 const QUERYABLE_STRING_KEY_PATHS = new Set([
+  'id',
   'slug',
   'repositoryId',
   'campaignId',
@@ -308,6 +317,8 @@ function transactionDone(transaction) {
  * @param {string | string[]} storeNames
  */
 function readwriteTransaction(database, storeNames) {
+  storeNames = typeof storeNames === 'string' ? [storeNames] : storeNames;
+  if (storeNames.includes('runs')) storeNames = [...new Set([...storeNames, ...DAILY_RUN_COUNT_STORES])];
   try {
     return database.transaction(storeNames, 'readwrite', { durability: 'relaxed' });
   } catch (error) {
@@ -353,13 +364,18 @@ function createIndex(store, name, keyPath) {
   store.createIndex(name, keyPath);
 }
 
-/** @param {IDBDatabase} database */
-function createSchema(database) {
+/** @param {IDBDatabase} database @param {boolean} [backfill] @param {string} [coverage] */
+function createSchema(database, backfill = false, coverage = 'retained-v44') {
   for (const [storeName, definition] of Object.entries(CANONICAL_DATABASE_SCHEMA)) {
+    if (database.objectStoreNames.contains(storeName)) continue;
     const store = database.createObjectStore(storeName, { keyPath: definition.keyPath });
     for (const [indexName, keyPath] of Object.entries(definition.indexes)) {
       createIndex(store, indexName, keyPath);
     }
+    if (storeName === 'dailyRunCountState') store.put({
+      id: DAILY_RUN_COUNT_STATE_ID, status: backfill ? 'backfilling' : 'ready',
+      coverage: backfill ? coverage : 'admitted', excludedRuns: 0, conflictedRuns: 0
+    });
   }
 }
 
@@ -471,9 +487,10 @@ async function reportPendingOpenDiagnostics(indexedDB, name, openId) {
 
 /**
  * @param {IDBFactory} indexedDB
+ * @param {typeof IDBKeyRange} [keyRange]
  * @returns {Promise<IDBDatabase>}
  */
-export function openCanonicalDatabase(indexedDB) {
+export function openCanonicalDatabase(indexedDB, keyRange = globalThis.IDBKeyRange) {
   const name = canonicalDatabaseName();
   const openId = ++nextOpenRequestId;
   const startedAt = monotonicNow();
@@ -524,7 +541,9 @@ export function openCanonicalDatabase(indexedDB) {
           event: 'open-upgrade-completed', openId, elapsedMs: elapsed()
         }));
       }
-      if (event.oldVersion < DATABASE_VERSION) {
+      if ([44, 45, 46].includes(event.oldVersion) && database.objectStoreNames.contains('runs')) {
+        createSchema(database, true, `retained-v${event.oldVersion}`);
+      } else if (event.oldVersion < DATABASE_VERSION) {
         // Canonical data is a derived cache. Rebuild incompatible identities and
         // schemas from authoritative dashboard inputs instead of migrating them.
         debug('upgrading database schema', name, { from: event.oldVersion, to: DATABASE_VERSION });
@@ -567,7 +586,10 @@ export function openCanonicalDatabase(indexedDB) {
       // `close` fires only when the browser closes the connection abnormally,
       // for example after backing-store corruption or when site data is cleared.
       database.onclose = () => debug({ event: 'connection-closed-abnormally', openId });
-      resolve(database);
+      backfillDailyRunCounts(database, keyRange).then(() => resolve(database), (error) => {
+        database.close();
+        reject(error);
+      });
     };
     request.onerror = () => {
       settle();
@@ -590,6 +612,65 @@ export function openCanonicalDatabase(indexedDB) {
       reject(new Error('Opening canonical dashboard data was blocked'));
     };
   });
+}
+
+/**
+ * Upgrade work is cursor-paged and never rewrites a detail record. A v44
+ * cache cannot recover already-evicted runs, so its coverage remains partial.
+ * @param {IDBDatabase} database
+ * @param {typeof IDBKeyRange} [keyRange]
+ */
+export async function backfillDailyRunCounts(database, keyRange = globalThis.IDBKeyRange) {
+  if (!database.objectStoreNames.contains('dailyRunCountState')) return;
+  const initial = await requestResult(database.transaction('dailyRunCountState')
+    .objectStore('dailyRunCountState').get(DAILY_RUN_COUNT_STATE_ID));
+  if (initial?.status !== 'backfilling') return;
+  let more = true;
+  while (more) {
+    const transaction = readwriteTransaction(database, ['runs', ...DAILY_RUN_COUNT_STORES]);
+    const done = transactionDone(transaction);
+    try {
+      const states = transaction.objectStore('dailyRunCountState');
+      const state = await requestResult(states.get(DAILY_RUN_COUNT_STATE_ID));
+      if (state?.status !== 'backfilling') {
+        await done;
+        return;
+      }
+      /** @type {Record<string, unknown>[]} */
+      const records = [];
+      const runs = transaction.objectStore('runs');
+      const range = state.after === undefined ? undefined : keyRange.lowerBound(state.after, true);
+      if (typeof runs.openCursor !== 'function') {
+        records.push(...await requestResult(runs.getAll(range, 250)));
+        more = records.length === 250;
+      } else await new Promise((resolve, reject) => {
+        const request = runs.openCursor(range);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor || records.length === 250) {
+            more = Boolean(cursor);
+            resolve(undefined);
+          } else {
+            records.push(cursor.value);
+            cursor.continue();
+          }
+        };
+      });
+      await reconcileDailyRunCountsBatch(transaction, records);
+      const latest = await requestResult(states.get(DAILY_RUN_COUNT_STATE_ID));
+      states.put({
+        ...latest, after: records.at(-1)?.id ?? state.after,
+        status: more ? 'backfilling' : 'ready'
+      });
+      commitTransaction(transaction);
+      await done;
+    } catch (error) {
+      try { transaction.abort(); } catch { /* Already completed. */ }
+      await done.catch(() => undefined);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -668,14 +749,42 @@ export async function upsertCanonicalBatch(indexedDB, batch, options = {}) {
   }
 }
 
-  /** @param {Record<string, unknown>} record */
-function estimatedRecordBytes(record) {
-  return new TextEncoder().encode(JSON.stringify(record)).byteLength + RECORD_OVERHEAD_BYTES;
+/**
+ * Admits count facts whose detail is intentionally outside its retention window.
+ * This never resurrects expired detail or modifies its retention timestamps.
+ * @param {IDBDatabase} database
+ * @param {Record<string, unknown>[]} records
+ */
+export async function admitExpiredRunCountsWithConnection(database, records) {
+  for (let offset = 0; offset < records.length; offset += 250) {
+    const transaction = readwriteTransaction(database, [...DAILY_RUN_COUNT_STORES]);
+    const done = transactionDone(transaction);
+    try {
+      await reconcileDailyRunCountsBatch(transaction, records.slice(offset, offset + 250));
+      commitTransaction(transaction);
+      await done;
+    } catch (error) {
+      try { transaction.abort(); } catch { /* Already completed. */ }
+      await done.catch(() => undefined);
+      throw error;
+    }
+  }
+}
+
+/** @param {IDBFactory} indexedDB @param {Record<string, unknown>[]} records */
+export async function admitExpiredRunCounts(indexedDB, records) {
+  if (records.length === 0) return;
+  const database = await openCanonicalDatabase(indexedDB);
+  try {
+    await admitExpiredRunCountsWithConnection(database, records);
+  } finally {
+    database.close();
+  }
 }
 
 /**
- * Applies retention and size limits using indexed, bounded shard cleanup.
- * Full scans are reserved for explicitly requested relationship or legacy audit repair.
+ * Applies retention and size limits using indexed shard cleanup and bounded Run pages.
+ * Full evidence scans are reserved for explicit relationship or legacy audit repair.
  *
  * @param {IDBFactory} indexedDB
  * @param {{ now?: number, retentionWindowMs?: number, retentionWindowMsByStore?: Record<string, number>, maxDatabaseBytes: number, usageBytes?: number | null, reconcileRelationships?: boolean, repairAuditCuration?: boolean, preserveEntityIds?: { repositories?: string[], workflows?: string[] }, onMaintenanceProgress?: (completed: number, total: number) => void, signal?: AbortSignal }} options
@@ -704,22 +813,12 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
     const defaultWindow = Number.isFinite(options.retentionWindowMs)
       ? Math.max(0, Number(options.retentionWindowMs))
       : 30 * 24 * 60 * 60 * 1000;
-    const targetBytes = Math.floor(Math.max(0, options.maxDatabaseBytes) * 0.75);
-    let estimatedBytes = 0;
     let deletedRecords = 0;
-    let retainedRecords = 0;
     let prunedAudits = 0;
     /** @type {Map<string, Record<string, unknown>>} */
     const auditRunFacts = new Map();
-    /** @type {{ id: string, timestamp: number, bytes: number }[]} */
-    const runs = [];
     /** @type {string[]} */
     const expiredRunIds = [];
-    /** @type {Map<string, number>} */
-    const linkedBytesByRun = new Map();
-    /** @type {Map<string, number>} */
-    const linkedRecordsByRun = new Map();
-    const retainedRunIds = new Set();
     const campaignIds = new Set();
     const repositoryIds = new Set();
     /** @type {Map<string, string>} */
@@ -729,6 +828,7 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
     const referencedRepositoryIds = new Set();
     const database = await openCanonicalDatabase(indexedDB);
     try {
+      await evictDailyRunCounts(database, now, options.signal);
       const referencedAudits = new Set();
       for (const storeName of ['graderObservations', 'evalObservations', 'experimentAssignments']) {
         options.signal?.throwIfAborted();
@@ -796,7 +896,7 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
               validRunIds.add(id);
               referencedWorkflowIds.add(workflowId);
               referencedRepositoryIds.add(repositoryId);
-            } else if (storeName === 'operationalValueEvidence') {
+            } else if (storeName === 'operationalValueEvidence' || storeName === 'workflowValueCollections') {
               const repositoryId = String(record.repositoryId);
               const workflowId = String(record.workflowId);
               if (!repositoryIds.has(repositoryId) || workflowRepositories.get(workflowId) !== repositoryId) {
@@ -835,21 +935,6 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
               deletedRecords += 1;
             }
             return;
-          }
-          const bytes = estimatedRecordBytes(record);
-          estimatedBytes += bytes;
-          retainedRecords += 1;
-          if (storeName === 'runs') {
-            retainedRunIds.add(id);
-            runs.push({
-              id: String(record.id),
-              timestamp: timestamp ?? Number.NEGATIVE_INFINITY,
-              bytes
-            });
-          } else if (RUN_LINKED_STORES.includes(/** @type {typeof RUN_LINKED_STORES[number]} */ (storeName))) {
-            const runId = String(record.runId);
-            linkedBytesByRun.set(runId, (linkedBytesByRun.get(runId) ?? 0) + bytes);
-            linkedRecordsByRun.set(runId, (linkedRecordsByRun.get(runId) ?? 0) + 1);
           }
         };
         if (typeof store.openCursor !== 'function') {
@@ -914,7 +999,6 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
             if (/** @type {Set<string>} */ (retainedIds).has(String(id))) return;
             remove();
             deletedRecords += 1;
-            retainedRecords -= 1;
           };
           if (typeof store.openCursor !== 'function') {
             for (const record of await requestResult(store.getAll())) {
@@ -939,31 +1023,8 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
         }
       }
 
-      for (const runId of expiredRunIds) {
-        estimatedBytes -= linkedBytesByRun.get(runId) ?? 0;
-        retainedRecords -= linkedRecordsByRun.get(runId) ?? 0;
-      }
-      const usageTarget = Number.isFinite(options.usageBytes)
-        && Number(options.usageBytes) > options.maxDatabaseBytes
-        ? Math.floor(estimatedBytes * (options.maxDatabaseBytes / Number(options.usageBytes)) * 0.9)
-        : targetBytes;
-      const effectiveTarget = Math.min(targetBytes, usageTarget);
-      const evictedRunIds = [...expiredRunIds];
-      if (estimatedBytes > effectiveTarget) {
-        runs.sort((left, right) => left.timestamp - right.timestamp || left.id.localeCompare(right.id));
-        for (const run of runs) {
-          if (estimatedBytes <= effectiveTarget) break;
-          evictedRunIds.push(run.id);
-          estimatedBytes -= run.bytes + (linkedBytesByRun.get(run.id) ?? 0);
-          retainedRecords -= 1 + (linkedRecordsByRun.get(run.id) ?? 0);
-        }
-      }
-      for (const runId of expiredRunIds) {
-        if (retainedRunIds.has(runId)) retainedRecords -= 1;
-      }
-
-      for (let offset = 0; offset < evictedRunIds.length; offset += DEFAULT_WRITE_BATCH_SIZE) {
-        const ids = evictedRunIds.slice(offset, offset + DEFAULT_WRITE_BATCH_SIZE);
+      for (let offset = 0; offset < expiredRunIds.length; offset += DEFAULT_WRITE_BATCH_SIZE) {
+        const ids = expiredRunIds.slice(offset, offset + DEFAULT_WRITE_BATCH_SIZE);
         const transaction = readwriteTransaction(database, ['runs', ...RUN_LINKED_STORES]);
         const done = transactionDone(transaction);
         const runStore = transaction.objectStore('runs');
@@ -1009,8 +1070,15 @@ async function reconcileCanonicalDatabase(indexedDB, options) {
       });
       await receiptDone;
       await rebuildStorageShards(database, ENTITY_STORES);
+      const maintenance = await maintainStorageShards(database, {
+        ...options, entityStores: ENTITY_STORES, runLinkedStores: RUN_LINKED_STORES
+      });
       debug('curated canonical audits', { prunedAudits, version: AUDIT_CURATION_VERSION });
-      return { deletedRecords, estimatedBytes, retainedRecords, prunedAudits };
+      return {
+        ...maintenance,
+        deletedRecords: deletedRecords + maintenance.deletedRecords,
+        prunedAudits: prunedAudits + maintenance.prunedAudits
+      };
     } finally {
       database.close();
     }
@@ -1029,9 +1097,10 @@ export async function readCanonicalBatch(indexedDB) {
 /**
  * Reads multiple stores through one connection and one readonly transaction.
  * @param {IDBFactory} indexedDB
- * @param {readonly typeof ENTITY_STORES[number][]} storeNames
+ * @param {readonly typeof DATABASE_STORES[number][]} storeNames
+ * @param {{ bounds?: { stores: ReadonlySet<string>, rows: number, bytes: number, onLimit: () => void }, checkpoint?: () => void }} [options]
  */
-export async function readCollections(indexedDB, storeNames) {
+export async function readCollections(indexedDB, storeNames, options = {}) {
   const startedAt = monotonicNow();
   const database = await openCanonicalDatabase(indexedDB);
   try {
@@ -1040,11 +1109,54 @@ export async function readCollections(indexedDB, storeNames) {
       : await (async () => {
         const transaction = database.transaction([...storeNames]);
         const done = transactionDone(transaction);
-        const values = await Promise.all(storeNames.map((storeName) =>
-          requestResult(transaction.objectStore(storeName).getAll())
-        ));
-        await done;
-        return values;
+        let bytes = 0;
+        const encoder = new TextEncoder();
+        const values = storeNames.map((storeName) => {
+          const store = transaction.objectStore(storeName);
+          const bounds = options.bounds;
+          if (!bounds?.stores.has(storeName)) return requestResult(store.getAll());
+          /** @type {Promise<Record<string, unknown>[]>} */
+          const result = new Promise((resolve, reject) => {
+            /** @type {Record<string, unknown>[]} */
+            const rows = [];
+            /** @param {IDBKeyRange | undefined} range */
+            const read = (range) => {
+              const batchSize = Math.min(1000, bounds.rows - rows.length + 1);
+              const request = store.getAll(range, batchSize);
+              request.onerror = () => reject(request.error);
+              request.onsuccess = () => {
+                try {
+                  options.checkpoint?.();
+                  for (const record of request.result) {
+                    const row = canonicalRecord(record);
+                    bytes += encoder.encode(JSON.stringify(row)).byteLength;
+                    if (rows.length >= bounds.rows || bytes > bounds.bytes) {
+                      bounds.onLimit();
+                      resolve([]);
+                      return;
+                    }
+                    rows.push(row);
+                  }
+                  if (request.result.length === batchSize) {
+                    const last = request.result[request.result.length - 1];
+                    read(IDBKeyRange.lowerBound(last[String(store.keyPath)], true));
+                  } else resolve(rows);
+                } catch (error) {
+                  reject(error);
+                  try {
+                    transaction.abort();
+                  } catch (abortError) {
+                    debug({ event: 'bounded-read-abort-failed', ...errorSummary(abortError) });
+                  }
+                }
+              };
+            };
+            read(undefined);
+          });
+          return result;
+        });
+        const [records] = await Promise.all([Promise.all(values), done]);
+        return records;
       })();
     debug('completed multi-store collection read', {
       storeCount: storeNames.length,
@@ -1114,7 +1226,7 @@ export async function readCollection(indexedDB, storeName) {
  * @param {IDBFactory} indexedDB
  * @param {typeof ENTITY_STORES[number]} storeName
  * @param {import('../../data-operations.js').DataOperator[]} operators
- * @param {{ maxRows?: number, onMetrics?: (metrics: { durationMs: number, requestCount: number, recordsScanned: number, recordsReturned: number, index: string | null }) => void }} [options]
+ * @param {{ maxRows?: number, maxBytes?: number, keyFilter?: (key: IDBValidKey) => boolean, checkpoint?: () => void, onMetrics?: (metrics: { durationMs: number, requestCount: number, recordsScanned: number, recordsReturned: number, index: string | null }) => void }} [options]
  */
 export async function queryCollection(indexedDB, storeName, operators, options = {}) {
   const startedAt = monotonicNow();
@@ -1131,8 +1243,29 @@ export async function queryCollection(indexedDB, storeName, operators, options =
         throw new Error(`IndexedDB selection exceeded max-input-rows of ${options.maxRows}`);
       }
     }
+    /** @type {Record<string, any>[]} */
     let records;
-    if (!plan) {
+    if (options.maxBytes !== undefined) {
+      const selected = new Map();
+      let bytes = 0;
+      for (const range of plan?.keys ?? [undefined]) {
+        options.checkpoint?.();
+        const keys = await requestResult((plan?.index ?? store).getAllKeys(range));
+        for (const key of keys) {
+          options.checkpoint?.();
+          if (options.keyFilter && !options.keyFilter(key)) continue;
+          if (selected.has(key)) continue;
+          const row = await requestResult(store.get(key));
+          bytes += new TextEncoder().encode(JSON.stringify(row)).length;
+          if (bytes > options.maxBytes || (options.maxRows !== undefined && selected.size >= options.maxRows)) {
+            throw new Error('Canonical selection exceeded bounded input budget');
+          }
+          selected.set(key, row);
+        }
+      }
+      records = [...selected.values()];
+      records.sort((left, right) => indexedDB.cmp(left[String(store.keyPath)], right[String(store.keyPath)]));
+    } else if (!plan) {
       records = await requestResult(store.getAll());
     } else {
       const matches = await Promise.all(plan.keys.map((key) => requestResult(plan.index.getAll(key))));
@@ -1499,10 +1632,9 @@ function indexedQueryPlan(store, operators) {
       ? [[predicate.field, /** @type {string[]} */ (values)]]
       : [];
   })));
-  /** @type {{ index: IDBIndex, keys: IDBValidKey[] } | null} */
+  /** @type {{ index: IDBIndex | IDBObjectStore, keys: IDBValidKey[] } | null} */
   let best = null;
-  for (const indexName of store.indexNames) {
-    const index = store.index(indexName);
+  for (const index of [store, ...Array.from(store.indexNames, name => store.index(name))]) {
     const keyPath = Array.isArray(index.keyPath) ? index.keyPath : [index.keyPath];
     if (!keyPath.every((field) => typeof field === 'string' && predicates.has(field))) continue;
     const keys = keyPath.reduce(

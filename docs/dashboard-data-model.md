@@ -22,22 +22,23 @@ publication, retention, browser updates, and SQLite projections.
 
 ```mermaid
 erDiagram
+  accTitle: Canonical execution lineage
+  accDescr: Repositories contain workflows and execute runs. Campaign membership is optional. Each run owns Domain, Tool, Skill, Friction, Audit and Issue records. This map is an execution-lineage subset, not the complete schema.
   CAMPAIGN o|--o{ WORKFLOW : classifies
   REPOSITORY ||--o{ WORKFLOW : contains
   REPOSITORY ||--o{ RUN : executes
-  REPOSITORY ||--o{ OPERATIONAL_VALUE : measures
   WORKFLOW ||--o{ RUN : defines
-  WORKFLOW ||--o{ OPERATIONAL_VALUE_EVIDENCE : evaluates
   RUN ||--o{ DOMAIN : records
   RUN ||--o{ TOOL : invokes
+  RUN ||--o{ SKILL : activates
+  RUN ||--o{ FRICTION : records
   RUN ||--o{ AUDIT : records
   RUN ||--o{ ISSUE : creates
 ```
 
-The main path follows activity from a repository through its workflows and
-runs to four specialized run-owned record types. A Campaign may classify a
-Workflow independently of that execution hierarchy. The table below provides
-the exact identities and parent relationships.
+The map focuses on execution lineage, including all six run-owned record types.
+Campaign membership is optional. Operational-value records have separate
+repository and workflow relationships, listed with the identities below.
 
 ## Entities
 
@@ -55,6 +56,7 @@ the exact identities and parent relationships.
 | **Issue** | `github:issue:<owner>/<repository>:<number>` | Run | Records issue and pull-request safe outputs. |
 | **Operational Value** | Deterministic repository, value ID, and timestamp identity | Repository | Records a campaign-defined numeric repository metric. |
 | **Operational Value Evidence** | Deterministic repository, workflow, metric, and metric-version identity | Repository and Workflow | Retains a coherent evidence packet connecting intent, safe outputs, accepted implementations, and independent repository snapshots. |
+| **Workflow Value Collection** | Deterministic repository and workflow identity | Repository and Workflow | Retains the reviewed registration and latest collection decision separately from actual attempts and accepted capture/cutoff clocks. |
 
 Names, paths, timestamps, and ingestion order are not canonical identities. Stable upstream IDs take precedence; deterministic source coordinates are used only when an upstream system provides no stable ID.
 
@@ -62,19 +64,29 @@ The current dashboard publication does not include immutable GitHub repository o
 
 ## Maintenance inventory
 
-The Updates page under Maintenance separates inventory into **Repositories**
-(the default tab) and **Campaigns**. Both tabs retain the Updates navigation
-indicator, and each has a directly addressable route:
+The Updates page under Maintenance separates operations into **Compiler
+upgrades** (the default tab) and **Workflow updates**. Both tabs retain the
+Updates navigation indicator, and each has a directly addressable route:
 
-- **Agentic campaigns** use Campaign records and compare `campaign-version` with
-  `campaign-current-version`. These are installed campaign revisions resolved
-  from the control repository's catalog sources.
+- **Campaign packages** use Campaign records and compare `campaign-version`
+  with `campaign-current-version`. Update commands use the exact retained
+  `campaign-source` package coordinate rather than deriving a source from the
+  campaign slug.
+- **Standalone workflows** remain Workflow records with no synthetic Campaign
+  membership. Source-managed rows compare retained installed/current source
+  revisions and may expose an update action. Local rows without source
+  provenance remain visible and non-actionable.
 - **Agentic Workflow compilers** use workflow inventory and compare
   `gh-aw-version` with `gh-aw-current-version` for each repository.
 
-Repositories opens at `#page-maintenance`; Campaigns opens at
-`#page-maintenance-campaigns`. Repository enrollment and compiler upgrade actions
-remain in Repositories, while campaign package update actions remain in Campaigns.
+Compiler upgrades opens at `#page-maintenance`; Workflow updates opens at
+`#page-maintenance-campaigns` for deep-link compatibility. Repository enrollment
+and compiler upgrade actions remain in Compiler upgrades, while campaign package
+and standalone source-update actions remain in Workflow updates.
+Compiler rows explain unavailable evidence by distinguishing missing installed
+compiler metadata, missing latest stable release evidence, and conflicting or
+mixed retained evidence. Upgrade actions remain hidden unless known evidence
+establishes that a repository is outdated.
 Switching sibling tabs, including browser back and forward, cross-fades only the
 tab content. The shared navigation and tab bar stay outside the full-page
 transition used when opening a different dashboard view.
@@ -95,8 +107,10 @@ Run-scoped Audit facts remain for request, attribution and resolution drill-down
 inventory and generic proxy events are discarded. Complete paired main-request
 costs can be compared to a named, explicitly estimated baseline, separately from
 total accounting. Missing costs remain unknown; partial runs do not
-enter cost quantiles. Browser schema 34 / IndexedDB version 44 rebuild older
-projections, and hosted PostgreSQL requires a fresh generated schema.
+enter cost quantiles. The canonical model is version 36; IndexedDB version 47
+preserves versions 44, 45, and 46 through an additive upgrade because Campaign
+and Workflow source-maintenance provenance is optional enrichment. Hosted PostgreSQL
+requires a fresh generated schema.
 
 A Run owns ordered Domain, Tool, Skill, Friction, Audit, and Issue records combining observations
 from agents, tools, MCP servers, gateways, firewalls, policy engines,
@@ -119,10 +133,10 @@ The activity shard manifest is the dashboard's published operational input. Norm
 
 The complete normative [cached gh-aw JSONL mapping](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md) describes source fields, canonical entities, identity, ownership, and accounting.
 
-The canonical model is version 34. The browser database is
-`gh-aw-cao-dashboard-data`, IndexedDB version 44. Its canonical stores are
+The canonical model is version 36. The browser database is
+`gh-aw-cao-dashboard-data`, IndexedDB version 47. Its canonical stores are
 `campaigns`, `repositories`, `workflows`, `runs`, `domains`, `tools`, `skills`,
-`friction`, `audits`, `issues`, `operationalValues`, `operationalValueEvidence`, `marketplacePackages`,
+`friction`, `audits`, `issues`, `operationalValues`, `operationalValueEvidence`, `workflowValueCollections`, `marketplacePackages`,
 `experiments`, `experimentAssignments`, `graders`, `graderObservations`,
 `evals`, and `evalObservations`;
 all use `id` as the key.
@@ -137,10 +151,23 @@ Eval model metadata are reconstructed from retained components or the owning
 Run. Identity, integrity keys, provenance, and independently observed historical
 facts remain stored.
 
-The `transactions` store records
-ingestion outcomes and is indexed by `createdAt`. Overview aggregates are
-computed by request-scoped queries over canonical runs. Schema upgrades rebuild all stores from
-authoritative dashboard inputs.
+The `transactions` store records ingestion outcomes and is indexed by
+`createdAt`; `storageShards` holds disposable storage accounting. Three separate
+projection stores, also keyed by `id` and without secondary indexes, implement
+[additive daily run counts](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-data.md#722-additive-daily-run-counts):
+`dailyRunCounts` holds UTC day/Repository/Workflow counters,
+`runCountContributions` holds one compact reconciliation receipt per logical
+Run, and `dailyRunCountState` holds coverage, readiness, backfill checkpoints,
+and retention state. This is not an additional canonical entity or a general
+persisted Overview cache. Other Overview metrics remain request-scoped queries.
+
+Upgrades from version 44 or 45 with a `runs` store create only missing stores,
+preserving existing records and projection state. A newly created daily state
+starts resumable, bounded backfill from retained Runs with partial coverage;
+already-evicted history cannot be recovered. Other older databases rebuild from
+authoritative inputs. Daily counts and receipts retain the current UTC
+Monday-start week and two preceding weeks independently of detail retention;
+missing or incomplete projection state is not an empty population.
 
 For each ingestion, the worker reads the existing canonical batch, merges the incoming records, expires run-linked detail outside the browser's 7-day window (while retaining available run summaries and keeping Operational Values on 30 days), and prunes orphaned descendants and unreferenced structural parents. The effective retention horizon is the later of the browser clock and the newest incoming observation, so a browser with a slow clock cannot prune current producer data. The worker then reconciles each canonical collection: it deletes records absent from the retained batch and writes changed records. This makes expired records disappear while allowing fresh partial collections to retain compatible history.
 

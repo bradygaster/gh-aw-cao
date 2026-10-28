@@ -185,6 +185,9 @@ func (s *Store) BeginIngestion(ctx context.Context) (*Writer, error) {
 	if err := writer.preserveValuePublications(ctx); err != nil {
 		return fail(err)
 	}
+	if err := writer.preserveCollectionDecisions(ctx); err != nil {
+		return fail(err)
+	}
 	writer.preserveValues = true
 	if err := writer.stageAdmittedRuns(ctx); err != nil {
 		return fail(err)
@@ -239,6 +242,11 @@ func (w *Writer) AppendInventory(ctx context.Context, source string, row model.R
 }
 
 func (w *Writer) append(ctx context.Context, source string, row model.Row, inventory bool) error {
+	if source == "$workflowValueCollections" {
+		if err := validateWorkflowValueCollection(row); err != nil {
+			return err
+		}
+	}
 	if source == "$operationalValueEvidence" {
 		if w.preserveValues {
 			var previous time.Time
@@ -477,7 +485,7 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		return State{}, err
 	}
 	if duplicate {
-		return State{}, errors.New("duplicate run identity across weeks")
+		return State{}, errors.New("duplicate run identity across days")
 	}
 	// Staged run-owned rows are linked after all run records have
 	// arrived. The copied batches remain bounded; PostgreSQL routes the insert.
@@ -496,7 +504,7 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 			quoted[i] = "s." + query.SQLIdentifier(column)
 		}
 		stage := query.SQLIdentifier(name + "_stage")
-		cutoff := weekStart(w.ingestedAt.AddDate(0, 0, -w.store.linkedRetentionDays))
+		cutoff := dayStart(w.ingestedAt.AddDate(0, 0, -w.store.linkedRetentionDays))
 		var expired int64
 		if err := w.tx.QueryRow(ctx, "SELECT count(*) FROM "+stage+" s JOIN runs p ON p.namespace=s.namespace AND p.id=s.run_id WHERE p.run_at<$1", cutoff).Scan(&expired); err != nil {
 			return State{}, err
@@ -515,7 +523,7 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 			return State{}, err
 		}
 		if duplicate {
-			return State{}, fmt.Errorf("duplicate %s identity across weeks", name)
+			return State{}, fmt.Errorf("duplicate %s identity across days", name)
 		}
 		w.staged[source] = false
 	}
@@ -565,9 +573,15 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		return State{}, err
 	}
 	// Autovacuum cannot analyze uncommitted replacement rows or partitioned parents.
-	// Refresh estimates before integrity joins can choose quadratic cold-start plans.
+	// Refresh estimates before reconciliation and integrity joins choose cold-start plans.
 	if _, err := w.tx.Exec(ctx, "SELECT cao_analyze_native()"); err != nil {
 		return State{}, fmt.Errorf("refresh native statistics: %w", err)
+	}
+	if err := w.reconcileDaily(ctx); err != nil {
+		return State{}, err
+	}
+	if err := w.reconcileCollectionDecisions(ctx); err != nil {
+		return State{}, err
 	}
 	if err := overlayRepositoryLifecycle(ctx, w.store.namespace, func(ctx context.Context, statement string, args ...any) error {
 		_, err := w.tx.Exec(ctx, statement, args...)
@@ -584,6 +598,8 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		`SELECT 1 FROM runs r JOIN workflows p ON p.namespace=r.namespace AND p.id=r.workflow_id
 			WHERE r.namespace=$1 AND r.repository_id<>p.repository_id LIMIT 1`,
 		`SELECT 1 FROM operational_value_evidence e JOIN workflows p ON p.namespace=e.namespace AND p.id=e.workflow_id
+			WHERE e.namespace=$1 AND e.repository_id<>p.repository_id LIMIT 1`,
+		`SELECT 1 FROM workflow_value_collections e JOIN workflows p ON p.namespace=e.namespace AND p.id=e.workflow_id
 			WHERE e.namespace=$1 AND e.repository_id<>p.repository_id LIMIT 1`,
 		`SELECT 1 FROM experiment_assignments o JOIN runs r ON r.namespace=o.namespace AND r.id=o.run_id
 			JOIN experiments d ON d.namespace=o.namespace AND d.id=o.experiment_id WHERE o.namespace=$1 AND r.workflow_id<>d.workflow_id LIMIT 1`,
@@ -617,12 +633,27 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		}
 	}
 	clockSources = append(clockSources, "SELECT max(greatest(as_of,retrieved_at)) AS instant FROM cao_quality WHERE namespace=$1")
-	if err := w.tx.QueryRow(ctx, "SELECT coalesce(max(instant),'epoch'::timestamptz) FROM ("+strings.Join(clockSources, " UNION ALL ")+") AS clocks", w.store.namespace).Scan(&w.evaluatedAt); err != nil {
-		return State{}, err
+	var latest *time.Time
+	// Keep partitioned-source plans independent as the daily horizon grows.
+	for _, statement := range clockSources {
+		var instant *time.Time
+		if err := w.tx.QueryRow(ctx, statement, w.store.namespace).Scan(&instant); err != nil {
+			return State{}, err
+		}
+		if instant != nil && (latest == nil || instant.After(*latest)) {
+			latest = instant
+		}
+	}
+	w.evaluatedAt = time.Unix(0, 0).UTC()
+	if latest != nil {
+		w.evaluatedAt = latest.UTC()
 	}
 	// Keep the source clock even when its latest event is a discarded copy.
 	if _, err := w.tx.Exec(ctx, auditCurationStatement(), w.store.namespace); err != nil {
 		return State{}, fmt.Errorf("curate native audits before publication: %w", err)
+	}
+	if err := w.capRuns(ctx); err != nil {
+		return State{}, err
 	}
 	state := State{Ready: true, DataRevision: dataRevision, EvaluatedAt: w.evaluatedAt.UTC(), Counts: map[string]int{}}
 	for _, source := range tableNames() {
@@ -653,6 +684,9 @@ func (w *Writer) Publish(ctx context.Context, dataRevision string) (State, error
 		AND EXISTS(SELECT 1 FROM audits WHERE namespace=$1 AND source='conclusion-admission' AND source_sequence=0)`,
 		w.store.namespace); err != nil {
 		return State{}, err
+	}
+	if err := w.persistStatisticalSnapshot(ctx, dataRevision, query.MaxWorkingBytes); err != nil {
+		return State{}, fmt.Errorf("publish statistical bundles: %w", err)
 	}
 	if err := w.tx.QueryRow(ctx, `UPDATE cao_state SET revision=revision+1,data_revision=$1,evaluated_at=$2,schema_version=$3
 		WHERE namespace=$4 RETURNING revision`, dataRevision, w.evaluatedAt, model.SchemaVersion, w.store.namespace).Scan(&state.Revision); err != nil {

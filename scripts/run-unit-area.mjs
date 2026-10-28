@@ -7,19 +7,21 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const unitDirectory = join(root, "tests", "unit");
 
 export const unitTestAreas = {
-  activity: [/^activity-/, /^workflow-values-recurring\./, /^actions-log\./, /^github-telemetry\./],
+  activity: [/^activity-/, /^workflow-value-publication\./, /^workflow-values-recurring\./, /^actions-log\./, /^github-api-budget\./, /^github-telemetry\./],
   dashboard: [/^dashboard-/, /^cli-action-/, /^server-azure-/],
   workflows: [
     /^workflow-contract-/, /^control-/, /^campaign-/, /^contoso-/,
-    /^github-apps\./, /^setup-hosted-cli-app\./, /^gh-aw-version-/, /^release-workflow\./, /^build-release\./,
+    /^github-apps\./, /^gh-aw-version-/, /^release-workflow\./, /^build-release\./,
     /^add-operational-value-skill\./, /^token-intervention-lifecycle\./,
   ],
   tooling: [
     /^cao-/, /^ops-publish/, /^optimization-/, /^dependabot-/, /^azure-local-/,
     /^eslint-rules-/, /^actions-context\./, /^actions-runtime\./, /^agent-plugin\./,
-    /^install-script\./, /^setup-terminal\./, /^repository-/, /^no-hardcoded-github-actions-url\./,
+    /^install-script\./, /^installer-canary\./, /^repository-/, /^no-hardcoded-github-actions-url\./,
     /^token-optimization-data-contract\./, /^unit-area-selection\./,
     /^backfill-stress-report\./, /^source-map-compat\./,
+    /^maintainer-simulation\./,
+    /^(?:native-value-import|value-session-archive)\./,
   ],
   documentation: [
     /^docs-/, /^landing-page-/, /^catalog-page\./,

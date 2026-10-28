@@ -972,18 +972,23 @@ contract is [`specs/server-hosted-cli.md`](../specs/server-hosted-cli.md).
   This fails closed instead of guessing where an unbounded or overlapping
   credential ends. Queue output limits still apply.
 - **Native command planning**: Go re-plans every command against the catalog
-  allowlist. CAO campaign updates become native `gh-aw update` invocations
-  constrained to the configured control repository and selected CAO package.
+  allowlist. Campaign-package and standalone-workflow source updates become
+  native `gh-aw update` invocations constrained to the configured control
+  repository and exact retained GitHub source coordinate.
   The backend does not run repository shell scripts, check out the control repository, or
   execute scripts from it. The image reference is pinned by digest and included
   in command-start audit records. An operator-selected mirror must also use a
   reviewed digest-pinned reference.
-- **App setup**: `node activity/cao.mjs setup-auth hosted-cli` creates a least-privilege
+- **App setup**: native Go `gh cao setup auth hosted-cli` creates a least-privilege
   App (actions, contents, pull requests, and workflows write; metadata read).
   It refuses sensitive or organization permissions and installs the App only
   on the control repository and named same-owner targets. The private-key file
   it writes with mode `0600` is a temporary bootstrap copy, not secret storage:
   import it into the executor deployment's vault and remove the local copy.
+  Existing files and symlinks are never overwritten. Browser approval remains
+  required; all-repository installations and incomplete selected scope fail
+  closed. This setup does not change CAO policy, Actions credentials, or hosted
+  enablement. The retired Node profile is rejected before side effects.
   Make the vaulted value available only to `execute-cli`, preferably through a
   secret-manager-mounted file configured with `CAO_HOSTED_CLI_PRIVATE_KEY_FILE`.
   Do not place it in the dashboard web process, checked-in configuration,

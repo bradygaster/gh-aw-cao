@@ -21,7 +21,7 @@ const campaignUpdateSource = "https://github.com/githubnext/gh-cao";
 // own source repository; the consumer is never pushed.
 const consumerRepository = "octocat/Hello-World";
 const materializerScript = resolve(".github/workflows/shared/materialize-cao.mjs");
-const installerSource = readFileSync(resolve("install.sh"), "utf8");
+const installerSource = readFileSync(resolve("install-gh-cao.sh"), "utf8");
 const controlRuntimeFiles = [
   ".github/workflows/shared/control.mjs",
   ".github/workflows/shared/policy.mjs",
@@ -61,30 +61,23 @@ const activityExpectedFiles = [
   "activity/cao.mjs",
   "activity/cli-usage.mjs",
   "activity/commands/activity-stats.mjs",
-  "activity/commands/add.mjs",
   "activity/commands/audit-jsonl.mjs",
   "activity/commands/cluster-problems.mjs",
   "activity/commands/compact-jsonl.mjs",
   "activity/commands/computation.mjs",
   "activity/commands/dashboard-complexity.mjs",
-  "activity/commands/disable.mjs",
   "activity/commands/discover-workflows.mjs",
-  "activity/commands/doctor.mjs",
+  "activity/commands/repair-database.mjs",
   "activity/commands/download.mjs",
-  "activity/commands/enable.mjs",
   "activity/commands/gh.mjs",
   "activity/commands/hash-payloads.mjs",
   "activity/commands/index.mjs",
   "activity/commands/ingest-jsonl.mjs",
   "activity/commands/ingest.mjs",
-  "activity/commands/init.mjs",
   "activity/commands/issue-status.mjs",
-  "activity/commands/mode.mjs",
   "activity/commands/operational-value.mjs",
   "activity/commands/prune-dashboard.mjs",
   "activity/commands/query.mjs",
-  "activity/commands/setup-auth.mjs",
-  "activity/commands/update.mjs",
   "activity/collect-logs.sh",
   "activity/collect-workflow-logs.mjs",
   "activity/computations/intelligence-contracts.mjs",
@@ -152,6 +145,7 @@ const optimizationExpectedFiles = [
 const selfCareExpectedFiles = [
   ".github/workflows/self-care-accessibility-checker.md",
   ".github/workflows/self-care-agent-discoverability.md",
+  ".github/workflows/self-care-cli-consistency.md",
   ".github/workflows/self-care-code-improvement.md",
   ".github/workflows/self-care-dashboard-data-schema.md",
   ".github/workflows/self-care-dashboard-debug-logging.md",
@@ -166,7 +160,6 @@ const selfCareExpectedFiles = [
   ".github/workflows/self-care-pages-health.md",
   ".github/workflows/self-care-primer-brand-checker.md",
   ".github/workflows/self-care-reactive-ui-expert.md",
-  ".github/workflows/self-care-release-blogger.md",
   ".github/workflows/self-care-server-go-logging.md",
   ".github/workflows/self-care-specs-maintainer.md",
   ".github/workflows/self-care.md",

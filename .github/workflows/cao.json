@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/githubnext/gh-cao/main/.github/workflows/shared/cao.schema.json",
   "version": 1,
-  "gh-aw-version": "v0.92.6",
+  "gh-aw-version": "v0.93.5",
   "control-plane": {
     "scope": {
       "allowed-owners": [
@@ -9,6 +9,16 @@
         "github"
       ],
       "allowed-repositories": [
+        "github/gh-aw",
+        "github/gh-aw-firewall",
+        "github/gh-aw-mcpg",
+        "github/gh-aw-actions",
+        "github/gh-aw-threat-detection",
+        "githubnext/gh-cao"
+      ]
+    },
+    "activity": {
+      "repositories": [
         "github/gh-aw",
         "github/gh-aw-firewall",
         "github/gh-aw-mcpg",
@@ -241,6 +251,9 @@
           "agent-discoverability": {
             "workflow": "self-care-agent-discoverability"
           },
+          "cli-consistency": {
+            "workflow": "self-care-cli-consistency"
+          },
           "code-improvement": {
             "workflow": "self-care-code-improvement"
           },
@@ -286,9 +299,6 @@
           "reactive-ui-expert": {
             "workflow": "self-care-reactive-ui-expert"
           },
-          "release-blogger": {
-            "workflow": "self-care-release-blogger"
-          },
           "server-go-logging": {
             "workflow": "self-care-server-go-logging"
           },
@@ -299,6 +309,20 @@
             "workflow": "self-care-specs-maintainer"
           }
         }
+      },
+      "activity": {
+        "workflow-values": [
+          {
+            "api-requests": 700,
+            "collector": ".github/value-collectors/daily-file-diet.mjs",
+            "evidence": {
+              "path": ".github/value-evidence/daily-file-diet.jsonl.gz",
+              "sha256": "9afaf3b49a02c1eda0c634016bae98bf0be0a5c1b63f1ae6c6353b151301d19e"
+            },
+            "repository": "github/gh-aw",
+            "workflow": "daily-file-diet"
+          }
+        ]
       }
     }
   },

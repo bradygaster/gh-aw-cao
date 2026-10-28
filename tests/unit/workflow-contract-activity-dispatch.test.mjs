@@ -31,21 +31,48 @@ test('manual fast collection narrows download budgets without changing scope or 
   });
 });
 
-test('fast collection preserves the history restore and exits before operational-value computation', (t) => {
+test('fast collection preserves Value history and publishes a deferred decision without acquisition', (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), 'activity-fast-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const computation = step('collect', 'Compute owner-scoped operational value');
+  const computation = step('collect', 'Retain Value evidence and publish collection health');
   assert.equal(computation.env.REPORT_FAST_MODE, '${{ inputs.fast == true }}');
-  assert.match(computation.run, /cp "\$retained_values" "\$value_output"[\s\S]*?ingest-jsonl[\s\S]*?if \[\[ "\$REPORT_FAST_MODE" == "true" \|\| "\$REPORT_RATE_LIMITED" == "true" \|\| "\$REPORT_PUBLIC_ONLY" == "true" \]\]/);
+  const seed = path.join(directory, 'seed');
+  const shards = path.join(directory, 'shards');
+  mkdirSync(seed);
+  mkdirSync(shards);
+  writeFileSync(path.join(seed, 'operational-values-example.jsonl'), 'retained evidence\n');
+  const inventory = path.join(directory, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify({ repositories: { rows: [] }, workflows: { rows: [] } }));
+  assert.match(computation.run, /cp "\$retained_values" "\$value_output"[\s\S]*?REPORT_FAST_MODE" == "true" \]\]; then reason=fast-mode/);
+  assert.equal(computation['continue-on-error'], true);
+  assert.equal(computation['timeout-minutes'], 20);
   const output = execFileSync('bash', ['-euc', computation.run], {
     cwd: root, encoding: 'utf8',
     env: {
       ...process.env, REPORT_FAST_MODE: 'true', ACTIVITY_ARTIFACT: 'example',
-      RUNNER_TEMP: directory,
-      REPORT_VALUE_SEED_SHARDS: directory, REPORT_GH_AW_LOGS_SHARDS: directory
+      RUNNER_TEMP: directory, REPORT_PUBLIC_ONLY: 'false', REPORT_RATE_LIMITED: 'false',
+      REPORT_TARGET_REPOSITORIES_JSON: '["github/gh-aw"]',
+      ACTIVITY_DATABASE: path.join(directory, 'unused.sqlite'), REPORT_INVENTORY_SOURCES: inventory,
+      GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GH_TOKEN: '', GITHUB_TOKEN: '',
+      REPORT_VALUE_API_RESERVE: '100',
+      REPORT_VALUE_SEED_SHARDS: seed, REPORT_GH_AW_LOGS_SHARDS: shards,
     }
   });
-  assert.match(output, /skipping new computation/);
+  const result = JSON.parse(output);
+  assert.equal(result.imported, 1);
+  assert.equal(result.deferred, 1);
+  assert.equal(readFileSync(path.join(shards, 'operational-values-example.jsonl'), 'utf8'), 'retained evidence\n');
+  const evidence = JSON.parse(readFileSync(path.join(shards, 'workflow-values-example.jsonl'), 'utf8'));
+  assert.equal(evidence.operational_value_evidence.observedAt, '2026-10-18T12:05:52.580Z');
+  assert.equal(evidence.operational_value_evidence.windowEnd, '2026-10-18T11:54:09Z');
+  const health = JSON.parse(readFileSync(path.join(shards, 'workflow-values-example-collections.jsonl'), 'utf8'));
+  assert.equal(health.workflow_value_collection.repository, 'github/gh-aw');
+  assert.equal(health.workflow_value_collection.workflow, 'daily-file-diet');
+  assert.equal(health.workflow_value_collection.registration, 'enabled');
+  assert.equal(health.workflow_value_collection.state, 'deferred');
+  assert.equal(health.workflow_value_collection.reasonCode, 'fast-mode');
+  assert.equal(health.workflow_value_collection.lastAttemptAt, undefined);
+  assert.equal(JSON.parse(readFileSync(path.join(shards, 'workflow-value-local.json'), 'utf8'))[0].eligible, false);
 });
 
 test('forced recycling runs before new downloads and safely clears only disposable payloads', (t) => {
@@ -98,7 +125,7 @@ test('recycle-only bypasses repository collection and API evidence requests but 
   assert.ok(steps.indexOf(verify) < steps.indexOf(step('index', 'Force recycling of restored activity cache')));
   assert.ok(steps.indexOf(reset) < steps.indexOf(step('index', 'Generate phased activity shards')));
   for (const name of [
-    'Generate phased activity shards', 'Ingest activity database', 'Validate activity database',
+    'Generate phased activity shards', 'Ingest activity database', 'Repair activity database and apply retention',
     'Hash activity payloads', 'Upload activity snapshot'
   ]) {
     assert.equal(step('index', name).if, undefined);

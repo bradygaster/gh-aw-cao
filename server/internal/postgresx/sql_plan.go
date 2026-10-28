@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/githubnext/gh-cao/server/internal/inputlimits"
 	"github.com/githubnext/gh-cao/server/internal/model"
 	"github.com/githubnext/gh-cao/server/internal/query"
+	"github.com/githubnext/gh-cao/server/internal/sqlbuilder"
 )
 
 type SQLPage struct{ Offset, Limit int }
@@ -26,6 +28,7 @@ type SQLExecutionOptions struct {
 	Runtime        func(context.Context, string) (model.Source, error)
 	Pages          map[string]SQLPage
 	ResourceLimits *SQLResourceLimits
+	Repositories   []string
 }
 
 func sqlResourceLimits(override *SQLResourceLimits) (SQLResourceLimits, error) {
@@ -57,7 +60,27 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 	defer cancel()
 	metadata := map[string]model.Metadata{}
 	retrievedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	definitions = frozenStatisticalDefinitions(definitions)
+	valueSelections := query.OperationalValueEvidenceSelections(definitions, requested)
+	measurementSelections := query.SourceEqualities(definitions, requested, "workflow-value-measurements",
+		"$operationalValues", "id", "workflow-route")
 	resolve := func(name string) (query.SQLRelation, error) {
+		if strings.HasPrefix(name, statisticalSnapshotPrefix) {
+			if len(options.Repositories) > 0 {
+				return query.SQLRelation{}, fmt.Errorf("hosted local Value cannot query unscoped statistical source %q", name)
+			}
+			relation, quality, err := r.frozenStatisticalSource(ctx, name)
+			metadata[name] = quality
+			return relation, err
+		}
+		if name == "$statisticalMembership" {
+			if len(options.Repositories) > 0 {
+				return query.SQLRelation{}, fmt.Errorf("hosted local Value cannot query unscoped statistical source %q", name)
+			}
+			relation, quality, err := r.statisticalSQLSource(ctx)
+			metadata[name] = quality
+			return relation, err
+		}
 		if table, exists := entityTables[name]; exists && table.runtime {
 			if options.Runtime == nil {
 				return query.SQLRelation{}, fmt.Errorf("runtime source %q requires its authorized provider", name)
@@ -80,13 +103,33 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 				}
 			}
 			metadata[name] = source.Metadata
-			return runtimeSQLSource(name, source)
+			relation, err := runtimeSQLSource(name, source)
+			if err != nil {
+				return query.SQLRelation{}, err
+			}
+			return r.scopeSQLRelation(name, relation, options.Repositories)
 		}
 		relation, err := r.entitySQLSource(name)
 		if err != nil {
 			return query.SQLRelation{}, err
 		}
-		value, err := r.rootMetadata(ctx, name)
+		if name == "$operationalValueEvidence" {
+			relation = r.operationalValueEvidenceSQLSource(valueSelections...)
+		}
+		if name == "$operationalValues" && len(measurementSelections) > 0 {
+			var predicates []string
+			for _, selection := range measurementSelections {
+				if selection.Field == "id" {
+					predicates = append(predicates, "t.id={}")
+					relation.Params = append(relation.Params, selection.Value)
+				} else {
+					predicates = append(predicates, "("+relation.Columns["workflow-route"].Expression+")={}")
+					relation.Params = append(relation.Params, selection.Value)
+				}
+			}
+			relation.SQL = "(SELECT * FROM " + relation.SQL + " WHERE " + strings.Join(predicates, " OR ") + ") AS t"
+		}
+		value, err := r.rootMetadata(ctx, name, valueSelections...)
 		if err != nil {
 			return query.SQLRelation{}, err
 		}
@@ -94,12 +137,13 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 		if value["availability"] == "unavailable" {
 			relation.SQL = "(SELECT * FROM " + relation.SQL + " WHERE FALSE) AS t"
 		}
-		return relation, nil
+		return r.scopeSQLRelation(name, relation, options.Repositories)
 	}
 	plan, err := query.CompileSQL(definitions, requested, resolve)
 	if err != nil {
 		return nil, model.Metrics{}, err
 	}
+
 	statsSQL, statsArgs, err := plan.StatisticsStatement()
 	if err != nil {
 		return nil, model.Metrics{}, err
@@ -263,7 +307,59 @@ func (r *readTransaction) ExecuteSQLPlanWithOptions(ctx context.Context, definit
 	return output, metrics, nil
 }
 
-func (r *readTransaction) rootMetadata(ctx context.Context, name string) (model.Metadata, error) {
+func (r *readTransaction) scopeSQLRelation(
+	name string,
+	relation query.SQLRelation,
+	repositories []string,
+) (query.SQLRelation, error) {
+	if len(repositories) == 0 {
+		return relation, nil
+	}
+	normalized := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		repository = strings.ToLower(strings.TrimSpace(repository))
+		if parts := strings.Split(repository, "/"); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return query.SQLRelation{}, fmt.Errorf("invalid hosted local Value repository scope %q", repository)
+		}
+		normalized = append(normalized, repository)
+	}
+	var predicate string
+	if repositoryID, exists := relation.Columns["repositoryId"]; exists {
+		predicate = "(" + repositoryID.Expression + `) IN (
+			SELECT id FROM repositories
+			WHERE namespace={} AND lower(owner||'/'||name)=ANY({})
+		)`
+		relation.Params = append(relation.Params, r.store.namespace, normalized)
+	} else if owner, ownerExists := relation.Columns["owner"]; ownerExists {
+		if repository, exists := relation.Columns["repository"]; exists {
+			predicate = "lower((" + owner.Expression + ")||'/'||(" + repository.Expression + "))=ANY({})"
+			relation.Params = append(relation.Params, normalized)
+		} else if repository, exists := relation.Columns["name"]; exists {
+			predicate = "lower((" + owner.Expression + ")||'/'||(" + repository.Expression + "))=ANY({})"
+			relation.Params = append(relation.Params, normalized)
+		}
+	} else if organization, organizationExists := relation.Columns["organization"]; organizationExists {
+		if repository, exists := relation.Columns["repository"]; exists {
+			predicate = "lower((" + organization.Expression + ")||'/'||(" + repository.Expression + "))=ANY({})"
+			relation.Params = append(relation.Params, normalized)
+		}
+	} else if name == "$operationalValues" {
+		if repository, exists := relation.Columns["repository"]; exists {
+			predicate = "lower(" + repository.Expression + ")=ANY({})"
+			relation.Params = append(relation.Params, normalized)
+		}
+	}
+	if predicate == "" {
+		return query.SQLRelation{}, fmt.Errorf("hosted local Value source %q cannot be repository scoped", name)
+	}
+	relation.SQL = "(SELECT * FROM " + relation.SQL + " WHERE " + predicate + ") AS t"
+	return relation, nil
+}
+
+func (r *readTransaction) rootMetadata(ctx context.Context, name string, valueSelections ...query.SourceEquality) (model.Metadata, error) {
+	if name == dailySource || name == "$dailyRunCounts" {
+		return r.dailyMetadata(ctx)
+	}
 	var availability, completeness, freshness string
 	var asOf, retrieved sql.NullTime
 	err := r.tx.QueryRowContext(ctx, `SELECT availability,completeness,freshness,as_of,retrieved_at FROM cao_quality
@@ -275,8 +371,20 @@ func (r *readTransaction) rootMetadata(ctx context.Context, name string) (model.
 		return nil, err
 	}
 	if name == "$operationalValueEvidence" {
-		if err := r.tx.QueryRowContext(ctx, `SELECT min(window_end),min(observed_at)
-			FROM operational_value_evidence WHERE namespace=$1`, r.store.namespace).Scan(&asOf, &retrieved); err != nil {
+		predicate, params := r.operationalValueEvidencePredicate(valueSelections)
+		statement, args, err := sqlbuilder.Build(`SELECT min(p.window_end),min(p.observed_at)
+			FROM operational_value_evidence p WHERE `+predicate, params...)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.tx.QueryRowContext(ctx, statement, args...).Scan(&asOf, &retrieved); err != nil {
+			return nil, err
+		}
+		completeness, freshness = "unknown", "unknown"
+	}
+	if name == "$workflowValueCollections" {
+		if err := r.tx.QueryRowContext(ctx, `SELECT min(observed_at),min(observed_at)
+			FROM workflow_value_collections WHERE namespace=$1`, r.store.namespace).Scan(&asOf, &retrieved); err != nil {
 			return nil, err
 		}
 		completeness, freshness = "unknown", "unknown"
@@ -299,6 +407,10 @@ func mergeMetadata(left, right model.Metadata, optional bool) model.Metadata {
 	result := model.Metadata{}
 	for key, value := range left {
 		result[key] = value
+	}
+	if frame, exists := right["statistical-frame"]; exists {
+		result["statistical-frame"] = frame
+		result["sample-frame"] = frame
 	}
 	for _, field := range []string{"as-of", "retrieved-at"} {
 		a, _ := left[field].(string)
@@ -363,14 +475,62 @@ func composeMetadata(definitions []query.Definition, roots map[string]model.Meta
 		for _, source := range definition.Union {
 			result = mergeMetadata(result, composeMetadata(definitions, roots, source, visiting), false)
 		}
+		inputs := []model.Metadata{result}
 		for _, join := range definition.Joins {
-			result = mergeMetadata(result, composeMetadata(definitions, roots, join.Source, visiting), join.Type == "left")
+			right := composeMetadata(definitions, roots, join.Source, visiting)
+			inputs = append(inputs, right)
+			result = mergeMetadata(result, right, join.Type == "left" && !dailyAggregateMetadata(right))
+		}
+		if len(definition.Joins) > 0 && len(definition.Union) == 0 {
+			var provenance model.Metadata
+			consistent := true
+			for _, input := range inputs {
+				if input["aggregate-version"] == nil {
+					continue
+				}
+				fields := aggregateMetadataFields(input)
+				if provenance == nil {
+					provenance = fields
+				} else if !reflect.DeepEqual(provenance, fields) {
+					consistent = false
+				}
+			}
+			for field := range aggregateMetadataFields(result) {
+				delete(result, field)
+			}
+			if consistent && dailyAggregateMetadata(provenance) {
+				for field, value := range provenance {
+					result[field] = value
+				}
+				// Inventory quality cannot erase the known partial coverage of counts.
+				for _, input := range inputs {
+					if input["completeness"] == "partial" {
+						result["completeness"] = "partial"
+					}
+				}
+			}
 		}
 		return result
 	}
+
 	// No arbitrary source-name or legacy logical-source fallback is admitted.
 	return model.Metadata{"source-id": strings.TrimSpace(name), "availability": "unavailable", "completeness": "unknown", "freshness": "unknown"}
 }
+
+func dailyAggregateMetadata(metadata model.Metadata) bool {
+	return fmt.Sprint(metadata["aggregate-version"]) == "1"
+}
+
+func aggregateMetadataFields(metadata model.Metadata) model.Metadata {
+	fields := model.Metadata{}
+	for field, value := range metadata {
+		if strings.HasPrefix(field, "aggregate-") || field == "excluded-runs" || field == "conflicted-runs" || field == "query-diagnostic" {
+			fields[field] = value
+		}
+	}
+	return fields
+}
+
 func unquoteSQLName(name string) string {
 	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
 		return name[1 : len(name)-1]
