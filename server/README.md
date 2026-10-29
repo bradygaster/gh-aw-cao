@@ -1,42 +1,35 @@
 # Go dashboard server with Postgres, local SQLite, and operational storage
 
-The [TypeSpec HTTP contract](spec/README.md) is the source for generated
-OpenAPI 3.1 and selected JSON Schemas; consult it before changing server routes.
+Consult the [TypeSpec HTTP contract](spec/README.md), which generates OpenAPI 3.1
+and selected JSON Schemas, before changing routes.
 
-The `server/` module is the unified serving runtime for the Central Agentic Ops
-dashboard with server-owned persistence and query execution. It ingests the
-same compacted data published with the deployed dashboard, stores current
-native entity rows in PostgreSQL and executes hosted Dashboard Language plans
-as SQL through the bounded PostgreSQL query engine,
-and serves the built dashboard either over loopback HTTP or through an
-authenticated host-neutral service profile. Local `serve` defaults to a cached
-SQLite snapshot, downloading deployed data only when the file is missing.
-PostgreSQL is the hosted default operational adapter, so the default deployment
-requires no Redis service.
-Explicit Redis configuration remains supported; an acknowledged single-process memory adapter supports the
-same OAuth, signed-webhook, collection, quota, and backfill services with volatile
-state. The PostgreSQL operational adapter supports durable,
-deployment-scoped services in separate tables. No operational adapter holds or
-queries dashboard entities.
+The `server/` runtime owns dashboard persistence and queries. It ingests deployed
+compacted data into native PostgreSQL entity rows, executes hosted Dashboard
+Language as bounded SQL, and serves the built dashboard over loopback HTTP or
+an authenticated host-neutral profile. Local `serve` caches a SQLite snapshot,
+downloading deployed data only when missing.
 
-Operational composition uses only the focused `OperationalServices` bundle.
-The provider owns lifecycle through `Backend`; consumers retain just the cache,
+Hosted operational storage defaults to durable, deployment-scoped PostgreSQL
+tables; Redis is optional. An explicitly acknowledged single-process memory
+adapter provides volatile OAuth, signed-webhook, collection, quota, and backfill
+state. Operational adapters never hold or query dashboard entities.
+
+The focused `OperationalServices` bundle replaces `Services()` and aggregate
+interfaces. `Backend` owns lifecycle; consumers retain only the cache,
 limiter, session, invalidation, revocation, lease, state, delivery, queue,
-admission, metadata, quota, health, or metrics contracts they use. The old
-`Services()` bundle and aggregate operational interfaces are removed.
-Separately injected services preserve the same backend's atomic transitions;
-the split is not permission to put session invalidation or delivery admission
-across unrelated stores. All three adapters share behavioral conformance over
-the focused contracts.
+admission, metadata, quota, health, or metrics contracts they use. Injected services
+must preserve the same backend's atomic transitions: session invalidation and
+delivery admission cannot span unrelated stores. All three adapters share
+behavioral conformance over these contracts.
 
-The browser never connects directly to Postgres or Redis and never receives
-database credentials. It communicates only with the same-origin HTTP(S) API.
+The browser uses only the same-origin HTTP(S) API, never connects to Postgres or
+Redis, and never receives database credentials.
 
 ### Local development and Pages simulation
 
-From the repository root, `npm run dev` or `npm run dashboard:local` builds
-the dashboard and starts Go `serve` with its verified SQLite cache. The Node
-server is retired; only an internal loopback canvas authoring bridge remains.
+From the root, `npm run dev` or `npm run dashboard:local` builds the dashboard
+and starts Go `serve` with its verified SQLite cache. Node serves only the
+internal loopback canvas authoring bridge.
 
 The Go local SQLite server also runs natively on Windows, without PostgreSQL,
 Redis, Docker, or Linux process features. From PowerShell at the repository root,
