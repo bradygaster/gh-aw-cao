@@ -1,0 +1,178 @@
+language-version: "0.1.0"
+dashboard:
+  id: firewall-egress-review
+  title: Firewall egress review
+  description: Shows denied destinations, their run evidence, accepted review issues, and native attainment for one bounded firewall egress review workflow.
+  defaults:
+    scope:
+      repositories:
+        - githubnext/gh-cao
+      workflows:
+        - .github/workflows/firewall-egress-review.yml
+    time:
+      range: 30d
+  queries:
+    - name: blocked-domain-totals
+      subject: Aggregate denied firewall requests by destination domain and workflow.
+      objective: Rank the destinations generating the most denied requests for bounded operator investigation.
+      acceptance: Preserve workflow scope and native denied request totals; ranking does not authorize broader egress.
+      from: firewall-observations
+      filter:
+        predicates:
+          - field: decision
+            equals: denied
+      aggregate:
+        by:
+          - workflow
+          - domain
+        values:
+          - field: request-count
+            as: blocked-requests
+            reducer: sum
+      order-by:
+        - field: blocked-requests
+          direction: desc
+        - field: domain
+          direction: asc
+      limit: 10
+  pages:
+    - id: firewall-egress-review
+      kind: custom
+      title: Firewall egress review
+      description: Helps an operator confirm activation, inspect denied destination evidence, review accepted issue effects, and monitor attainment for this workflow.
+      views:
+        - id: blocked-destination-ranking
+          subject: Denied request totals for destination domains observed by the firewall egress review workflow.
+          objective: Identify which blocked destinations need evidence-backed investigation first.
+          acceptance: Show at most ten domains ranked by native denied request totals, without implying that a block should be removed.
+          title: Most blocked destinations
+          data:
+            source: blocked-domain-totals
+            filters:
+              workflow: .github/workflows/firewall-egress-review.yml
+            limit: 10
+          mark: chart
+          chart: horizontal-bar
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: domain
+              type: nominal
+              title: Destination domain
+            y:
+              field: blocked-requests
+              type: quantitative
+              title: Denied requests
+        - id: denied-request-evidence
+          subject: Denied firewall observations for the selected workflow and horizon.
+          objective: Give operators destination, request-count, run, and observation evidence for each denial.
+          acceptance: Include only denied observations for the synthetic workflow, newest first, with a direct run link.
+          title: Denied request evidence
+          data:
+            source: firewall-observations
+            filters:
+              workflow: .github/workflows/firewall-egress-review.yml
+              decision: denied
+            order-by:
+              - field: observed-at
+                direction: desc
+              - field: firewall-observation
+                direction: asc
+            limit: 30
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: essential
+          empty-message: No denied firewall observations were available for this workflow in the selected horizon.
+          encoding:
+            href:
+              field: run-link
+              type: nominal
+            columns:
+              - field: domain
+                type: nominal
+                title: Destination
+              - field: decision
+                type: ordinal
+                title: Decision
+                display: status
+              - field: request-count
+                type: quantitative
+                title: Requests
+              - field: run
+                type: nominal
+                title: Run
+                display: run-link
+              - field: observed-at
+                type: temporal
+                title: Observed
+        - id: accepted-review-issues
+          subject: Accepted issue outputs created by the firewall egress review workflow.
+          objective: Let operators inspect the durable review effect associated with actionable denied destinations.
+          acceptance: Show only accepted issue outcomes for the synthetic workflow with issue and run provenance; a successful run alone is insufficient.
+          data:
+            source: outcomes
+            filters:
+              workflow: .github/workflows/firewall-egress-review.yml
+              outcome-category: issue
+              outcome-state: accepted
+            order-by:
+              - field: observed-at
+                direction: desc
+              - field: outcome-number
+                direction: asc
+            limit: 20
+          mark: table
+          controls: interactive
+          layout: full
+          disclosure: supplemental
+          empty-message: No accepted egress review issues match the selected horizon.
+          encoding:
+            href:
+              field: issue-link
+              type: nominal
+            columns:
+              - field: outcome-title
+                type: nominal
+                title: Review issue
+                display: outcome-link
+              - field: outcome-number
+                type: quantitative
+                title: Number
+              - field: outcome-state
+                type: ordinal
+                title: Outcome
+                display: status
+              - field: run-conclusion
+                type: ordinal
+                title: Run conclusion
+                display: status
+              - field: observed-at
+                type: temporal
+                title: Observed
+        - id: egress-review-attainment
+          subject: Native firewall egress review attainment observations for the selected workflow.
+          objective: Show whether matured actionable destination opportunities receive one accepted review issue.
+          acceptance: Preserve the native ratio and null semantics for firewall-egress-review-attainment; do not derive attainment from request or run counts.
+          title: Egress review attainment
+          data:
+            source: operational-values
+            filters:
+              workflow: .github/workflows/firewall-egress-review.yml
+              operational-value-definition: firewall-egress-review-attainment
+          mark: chart
+          chart: line
+          layout: full
+          disclosure: essential
+          encoding:
+            x:
+              field: observed-at
+              type: temporal
+              time-unit: day
+              title: Observed
+            y:
+              field: operational-value
+              type: quantitative
+              aggregate: mean
+              title: Attainment ratio

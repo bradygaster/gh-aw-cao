@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "id": "firewall-egress-review",
+  "task": {
+    "actor": "Repository operator",
+    "subject": "Denied network destinations observed for the githubnext/gh-cao firewall egress review workflow",
+    "intent": "Help a repository operator verify that a bounded firewall egress review workflow activates on newly observed denied destinations, opens one accepted review issue for each actionable destination opportunity, and attains complete review coverage without treating denied traffic as permission to widen egress.",
+    "activationConditions": [
+      "The standalone workflow .github/workflows/firewall-egress-review.yml is enabled in review mode for githubnext/gh-cao.",
+      "A denied firewall observation for that workflow identifies a destination domain within the selected horizon.",
+      "The denied destination is not already covered by an accepted review issue for the same stable opportunity."
+    ],
+    "requiredEffects": [
+      "Bind each eligible denied destination to one stable repository, workflow, domain, and evidence-cutoff opportunity.",
+      "Create at most one safe review issue for an actionable opportunity, preserving the denied firewall observation and workflow-run provenance.",
+      "Keep denied destinations visible for investigation without interpreting a block as evidence that the destination should be allowed."
+    ],
+    "noopConditions": [
+      "No denied firewall destination is observed for the workflow in the selected horizon.",
+      "An accepted review issue already covers the same stable opportunity.",
+      "Firewall evidence is unavailable or insufficient to identify the destination domain; missing evidence must not be treated as an all-clear."
+    ],
+    "successConditions": [
+      "The operator can rank blocked destinations, inspect the denied run evidence, and open each accepted review issue from the dashboard.",
+      "Each matured actionable opportunity has exactly one accepted review issue and no opportunity is counted from a successful run alone.",
+      "The direct attainment metric remains in the closed interval [0,1] and preserves null when evidence is insufficient."
+    ],
+    "uncertainties": [
+      "A denied request may be expected policy behavior rather than a defect.",
+      "A successful workflow run does not prove that a review issue was accepted.",
+      "Retained firewall observations may be partial, and an absent destination is not evidence that no request occurred."
+    ]
+  },
+  "operationalValue": {
+    "upstream": "gh-aw",
+    "opportunity": {
+      "identity": "Exact repository + workflow path + denied destination domain + frozen evidence cutoff.",
+      "eligibility": "A denied firewall observation for the accepted repository and synthetic workflow with a known domain, excluding an opportunity already covered before the cutoff.",
+      "acceptedRepositories": [
+        "githubnext/gh-cao"
+      ],
+      "acceptedEvidence": [
+        "A canonical firewall-observations row whose repository, workflow, domain, decision=denied, run, and observation time bind the opportunity.",
+        "A canonical outcomes row for an accepted issue produced by the same repository, workflow, and opportunity evidence window."
+      ]
+    },
+    "orderedMetrics": [
+      {
+        "id": "firewall-egress-review-attainment",
+        "unit": "ratio",
+        "direction": "higher_is_better",
+        "range": [
+          0,
+          1
+        ],
+        "formula": "Matured eligible opportunities with one accepted review issue divided by all matured eligible opportunities."
+      }
+    ],
+    "maturation": {
+      "rule": "An eligible opportunity matures seven UTC days after its frozen evidence cutoff so an accepted review issue can be observed.",
+      "days": 7
+    },
+    "zeroRule": "Emit numeric zero only when at least one eligible opportunity has matured with complete evidence and none has an accepted review issue.",
+    "missingEvidenceRule": "Emit null when there are no matured eligible opportunities, firewall coverage is unavailable or partial for the required window, the opportunity identity is incomplete, or accepted issue evidence cannot be matched.",
+    "baseline": {
+      "mode": "attainment-only",
+      "value": null,
+      "cutoff": "2026-09-01T00:00:00Z",
+      "reason": "This synthetic design has no immutable comparable pre-adoption evidence."
+    },
+    "preservation": "Preserve the metric ID, native ratio or null, unit, direction, maturation state, opportunity cutoff, and accepted evidence boundary exactly as published by gh-aw; blocked request counts and run conclusions are not substitutes for attainment."
+  },
+  "duplicateCheck": {
+    "comparedWith": [
+      "failed-run-investigation",
+      "triage-review-readiness",
+      "workflow-cost-inventory"
+    ],
+    "result": "Novel: this example uses denied firewall destination opportunities, a seven-day attainment-only value contract, a derived blocked-domain ranking, linked firewall evidence, and accepted issue review coverage rather than generic run failure, issue-triage readiness, or workflow cost inventory."
+  },
+  "logicalSources": {
+    "firewall-observations": {
+      "rows": []
+    },
+    "outcomes": {
+      "rows": []
+    },
+    "operational-values": {
+      "rows": []
+    }
+  },
+  "dashboard": "firewall-egress-review.dashboard.yml"
+}
