@@ -34,6 +34,103 @@ normative [hosted CLI actions specification](../specs/server-hosted-cli.md).
 
 ## Supported security boundary
 
+### Optional Copilot requests broker
+
+The opt-in `/api/token-broker` service has a separate Actions OIDC boundary;
+dashboard sessions, API bearers and admission decisions never authorize
+issuance. Its protected `cao.json` allowlist pins immutable owner/repository
+IDs and exact workflow references and revisions. It checks signed execution
+and job evidence, denies fork/pull-request and reusable execution, and supports
+only `copilot-request` with the trusted `github` provider. Unsupported tasks do
+not trigger minting.
+
+A dedicated organization App's private key is read from Azure Key Vault using
+managed identity, never from policy or caller inputs. GitHub installation
+identity, organization ownership and least-privilege `copilot_requests: read`
+are checked before minting. Issuance is billable organization access, not
+read-only financial behavior. GitHub Copilot organization budgets must be
+configured separately; CAO admission budgets are not a broker spending cap.
+
+Request sizes, upstream responses, timeouts, in-flight issuance, retained
+credentials and rate subjects are bounded. Redirects and caller-selected
+upstream destinations are forbidden. Never capture broker bodies, OIDC tokens,
+App JWTs, Key Vault secrets or returned credentials in logs, traces or proxies.
+Failures have empty no-store responses without upstream diagnostics.
+
+The initial broker requires one explicitly acknowledged process replica.
+Job invalidation and graceful shutdown revoke tracked tokens, but a crash loses
+the process-local revocation registry. Installation tokens can remain valid
+until their actual expiry, bounded to one hour. No durable cleanup,
+multi-replica operation, Azure Functions hosting, or integrated-deployment
+certification is claimed.
+
+#### Broker enrollment and setup
+
+The organization permission is **Copilot Requests: Read-only**
+(`copilot_requests: read`); despite its name it authorizes billable AI requests.
+Use a dedicated organization-installed App, not a personal/enterprise
+installation or the collector App. Review the
+[GitHub organization App access documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/how-tos/administer-copilot/manage-for-organization/manage-app-copilot-access)
+and enable organization spending controls before activation.
+
+The checked-in `control-plane.token-broker.copilot-requests.workflows` list in
+`cao.json` is empty: no workflow is enrolled by this change. Each enrollment
+requires exact `repository-id`, `owner-id`, `workflow-ref`, and `workflow-sha`
+strings. The reference includes the repository, workflow filename and branch/tag,
+for example `acme/project/.github/workflows/triage.lock.yml@refs/heads/main`;
+the SHA is the 40-character lowercase commit SHA of that workflow revision.
+Wildcards are not supported. Protect the mounted policy from untrusted writes
+and serve the reviewed policy snapshot corresponding to enrolled workflow
+revisions. Update the pin only after reviewing a new revision. Broker
+authorization is independent of admission, rollout mode and repository writes.
+
+Configure these server environment settings; none contains a private key:
+
+| Setting | Required value |
+| --- | --- |
+| `CAO_TOKEN_BROKER_ENABLED` | `true` (otherwise disabled) |
+| `CAO_TOKEN_BROKER_SINGLE_PROCESS` | `true`, acknowledging one process/replica and volatile cleanup state |
+| `CAO_TOKEN_BROKER_URL` | Exact public `https://HOST/api/token-broker`, also the OIDC audience |
+| `CAO_TOKEN_BROKER_APP_ID` | Dedicated GitHub App's numeric ID |
+| `CAO_TOKEN_BROKER_INSTALLATION_ID` | Organization installation's numeric ID |
+| `CAO_TOKEN_BROKER_OWNER_ID` | Organization's immutable numeric ID |
+| `CAO_TOKEN_BROKER_KEY_VAULT_SECRET_URL` | `https://VAULT.vault.azure.net/secrets/SECRET`, optionally with a version |
+| `CAO_TOKEN_BROKER_MANAGED_IDENTITY_CLIENT_ID` | Optional user-assigned managed identity client ID |
+| `CAO_POLICY_PATH` | Protected control-repository `cao.json` path |
+
+Store the App's PEM private key as an Azure Key Vault **secret**, provisioned by
+an operator outside the server. Grant the server's managed identity secret-read
+access only to that secret (for example, Azure RBAC Key Vault Secrets User at
+the narrowest supported scope). App Service managed identity and Azure IMDS
+are supported; the runtime never provisions a vault, writes keys, or accepts a
+PEM through environment variables, workflow inputs, or request bodies.
+An unversioned secret URL reads the current version on each mint, supporting
+rotation without persisting keys in CAO. Use a private endpoint/firewall where
+appropriate and audit secret reads without capturing values.
+
+Run through hosted HTTPS with the reviewed allowed host and one process-owned
+listener. Azure Functions, externally owned listeners, and multiple replicas
+are rejected for this initial profile. Do not autoscale, overlap deployments,
+or enable broker request/response-body capture in a reverse proxy or APM system.
+Only explicitly trusted push, schedule and manual-dispatch execution is
+supported; pull requests, reusable workflows, environment-based subjects and
+identities lacking signed `check_run_id` job evidence fail closed.
+Cleanup uses gh-aw's fresh-OIDC `invalidate` request to revoke only that job's
+issued tokens; graceful shutdown also attempts revocation. A crash can lose
+cleanup state while GitHub tokens remain usable until their actual expiry
+(at most one hour). This is not a durable/multi-replica broker.
+
+For compatible gh-aw releases, opt in with `token-broker.copilot-request: true`
+and set `GH_AW_TOKEN_BROKER_URL` to that exact endpoint. Do not also set
+`permissions.copilot-requests: write`. As of the upstream experimental
+[broker specification](https://github.com/github/gh-aw/blob/main/docs/src/content/docs/specs/token-broker-specification.md),
+bounded threat-detection/evals consumers are wired; main-agent inference still
+requires renewable AWF credential support. Existing compiled workflows are not
+changed here. Before claiming integrated support, test real GitHub OIDC
+exchange, authorized Copilot inference, renewal, key rotation and job-scoped
+invalidation with your selected gh-aw version and organization entitlements.
+Offline tests or a token-shaped response do not establish that acceptance.
+
 The supported deployment is:
 
 - one trusted operator;
@@ -54,6 +151,52 @@ Default local startup downloads and verifies a deployed snapshot only when the
 cache is missing; existing invalid or unreadable caches fail closed without an
 automatic repair download. `--download-sqlite` explicitly refreshes the cache
 before opening it read-only and does not relax the local security boundary.
+
+## Repository metadata input limits
+
+Local repository-memory manifests default to a 2 MiB limit before JSON decoding,
+independently of the existing 400-files-per-campaign, 1 MiB-per-file and 64 MiB
+aggregate content limits. The metadata budget leaves room for many campaigns
+without treating file-content limits as a bound on manifest size.
+
+The Go marketplace resolver defaults ordinary GitHub JSON responses (commit,
+blob and installation-token exchange) to a 512 KiB limit before decoding.
+This allows base64 wrapping and metadata around 256 KiB manifests/READMEs
+without granting individual packages a multi-megabyte response budget.
+Recursive repository-tree discovery defaults to a separate 8 MiB ceiling
+because it lists paths across the entire repository, not just one package.
+Artwork fields are references, not image downloads through this JSON reader.
+Public repository signals retain their separate 64 KiB limit.
+
+These three metadata-read budgets are centralized in
+`internal/inputlimits/limits.go` and can be overridden independently:
+
+| Environment variable | Default | Input |
+| --- | --- | --- |
+| `CAO_REPOSITORY_MEMORY_MANIFEST_MAX_BYTES` | 2097152 (2 MiB) | Local repository-memory manifest |
+| `CAO_MARKETPLACE_JSON_MAX_BYTES` | 524288 (512 KiB) | Ordinary marketplace GitHub JSON |
+| `CAO_MARKETPLACE_TREE_JSON_MAX_BYTES` | 8388608 (8 MiB) | Recursive marketplace GitHub tree |
+
+Overrides are positive decimal byte counts below the platform integer maximum,
+leaving room for the overflow-detection byte. Unset variables use the defaults;
+empty, zero, negative, malformed or overflowing values fail explicitly before
+the relevant file is opened or HTTP request is issued. Overrides are resolved
+when the input is read, not cached at package initialization. Raising a budget
+is an operator-controlled capacity tradeoff, not evidence of workload safety.
+Existing file-content, package-content and repository-signal limits are unchanged.
+
+Both readers consume at most their limit plus one byte and reject oversized
+input, including a valid JSON prefix followed by excess whitespace. The
+marketplace checks actual response bytes rather than trusting Content-Length;
+complete JSON validation also rejects trailing documents or garbage. Read
+errors and request cancellation remain failures. Optional README failures keep
+the existing logged, empty-content behavior; required registry responses fail
+that registry with credential-free diagnostics.
+
+These are per-input byte bounds, not process-heap, concurrency, filesystem I/O
+deadline or deployment capacity guarantees. Decoded structures and subsequent
+normalization require additional memory. Deployed workload suitability and
+operating effectiveness still require operator evidence.
 
 ## Host-neutral hosted profile
 
@@ -926,18 +1069,23 @@ contract is [`specs/server-hosted-cli.md`](../specs/server-hosted-cli.md).
   This fails closed instead of guessing where an unbounded or overlapping
   credential ends. Queue output limits still apply.
 - **Native command planning**: Go re-plans every command against the catalog
-  allowlist. CAO campaign updates become native `gh-aw update` invocations
-  constrained to the configured control repository and selected CAO package.
+  allowlist. Campaign-package and standalone-workflow source updates become
+  native `gh-aw update` invocations constrained to the configured control
+  repository and exact retained GitHub source coordinate.
   The backend does not run repository shell scripts, check out the control repository, or
   execute scripts from it. The image reference is pinned by digest and included
   in command-start audit records. An operator-selected mirror must also use a
   reviewed digest-pinned reference.
-- **App setup**: `node activity/cao.mjs setup-auth hosted-cli` creates a least-privilege
+- **App setup**: native Go `gh cao setup auth hosted-cli` creates a least-privilege
   App (actions, contents, pull requests, and workflows write; metadata read).
   It refuses sensitive or organization permissions and installs the App only
   on the control repository and named same-owner targets. The private-key file
   it writes with mode `0600` is a temporary bootstrap copy, not secret storage:
   import it into the executor deployment's vault and remove the local copy.
+  Existing files and symlinks are never overwritten. Browser approval remains
+  required; all-repository installations and incomplete selected scope fail
+  closed. This setup does not change CAO policy, Actions credentials, or hosted
+  enablement. The retired Node profile is rejected before side effects.
   Make the vaulted value available only to `execute-cli`, preferably through a
   secret-manager-mounted file configured with `CAO_HOSTED_CLI_PRIVATE_KEY_FILE`.
   Do not place it in the dashboard web process, checked-in configuration,
@@ -995,6 +1143,13 @@ contract is [`specs/server-hosted-cli.md`](../specs/server-hosted-cli.md).
   `cao_hostedcli.token.pending_revocations`, on
   `cao_audit.event.count{stored="false"}`, on `audit.verify_failed`, and on
   spikes in `admin.denied`.
+- **Missing rebuild evidence**: `cao-dashboard audit lifecycles` uses the
+  SELECT-only evidence reader for a bounded, read-only check of admitted/started
+  rebuild IDs without terminal evidence beyond grace. Alert on missing terminals,
+  per-ID uncertainty, incomplete coverage and missing-check heartbeats. Recent
+  pending IDs may still be active; no result infers an outcome or repairs history.
+  Follow the [operator reconciliation runbook](README.md#missing-rebuild-terminal-evidence);
+  independent verification/delivery and deployment cadence remain operator-owned.
 - **SQLite debug store**: `--hosted-cli-sqlite` and `execute-cli --sqlite`
   replace the hosted-CLI PostgreSQL queue/audit/journal with one local SQLite
   file for debugging. Explicit `database bootstrap --store operational
@@ -1023,8 +1178,9 @@ Recommended next steps, in priority order:
 1. Evaluate a stronger gVisor or microVM boundary against the deployment's
    threat model; it is not a universal SOC 2 mandate. Production Docker egress
    restriction is now required, with live boundary evidence collected during rollout.
-2. Keep the App private key in a KMS or HSM that signs the App JWT, and rotate
-   it on a schedule.
+2. Evaluate managed App JWT signing in a KMS or HSM against the deployment's
+   threat model. It is not a universal SOC 2 mandate or a supported runtime
+   option today; see [App key custody and rollover preflight](#app-key-custody-and-rollover-preflight).
 3. Deploy the [PostgreSQL privilege boundary](POSTGRES.md): owner-only bootstrap
    and canonical partition maintenance, runtime audit `INSERT`/`SELECT`, a
    separate retention-function executor, and SELECT-only evidence access.
@@ -1036,6 +1192,89 @@ Recommended next steps, in priority order:
 5. Propagate the admission trace context into the queued command.
 6. Expose executor liveness and readiness that reflect store, App, and
    revocation health.
+
+### App key custody and rollover preflight
+
+The supported signing path loads an unencrypted RSA PEM at process startup.
+Managed **secret storage** is not managed **signing**: the Azure templates use
+Key Vault secret references and managed identity to deliver PEM material into
+the collector process. They do not invoke Key Vault keys or keep the signing
+key outside process memory. Hosted CLI execution uses its dedicated App key;
+the web admission process must not receive it. Gateway production receive
+processes likewise must not receive App private keys; only dispatch loads the
+receiving-App and dispatch-App keys. Preserve these boundaries during rotation.
+
+`cao-dashboard app-key-check` is an explicit, offline preflight for an
+operator-selected PEM file. It does not read credential environment defaults,
+initialize telemetry or storage, mint tokens, contact GitHub or a vault, change
+keys, or modify runtime behavior. Run it only in an authorized credential
+handling environment, not on a web admission or gateway receive replica:
+
+```sh
+cao-dashboard app-key-check --key-file /run/secrets/replacement-app.pem
+cao-dashboard app-key-check --key-file /run/secrets/replacement-app.pem \
+  --expected-public-key-sha256 "$REVIEWED_REPLACEMENT_FINGERPRINT" \
+  --previous-public-key-sha256 "$RECORDED_PREVIOUS_FINGERPRINT"
+```
+
+The JSON result contains public metadata only: `algorithm` (`RS256`), `bits`,
+`publicKeySHA256`, whether each optional fingerprint check was requested and
+passed (`expectedKeyChecked`, `rotationKeyChecked`), and
+`scope: "offline-key-material-only"`. A fingerprint is exactly 64 lowercase hex
+characters: SHA-256 of the DER SubjectPublicKeyInfo public key, not the PEM,
+private key, PKCS#1 public-key encoding, or a vault version identifier.
+PKCS#1 and PKCS#8 encodings of the same private key produce the same fingerprint;
+re-encoding is not rotation. Obtain the expected fingerprint from an independently
+reviewed public-key record, not from the candidate file being checked. Never put
+private-key bytes in arguments, output, tickets or logs.
+
+The diagnostic accepts one unencrypted RSA PKCS#1 or PKCS#8 block in a regular
+file of at most 64 KiB, checks RSA consistency and a diagnostic key-size range
+of 2048-8192 bits, and rejects malformed/unsupported material, mismatched pins,
+and unchanged rollover keys with a nonzero exit and no success report. This is
+an opt-in diagnostic policy, not a new runtime acceptance policy. It does not
+establish the App ID, GitHub registration, granted permissions, provider
+availability, revocation, absence of other private copies, or which key a
+running replica has loaded. File reads are bounded in size, not a guarantee
+against an unavailable filesystem; use a trusted local secret mount.
+
+For a planned rollover, preserve the existing hosted CLI drain/restart
+requirement in [the credential contract](../specs/server-hosted-cli.md#5-token-broker).
+Before retiring the old key, retain reviewed App identity, secret version,
+old/new **public** fingerprints, approvals, replica inventory and restart
+records, and authorized fresh token-mint evidence for every signing role.
+Changing the mounted file alone does not reload a running process. Verify the
+replacement's least-privilege token grant and cleanup without running an
+unapproved command. After the operator revokes the old key in GitHub, retain
+evidence that a fresh mint signed with it is denied and the replacement still
+works. Do not run such probes as part of this offline command, and do not retain
+or restore retired private material solely to obtain evidence.
+
+Key retirement is not installation-token revocation. Drain and revoke already
+minted/prefetched tokens through the existing broker and durable cleanup
+journal; do not infer token invalidation from changing or revoking an App key.
+Emergency response may require immediate revocation and interruption rather
+than a planned overlap; the incident owner must choose and record that action.
+Synthetic rotation/refusal tests support design only, not deployed or
+historical operating effectiveness.
+
+**Managed-signing design blocker:** the current `githubapp` client and gateway
+scoped transports construct `ghinstallation` App authentication from PEM.
+There is no deployed provider-signing adapter, exact key/version/public-key
+binding, or managed signing identity/permission contract. Key Vault **secret**
+access grants do not imply key `sign` permission. A future adapter requires an
+explicit provider/deployment decision, confirmation that a GitHub-registered
+private key can be imported under the chosen provider's constraints (creating
+an arbitrary KMS key does not register it with GitHub), exact version and RS256
+(RSA PKCS#1 v1.5 with SHA-256) validation, verified signature/public-key identity,
+bounded context-aware calls, role-isolated authorization, and failure without
+local-key fallback. The existing `ghinstallation.WithSigner` extension takes a
+JWT `Sign(claims)` interface without request context; it is a possible future
+integration seam, not a provider adapter or request-cancellation guarantee.
+A `crypto.Signer` seam alone likewise would not deliver these guarantees.
+Keep cloud SDKs outside the vendor-neutral core.
+No KMS support, permissions, rollout, or production validation is introduced by
+this diagnostic.
 
 ### SOC 2 evidence boundary
 

@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -140,6 +141,13 @@ func nativeSetupAppManifest(name, homepage, redirect, description string, permis
 	}
 }
 
+func nativeSetupAppDescription(repo string, profile nativeSetupCredential) string {
+	if profile.Role == "hosted-cli" {
+		return "Central Agentic Ops hosted CLI executor for " + repo + ". Single-use repository tokens only."
+	}
+	return "Central Agentic Ops " + profile.Label + " App for " + repo
+}
+
 func nativeSetupAppName(repo, role string) string {
 	name := "cao-" + strings.ReplaceAll(strings.ToLower(repo), "/", "-")
 	name = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(name, "-")
@@ -161,16 +169,74 @@ func nativeSetupValidateAppName(name string) error {
 	return nil
 }
 
-func nativeSetupAppInstallURL(server, owner, slug string) string {
+func nativeSetupAppInstallSelection(cmd *cobra.Command, gh ghExecutor, server string, target nativeSetupOwnerGroup) (url.Values, error) {
+	if server != "https://github.com" {
+		return nil, nil
+	}
+	if err := cmd.Context().Err(); err != nil {
+		return nil, err
+	}
+	// GitHub selects all repositories when repository_ids[] is absent.
+	if len(target.Repositories) == 0 {
+		return nil, fmt.Errorf("cannot preselect repositories for %s: at least one exact repository is required", target.Owner)
+	}
+	if len(target.Repositories) > 100 {
+		return nil, fmt.Errorf("cannot preselect %d repositories for %s: GitHub supports at most 100 per new installation; create/install the Apps manually with Only select repositories, then rerun setup with --read-client-id and --write-client-id", len(target.Repositories), target.Owner)
+	}
+	selection := url.Values{}
+	var ownerID int64
+	seen := map[int64]bool{}
+	for _, name := range target.Repositories {
+		repo := target.Owner + "/" + name
+		if !repositoryPattern.MatchString(repo) {
+			return nil, errors.New("app preselection requires exact OWNER/REPOSITORY values")
+		}
+		out, _, err := gh(cmd.Context(), "api", "/repos/"+repo)
+		if err != nil {
+			if err := cmd.Context().Err(); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("cannot preselect %s: repository metadata lookup failed; check gh authentication and access to this exact repository, then retry", repo)
+		}
+		var metadata struct {
+			ID       int64  `json:"id"`
+			FullName string `json:"full_name"`
+			Owner    struct {
+				ID    int64  `json:"id"`
+				Login string `json:"login"`
+			} `json:"owner"`
+		}
+		if json.Unmarshal([]byte(out), &metadata) != nil || metadata.ID <= 0 || metadata.Owner.ID <= 0 ||
+			!strings.EqualFold(metadata.FullName, repo) || !strings.EqualFold(metadata.Owner.Login, target.Owner) ||
+			(ownerID != 0 && metadata.Owner.ID != ownerID) || seen[metadata.ID] {
+			return nil, fmt.Errorf("cannot preselect %s: GitHub returned invalid or inconsistent repository/account IDs or identity; verify the exact repository and gh access, then retry", repo)
+		}
+		ownerID = metadata.Owner.ID
+		seen[metadata.ID] = true
+		selection.Add("repository_ids[]", strconv.FormatInt(metadata.ID, 10))
+	}
+	selection.Set("suggested_target_id", strconv.FormatInt(ownerID, 10))
+	return selection, nil
+}
+
+func nativeSetupAppInstallURL(server, owner, slug string, selection url.Values) string {
 	parsed, _ := url.Parse(server)
 	if strings.HasSuffix(parsed.Hostname(), ".ghe.com") {
 		return server + "/organizations/" + owner + "/settings/apps/" + slug + "/installations"
 	}
-	return server + "/apps/" + slug + "/installations/new"
+	address := server + "/apps/" + slug + "/installations/new"
+	if server == "https://github.com" && len(selection["repository_ids[]"]) > 0 {
+		address += "/permissions?" + selection.Encode()
+	}
+	return address
 }
 
-func nativeSetupCreateApp(cmd *cobra.Command, gh ghExecutor, owner, name, homepage string, profile nativeSetupCredential, noOpen bool) (app nativeSetupApp, err error) {
+func nativeSetupCreateApp(cmd *cobra.Command, gh ghExecutor, target nativeSetupOwnerGroup, name, homepage string, profile nativeSetupCredential, noOpen bool) (app nativeSetupApp, err error) {
 	serverURL, err := nativeSetupServerURL()
+	if err != nil {
+		return nativeSetupApp{}, err
+	}
+	selection, err := nativeSetupAppInstallSelection(cmd, gh, serverURL, target)
 	if err != nil {
 		return nativeSetupApp{}, err
 	}
@@ -189,9 +255,9 @@ func nativeSetupCreateApp(cmd *cobra.Command, gh ghExecutor, owner, name, homepa
 	}
 	state := hex.EncodeToString(stateBytes)
 	localURL := "http://" + listener.Addr().String()
-	manifest := nativeSetupAppManifest(name, homepage, localURL+"/callback", "Central Agentic Ops "+profile.Label+" App for "+strings.TrimPrefix(homepage, serverURL+"/"), profile.Permissions)
+	manifest := nativeSetupAppManifest(name, homepage, localURL+"/callback", nativeSetupAppDescription(strings.TrimPrefix(homepage, serverURL+"/"), profile), profile.Permissions)
 	data, _ := json.Marshal(manifest)
-	registrationURL := serverURL + "/organizations/" + owner + "/settings/apps/new?state=" + state
+	registrationURL := serverURL + "/organizations/" + target.Owner + "/settings/apps/new?state=" + state
 	// This browser-only form is the GitHub App manifest protocol, not a CLI
 	// JavaScript runtime. The noscript button supports JavaScript-free browsers.
 	var page bytes.Buffer
@@ -247,7 +313,7 @@ func nativeSetupCreateApp(cmd *cobra.Command, gh ghExecutor, owner, name, homepa
 			return
 		}
 		app := nativeSetupApp{ID: payload.ID.String(), ClientID: payload.ClientID, PEM: payload.PEM, Slug: payload.Slug, Name: payload.Name}
-		http.Redirect(w, req, nativeSetupAppInstallURL(serverURL, owner, app.Slug), http.StatusFound)
+		http.Redirect(w, req, nativeSetupAppInstallURL(serverURL, target.Owner, app.Slug, selection), http.StatusFound)
 		finish(app, nil)
 	})
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
@@ -257,11 +323,16 @@ func nativeSetupCreateApp(cmd *cobra.Command, gh ghExecutor, owner, name, homepa
 		}
 	}()
 	defer func() { err = errors.Join(err, server.Close()) }()
-	if err := nativeSetupNote(cmd, "Create private GitHub App for %s:\n- name: %s\n- homepage: %s\n- public: no\n- webhook events: none\n", owner, name, homepage); err != nil {
+	if err := nativeSetupNote(cmd, "Create private GitHub App for %s:\n- name: %s\n- homepage: %s\n- public: no\n- webhook events: none\n", target.Owner, name, homepage); err != nil {
 		return nativeSetupApp{}, err
 	}
 	for _, permission := range nativeSetupSortedPermissions(profile.Permissions) {
 		if err := nativeSetupNote(cmd, "  - %s: %s\n", permission, profile.Permissions[permission]); err != nil {
+			return nativeSetupApp{}, err
+		}
+	}
+	if selection != nil {
+		if err := nativeSetupNote(cmd, "After creation, review the preselected repositories on %s: %s. Keep Only select repositories and approve on GitHub.\n", target.Owner, strings.Join(target.Repositories, ", ")); err != nil {
 			return nativeSetupApp{}, err
 		}
 	}
@@ -331,6 +402,9 @@ func nativeSetupAuthenticateApp(ctx context.Context, api nativeSetupAppAPI, app 
 		}
 	}
 	for permission, level := range payload.Permissions {
+		if profile.Role == "hosted-cli" && profile.Permissions[permission] != level {
+			return app, fmt.Errorf("%s App has an unsupported permission: %s: %s", profile.Label, permission, level)
+		}
 		if level != "read" && profile.Permissions[permission] != level {
 			return app, fmt.Errorf("%s App has an unsupported permission: %s: %s", profile.Label, permission, level)
 		}
@@ -375,12 +449,25 @@ func (api nativeSetupAppAPI) covers(ctx context.Context, app nativeSetupApp, tar
 	if installation.Selection != "selected" {
 		return nil, errNativeSetupInstallationScope
 	}
+	selected, err := api.installationRepositories(ctx, app, installation.ID.String())
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range target.Repositories {
+		if !selected[strings.ToLower(target.Owner+"/"+name)] {
+			return nil, nil
+		}
+	}
+	return installation, nil
+}
+
+func (api nativeSetupAppAPI) installationRepositories(ctx context.Context, app nativeSetupApp, installationID string) (map[string]bool, error) {
 	jwt, err := nativeSetupAppJWT(app, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	var access struct{ Token string }
-	if _, err := api.request(ctx, "POST", "/app/installations/"+installation.ID.String()+"/access_tokens", jwt, map[string]any{"permissions": map[string]string{"metadata": "read"}}, &access); err != nil {
+	if _, err := api.request(ctx, "POST", "/app/installations/"+installationID+"/access_tokens", jwt, map[string]any{"permissions": map[string]string{"metadata": "read"}}, &access); err != nil {
 		return nil, err
 	}
 	if access.Token == "" {
@@ -409,12 +496,7 @@ func (api nativeSetupAppAPI) covers(ctx context.Context, app nativeSetupApp, tar
 			return nil, nativeErrorf("App selected repository verification exceeded its bound")
 		}
 	}
-	for _, name := range target.Repositories {
-		if !selected[strings.ToLower(target.Owner+"/"+name)] {
-			return nil, nil
-		}
-	}
-	return installation, nil
+	return selected, nil
 }
 
 func nativeSetupPause(ctx context.Context, duration time.Duration) error {
@@ -444,20 +526,32 @@ func nativeSetupEnsureInstallations(cmd *cobra.Command, gh ghExecutor, api nativ
 			}
 			continue
 		}
+		preselected := firstOpen && index == 0 && server == "https://github.com"
 		if !firstOpen || index != 0 {
-			address := nativeSetupAppInstallURL(server, target.Owner, app.Slug)
 			existing, err := api.installation(cmd.Context(), app, target.Owner)
 			if err != nil {
 				return err
 			}
+			var address string
 			if existing != nil {
 				address = server + "/organizations/" + target.Owner + "/settings/installations/" + existing.ID.String()
+			} else {
+				selection, err := nativeSetupAppInstallSelection(cmd, gh, server, target)
+				if err != nil {
+					return err
+				}
+				address = nativeSetupAppInstallURL(server, target.Owner, app.Slug, selection)
+				preselected = selection != nil
 			}
 			if err := nativeSetupOpen(cmd, gh, address, noOpen); err != nil {
 				return err
 			}
 		}
-		if err := nativeSetupNote(cmd, "Install %s on %s. Choose Only select repositories; select %s and save.\n", app.Name, target.Owner, strings.Join(target.Repositories, ", ")); err != nil {
+		instruction := "Choose Only select repositories; select %s and save."
+		if preselected {
+			instruction = "Review the preselected repositories: %s. Keep Only select repositories and approve on GitHub."
+		}
+		if err := nativeSetupNote(cmd, "Install %s on %s. "+instruction+"\n", app.Name, target.Owner, strings.Join(target.Repositories, ", ")); err != nil {
 			return err
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
@@ -605,7 +699,7 @@ func nativeSetupGitHubApps(cmd *cobra.Command, gh ghExecutor, options nativeSetu
 				return nil, err
 			}
 		} else {
-			app, err = nativeSetupCreateApp(cmd, gh, owner, names[profile.Role], server+"/"+canonical, profile, options.noOpen)
+			app, err = nativeSetupCreateApp(cmd, gh, targets[profile.Role][0], names[profile.Role], server+"/"+canonical, profile, options.noOpen)
 			if err != nil {
 				return nil, err
 			}

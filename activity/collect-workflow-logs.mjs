@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { GithubApiCapacityError, isGithubRateLimitError } from './github-telemetry.mjs';
-import { assertPublicRepository } from './repository-visibility.mjs';
+import { assertMonitoringRepository } from './repository-visibility.mjs';
 
 const execute = promisify(execFile);
 
@@ -25,7 +25,10 @@ export function workflowLogTargets(pages, repository) {
   return [...targets].sort();
 }
 
-export async function collectWorkflowLogs(binary, args, { publicOnly = process.env.REPORT_PUBLIC_ONLY === 'true' } = {}) {
+export async function collectWorkflowLogs(binary, args, {
+  publicOnly = process.env.REPORT_PUBLIC_ONLY === 'true',
+  controlRepository = process.env.GITHUB_REPOSITORY,
+} = {}) {
   const index = args.indexOf('--repo');
   const repository = args[index + 1];
   if (index < 0 || args.lastIndexOf('--repo') !== index
@@ -34,16 +37,16 @@ export async function collectWorkflowLogs(binary, args, { publicOnly = process.e
   }
   const timeoutIndex = args.indexOf('--timeout');
   const minutes = timeoutIndex < 0 ? 0 : Number(args[timeoutIndex + 1]);
-  // gh-aw needs time after its download deadline to flush retained evidence.
+  // Auditing and writing hundreds of downloaded runs can outlast the download deadline.
   const signal = Number.isSafeInteger(minutes) && minutes > 0
-    ? AbortSignal.timeout(minutes * 60_000 + 60_000) : undefined;
+    ? AbortSignal.timeout((minutes + 5) * 60_000) : undefined;
   if (publicOnly) {
     // A missing repository or visibility change must stop publication, not be
     // downgraded to an unavailable artifact.
     const metadata = await execute(binary, ['api', `repos/${repository}`], {
       encoding: 'utf8', maxBuffer: 1024 * 1024, signal,
     }).catch(() => { throw new Error(`Public visibility could not be verified for ${repository}`); });
-    assertPublicRepository(JSON.parse(metadata.stdout), repository);
+    assertMonitoringRepository(JSON.parse(metadata.stdout), repository, controlRepository);
   }
   let response;
   try {

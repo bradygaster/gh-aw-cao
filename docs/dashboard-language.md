@@ -20,6 +20,59 @@ main-thread JavaScript data derivation.
 
 ## What you can ask
 
+### Design an Agentic Workflow or Campaign
+
+Open **Workflow wizard** (`#page-wizard`) to design a generation prompt. The
+first step is a marketplace-style workflow-type gallery: select a mined pattern
+or **Custom automation**. Next, choose an AW or Campaign, optionally refine its
+task and intent/acceptance criteria, then select triggers and safe outputs
+and optional capabilities. Titles and file/package names are inferred from the
+intent and selected type, not requested as separate inputs. Campaigns also
+require proposed target repositories. Safe outputs are preselected from each
+scenario's specific recommendations, not broad permission categories. Change or
+clear those choices as needed; optional capabilities remain off by default.
+Returning to the same type preserves edits; choosing a different type loads its
+output defaults. Preselection does not grant live execution authority.
+Task details, acceptance criteria, per-run limits and safety/non-goal refinements
+are optional; leave them blank to use the scenario. Fixed safety boundaries still
+apply. Back/Next navigation appears below the active pane. Click an earlier step
+tab to return directly without losing answers; future steps cannot bypass validation.
+
+On **Scope and behavior**, **Generate** replaces Next at the bottom right.
+It validates your answers and opens the full prompt preview directly; there is
+no separate Review tab. In the Copilot app canvas, **Start session** creates a new app session with
+that prompt. Outside the app, **Copy prompt** copies it for your coding agent.
+The prompt is natural language, beginning “Create a Pull Request for the following
+task:”. It includes only relevant selected requirements, with Campaign guidance
+only for a Campaign, and omits raw pattern JSON, provenance, rankings and anti-patterns.
+Both AWs and Campaigns use this flow; opening a preview starts nothing. Starting
+a session requires a separate explicit click and never uses `gh agent-task`.
+The prompt requests a draft pull request, not installation or live activation.
+Draft answers are page-local memory; leaving the page discards them. Never
+enter secrets.
+
+The page's steps, conditional fields, choices and generation instructions live
+in `dashboard/site/dashboard-fragments/wizard.json`. They use the reusable
+`prompt-wizard` element rather than view-specific JavaScript. Its pattern
+choices and generation guidance reuse the MIT-licensed dataset mined in
+[`githubnext/gh-aw-wizard`](https://github.com/githubnext/gh-aw-wizard). The
+configuration records the immutable revision, mining date and license; historical rates
+and tips are reference material, not efficacy claims.
+
+To refresh the dataset, review an upstream commit, then run:
+
+```sh
+node dashboard/site/scripts/update-wizard-patterns.mjs FULL_UPSTREAM_COMMIT_SHA
+```
+
+The importer uses `gh api`, retains the upstream license and provenance, and
+updates only pattern/trigger/output/capability choices in the JSON document.
+Authored capability labels and descriptions are preserved during refresh.
+It does not fetch remote data at page runtime. Review the generated diff and
+run dashboard validation and the focused wizard tests before publishing.
+
+### Explore operational evidence
+
 Start with a declared source such as repositories, workflows, runs, domains,
 tools, audits, issues, usage, outcomes, or findings. Then combine only the operations the view
 needs:
@@ -131,6 +184,24 @@ Use `debounce` for sliders that should settle before execution or `throttle`
 for continuously sampled feedback. The runtime aborts superseded page
 projections and only renders the newest complete result. Form components never
 filter or compute data themselves.
+
+The built-in **Simulators > Pull request** page demonstrates a standalone company
+calculator. Its six editable inputs are repositories, developers, PRs per
+developer per day, AW runs per PR, duration, and AIC per AW run (default 100).
+The default 10,000-developer scenario produces 100,000 PRs, 500,000 AW runs,
+and 50 million modeled AIC each day. Repository count affects per-repository
+averages, not the total number of PRs.
+
+Its queries use the intrinsic `simulation-days` synthetic source, restrict it to
+one row, and multiply daily values by the selected duration. This does not extend
+the source's fixed 30-row calendar or read observed activity. All arithmetic
+remains in Dashboard Language. Outputs are estimates, not measured capacity,
+actual spending, or authorization to execute workflows.
+
+For real ingestion/storage/query measurements from generated AW evidence, run
+`npm run test:stress:company -- --preset large` with disposable local PostgreSQL;
+see the [company stress runner](../server/README.md#configurable-company-ingestion-stress).
+The calculator itself never starts that test.
 
 ## Present the result
 

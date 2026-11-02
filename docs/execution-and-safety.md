@@ -5,8 +5,7 @@ description: Follow the control envelope, execution invariants, and fail-closed 
 
 Use this page when implementing or reviewing control-plane behavior. Start with
 [Execution boundaries](architecture.md#execution-boundaries) for the architectural
-model or [How does CAO work?](how-cao-works.md#opt-shared-work-into-controlled-execution)
-for the operating flow; this reference supplies the exact handoff and invariants.
+model; this reference supplies the exact handoff and invariants.
 
 ## Responsibility Model
 
@@ -22,8 +21,6 @@ The orchestrator workflow is the rollout authority. worker workflows are enforce
 ## Execution Flow
 
 The execution boundary is the key architectural fact: orchestrators and workers run from the control repository. A worker checks out and analyzes one remote target at a time. Target repositories receive only declared safe outputs; they do not receive or run the control-plane workflow definitions.
-
-![The control plane contains rollout policy and campaigns. Central orchestrators and workers inspect remote targets, emit declared safe outputs across the repository boundary, and correlate results with the originating central run.](assets/central-execution-how-it-works.svg)
 
 1. A schedule trigger or `workflow_dispatch` starts a campaign orchestrator workflow.
 2. Before activation, `.github/workflows/shared/control.md` loads the canonical `.github/workflows/shared` runtime from the workflow revision, then runs the `admit` command against policy from that revision.

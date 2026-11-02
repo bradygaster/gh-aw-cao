@@ -37,6 +37,8 @@ import { cliQueueOperation, cliQueueEnabled, configureCliQueue, isCliQueueQuery,
 import { createGitHubDataService } from './data/github-service.js';
 import { isGitHubQuerySource, githubSnapshotSource } from './data/github-query-sources.js';
 import { queryCalloutVisibility } from './data/queries/callouts.js';
+import { evidencePacketSelection } from './data/queries/evidence-selection.js';
+import { measurementSelection } from './data/queries/measurement-selection.js';
 
 const debugIngestion = createDebug('data:ingestion');
 const debugPerformance = createDebug('data:performance');
@@ -607,7 +609,10 @@ async function executeLiveDashboardQuery(
       indexedDB,
       dashboard.logicalSources,
       databaseRequired,
-      { onMetrics: (metrics) => { databaseMetrics = metrics; } }
+      { onMetrics: (metrics) => { databaseMetrics = metrics; },
+        checkpoint: () => { if (signal?.aborted) throw new DashboardQueryCancelledError('Value source read aborted', 'aborted'); },
+        evidenceSelection: evidencePacketSelection(executionQueries, nonNativeRequested),
+        measurementSelection: measurementSelection(executionQueries, nonNativeRequested) }
     );
     const directRequests = new Set([...executionRequested].filter((name) => (
       !nativeSourceNames.has(name)
@@ -1287,7 +1292,7 @@ export function processDataRequest(request, signal) {
             onLockWait: () => progress.log(INGESTION_LOCK_WAIT_MESSAGE),
             signal
           });
-          changed ||= maintenance.deletedRecords > 0;
+          changed ||= maintenance.deletedRecords > 0 || maintenance.prunedFailureLogs > 0;
           progress.reportImportProgress(shardCount + 2 * preparationStepWeight, importSteps, 'queries');
         } else {
           progress.log('Normalizing dashboard source data.');

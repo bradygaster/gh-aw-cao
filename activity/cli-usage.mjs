@@ -17,6 +17,7 @@ export const ENTITY_COLLECTIONS = [
   'issues',
   'operationalValues',
   'operationalValueEvidence',
+  'workflowValueCollections',
   'experiments',
   'experimentAssignments',
   'graders',
@@ -36,29 +37,12 @@ export const DEFAULT_ACTIVITY_STATS_LIMIT = 5;
 export const DEFAULT_GH_LIMIT = 30;
 
 export const USAGE = `Usage:
-  cao init
-  cao setup [--json] [--repository OWNER/REPO|OWNER/*...]
-  cao setup-auth github-app [--repo OWNER/REPO] [APP_SETUP_OPTIONS...]
-    Reuse approved private Apps with --read-client-id ID --write-client-id ID; keys are prompted securely.
-  cao setup-auth enterprise-app --repo OWNER/REPO --read-client-id ID --write-client-id ID [--write-repository OWNER/REPO...] [--policy PATH] [--dry-run]
-  cao setup-auth hosted-cli --repo OWNER/REPO --private-key-out PATH [--target-repository OWNER/REPO...] [--app-name NAME] [--dry-run] [--no-open]
-    Dedicated least-privilege App for the dashboard server's execute-cli worker; never requests administration or installation permissions.
-  cao setup-auth token --repo OWNER/REPO [--write-repository OWNER/REPO...] [--policy PATH] [--expires-in DAYS] [--dry-run] [--no-open] [--keep-existing|--replace-existing]
-  cao add CAMPAIGN [GH_AW_ADD_OPTIONS...]
-  cao add --repository OWNER/REPO
-  cao update [--campaign SLUG] [--pre-releases] [GH_AW_UPDATE_OPTIONS...]
-  cao update (main|master|latest|COMMIT_SHA) [--campaign SLUG] [GH_AW_ADD_OPTIONS...]
-  cao upgrade-gh-aw VERSION
-  cao mode (live|preview) CAMPAIGN...
-  cao enable CAMPAIGN...
-  cao disable CAMPAIGN...
   cao discover-workflows --control-settings FILE --inventory FILE --output FILE --repo OWNER/REPO [--root DIRECTORY] [--offline]
   cao dashboard-complexity [QUERY_ID] --input FILE [--database FILE] [--format json|markdown] [--limit COUNT]
   cao prune-dashboard --input FILE [--output FILE]
-  cao ingest [--database FILE] --context CONTEXT_JSON --logs LOG_DIRECTORY [--retention-days DAYS|all] [--run-retention-days DAYS|all]
   cao ingest-jsonl [--database FILE] [--input FILE|--input-dir SHARD_DIRECTORY|--runs-dir DIRECTORY --records-dir DIRECTORY] [--context CONTEXT_JSON] [--retention-days DAYS|all] [--run-retention-days DAYS|all]
   cao audit-jsonl [--input-dir SHARD_DIRECTORY]
-  cao compact-jsonl --input-dir SHARD_DIRECTORY --group OWNER/REPOSITORY=SHARD_PREFIX [--group OWNER/REPOSITORY=SHARD_PREFIX...] [--max-bytes BYTES]
+  cao compact-jsonl --input-dir SHARD_DIRECTORY --group OWNER/REPOSITORY=SHARD_PREFIX [--group OWNER/REPOSITORY=SHARD_PREFIX...] [--max-bytes BYTES] [--exclude-out-of-scope]
   cao recycle-cache --input-dir SHARD_DIRECTORY [--retention-days DAYS|all] [--max-bytes BYTES]
   cao issue-status [--database FILE] --input-dir SHARD_DIRECTORY [--batch-size COUNT] [--graphql-cost-budget POINTS] [--graphql-min-remaining POINTS]
   cao pages [PAGE_ID] [--dashboard FILE] [--json]
@@ -70,9 +54,10 @@ export const USAGE = `Usage:
   cao mcp [--database FILE] [--dashboard FILE] [--host HOST] [--port PORT]
   cao computation intelligence [--database FILE] [--inventory FILE] [--campaign SLUG] [--previous FILE] [--feedback FILE]
   cao computation runtime-health [--database FILE] [--inventory FILE] [--campaign SLUG] [--diagnose]
-  cao operational-value [--database FILE] [--root DIRECTORY] [--output FILE] [--timestamp TIME] [--repository OWNER/REPO] [--campaign SLUG] [--retention-days DAYS|all] [--history-campaign SLUG] [--max-github-api-rate-limit LIMIT]
+  cao operational-value [--database FILE] [--root DIRECTORY] [--output FILE] [--timestamp TIME] [--repository OWNER/REPO] [--campaign SLUG] [--retention-days DAYS|all] [--history-campaign SLUG] [--max-github-api-rate-limit LIMIT] [--local-only]
   cao cluster-problems [--database FILE] [--root DIRECTORY] [--timestamp TIME]
-  cao doctor [--database FILE] [--ttl-days DAYS|all] [--run-ttl-days DAYS|all]
+  cao repair-database [--database FILE] [--ttl-days DAYS|all] [--run-ttl-days DAYS|all]
+    Mutates SQLite: backs up before repairs and prunes expired/orphaned records, even without corruption.
   cao validate [--json] [--strict-warnings]
   cao download [--url URL] [--output DIRECTORY] [--manifest-sha256 DIGEST]
   cao hash-payloads [--database FILE] [--shard-dir SHARD_DIRECTORY] [--normalized-dir DIRECTORY] [--runs-dir DIRECTORY] [--records-dir DIRECTORY] [--inventory FILE] [--output FILE] [--max-bytes BYTES] [--max-cache-bytes BYTES]
@@ -81,6 +66,12 @@ export const USAGE = `Usage:
   cao gh runs [--database FILE] [--repo OWNER/REPO] [--workflow NAME|FILE] [--status STATUS] [--since TIME] [--until TIME] [--limit COUNT]
   cao gh issues [--database FILE] [--repo OWNER/REPO] [--workflow NAME|FILE] [--since TIME] [--until TIME] [--limit COUNT]
   cao gh prs [--database FILE] [--repo OWNER/REPO] [--workflow NAME|FILE] [--since TIME] [--until TIME] [--limit COUNT]
+
+Manual artifact import (supported; not used by the Activity or Dashboard pipelines):
+  cao ingest [--database FILE] --context CONTEXT_JSON --logs LOG_DIRECTORY [--retention-days DAYS|all] [--run-retention-days DAYS|all]
+  Imports an extracted gh-aw artifact directory with its context JSON into SQLite.
+  The explicit ingest command remains supported; only the old positional CONTEXT_JSON LOG_DIRECTORY form is retired.
+
 Query local CAO data as JSON. Download the deployed snapshot before querying:
   cao download
   cao dashboard-complexity --input dashboard/site/dashboard.json
@@ -98,25 +89,16 @@ Query local CAO data as JSON. Download the deployed snapshot before querying:
   cao gh issues -R githubnext/gh-cao --since 2026-09-01
   cao gh prs -R githubnext/gh-cao -w cao-activity -L 10
 
-Update CAO:
-  cao update                         Latest compatible published release
-  cao update main                    Catalog default-branch HEAD, pinned to a full SHA
-  cao update master                  Alias for the catalog default-branch HEAD
-  cao update latest                  Return to the latest published stable release
-  cao update --campaign dependabot   Update only the installed Dependabot campaign
-  cao update 0123456789abcdef0123456789abcdef01234567
-  Explicit refs accept main, master, latest, or a 7-40 character commit SHA and reapply
-  selected installed CAO packages at that commit, replacing campaign-owned files.
-  --campaign SLUG selects exactly one installed campaign; use root for the CAO root
-  package. Omit it to update all installed CAO packages.
-  Options may appear before or after the ref.
-  main and master both use the catalog repository's GitHub default branch.
-  Use latest after an untagged branch/SHA install; subsequent bare updates follow
-  releases again. latest bypasses major-version and cooldown selection.
-  Ref updates accept gh-aw add options (such as --no-security-scanner), not
-  release-update options (--major, --cool-down, or --pre-releases).
+Operator onboarding and lifecycle commands run natively in gh cao.
+Use gh cao --help; workflow and campaign installation is gh cao add SOURCE.
 
 Agent analysis:
+  These are supported evidence APIs for agents inside agentic workflows.
+  Invoke the installed Node runtime as node activity/cao.mjs <command>.
+  gh cao owns human/operator commands; cao-dashboard owns server hosting and
+  administration. Similar operator reads do not replace these workflow APIs.
+  Workflow agents use queries, query-info, prompt, query, gh runs/issues/prs,
+  computation, mcp, and download without building or installing gh cao.
   Download the current CAO snapshot:
     cao download
   Discover dashboard pages:
@@ -155,6 +137,11 @@ gh query options:
 Data preparation:
   cao download writes the deployed JSONL and query-ready SQLite snapshot to ${DEFAULT_OUTPUT_DIRECTORY}/.
   To query other gh-aw JSONL shards, first run cao ingest-jsonl --input-dir SHARD_DIRECTORY [--database FILE].
+
+Active ingestion and packaging:
+  compact-jsonl compacts collected raw JSONL shards per repository.
+  hash-payloads normalizes and consolidates raw shards into run/record shards and computes payload checksums.
+  ingest-jsonl imports raw JSONL or normalized run/record shards into SQLite.
 
 Collections: ${QUERY_COLLECTIONS.join(', ')}
 

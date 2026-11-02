@@ -5,6 +5,11 @@ on:
     paths:
       - .github/workflows/cid.yml
       - dashboard/site/**
+      - server/cmd/cao-dashboard/serve_pages*.go
+      - scripts/simulate-dashboard-pages.mjs
+      - tests/helpers/dashboard-pages-preview.mjs
+      - tests/e2e/dashboard-pages.spec.mjs
+      - tests/playwright/configs/dashboard-pages.config.mjs
       - docs/assets/logo-day.svg
       - docs/assets/logo-night.svg
       - public/favicon.svg
@@ -18,6 +23,11 @@ on:
       - activity/commands/**
       - activity/dashboard-complexity.mjs
       - dashboard/site/**
+      - server/cmd/cao-dashboard/serve_pages*.go
+      - scripts/simulate-dashboard-pages.mjs
+      - tests/helpers/dashboard-pages-preview.mjs
+      - tests/e2e/dashboard-pages.spec.mjs
+      - tests/playwright/configs/dashboard-pages.config.mjs
       - docs/assets/logo-day.svg
       - docs/assets/logo-night.svg
       - public/favicon.svg
@@ -29,6 +39,7 @@ on:
       - package-lock.json
       - "!dashboard/site/**/*.md"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -38,6 +49,40 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  pages:
+    name: Go Pages and IndexedDB
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Install dependencies
+        run: npm ci --ignore-scripts && npm --prefix dashboard/site ci --omit=dev --ignore-scripts
+      - name: Install Chromium
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          npx playwright install --with-deps chromium
+      - name: Test Pages deployment
+        run: npm run test:e2e:dashboard-pages
+      - name: Upload Pages evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-pages-evidence
+          path: test-results/dashboard-pages/
+          if-no-files-found: error
+          retention-days: 14
+
   lint-unit:
     name: Lint and unit tests
     runs-on: ubuntu-latest
@@ -86,8 +131,16 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: dashboard/site/package-lock.json
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
       - name: Install dependencies
         run: npm ci
+      - name: Build canvas Go host outside browser test deadlines
+        run: |
+          go -C ../../server build -o "$RUNNER_TEMP/cao-dashboard" ./cmd/cao-dashboard
+          echo "CAO_DASHBOARD_EXECUTABLE=$RUNNER_TEMP/cao-dashboard" >> "$GITHUB_ENV"
       - name: Cache Playwright browsers
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -103,6 +156,16 @@ jobs:
           npx playwright install --with-deps chromium webkit
       - name: End-to-end tests
         run: npm run test:e2e -- --shard=${{ matrix.shard }}
+      - name: Retain browser test reports and failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-browser-shard-${{ strategy.job-index }}
+          path: |
+            dashboard/site/test-results/
+            dashboard/site/playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
 
   ingestion-scale:
     name: Synthetic ingestion scale test

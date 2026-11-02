@@ -4,9 +4,13 @@
 `main.tsp` imports independent domains: shared response/auth types, Dashboard
 Language queries and SSE, health, agent discovery, hosted sessions, canonical
 entities, repository memory, ingestion/administration, explicit workflow-value
-publication, and the optional MCP HTTP
+publication, the optional organization Copilot requests token broker, and MCP HTTP
 transport. MCP protocol messages and tool schemas, and static dashboard assets,
 are intentionally out of scope.
+
+`token-broker.tsp` specifies the OIDC-in-body exchange and job invalidation
+protocol, independently of dashboard session authentication and activation
+admission. It supports `copilot-request` only; no task credential is issued.
 
 `storage.tsp` is a separate, **fresh-only** physical Postgres contract.
 `storage.tspconfig.yaml` runs the repository-owned `postgres-emitter.mjs` to
@@ -14,6 +18,20 @@ generate `../internal/postgresx/schema.sql` and `schema.gen.go`. The SQL file is
 standalone DDL for downstream implementations; the Go file supplies the same
 entity names, fields, and native types to ingestion and reads. Both are generated
 artifacts. Edit TypeSpec, never the generated SQL or bindings.
+
+`adx.tsp` separately defines the optional ADX analytics export: five allowlisted
+canonical fact families and the ready-version manifest, including native types,
+nullable observations, presence metadata and contract version. Its
+`@source` annotations name canonical collections; each own fact property maps
+to the canonical field with a lowercase initial. `adx-emitter.mjs` generates
+`../internal/adxingest/schema.gen.go` (the runtime projection allowlist) and
+`schema.gen.kql` (tables, JSON mappings, streaming/retention policies and curated
+functions). The Go CLI embeds that KQL for offline operator setup; runtime
+never provisions ADX. Edit TypeSpec, not generated output. Run
+`npm run generate:adx` for ADX alone; ordinary `generate`, `test` and `check`
+include it. `adx.test.mjs` verifies canonical field/type compatibility,
+deterministic generation and fail-closed rejection of opaque evidence.
+This contract adds no PostgreSQL tables or public HTTP operations.
 
 Each canonical collection has one root table. Only fields
 consumed by `dashboard/site/src/data/queries/database.json` and its joins are
@@ -23,6 +41,17 @@ use `TEXT`. Optional-field presence costs one bit per scalar column, preserving
 absent versus explicit null. Query-required structured evidence uses entity-owned
 relational child values; no JSON, JSONB, serialized row documents, or duplicate
 generic scalar rows are stored.
+
+`@sampledBundle` declares private typed copies of canonical collections for
+PostgreSQL's independent statistical snapshot. The emitter generates
+non-partitioned `cao_sample_*` tables and a separate internal binding registry,
+not additional canonical ingestion sources. `Storage.Statistical` declares typed
+frame, membership, and stratum metadata; copied quality and structural parents
+keep statistical queries independent of mutable canonical detail. Snapshot
+publication replaces these tables atomically under the namespace writer lock,
+with whole-bundle admission limits. Incremental writes only make the publication
+stale; a complete snapshot rebuilds its seven-day frame. Exact retention, browser
+and SQLite sampling, hot-tier eviction, and daily contributions are unchanged.
 
 `operationalValueEvidence.facts` is an entity-owned typed array. The emitter
 generates its private relational child table and native scalar bindings.
@@ -118,8 +147,8 @@ status projections for query planning, without canonical DDL or execution
 endpoints. Hosted providers report these sources as unavailable: durable
 operational queue storage alone does not grant local execution authority.
 
-Run `npm run generate:storage` for storage only, or `npm run generate` for both
-storage and HTTP contracts. `storage.test.mjs` checks one-to-one table coverage,
+Run `npm run generate:storage` for storage only, or `npm run generate` for
+storage, ADX and HTTP contracts. `storage.test.mjs` checks one-to-one table coverage,
 required query fields, absence of speculative columns, and document-free DDL.
 The follow-on removal and rebuild plan is [Postgres rebuild plan](../POSTGRES-REBUILD-PLAN.md).
 

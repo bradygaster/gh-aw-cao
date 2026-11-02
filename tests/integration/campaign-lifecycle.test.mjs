@@ -21,13 +21,13 @@ const campaignUpdateSource = "https://github.com/githubnext/gh-cao";
 // own source repository; the consumer is never pushed.
 const consumerRepository = "octocat/Hello-World";
 const materializerScript = resolve(".github/workflows/shared/materialize-cao.mjs");
-const installerSource = readFileSync(resolve("install.sh"), "utf8");
+const installerSource = readFileSync(resolve("install-gh-cao.sh"), "utf8");
 const controlRuntimeFiles = [
   ".github/workflows/shared/control.mjs",
   ".github/workflows/shared/policy.mjs",
   ".github/workflows/shared/authority.mjs",
   ".github/workflows/shared/operations.mjs",
-  ".github/workflows/shared/setup-github-apps.mjs",
+  ".github/workflows/shared/github-apps.mjs",
 ];
 const controlPlaneSkillFiles = [
   ".github/skills/agentic-workflows/SKILL.md",
@@ -51,7 +51,7 @@ const dashboardCampaignSource = focusedCampaignSource("dashboard");
 const dependabotUpdateSource = focusedCampaignSource("dependabot");
 const dependabotCampaignUpdateSource = `${campaignUpdateSource}/dependabot`;
 const optimizationCampaignSource = focusedCampaignSource("optimization");
-const repoStatusWorkflowSource = `https://github.com/${campaignSource.slice(0, campaignSource.lastIndexOf("@"))}/blob/${campaignSource.slice(campaignSource.lastIndexOf("@") + 1)}/.github/workflows/repo-status.md`;
+const repoStatusWorkflowSource = `https://github.com/${campaignSource.slice(0, campaignSource.lastIndexOf("@"))}/blob/${campaignSource.slice(campaignSource.lastIndexOf("@") + 1)}/.github/workflows/daily-repo-status.md`;
 const selfCareCampaignSource = focusedCampaignSource("self-care");
 const softwareDevelopmentPracticesCampaignSource = focusedCampaignSource("software-development-practices");
 const activityExpectedFiles = [
@@ -61,30 +61,23 @@ const activityExpectedFiles = [
   "activity/cao.mjs",
   "activity/cli-usage.mjs",
   "activity/commands/activity-stats.mjs",
-  "activity/commands/add.mjs",
   "activity/commands/audit-jsonl.mjs",
   "activity/commands/cluster-problems.mjs",
   "activity/commands/compact-jsonl.mjs",
   "activity/commands/computation.mjs",
   "activity/commands/dashboard-complexity.mjs",
-  "activity/commands/disable.mjs",
   "activity/commands/discover-workflows.mjs",
-  "activity/commands/doctor.mjs",
+  "activity/commands/repair-database.mjs",
   "activity/commands/download.mjs",
-  "activity/commands/enable.mjs",
   "activity/commands/gh.mjs",
   "activity/commands/hash-payloads.mjs",
   "activity/commands/index.mjs",
   "activity/commands/ingest-jsonl.mjs",
   "activity/commands/ingest.mjs",
-  "activity/commands/init.mjs",
   "activity/commands/issue-status.mjs",
-  "activity/commands/mode.mjs",
   "activity/commands/operational-value.mjs",
   "activity/commands/prune-dashboard.mjs",
   "activity/commands/query.mjs",
-  "activity/commands/setup-auth.mjs",
-  "activity/commands/update.mjs",
   "activity/collect-logs.sh",
   "activity/collect-workflow-logs.mjs",
   "activity/computations/intelligence-contracts.mjs",
@@ -152,6 +145,7 @@ const optimizationExpectedFiles = [
 const selfCareExpectedFiles = [
   ".github/workflows/self-care-accessibility-checker.md",
   ".github/workflows/self-care-agent-discoverability.md",
+  ".github/workflows/self-care-cli-consistency.md",
   ".github/workflows/self-care-code-improvement.md",
   ".github/workflows/self-care-dashboard-data-schema.md",
   ".github/workflows/self-care-dashboard-debug-logging.md",
@@ -166,7 +160,6 @@ const selfCareExpectedFiles = [
   ".github/workflows/self-care-pages-health.md",
   ".github/workflows/self-care-primer-brand-checker.md",
   ".github/workflows/self-care-reactive-ui-expert.md",
-  ".github/workflows/self-care-release-blogger.md",
   ".github/workflows/self-care-server-go-logging.md",
   ".github/workflows/self-care-specs-maintainer.md",
   ".github/workflows/self-care.md",
@@ -529,7 +522,7 @@ test("gh aw add installs the focused Optimization campaign contract", { timeout:
   }
 });
 
-test("root campaign runtime supports standalone Repo Status installation", { timeout: 240_000 }, async () => {
+test("root campaign runtime supports standalone Daily Repo Status installation", { timeout: 240_000 }, async () => {
   const consumer = mkdtempSync(join(tmpdir(), "central-agentic-ops-standalone-"));
   try {
     run("git", ["init", "--quiet"], consumer);
@@ -537,12 +530,12 @@ test("root campaign runtime supports standalone Repo Status installation", { tim
     retryTransientCampaignInstall(() => run("gh", ["aw", "add", campaignSource, "--no-security-scanner"], consumer));
     retryTransientCampaignInstall(() => run("gh", ["aw", "add", repoStatusWorkflowSource], consumer));
     for (const relativePath of [
-      ".github/workflows/repo-status.md",
-      ".github/workflows/repo-status.lock.yml",
+      ".github/workflows/daily-repo-status.md",
+      ".github/workflows/daily-repo-status.lock.yml",
       ".github/workflows/shared/control.md",
       ".github/workflows/shared/control.mjs",
     ]) {
-      assert.ok(existsSync(join(consumer, relativePath)), `Repo Status omitted ${relativePath}`);
+      assert.ok(existsSync(join(consumer, relativePath)), `Daily Repo Status omitted ${relativePath}`);
     }
     const policyPath = join(consumer, ".github/workflows/cao.json");
     assert.equal(existsSync(policyPath), false, "installation does not copy catalog rollout authority");
@@ -555,7 +548,7 @@ test("root campaign runtime supports standalone Repo Status installation", { tim
     };
     policy["control-plane"].workflows = {
       ...policy["control-plane"].workflows,
-      "repo-status": { enabled: false, mode: "review", "max-mode": "review", "max-repositories": 1 },
+      "daily-repo-status": { enabled: false, mode: "review", "max-mode": "review", "max-repositories": 1 },
     };
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
     run(process.execPath, [".github/workflows/shared/control.mjs", "validate-policy", policyPath], consumer);
@@ -563,8 +556,9 @@ test("root campaign runtime supports standalone Repo Status installation", { tim
     assert.equal(installedManifests(consumer).some(name => /repo-status/.test(name)), false);
     assert.equal(existsSync(join(consumer, ".github/workflows/repo-status-report.md")), false);
     assert.equal(existsSync(join(consumer, ".github/workflows/repo-assist.md")), false);
-    const source = readFileSync(join(consumer, ".github/workflows/repo-status.md"), "utf8");
-    assert.match(source, /role: standalone\n\s+workflow: repo-status/);
+    const source = readFileSync(join(consumer, ".github/workflows/daily-repo-status.md"), "utf8");
+    assert.match(source, /role: standalone\n\s+workflow: daily-repo-status/);
+    assert.match(source, /model: gpt-5\.3-codex/);
     assert.match(source, /required-labels: \[repo-status\]/);
     assert.match(source, /Copyright \(c\) 2025 GitHub/);
   } finally {

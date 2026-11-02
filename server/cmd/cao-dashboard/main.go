@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -147,31 +148,13 @@ func resolveNamespaceDefault(envValue, checkoutDefault string) (string, namespac
 	return checkoutDefault, namespaceDefaultSourceCheckout
 }
 
-// ingestSourceOrigin identifies which input determined the ingest command's
-// deployed dashboard directory. It is useful for diagnosing misconfiguration
-// without logging the directory path itself.
-type ingestSourceOrigin string
-
-const (
-	ingestSourceOriginFlag          ingestSourceOrigin = "flag"
-	ingestSourceOriginPositionalArg ingestSourceOrigin = "positional-arg"
-)
-
-// resolveIngestSource applies the standard priority for the ingest command's
-// deployed dashboard directory: an explicit --source flag value, then a
-// single positional argument. It returns the resolved source and which input
-// supplied it, so callers can log the source without exposing the directory
-// path. An error is returned when neither input supplies a non-blank value.
-func resolveIngestSource(flagValue string, positionalArgs []string) (string, ingestSourceOrigin, error) {
+// resolveIngestSource returns the ingest command's deployed dashboard
+// directory from the required --source flag.
+func resolveIngestSource(flagValue string) (string, error) {
 	if source := strings.TrimSpace(flagValue); source != "" {
-		return source, ingestSourceOriginFlag, nil
+		return source, nil
 	}
-	if len(positionalArgs) == 1 {
-		if source := strings.TrimSpace(positionalArgs[0]); source != "" {
-			return source, ingestSourceOriginPositionalArg, nil
-		}
-	}
-	return "", "", errors.New("ingest requires --source DIRECTORY")
+	return "", errors.New("ingest requires --source DIRECTORY")
 }
 
 // checkoutNamespaceDefault resolves this checkout's default Redis namespace
@@ -351,8 +334,12 @@ func newRootCommand() *cobra.Command {
 	// documented interface, so keep the command surface as-is.
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(
+		newADXCommand(),
 		newAdmissionCommand(),
+		newAppKeyCheckCommand(),
+		newAzureFunctionsCommand(),
 		newServeCommand(),
+		newServePagesCommand(),
 		newServeHostedCommand(),
 		newIngestCommand(),
 		newCollectCommand(),
@@ -689,6 +676,9 @@ func newServeCommand() *cobra.Command {
 	redisURL := cmd.Flags().String("redis-url", defaultRedisURL, "explicitly opt in to Redis operational state instead of Postgres")
 	postgresURL := cmd.Flags().String("postgres-url", "", "opt in to Postgres dashboard storage; an empty value uses CAO_POSTGRES_URL")
 	sqlitePath := cmd.Flags().String("sqlite", defaultSQLitePath, "local SQLite snapshot cache; download deployed data if missing")
+	sqliteOverlay := cmd.Flags().String("sqlite-overlay", "", "writable local delta; defaults to the snapshot path plus .local.sqlite")
+	backfill := cmd.Flags().Bool("backfill", true, "refresh local SQLite data using GH_TOKEN, GITHUB_TOKEN or gh auth; set false for offline serving")
+	backfillInterval := cmd.Flags().Duration("backfill-interval", 5*time.Minute, "delay between local SQLite refresh passes")
 	dataURLDefault := strings.TrimSpace(os.Getenv("DASHBOARD_DATA_URL"))
 	if dataURLDefault == "" {
 		dataURLDefault = defaultSQLiteDataURL
@@ -707,7 +697,13 @@ func newServeCommand() *cobra.Command {
 	agentCatalog := cmd.Flags().String("agent-catalog", "../dashboard/site/src/agent/catalog.generated.json", "materialized read-only agent catalog")
 	mcpContract := cmd.Flags().String("mcp-contract", "../dashboard/site/src/agent/mcp-contract.json", "shared MCP tool contract")
 	mcpEnabled := cmd.Flags().Bool("mcp-enabled", false, "serve the read-only MCP endpoint at /mcp")
+	canvasConfigPath := cmd.Flags().String("canvas-config", "", "private local Copilot adapter configuration; stdin owns the host lifetime")
 	cmd.MarkFlagsMutuallyExclusive("sqlite", "postgres-url")
+	for _, flag := range []string{"sqlite-overlay", "backfill", "backfill-interval"} {
+		for _, other := range []string{"postgres-url", "redis-url", "source", "canvas-config"} {
+			cmd.MarkFlagsMutuallyExclusive(flag, other)
+		}
+	}
 	cmd.MarkFlagsMutuallyExclusive("sqlite", "redis-url")
 	cmd.MarkFlagsMutuallyExclusive("sqlite", "source")
 	cmd.MarkFlagsMutuallyExclusive("download-sqlite", "postgres-url")
@@ -740,10 +736,23 @@ func newServeCommand() *cobra.Command {
 		}
 		localSQLite := !cmd.Flags().Changed("postgres-url") &&
 			!cmd.Flags().Changed("redis-url") && !cmd.Flags().Changed("source")
+		canvas, err := readCanvasConfig(*canvasConfigPath)
+		if err != nil {
+			return err
+		}
+		if canvas != nil && !localSQLite {
+			return errors.New("canvas integration requires local SQLite serving")
+		}
 		snapshotPath := strings.TrimSpace(*sqlitePath)
 		if localSQLite {
 			if snapshotPath == "" {
 				return errors.New("--sqlite requires a local snapshot cache path")
+			}
+			if *backfillInterval <= 0 {
+				return errors.New("--backfill-interval must be positive")
+			}
+			if cmd.Flags().Changed("sqlite-overlay") && strings.TrimSpace(*sqliteOverlay) == "" {
+				return errors.New("--sqlite-overlay requires a separate local file path")
 			}
 			if err := server.ValidateListen(*listen, *cert, *key); err != nil {
 				return err
@@ -769,6 +778,12 @@ func newServeCommand() *cobra.Command {
 		commandLog.Printf("serve flags parsed tls=%t source_ingestion=%t", *cert != "", *source != "")
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if canvas != nil {
+			go func() {
+				_, _ = io.Copy(io.Discard, cmd.InOrStdin())
+				stop()
+			}()
+		}
 		closeTelemetry, err := setupTelemetry(ctx, version, telemetry.Setup)
 		if err != nil {
 			return err
@@ -781,7 +796,7 @@ func newServeCommand() *cobra.Command {
 			}
 			actionsEnv := resolveActionsEnvironment(os.Getenv)
 			commandLog.Printf("serve resolved actions environment %s", actionsEnv.present())
-			return server.Config{
+			config := server.Config{
 				Listen:               *listen,
 				SiteDirectory:        *siteDirectory,
 				CertFile:             *cert,
@@ -800,7 +815,21 @@ func newServeCommand() *cobra.Command {
 				ActionsRepository:    actionsEnv.Repository,
 				GitHubAPIURL:         actionsEnv.APIURL,
 				Logger:               log.New(os.Stderr, "cao-dashboard: ", log.LstdFlags),
-			}, nil
+				Canvas:               canvas,
+			}
+			if localSQLite {
+				// A local user's GITHUB_TOKEN is collection-only, not an
+				// Actions identity admitted through the MCP endpoint.
+				config.GitHubActionsToken, config.GitHubActionsActor = "", ""
+			}
+			if canvas != nil {
+				config.OnListen = func(address string) error {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
+						"url": "http://" + address + canvas.Prefix,
+					})
+				}
+			}
+			return config, nil
 		}
 		if localSQLite {
 			config, err := configure()
@@ -820,7 +849,20 @@ func newServeCommand() *cobra.Command {
 				}
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "SQLite snapshot ready.")
 			}
-			app, err := server.NewLocalSQLiteApp(ctx, snapshotPath, config)
+			var app *server.App
+			if canvas != nil {
+				app, err = server.NewLocalSQLiteApp(ctx, snapshotPath, config)
+			} else {
+				overlay := strings.TrimSpace(*sqliteOverlay)
+				if overlay == "" {
+					overlay = snapshotPath + ".local.sqlite"
+				}
+				interval := time.Duration(0)
+				if *backfill {
+					interval = *backfillInterval
+				}
+				app, err = server.NewLocalSQLiteOverlayApp(ctx, snapshotPath, overlay, interval, config)
+			}
 			if err != nil {
 				return err
 			}
@@ -866,26 +908,27 @@ func newServeCommand() *cobra.Command {
 
 func newIngestCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "ingest [source]",
+		Use:   "ingest",
 		Short: "ingest a deployed dashboard directory into Postgres",
+		Args:  cobra.NoArgs,
 	}
 	cmd.Flags().String("redis-url", defaultRedisURL, "legacy Redis URL (not used for canonical Postgres ingestion)")
 	postgresURL := cmd.Flags().String("postgres-url", "", "Postgres dashboard entity store URL; defaults to CAO_POSTGRES_URL")
 	redisNamespace, namespaceErr := registerRedisNamespaceFlag(cmd, "canonical Postgres dataset namespace (legacy flag name)")
 	source := cmd.Flags().String("source", "", "deployed dashboard directory")
 	databaseQueries := cmd.Flags().String("database-queries", "../dashboard/site/src/data/queries/database.json", "canonical database projection queries")
-	cmd.RunE = func(_ *cobra.Command, args []string) error {
+	cmd.RunE = func(_ *cobra.Command, _ []string) error {
 		if namespaceErr != nil {
 			return namespaceErr
 		}
 		if _, _, err := resolvePostgresEndpoint(*postgresURL, os.Getenv("CAO_POSTGRES_URL")); err != nil {
 			return err
 		}
-		resolvedSource, sourceOrigin, err := resolveIngestSource(*source, args)
+		resolvedSource, err := resolveIngestSource(*source)
 		if err != nil {
 			return err
 		}
-		commandLog.Printf("ingest flags parsed source_origin=%s", sourceOrigin)
+		commandLog.Printf("ingest flags parsed")
 		ctx := context.Background()
 		closeTelemetry, err := setupTelemetry(ctx, version, telemetry.Setup)
 		if err != nil {
@@ -1060,6 +1103,9 @@ func newBackfillCommand() *cobra.Command {
 		"../dashboard/site/src/data/queries/database.json", "canonical database projection queries")
 	replayOnly := cmd.Flags().Bool("replay-only", false,
 		"reproject the evidence lake without contacting GitHub")
+	repositoriesOnly := cmd.Flags().Bool("repositories-only", false,
+		"refresh App installations and queue repository-list reconciliation without replaying history")
+	cmd.MarkFlagsMutuallyExclusive("replay-only", "repositories-only")
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -1071,6 +1117,18 @@ func newBackfillCommand() *cobra.Command {
 		collector, err := server.NewCollectorFromEnv(ctx, *databaseQueries)
 		if err != nil {
 			return err
+		}
+		if *repositoriesOnly {
+			result, err := collector.RepositoryDiscovery().Refresh(ctx)
+			if err != nil {
+				return err
+			}
+			report, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(report))
+			return nil
 		}
 		backfill := collector.Backfill()
 		mode := resolveBackfillMode(*replayOnly)

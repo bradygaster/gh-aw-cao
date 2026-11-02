@@ -6,7 +6,6 @@ const path = Astro.url.pathname;
 const { hasSidebar, id } = Astro.locals.starlightRoute;
 const links = [
   { label: "Docs", href: "/gh-cao/architecture-at-a-glance/" },
-  { label: "Blog", href: "/gh-cao/blog/" },
 ];
 ---
 
@@ -185,12 +184,16 @@ const links = [
     top: var(--sl-nav-height);
     right: 0;
     left: 0;
-    display: grid;
+    display: none;
     gap: 0.25rem;
     border-bottom: 1px solid var(--sl-color-hairline-shade);
     padding: 0.75rem var(--sl-nav-pad-x) 1rem;
     background: var(--sl-color-bg-nav);
     box-shadow: var(--sl-shadow-md);
+  }
+
+  .cao-mobile-nav[open] nav {
+    display: grid;
   }
 
   .cao-mobile-nav a {

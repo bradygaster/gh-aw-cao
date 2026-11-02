@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
+import { IDBFactory } from 'fake-indexeddb';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { loadDatabaseQuerySources } from '../../src/data/queries/database.js';
 import { DataRequestWorker } from '../data-request-worker.js';
 import { renderDashboard as renderDashboardView, disposeDashboard, enableDashboardKeyboardNavigation, enableDashboardPageNavigation, dashboardPageLazySourceNames, resolveQueryDrillPageTitle } from '../../src/presenter.js';
 import { processDataRequest } from '../../src/data-worker.js';
@@ -1826,7 +1829,7 @@ describe('presenter built-in and custom pages', () => {
   });
 
 
-  it('renders agent and model distribution before the full-view lazy table', async () => {
+  it('renders agent and model sample composition before the exact full-view lazy table', async ({ onTestFinished }) => {
     const metadata = {
       'source-id': 'usage-fixture',
       'source-kind': 'fixture',
@@ -1836,15 +1839,24 @@ describe('presenter built-in and custom pages', () => {
       freshness: /** @type {'fresh'} */ ('fresh'),
       availability: /** @type {'available'} */ ('available')
     };
-    const rendered = renderDashboard({
-      document: authoritativeDashboardDocument,
-      sources: {
+    const previousDatabase = globalThis.indexedDB;
+    const previousCrypto = globalThis.crypto;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(metadata['as-of']));
+    vi.stubGlobal('indexedDB', new IDBFactory());
+    vi.stubGlobal('crypto', webcrypto);
+    onTestFinished(() => {
+      vi.stubGlobal('indexedDB', previousDatabase);
+      vi.stubGlobal('crypto', previousCrypto);
+      clock.mockRestore();
+    });
+    /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */
+    const sources = {
         runs: {
           source: 'runs',
           rows: [
-            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.yml', run: '1001', 'run-conclusion': 'success', engine: 'copilot', 'engine-version': '0.87.6', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1001', label: 'View run 1001' } },
-            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/review.yml', run: '1002', 'run-conclusion': 'failure', engine: 'copilot', 'engine-version': '0.87.9', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1002', label: 'View run 1002' } },
-            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/audit.yml', run: '1003', 'run-conclusion': 'success', engine: 'pi', 'engine-version': '1.2.0', 'requested-model': 'claude-sonnet-5', 'resolved-model': 'claude-sonnet-5', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1003', label: 'View run 1003' } }
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/daily.yml', run: '1001', 'run-status': 'completed', 'started-at': '2026-09-02T09:00:00Z', 'run-conclusion': 'success', engine: 'copilot', 'engine-version': '0.87.6', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1001', label: 'View run 1001' } },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/review.yml', run: '1002', 'run-status': 'completed', 'started-at': '2026-09-02T10:00:00Z', 'run-conclusion': 'failure', engine: 'copilot', 'engine-version': '0.87.9', 'requested-model': 'gpt-5.6-sol', 'resolved-model': 'gpt-5.6-sol', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1002', label: 'View run 1002' } },
+            { organization: 'github', repository: 'gh-cao', workflow: '.github/workflows/audit.yml', run: '1003', 'run-status': 'completed', 'started-at': '2026-09-02T11:00:00Z', 'run-conclusion': 'success', engine: 'pi', 'engine-version': '1.2.0', 'requested-model': 'claude-sonnet-5', 'resolved-model': 'claude-sonnet-5', 'run-link': { relation: 'run', href: 'https://github.com/github/gh-cao/actions/runs/1003', label: 'View run 1003' } }
           ],
           metadata
         },
@@ -1878,8 +1890,19 @@ describe('presenter built-in and custom pages', () => {
           metadata
         },
         outcomes: { source: 'outcomes', rows: [], metadata }
-      }
+    };
+    const sampled = /** @type {Record<string, import('../../src/presenter.js').LogicalSourceInput>} */ (
+      await processDataRequest({
+        operation: 'load-dashboard-query-sources', ingest: true,
+        sources, sourceNames: ['statistical-runs'], queries: authoritativeDashboardDocument.dashboard.queries
+      })
+    );
+    expect(sampled['statistical-runs'].metadata['statistical-frame']).toMatchObject({ 'selected-count': 3 });
+    const rendered = renderDashboard({
+      document: authoritativeDashboardDocument,
+      sources: { ...sources, ...sampled }
     });
+    onTestFinished(() => disposeDashboard(rendered));
 
     const page = await activatePage(rendered, 'engines-models');
     expect(page?.querySelectorAll('[data-view-layout="full-view"]')).toHaveLength(1);
@@ -2071,7 +2094,8 @@ describe('presenter built-in and custom pages', () => {
       window.location.hash = '#page-indexing';
       await vi.waitFor(() => expect(rendered.querySelector('[data-page-id="indexing"]')?.hasAttribute('data-page-pending')).toBe(false));
       const page = rendered.querySelector('[data-page-id="indexing"]');
-      expect(page?.querySelectorAll('[data-view-id]')).toHaveLength(9);
+      expect(page?.querySelectorAll('[data-view-id]')).toHaveLength(10);
+      expect(page?.querySelector('[data-view-id="indexing-daily-run-counts"] [data-view-availability="unavailable"]')).not.toBeNull();
       expect(page?.querySelector('[data-view-id="ingestion-webhook-status"] [data-view-availability="unavailable"]')).not.toBeNull();
       expect(page?.querySelectorAll('[data-chart-widget="bar"]')).toHaveLength(0);
       expect(page?.querySelector('[data-view-id="ingestion-storage"]')?.textContent).toContain('Storage engine unknown');
@@ -3763,7 +3787,9 @@ describe('presenter built-in and custom pages', () => {
   });
 
 
-  it('DLS-PAGE-002 DLS-PAGE-006 DLS-PAGE-008 DLS-PAGE-009 DLS-PAGE-010 DLS-PAGE-011 DLS-PAGE-012 DLS-PAGE-013 DLS-PAGE-014 renders built-in sections in authoritative dashboard.json view order grouped by declared source instead of hard-coded section index positions', () => {
+  it('DLS-PAGE-002 DLS-PAGE-006 DLS-PAGE-008 DLS-PAGE-009 DLS-PAGE-010 DLS-PAGE-011 DLS-PAGE-012 DLS-PAGE-013 DLS-PAGE-014 renders built-in sections in authoritative dashboard.json view order grouped by declared source instead of hard-coded section index positions', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-29T20:01:00Z'));
+    onTestFinished(() => clock.mockRestore());
     /** @type {import('../../src/presenter.js').PresentationInput['document']} */
     const document = {
       languageVersion: '0.1.0',
@@ -3794,7 +3820,7 @@ describe('presenter built-in and custom pages', () => {
 
     const rendered = renderDashboard({
       document,
-      sources: applyDashboardQueries({
+      sources: await loadDatabaseQuerySources(new IDBFactory(), {
         runs: {
           source: 'runs',
           rows: [
@@ -3840,7 +3866,10 @@ describe('presenter built-in and custom pages', () => {
             availability: 'available'
           }
         }
-      }, ['runs-table', 'runs-daily-conclusions'])
+      }, {
+        ingest: true, queries: authoritativeDashboardDocument.dashboard.queries,
+        sourceNames: ['runs-table', 'runs-daily-conclusions']
+      })
     });
 
     const headings = [...rendered.querySelectorAll('[data-page-id="runs"] .page-section > h2, [data-page-id="runs"] .page-section > .chart-prompt-heading > h2')].map((element) => element.textContent);
@@ -4506,6 +4535,8 @@ describe('presenter built-in and custom pages', () => {
     expect(renderedSecond.hidden).toBe(false);
     expect(renderedSecond.hasAttribute('data-page-pending')).toBe(false);
     expect(renderedSecond.hasAttribute('aria-busy')).toBe(false);
+    expect(renderedSecond.dataset.pageExperimental).toBe('true');
+    expect(/** @type {HTMLElement} */ (rendered.querySelector('.title-area [data-page-experimental]')).hidden).toBe(false);
     expect(rendered.querySelector('#page-title')?.textContent).toBe('Canonical second');
     expect(rendered.querySelector('[data-page-description]')?.textContent).toBe('Canonical second description');
 

@@ -81,7 +81,7 @@ const inventory = {
       readme: '# Dependabot\n\nKeeps dependency updates moving.\n',
       'readme-path': 'dependabot/README.md',
       source: `githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
-      'add-command': `gh cao campaigns add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
+      'add-command': `gh cao add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`,
     }, ...['aw-optimization', 'cao-evolution'].map((path, index) => ({
       id: `official:githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
       'registry-id': 'official',
@@ -101,7 +101,7 @@ const inventory = {
       readme: `# ${path}\n`,
       'readme-path': `${path}/README.md`,
       source: `githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
-      'add-command': `gh cao campaigns add githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
+      'add-command': `gh cao add githubnext/gh-cao/${path}@${'b'.repeat(40)}`,
       'observed-at': '2026-09-15T10:00:00Z',
     })), {
       id: `official:githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
@@ -122,7 +122,7 @@ const inventory = {
       readme: '# aw-optimization\n',
       'readme-path': 'aw-optimization/README.md',
       source: `githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
-      'add-command': `gh cao campaigns add githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
+      'add-command': `gh cao add githubnext/gh-cao/aw-optimization@${'c'.repeat(40)}`,
       'observed-at': '2026-09-14T10:00:00Z',
     }],
     metadata: { 'as-of': '2026-09-15T10:00:00Z', 'retrieved-at': '2026-09-15T10:00:00Z', completeness: 'complete', freshness: 'fresh', availability: 'available' },
@@ -264,10 +264,10 @@ test('core dashboard stays small and page chunks load on demand with in-memory c
     };
   });
   // Query definitions stay in page chunks; core keeps each page stub's source index so sources can
-  // load before the chunk arrives. Four Value routes and their shared result card add about 4 KB.
+  // load before the chunk arrives. Page descriptions and analysis contracts stay in their chunks.
   expect(core.textLength).toBeLessThan(81000);
   expect(core.value.dashboard.pages.some((/** @type {Record<string, unknown>} */ entry) =>
-    ['intent', 'subject', 'objective', 'acceptance'].some((field) => field in entry))).toBe(false);
+    ['description', 'intent', 'subject', 'objective', 'acceptance'].some((field) => field in entry))).toBe(false);
   expect(core.value.dashboard.pages.some((/** @type {{ views?: unknown[] }} */ entry) => Array.isArray(entry.views))).toBe(false);
   expect(core.value.dashboard.pages.some((/** @type {{ definition?: { views?: unknown[] } }} */ entry) => Array.isArray(entry.definition?.views))).toBe(false);
 
@@ -469,7 +469,7 @@ test('dashboard status preserves refresh failure and recovery without the Overvi
   await expect(page).toHaveURL(`${origin}/#page-overview`);
 });
 
-test('marketplace page renders canonical package cards after ingestion', async ({ page }) => {
+test('marketplace page renders canonical package cards after ingestion', async ({ page }, testInfo) => {
   await page.goto(`${origin}/#page-marketplace`);
 
   const marketplace = page.locator('[data-page-id="marketplace"]');
@@ -528,9 +528,16 @@ test('marketplace page renders canonical package cards after ingestion', async (
   await dashboardRoot.evaluate((root) => root.setAttribute('data-theme', 'light'));
   await add.click();
   await expect(page.locator('.cli-action-dialog .cli-action-command')).toHaveText(
-    `gh cao campaigns add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`
+    `gh cao add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`
   );
+  await page.screenshot({ path: testInfo.outputPath('marketplace-add-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.cli-action-dialog .cli-action-command')).toHaveText(
+    `gh cao add githubnext/gh-cao/dependabot@${'a'.repeat(40)}`
+  );
+  await page.screenshot({ path: testInfo.outputPath('marketplace-add-mobile.png') });
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
   await expect(detail.locator('.dashboard-markdown')).toContainText('Keeps dependency updates moving.');
   const about = detail.locator('.link-button-list-view');
   await expect(about.getByRole('heading', { name: 'About' })).toBeVisible();
@@ -541,6 +548,100 @@ test('marketplace page renders canonical package cards after ingestion', async (
   const aboutBox = await about.boundingBox();
   expect(aboutBox?.x ?? 0).toBeGreaterThan((readmeBox?.x ?? 0) + (readmeBox?.width ?? 0));
 });
+
+test('marketplace cards stay within their grid at mobile, tablet, and desktop widths', async ({ page }) => {
+  await page.goto(`${origin}/#page-marketplace`);
+  const cards = page.locator('[data-page-id="marketplace"] .entity-card-list-card');
+  await expect(cards).toHaveCount(3);
+
+  for (const width of [320, 375, 390, 420, 430, 700, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => cards.evaluateAll((items) => items.length === 3 && items.every((card) => {
+      const bounds = card.getBoundingClientRect();
+      return bounds.width >= 160 && card.scrollWidth <= card.clientWidth + 1
+        && bounds.left >= 0 && bounds.right <= window.innerWidth
+        && [...card.children].every((child) => {
+          const box = child.getBoundingClientRect();
+          return box.width === 0 || (box.left >= bounds.left && box.right <= bounds.right);
+        });
+    })), { message: `Card content should fit at ${width}px` }).toBe(true);
+
+    if (width <= 700) {
+      await expect.poll(() => page.locator('[data-page-id="marketplace"] .document-list-header > p').evaluate((paragraph) => {
+        const bounds = paragraph.getBoundingClientRect();
+        return bounds.width > 0 && bounds.left >= 16 && bounds.right <= innerWidth - 16;
+      }), { message: `Introductory text should have mobile gutters at ${width}px` }).toBe(true);
+      await expect.poll(() => cards.evaluateAll((items) => {
+        if (items.length !== 3) return false;
+        const [first, second] = items.map((card) => card.getBoundingClientRect());
+        return first.width >= 160 && second.x === first.x && second.y > first.bottom;
+      }), { message: `Cards should stack at ${width}px` }).toBe(true);
+    }
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const link = cards.first().getByRole('link', { name: 'AW Optimization' });
+  await link.focus();
+  await expect(link).toBeFocused();
+  await page.keyboard.press('Enter');
+  const detail = page.locator('[data-page-id="marketplace-package"]');
+  await expect(detail.locator('.entity-card-list-card')).toHaveCount(1);
+  await expect(detail.locator('.entity-card-list-actions .cli-action-trigger')).toBeVisible();
+  await expect.poll(() => detail.locator('.entity-card-list-card').evaluate((card) =>
+    card.scrollWidth <= card.clientWidth + 1)).toBe(true);
+});
+
+for (const width of [390, 1440]) {
+  test(`marketplace progressively loads canonical package pages at ${width}px`, async ({ context, page }) => {
+    const packageRows = Array.from({ length: 65 }, (_, index) => ({
+      ...inventory['marketplace-packages'].rows[0],
+      id: `package-${index}`,
+      name: `Package ${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + index % 26)}`,
+      path: `package-${index}`,
+      source: `githubnext/gh-cao/package-${index}@${'a'.repeat(40)}`,
+      description: 'A long package description that explains its purpose and operational scope. '.repeat(8)
+    }));
+    await context.route(`${origin}/inventory-sources.json`, route => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...inventory,
+        'marketplace-packages': { ...inventory['marketplace-packages'], rows: packageRows }
+      })
+    }));
+    await page.setViewportSize({ width, height: 844 });
+    await page.addInitScript(() => {
+      document.addEventListener('dashboard-data', event => {
+        if (event instanceof CustomEvent && event.detail.kind === 'refresh') {
+          document.documentElement.dataset.testRefreshState = event.detail.status;
+        }
+      });
+    });
+    await page.goto(`${origin}/#page-marketplace`);
+    await expect(page.locator('html')).toHaveAttribute('data-test-refresh-state', 'completed');
+    const marketplace = page.locator('[data-page-id="marketplace"]');
+    const cards = marketplace.locator('.entity-card-list-card');
+    await expect(cards).toHaveCount(25);
+    await expect(cards.locator('.issue-list-card-title')).toHaveText(packageRows.slice(0, 25).map(row => row.name));
+    const first = cards.first().getByRole('link', { name: packageRows[0].name });
+    const firstCard = await cards.first().elementHandle();
+    const more = marketplace.getByRole('button', { name: 'Load more', exact: true });
+    await more.scrollIntoViewIfNeeded();
+    await expect(cards).toHaveCount(50);
+    await expect(first).toHaveCount(1);
+    expect(await firstCard?.evaluate((card) => card.isConnected)).toBe(true);
+    await more.scrollIntoViewIfNeeded();
+    await expect(cards).toHaveCount(65);
+    await expect(more).toBeHidden();
+    await expect(marketplace.getByRole('status')).toHaveText('Showing 65 of 65 items');
+    expect(await cards.evaluateAll((items) => new Set(items.map((card) => card.textContent)).size)).toBe(65);
+    const last = cards.last().getByRole('link', { name: packageRows[64].name });
+    await last.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-page-id="marketplace-package"] .entity-card-list-card')).toContainText(packageRows[64].name);
+    await page.goBack();
+    await expect(cards).toHaveCount(65);
+  });
+}
 
 test('outcome sections settle into empty states when no outcome is selected', async ({ page }) => {
   await page.goto(`${origin}/#page-outcome-detail`);

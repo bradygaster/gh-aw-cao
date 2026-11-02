@@ -13,12 +13,15 @@ import { hasIndependentLayerY, hasTemporalLayerX, resolveChartLayers } from '../
 import { externalAnchorAttrs, findFirstLink, findLink, renderExternalLink, renderLinkedValue, renderOutcomeLink, renderWorkflowRunLink } from './link-content.js';
 import { createEntityAwareCellRenderer } from './linked-text.js';
 import { renderTableRegion } from './table-region.js';
+import { enableCardListPagination } from './card-list-pagination.js';
+import { CONTINUATION_PAGE_SIZE } from '../data/continuation.js';
 import { renderPageSection, renderViewSectionChrome } from './view-chrome.js';
 import { renderCloseButton, isPlainObject, isSafeHttpsUrl, createCopyControl, createModalDialog, observeLoadMoreBoundary, renderIconSpan, renderDlRow } from './ui-primitives.js';
 import { clearTimeWindowFilter, isTimeWindowFilterActive } from './filter-bar.js';
 import { processScatterPoints } from '../data-processor.js';
 import { MAX_RENDERED_SCATTER_POINTS } from '../scatter-clustering.js';
 import { createPromptCliActionControl, renderDeclaredCliAction, renderRowCliAction } from './cli-actions.js';
+import { createPromptSessionControl } from './prompt-session.js';
 import { effect, onCleanup, state } from '../reactive.js';
 import { createFactoryScope } from './factory-elements.js';
 import { createDebug } from '../debug.js';
@@ -324,7 +327,8 @@ function renderListView(context) {
         renderValue,
         toText,
         definition,
-        listAction
+        listAction,
+        continuation: context.continuation
       });
     }
   }
@@ -384,7 +388,8 @@ function renderListView(context) {
  *   renderValue: (column: string | { field: string, display?: unknown, format?: unknown, type?: unknown }, value: unknown, row: Record<string, unknown>) => string | HTMLElement,
  *   toText: (value: unknown) => string,
  *   definition: { icon: string, status?: { field: string, 'fallback-field'?: string, title?: string }, title: TableField, subtitle?: TableField, labels: TableField[], details: TableField[], 'detail-labels'?: string, metrics?: TableField[], timing?: Array<TableField & { icon: string }>, drill?: Record<string, unknown> },
- *   listAction: HTMLElement | null
+ *   listAction: HTMLElement | null,
+ *   continuation?: DataViewContext['continuation']
  * }} options
  */
 function renderEntityCardListView(options) {
@@ -394,7 +399,7 @@ function renderEntityCardListView(options) {
     : isPlainObject(definition.drill) ? definition.drill : null;
   const grouped = isPlainObject(view.list) && view.list.appearance === 'grouped';
   const marketplace = isPlainObject(view.list) && view.list.appearance === 'marketplace';
-  const cards = renderEntityCardItems(rows, {
+  const cardOptions = {
     pageId,
     title,
     renderValue,
@@ -402,10 +407,11 @@ function renderEntityCardListView(options) {
     definition,
     drill,
     chevron: grouped || marketplace
-  });
+  };
+  const cards = renderEntityCardItems(view['lazy-list'] === true ? rows.slice(0, CONTINUATION_PAGE_SIZE) : rows, cardOptions);
   const viewAll = isPlainObject(view.list) && isPlainObject(view.list['view-all']) ? view.list['view-all'] : null;
   const viewAllPage = typeof viewAll?.page === 'string' ? viewAll.page : '';
-  return renderCardListSection({
+  const section = renderCardListSection({
     pageId,
     title,
     view,
@@ -432,6 +438,14 @@ function renderEntityCardListView(options) {
       )]
       : []
   });
+  if (view['lazy-list'] === true) {
+    enableCardListPagination(section, {
+      rows,
+      continuation: options.continuation,
+      renderItems: (nextRows, keyOffset) => renderEntityCardItems(nextRows, { ...cardOptions, keyOffset })
+    });
+  }
+  return section;
 }
 
 /**
@@ -1735,8 +1749,9 @@ export function renderIntentAction(action, row) {
  * @param {string | undefined} [actionId]
  * @param {string} [iconName]
  * @param {string} [presentation]
+ * @param {() => boolean} [beforeOpen]
  */
-export function renderPromptPreviewAction(action, getContent, actionId, iconName, presentation) {
+export function renderPromptPreviewAction(action, getContent, actionId, iconName, presentation, beforeOpen) {
   if (typeof action === 'string') action = normalizeAction({
     label: action, actionId, icon: iconName, presentation
   }, { id: action, type: 'prompt' });
@@ -1763,7 +1778,10 @@ export function renderPromptPreviewAction(action, getContent, actionId, iconName
   effect(() => {
     preview.textContent = content.get();
   }, { signal: scope.signal });
-  const copyControl = createCopyControl({
+  const promptCliAction = typeof action.actionId === 'string'
+    ? createPromptCliActionControl(action.actionId, content.get, { level: action.level, label })
+    : null;
+  const activeControl = promptCliAction ?? createPromptSessionControl(content.get) ?? createCopyControl({
     getContent: content.get,
     label: 'Copy prompt',
     buttonClassName: 'table-intent-copy-button',
@@ -1772,10 +1790,6 @@ export function renderPromptPreviewAction(action, getContent, actionId, iconName
     failureText: 'Could not copy prompt.',
     trackState: true
   });
-  const promptCliAction = typeof action.actionId === 'string'
-    ? createPromptCliActionControl(action.actionId, content.get, { level: action.level, label })
-    : null;
-  const activeControl = promptCliAction ?? copyControl;
   dialog.append(
     h(
       'header',
@@ -1812,7 +1826,7 @@ export function renderPromptPreviewAction(action, getContent, actionId, iconName
       'data-intent-presentation': action.presentation ?? 'semantic-prompt',
       'data-action-level': action.level,
       onClick: () => {
-        if (scope.signal.aborted) return;
+        if (scope.signal.aborted || (beforeOpen && !beforeOpen())) return;
         activeControl.reset();
         opened.set(true);
         openPreview();

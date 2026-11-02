@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import { configureCliQueue, isCliQueueQuery } from '../../src/data/cli-queue.js';
 import commandQueueFixture from '../fixtures/cli-command-queue.json' with { type: 'json' };
@@ -113,7 +114,9 @@ function viewsOf(page) {
     ? /** @type {Record<string, unknown>} */ (configured.definition)
     : configured;
   return [
-    ...(Array.isArray(body.views) ? body.views : []),
+    ...(Array.isArray(body.views) ? body.views.filter(
+      (view) => view && typeof view === 'object' && !Array.isArray(view)
+    ) : []),
     ...(Array.isArray(body.sections) ? body.sections.flatMap((/** @type {unknown} */ section) => viewsOf(section)) : [])
   ];
 }
@@ -285,6 +288,7 @@ describe('dashboard view query contracts', () => {
       label: 'Experimental',
       experimental: true,
       pages: [
+        'wizard',
         'model-routing',
         'skills',
         'steering',
@@ -608,10 +612,13 @@ describe('dashboard view query contracts', () => {
       mark: 'list',
       list: { style: 'entity-cards', card: 'problem' }
     });
-    expect(viewsOf(runs).find((view) => view.id === 'campaign-run-status')).toMatchObject({
-      data: { source: 'campaign-runs', 'route-field': 'campaign' },
-      mark: 'chart'
+    const runStatus = /** @type {Record<string, any>} */ (viewsOf(runs).find((view) => view.id === 'campaign-run-status'));
+    expect(runStatus).toMatchObject({
+      data: { source: 'campaign-run-status-counts', 'route-field': 'campaign' },
+      mark: 'chart',
+      encoding: { y: { field: 'runs', type: 'quantitative' } }
     });
+    expect(runStatus.encoding.y).not.toHaveProperty('aggregate');
   });
 
   it('builds a route-scoped selected-horizon campaign baseline with deterministic signals', () => {
@@ -1038,6 +1045,7 @@ describe('dashboard view query contracts', () => {
     const runtimeRequested = requested.filter((name) => isCliQueueQuery(queries, [name]));
     const workerRequested = requested.filter((name) => !requiresServerSource(name) && !runtimeRequested.includes(name));
     expect(requested.filter((name) => requiresServerSource(name)).sort()).toEqual(['github-api-usage', 'ingestion-health', 'ingestion-queue-sizes', 'ingestion-webhook-status']);
+    vi.stubGlobal('crypto', webcrypto);
     vi.stubGlobal('indexedDB', new IDBFactory());
     let results;
     try {
@@ -1045,6 +1053,10 @@ describe('dashboard view query contracts', () => {
         operation: 'load-dashboard-query-sources',
         queries,
         sources: {
+          runs: {
+            source: 'runs', rows: [],
+            metadata: { availability: 'empty', completeness: 'complete', 'as-of': '2026-10-23T12:00:00.000Z' }
+          },
           'configuration-policy': {
             source: 'configuration-policy',
             rows: [],

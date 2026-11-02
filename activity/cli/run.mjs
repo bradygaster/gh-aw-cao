@@ -7,15 +7,9 @@ import { hasComputation, queryComputation } from '../computations/index.mjs';
 import { DEFAULT_DATABASE_PATH, DEFAULT_SHARDS_PATH, USAGE } from '../cli-usage.mjs';
 import { commandHandlers } from '../commands/index.mjs';
 import { sqliteRetention } from '../sqlite-retention.mjs';
-import { setupCaoControlPlane } from '../setup.mjs';
 import { DAY_MS, UsageError, parseOptions, rawQueryFromStdin, option, rejectUnknownOptions, ttlDays, retentionWindowMs, runRetentionWindowMs, runTtlDays } from './options.mjs';
 import { DEFAULT_COMPACTED_JSONL_SHARD_BYTES, auditJsonlDirectory, compactJsonlShards } from './jsonl.mjs';
-import { initializeCaoPolicy } from './policy.mjs';
-import { addCaoRepository } from './repositories.mjs';
-import { setupCaoAuthentication } from './authentication.mjs';
-import { upgradeGhAw } from './gh-aw.mjs';
-import { addCaoCampaign, updateCaoCampaigns, setCaoCampaignMode, setCaoCampaignWorkflowsEnabled } from './campaigns.mjs';
-import { databaseCounts, ingestGhAwLogDirectory, ingestJsonlShardDirectory, ingestNormalizedShardDirectories, ingestJsonlFile, createDatabase, runLegacyIngestion } from './ingestion.mjs';
+import { databaseCounts, ingestGhAwLogDirectory, ingestJsonlShardDirectory, ingestNormalizedShardDirectories, ingestJsonlFile, createDatabase } from './ingestion.mjs';
 import { downloadDeployedDashboardData } from './download.mjs';
 import { hashActivityPayloads } from './payloads.mjs';
 import { activityWorkflowStats } from './activity-stats.mjs';
@@ -26,33 +20,27 @@ import { discoverWorkflows, pruneDashboardFile, analyzeDashboardComplexityFile }
 // Commands whose first argument may be an identifier instead of an option.
 const POSITIONAL_COMMANDS = new Set(['dashboard-complexity', 'pages', 'query-info', 'query', 'prompt']);
 
-const COMMANDS = new Set(['init', 'setup', 'setup-auth', 'add', 'update', 'upgrade-gh-aw', 'mode', 'enable', 'disable', 'discover-workflows', 'dashboard-complexity', 'prune-dashboard', 'ingest', 'ingest-jsonl', 'audit-jsonl', 'compact-jsonl', 'recycle-cache', 'issue-status', 'query', 'prompt', 'computation', 'operational-value', 'cluster-problems', 'doctor', 'validate', 'download', 'hash-payloads', 'activity-stats', 'validate-activity-data', 'gh', 'pages', 'queries', 'query-info', 'mcp']);
+const RETIRED_OPERATOR_COMMANDS = new Map([
+  ['init', 'gh cao init'],
+  ['setup', 'gh cao setup'],
+  ['setup-auth', 'gh cao setup auth'],
+  ['add', 'gh cao add CAMPAIGN (repository enrollment: gh cao repos add OWNER/REPO)'],
+  ['mode', 'gh cao campaigns mode'],
+  ['enable', 'gh cao campaigns enable'],
+  ['disable', 'gh cao campaigns disable'],
+  ['update', 'gh cao update'],
+  ['upgrade-gh-aw', 'gh cao upgrade-gh-aw'],
+]);
 
 export async function runCli(arguments_, input = process.stdin, { signal } = {}) {
   const [command, ...rawOptionArguments] = arguments_;
+  const replacement = RETIRED_OPERATOR_COMMANDS.get(command);
+  if (replacement) throw new UsageError(`Node cao ${command} has been retired; use ${replacement}`);
   if (!command || command === '--help' || command === 'help') return USAGE;
+  if (command === 'doctor') throw new UsageError('Unknown command: doctor; use repair-database for SQLite backup, repair, and retention');
   if (command === 'quickstart') throw new UsageError(`Unknown command: ${command}`);
-  if (!COMMANDS.has(command) && arguments_.length === 2) {
-    return runLegacyIngestion(command, rawOptionArguments[0]);
-  }
   const handler = commandHandlers.get(command);
   if (!handler) throw new UsageError(`Unknown command: ${command}`);
-  if (['init', 'setup', 'setup-auth', 'add', 'update', 'upgrade-gh-aw', 'mode', 'enable', 'disable'].includes(command)) {
-    return handler({
-      arguments_: rawOptionArguments,
-      input,
-      UsageError,
-      initializeCaoPolicy,
-      setupCaoControlPlane,
-      setupCaoAuthentication,
-      addCaoCampaign,
-      addCaoRepository,
-      updateCaoCampaigns,
-      upgradeGhAw,
-      setCaoCampaignMode,
-      setCaoCampaignWorkflowsEnabled,
-    });
-  }
   const optionArguments = [...rawOptionArguments];
   const positional = POSITIONAL_COMMANDS.has(command) && optionArguments[0] && !optionArguments[0].startsWith('--')
     ? optionArguments.shift()

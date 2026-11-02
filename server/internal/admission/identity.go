@@ -26,6 +26,8 @@ type Identity struct {
 	Issuer, Subject, Repository, RepositoryID, OwnerID string
 	RunID, RunAttempt, Ref, Event, Actor, ActorID      string
 	WorkflowRef, WorkflowSHA                           string
+	CheckRunID                                         string
+	EnvironmentPresent                                 bool
 }
 
 func (i Identity) Key() string {
@@ -134,7 +136,9 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		RunID: get("run_id"), RunAttempt: get("run_attempt"), Ref: get("ref"),
 		Event: get("event_name"), Actor: get("actor"), ActorID: get("actor_id"),
 		WorkflowRef: get("workflow_ref"), WorkflowSHA: get("workflow_sha"),
+		CheckRunID: get("check_run_id"),
 	}
+	_, i.EnvironmentPresent = claims["environment"]
 	if !repository.MatchString(i.Repository) || i.Subject == "" || i.Ref == "" || i.Event == "" ||
 		!clean(i.Actor, 100) || !decimal.MatchString(i.RepositoryID) ||
 		!decimal.MatchString(i.OwnerID) || !decimal.MatchString(i.ActorID) ||
@@ -195,6 +199,24 @@ func (v *Verifier) refreshKey(ctx context.Context, kid string, now time.Time) (*
 	if err != nil || len(data) > 64<<10 {
 		return nil, ErrUnavailable
 	}
+	keys, err := parseJWKS(data)
+	if err != nil {
+		return nil, err
+	}
+	v.keys, v.refreshed = keys, now
+	admissionLog.Printf("refreshed token signing keys: count=%d", len(keys))
+	if key := keys[kid]; key != nil {
+		return key, nil
+	}
+	admissionLog.Printf("token signing key not found in refreshed set")
+	v.missing = kid
+	return nil, ErrDenied
+}
+
+// parseJWKS decodes a JWKS document into RSA signing keys keyed by kid. Keys
+// that are not RS256 signature keys are skipped; malformed or oversized keys,
+// duplicate IDs, and empty or oversized documents are unavailable.
+func parseJWKS(data []byte) (map[string]*rsa.PublicKey, error) {
 	var document struct {
 		Keys []struct {
 			ID   string `json:"kid"`
@@ -224,10 +246,5 @@ func (v *Verifier) refreshKey(ctx context.Context, kid string, now time.Time) (*
 		}
 		keys[key.ID] = &rsa.PublicKey{N: new(big.Int).SetBytes(n), E: int(exponent.Int64())}
 	}
-	v.keys, v.refreshed = keys, now
-	if key := keys[kid]; key != nil {
-		return key, nil
-	}
-	v.missing = kid
-	return nil, ErrDenied
+	return keys, nil
 }

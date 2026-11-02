@@ -33,9 +33,12 @@ describe('entity card templates', () => {
       'icon-field': 'package-icon',
       title: { field: 'package-name' },
       subtitle: { field: 'package-description' },
+      'detail-labels': 'visible',
       details: [
-        { field: 'publisher', title: 'By' },
-        { field: 'forks', title: 'Public forks' }
+        { field: 'publisher', title: 'By' }
+      ],
+      labels: [
+        { field: 'registry-name', title: 'Registry', display: 'label' }
       ]
     });
     expect(templates['marketplace-package-summary'].actions).toBeUndefined();
@@ -51,15 +54,18 @@ describe('entity card templates', () => {
   it('declares marketplace list and detail routes', () => {
     expect(pages.marketplace.experimental).toBe(false);
     expect(pages.marketplace['class-name']).toBe('marketplace-page');
+    expect(dashboard.navigation[0]).toEqual({ pages: ['overview', 'marketplace'] });
     expect(dashboard.navigation.find(
       (/** @type {Record<string, any>} */ section) => section.label === 'Maintenance'
-    )?.pages).toContain('marketplace');
+    )?.pages).not.toContain('marketplace');
     expect(pages.marketplace.views).toHaveLength(1);
     expect(pages.marketplace.views[0]).toMatchObject({
-      data: { source: 'marketplace-packages' },
+      data: { source: 'marketplace-directory' },
+      'lazy-list': true,
       list: {
         style: 'entity-cards',
         appearance: 'marketplace',
+        layout: 'grid',
         icon: 'archive',
         card: 'marketplace-package-summary',
         drill: { page: 'marketplace-package', query: 'marketplace-package-detail' }
@@ -94,7 +100,7 @@ describe('entity card templates', () => {
     )).toMatchObject({
       label: 'Add',
       icon: 'plus',
-      command: 'gh cao campaigns add {{package-source}}',
+      command: 'gh cao add {{package-source}}',
       placement: 'row',
       'copy-only': true
     });
@@ -123,6 +129,14 @@ describe('entity card templates', () => {
       data: { source: 'campaign-inventory' },
       mark: 'table'
     });
+    const dispatches = pages.campaigns.definition.views.find(
+      (/** @type {Record<string, any>} */ view) => view.id === 'campaigns-dispatches'
+    );
+    expect(dispatches).toMatchObject({
+      data: { source: 'campaign-inventory' },
+      encoding: { y: { field: 'dispatches', type: 'quantitative' } }
+    });
+    expect(dispatches.encoding.y).not.toHaveProperty('aggregate');
     expect(pages.campaigns.definition.views.find(
       (/** @type {Record<string, any>} */ view) => view.id === 'campaigns-repository-coverage'
     )).toMatchObject({

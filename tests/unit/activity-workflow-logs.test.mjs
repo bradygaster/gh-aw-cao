@@ -109,6 +109,26 @@ test('discovery fails closed without exposing upstream errors or invoking local 
   }
 });
 
+test('public-only log collection permits a private control repository but not private remote targets', async (t) => {
+  const f = await fixture(t, {
+    metadata: { full_name: 'octo/api', private: true, visibility: 'private' },
+  });
+  await execute(process.execPath, f.args, {
+    env: { ...process.env, REPORT_PUBLIC_ONLY: 'true', GITHUB_REPOSITORY: 'octo/api' },
+  });
+  assert.equal((await f.calls()).length, 3);
+  const [, binary, ...args] = f.args;
+  await assert.rejects(collectWorkflowLogs(binary, args, {
+    publicOnly: true, controlRepository: 'octo/control',
+  }), /verified public visibility/);
+  const renamed = await fixture(t, {
+    metadata: { full_name: 'octo/moved', private: true, visibility: 'private' },
+  });
+  await assert.rejects(collectWorkflowLogs(renamed.args[1], renamed.args.slice(2), {
+    publicOnly: true, controlRepository: 'octo/api',
+  }), /verified control repository visibility and unchanged identity/);
+});
+
 test('collection preserves quota-exhausted statuses from discovery and gh-aw', async (t) => {
   for (const options of [
     { discoveryStatus: 1, stderr: 'HTTP 403: API rate limit exceeded for user ID PRIVATE_ID' },
@@ -123,25 +143,25 @@ test('collection preserves quota-exhausted statuses from discovery and gh-aw', a
   }
 });
 
-test('collection allows gh-aw one minute to flush evidence after its own timeout', async (t) => {
+test('collection allows gh-aw to audit and flush evidence after its download timeout', async (t) => {
   const timeout = AbortSignal.timeout.bind(AbortSignal);
   const deadlines = [];
   t.mock.method(AbortSignal, 'timeout', (milliseconds) => {
     deadlines.push(milliseconds);
-    return timeout(milliseconds / 20);
+    return timeout(milliseconds / 100);
   });
-  const f = await fixture(t, { collectionDelay: 3_250 });
+  const f = await fixture(t, { collectionDelay: 2_500 });
   const [, binary, ...args] = f.args;
   args[args.indexOf('--timeout') + 1] = '1';
 
   assert.equal(await collectWorkflowLogs(binary, args), 0);
-  assert.deepEqual(deadlines, [120_000]);
+  assert.deepEqual(deadlines, [360_000]);
   assert.equal((await f.calls()).length, 2);
 });
 
 test('collection still fails closed when gh-aw exceeds the bounded cleanup window', async (t) => {
   const timeout = AbortSignal.timeout.bind(AbortSignal);
-  t.mock.method(AbortSignal, 'timeout', (milliseconds) => timeout(milliseconds / 20));
+  t.mock.method(AbortSignal, 'timeout', (milliseconds) => timeout(milliseconds / 100));
   const f = await fixture(t, { collectionDelay: 10_000 });
   const [, binary, ...args] = f.args;
   args[args.indexOf('--timeout') + 1] = '1';

@@ -243,7 +243,7 @@ mismatches and MUST NOT rewrite an existing policy or any authority fields.
 The installer MUST invoke `gh cao init` and `gh cao setup`.
 No shell launcher is installed. Actions and Node-only
 tools MUST invoke `node activity/cao.mjs <command>` or another explicit Node
-entry point directly, including SQLite `doctor` and `setup-auth hosted-cli`.
+entry point directly, including SQLite `repair-database`.
 User-facing commands MUST live in the Go extension except the Node-only
 administration tools above. Actions execution
 support MUST live in the JavaScript runtime under `activity/` and `dashboard/`.
@@ -270,6 +270,20 @@ non-root campaign before reading its declaration. `cao add` MUST reject the
 root campaign before invoking gh-aw and direct operators to the root installer.
 `cao update` MUST materialize each updated selected campaign before merging
 declarations.
+
+Documentation MUST recommend `gh extension install githubnext/gh-cao` first,
+followed by native `gh cao setup`. It MUST present the root `install-gh-cao.sh`
+as a curl fallback in a callout for SAML-token installation failures, not as
+the default extension installation path. The fallback MUST invoke the upstream
+`github/gh-aw` `install-gh-aw.sh` with the
+required version and checksum verification enabled. Public tool release discovery
+and downloads MUST be anonymous, independent of the operator's GitHub token and
+curl authentication configuration. The upstream installer MUST NOT inherit token
+variables or the Actions `INPUT_VERSION` override that selects authenticated
+extension installation. Anonymous rate limits and download/verification failures
+MUST fail closed, not retry with operator credentials. This isolation MUST NOT
+clear stored credentials or remove authentication from control-repository
+creation, setup, or the separate runtime artifact/provenance acquisition path.
 
 The installer MUST check tools, Node.js 24+, GitHub sign-in, and checkout-root
 readiness before installation or upgrade. Creating a control repository MUST
@@ -334,7 +348,7 @@ commit, or push. The explicit public-monitoring shortcut below and a previously
 saved public-only scope MAY select a wider exact public collection scope.
 
 Operational campaigns MUST remain separate from installation and setup.
-Operators install campaigns with `gh cao campaigns add`, review and commit
+Operators install campaigns with `gh cao add`, review and commit
 workflows and policy together, then explicitly dispatch authorized work through
 `gh aw run`. Installation and setup MUST NOT commit, push, or dispatch campaigns.
 Validation MUST report a manually paused orchestrator with active workers as a
@@ -350,16 +364,25 @@ the field, existing fail-closed authentication behavior remains unchanged.
 `control-plane.activity.public-only: true` MUST require an explicit exact
 Activity scope and workflow-token authentication. It MUST NOT change campaign,
 worker, operation, safe-output or live authority. Collection MUST verify the
-control repository and selected repositories are public with unchanged identity
-before discovery and recheck each target before collecting logs. Missing or
-non-public visibility MUST block publication, including after a visibility
-change. Restricted public evidence MUST remain explicitly partial, not complete
+control repository's identity and known visibility and verify all selected remote
+repositories are public with unchanged identity before discovery and recheck each
+target before collecting logs. Only the actual control repository identified by
+the job's `GITHUB_REPOSITORY` MAY be private or internal, using its repository-local
+token. Missing visibility, changed identity, or non-public remote targets MUST
+block publication, including after a visibility change.
+Restricted public evidence MUST remain explicitly partial, not complete
 or zero; public-only collection MUST NOT invoke new operational-value collectors
 or authenticated issue-status enrichment.
 
-Guided setup SHOULD recommend public-only monitoring for an all-public scope.
+Guided setup SHOULD select public-only monitoring for the control repository and
+public remote targets, regardless of the control repository's visibility.
+When workflow-token authentication is already selected or is the default, setup
+MUST NOT write an authentication variable or credentials. It MUST check repository
+variables before inherited organization variables shared with that repository.
+An existing conflicting effective mode MUST receive a repository-level
+`workflow-token` override; unreadable or malformed settings MUST fail closed.
 `gh cao setup --repository OWNER/REPO|OWNER/*` MAY configure
-that profile without prompts; this shortcut accepts public Pages
+that profile without prompts in a public control repository; this shortcut accepts public Pages
 publication. Wildcards MUST resolve only currently public repositories to saved
 exact names, and exact non-public selections MUST fail before mutation. Setup
 MUST remain bare, with no campaign or agent execution, and MUST write policy

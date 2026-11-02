@@ -9,12 +9,24 @@ const program = await compile(NodeHost, new URL('storage.tsp', import.meta.url).
 assert.deepEqual(program.diagnostics, []);
 const tables = new Map();
 const documentation = new Map();
+const dailyTables = new Map();
 const parents = new Map();
 const partitioned = new Set();
+const sampled = new Set();
+const statisticalMetadata = new Set();
 let evidenceFactFields;
 let webhookStatusFields;
 navigateProgram(program, {
   model(model) {
+    if (getNamespaceFullName(model.namespace) === 'Cao.Postgres.Storage.Statistical') {
+      statisticalMetadata.add(model.name);
+      for (const property of model.properties.values()) {
+        assert.equal(property.type.kind, 'Scalar', `${model.name}.${property.name} must use a native scalar`);
+      }
+    }
+    if (getNamespaceFullName(model.namespace) === 'Cao.Postgres.Daily') {
+      dailyTables.set(model.name, new Map([...model.properties].map(([name, property]) => [name, property.type.name])));
+    }
     if (getNamespaceFullName(model.namespace) === 'Cao.Postgres.Runtime' && model.name === 'webhookStatus') {
       webhookStatusFields = new Set(model.properties.keys());
     }
@@ -28,14 +40,50 @@ navigateProgram(program, {
       tables.set(`$${model.name}`, new Set(model.properties.keys()));
       documentation.set(model.name, getDoc(program, model));
       if (program.stateSet(Symbol.for('cao-postgres.run-partition')).has(model)) partitioned.add(model.name);
+      if (program.stateSet(Symbol.for('cao-postgres.sampled-bundle')).has(model)) sampled.add(model.name);
       parents.set(model.name, [...model.properties.values()]
         .map((property) => program.stateMap(Symbol.for('cao-postgres.parent')).get(property)?.entity)
         .filter(Boolean));
     }
   }
 });
+
+test('statistical bundles cover every Run-owned collection and its complete structural closure', () => {
+  assert.deepEqual([...sampled].sort(), [
+    'campaigns', 'repositories', 'workflows', 'runs', 'domains', 'tools', 'skills',
+    'friction', 'audits', 'issues', 'experiments', 'experimentAssignments',
+    'graders', 'graderObservations', 'evals', 'evalObservations'
+  ].sort());
+  for (const collection of partitioned) assert.ok(sampled.has(collection), `missing owned collection ${collection}`);
+  for (const collection of sampled) {
+    for (const parent of parents.get(collection)) assert.ok(sampled.has(parent), `missing structural parent ${parent}`);
+  }
+  assert.deepEqual([...statisticalMetadata].sort(), ['statisticalFrame', 'statisticalMembership', 'statisticalStrata']);
+  const sql = readFileSync(new URL('../internal/postgresx/schema.sql', import.meta.url), 'utf8');
+  for (const collection of [...sampled, ...statisticalMetadata, 'caoQuality']) {
+    const name = collection.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+    const declaration = sql.split(`CREATE TABLE IF NOT EXISTS cao_sample_${name} (`)[1]?.split(';')[0];
+    assert.ok(declaration, `missing frozen table ${collection}`);
+    assert.doesNotMatch(declaration, /PARTITION BY/);
+    assert.doesNotMatch(declaration, /REFERENCES (?:runs|workflows|repositories|campaigns|experiments|graders|evals)\(/);
+  }
+});
 const definitions = JSON.parse(readFileSync(new URL('../../dashboard/site/src/data/queries/database.json', import.meta.url)));
 const records = ['$domains', '$tools', '$skills', '$friction', '$audits', '$issues'];
+
+test('daily outcome counts are an independent additive typed storage extension', () => {
+  assert.deepEqual([...dailyTables.keys()].sort(), ['dailyRunCountState', 'dailyRunCounts', 'runCountContributions']);
+  const columns = dailyTables.get('dailyRunCounts');
+  for (const field of ['total', 'successful', 'failed', 'approval', 'pending', 'other']) {
+    assert.equal(columns.get(field), 'int64');
+  }
+  const extension = readFileSync(new URL('../internal/postgresx/daily-schema.sql', import.meta.url), 'utf8');
+  const native = readFileSync(new URL('../internal/postgresx/schema.sql', import.meta.url), 'utf8');
+  assert.match(extension, /PRIMARY KEY \(namespace, id\)/);
+  assert.match(extension, /UNIQUE \(namespace, day, repository_id, workflow_id\)/);
+  assert.doesNotMatch(extension, /REFERENCES|PARTITION BY|JSONB?|ON DELETE/);
+  assert.doesNotMatch(native, /daily_run_counts|run_count_contributions|cao_daily_contract/);
+});
 
 function inputFields(definition) {
   const derived = new Set();
@@ -56,13 +104,13 @@ function inputFields(definition) {
 
 test('TypeSpec declares exactly one root table per canonical dashboard collection', () => {
   assert.deepEqual([...tables.keys()].sort(), [
-    '$campaigns', '$repositories', '$workflows', '$runs', ...records, '$operationalValues', '$operationalValueEvidence',
+    '$campaigns', '$repositories', '$workflows', '$runs', ...records, '$operationalValues', '$operationalValueEvidence', '$workflowValueCollections',
     '$marketplacePackages', '$experiments', '$experimentAssignments',
     '$graders', '$graderObservations', '$evals', '$evalObservations'
   ].sort());
 });
 
-test('all run-owned tables share weekly partitions and maintenance coverage', () => {
+test('all run-owned tables share daily partitions and maintenance coverage', () => {
   const runOwned = new Set(['runs']);
   let size;
   do {
@@ -80,7 +128,7 @@ test('all run-owned tables share weekly partitions and maintenance coverage', ()
   }
   const maintenance = readFileSync(new URL('../internal/postgresx/partitions.go', import.meta.url), 'utf8');
   const registered = maintenance.match(/var partitionTables = \[\]string\{([^}]+)\}/);
-  assert.ok(registered, 'weekly maintenance must declare its partitioned tables');
+  assert.ok(registered, 'daily maintenance must declare its partitioned tables');
   assert.match(maintenance, /tables := partitionTables/);
   const provisioned = readFileSync(new URL('../internal/postgresx/provisioned.go', import.meta.url), 'utf8');
   assert.match(provisioned, /range partitionTables/, 'runtime readiness must validate the same partition tables');
@@ -96,7 +144,7 @@ test('all run-owned tables share weekly partitions and maintenance coverage', ()
     }
   }
   const discovered = maintenance.match(/p\.relname IN\s*\(([^)]+)\)/);
-  assert.ok(discovered, 'weekly maintenance must discover every partitioned table');
+  assert.ok(discovered, 'daily maintenance must discover every partitioned table');
   assert.deepEqual([...discovered[1].matchAll(/'([^']+)'/g)].map((match) => match[1]).sort(), names);
 });
 
@@ -122,28 +170,40 @@ test('grader and eval observations retain distinct definitions and audit provena
 
 test('native table fields cover database projections and joins without speculative columns', () => {
   const defects = [];
+  // The SQL source derives these from typed parents, not duplicate stored columns.
+  const derived = new Map([['$operationalValues', new Set(['repository', 'workflow-route'])]]);
+  for (const [source, fields] of derived) {
+    for (const field of fields) assert.equal(tables.get(source).has(field), false, `${source}.${field} must be derived`);
+  }
   const required = new Map([...tables.keys()].map((source) => [source, new Set(['id'])]));
   required.get('$runs').add('repositoryId'); // Cross-parent canonical integrity.
   // This input normalizes the packet and its typed child values, not root columns.
   required.set('$operationalValueEvidence', new Set(tables.get('$operationalValueEvidence')));
+  for (const field of ['schemaVersion', 'repository', 'workflowId']) {
+    required.get('$workflowValueCollections').add(field); // Versioned producer identity and parent integrity.
+  }
   for (const definition of definitions) {
     if (definition.from === '$operationalValueEvidence') continue;
     const sources = [definition.from];
     const fields = inputFields(definition);
     if (tables.has(definition.from)) {
       for (const field of fields) {
-        if (!tables.get(definition.from).has(field)) defects.push(`missing ${definition.from}.${field}`);
+        if (!tables.get(definition.from).has(field) && !derived.get(definition.from)?.has(field)) {
+          defects.push(`missing ${definition.from}.${field}`);
+        }
       }
     }
     for (const source of sources) {
       if (!required.has(source)) continue;
-      for (const field of fields) required.get(source).add(field);
+      for (const field of fields) if (!derived.get(source)?.has(field)) required.get(source).add(field);
     }
     for (const join of definition.joins ?? []) {
       if (!tables.has(join.source)) continue;
       for (const field of [...join.on.map((key) => key.right), ...join.fields.map((field) => field.field)]) {
-        if (!tables.get(join.source).has(field)) defects.push(`missing joined ${join.source}.${field}`);
-        required.get(join.source).add(field);
+        if (!tables.get(join.source).has(field) && !derived.get(join.source)?.has(field)) {
+          defects.push(`missing joined ${join.source}.${field}`);
+        }
+        if (!derived.get(join.source)?.has(field)) required.get(join.source).add(field);
       }
     }
   }
@@ -155,13 +215,17 @@ test('native table fields cover database projections and joins without speculati
   assert.deepEqual(defects, []);
 });
 
-test('operational value evidence projects exactly the typed fact and common packet contract', () => {
+test('operational value evidence projects typed facts, common packet metadata and derived route identities', () => {
   assert.deepEqual(evidenceFactFields.sort(), [...EVIDENCE_FACT_FIELDS].sort());
   const projection = definitions.find((definition) => definition.name === 'operational-value-evidence');
   assert.deepEqual(projection.select.map((field) => field.field).sort(), [
     ...EVIDENCE_FACT_FIELDS, 'report-id', 'organization', 'repository', 'workflow', 'workflow-path',
-    'observed-at', 'window-start', 'window-end', 'contract-digest'
+    'observed-at', 'window-start', 'window-end', 'contract-digest', 'workflow-route', 'snapshot-route'
   ].sort());
+  for (const field of ['workflow-route', 'snapshot-route']) {
+    assert.equal(evidenceFactFields.includes(field), false, `${field} must not duplicate packet identity in stored facts`);
+    assert.equal(tables.get('$operationalValueEvidence').has(field), false, `${field} must be derived`);
+  }
   const sql = readFileSync(new URL('../internal/postgresx/schema.sql', import.meta.url), 'utf8');
   assert.match(sql, /CREATE TABLE IF NOT EXISTS operational_value_evidence_facts/);
   assert.match(sql, /FOREIGN KEY \(namespace, packet_id\) REFERENCES operational_value_evidence/);

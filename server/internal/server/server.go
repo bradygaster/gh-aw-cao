@@ -32,6 +32,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/githubnext/gh-cao/server/internal/admission"
+	"github.com/githubnext/gh-cao/server/internal/adxingest"
+	"github.com/githubnext/gh-cao/server/internal/adxtrace"
 	"github.com/githubnext/gh-cao/server/internal/audit"
 	"github.com/githubnext/gh-cao/server/internal/dashboardstore"
 	"github.com/githubnext/gh-cao/server/internal/githubapp"
@@ -44,8 +46,11 @@ import (
 	"github.com/githubnext/gh-cao/server/internal/postgresx"
 	"github.com/githubnext/gh-cao/server/internal/query"
 	"github.com/githubnext/gh-cao/server/internal/repositorymemory"
+	"github.com/githubnext/gh-cao/server/internal/sessionarchive"
+	"github.com/githubnext/gh-cao/server/internal/sessionarchiveblob"
 	"github.com/githubnext/gh-cao/server/internal/sqlitex"
 	"github.com/githubnext/gh-cao/server/internal/telemetry"
+	"github.com/githubnext/gh-cao/server/internal/tokenbroker"
 )
 
 var serverLog = logger.New("cao:server")
@@ -60,6 +65,8 @@ type Config struct {
 	CertFile               string
 	KeyFile                string
 	AccessToken            string
+	Canvas                 *LocalCanvasConfig
+	OnListen               func(string) error
 	HostProfile            HostProfile
 	SingleReplicaConfirmed bool
 	AllowVolatile          bool
@@ -89,8 +96,14 @@ type Config struct {
 	Logger               *log.Logger
 	// Audit records security audit events for administrator and hosted CLI
 	// operations; nil disables them (local mode and tests).
-	Audit     *audit.Logger
-	Admission *AdmissionConfig
+	Audit              *audit.Logger
+	Admission          *AdmissionConfig
+	TokenBroker        *tokenbroker.Config
+	ADX                *adxingest.Config
+	ADXTraces          *adxtrace.Config
+	SessionArchive     *sessionarchive.Config
+	SessionArchiveBlob *sessionarchiveblob.Config
+	SessionArchiveRead *SessionArchiveReadAccess
 	// RateLimits overrides inbound request rate limits; the zero value keeps
 	// the production defaults.
 	RateLimits RateLimitConfig
@@ -98,6 +111,10 @@ type Config struct {
 	// RedisMaxBytes bounds cache pressure against whole-node memory usage.
 	// Zero selects CAO_REDIS_MAX_BYTES or the 200 MB default.
 	RedisMaxBytes int64
+
+	// TokenBrokerSingleProcessConfirmed acknowledges volatile credential cleanup
+	// and prohibits multiple or overlapping broker process replicas.
+	TokenBrokerSingleProcessConfirmed bool
 }
 
 type App struct {
@@ -105,6 +122,7 @@ type App struct {
 	ownedOperational operational.Store
 	database         dashboardstore.Store
 	ownedDatabase    dashboardstore.Store
+	localBackfill    *localSQLiteBackfill
 	closeDatabase    sync.Once
 	closeError       error
 	databaseQueries  []query.Definition
@@ -137,6 +155,10 @@ type App struct {
 	hostedCLI        *hostedCLI
 	valuePublisher   operationalValuePublisher
 	admission        *admission.Service
+	tokenBroker      *tokenbroker.Service
+	adx              *adxingest.Worker
+	adxTraces        *adxtrace.Worker
+	sessionArchive   *sessionArchiveService
 }
 
 func New(ctx context.Context, store operational.Store, config Config) (*App, error) {
@@ -145,9 +167,22 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	}
 	postgresDatabase, isPostgres := config.Database.(*postgresx.Store)
 	sqliteDatabase, localSQLite := config.Database.(*sqlitex.Store)
+	if err := validateLocalCanvas(config, localSQLite); err != nil {
+		return nil, err
+	}
 	if config.Database == nil || isPostgres && postgresDatabase == nil || localSQLite && sqliteDatabase == nil {
 		return nil, errors.New("dashboard database is required")
 	}
+	adxConfig, err := resolveADXConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	config.ADX = &adxConfig
+	traceConfig, err := resolveTraceConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	config.ADXTraces = &traceConfig
 	if localSQLite {
 		if err := validateLocalSQLiteConfig(config); err != nil {
 			return nil, err
@@ -224,6 +259,10 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 		return nil, err
 	}
 	activationAdmission, err := newActivationAdmission(store, config)
+	if err != nil {
+		return nil, err
+	}
+	broker, err := newTokenBroker(config)
 	if err != nil {
 		return nil, err
 	}
@@ -319,9 +358,10 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 	}
 	serverLog.Printf("initialized host_profile=%s oauth=%t source_ingestion=%t", profile.Name, oauth != nil, config.SourceDirectory != "")
 	app := &App{
-		admission: activationAdmission,
-		services:  services,
-		database:  config.Database, databaseQueries: databaseQueries, config: config, accessToken: accessToken, oauth: oauth, hub: newEventHub(),
+		admission:   activationAdmission,
+		tokenBroker: broker,
+		services:    services,
+		database:    config.Database, databaseQueries: databaseQueries, config: config, accessToken: accessToken, oauth: oauth, hub: newEventHub(),
 		canonical: canonicalService{store: config.Database, definitions: databaseQueries}, reconciler: reconciler, memory: memoryResolver,
 		webhookSecret: []byte(config.WebhookSecret), actionsToken: actionsToken, actionsActor: actionsActor,
 		quota: quota, drain: make(chan struct{}),
@@ -341,6 +381,24 @@ func New(ctx context.Context, store operational.Store, config Config) (*App, err
 			return nil, fmt.Errorf("configure MCP: %w", err)
 		}
 		app.mcp = handler
+	}
+	if config.ADX.Enabled {
+		worker, err := newADXWorker(config, services, capabilities)
+		if err != nil {
+			return nil, err
+		}
+		app.adx = worker
+	}
+	if config.ADXTraces.Enabled {
+		worker, err := newTraceWorker(ctx, config, app.Collector())
+		if err != nil {
+			return nil, err
+		}
+		app.adxTraces = worker
+		app.Collector().runner.Traces = worker
+	}
+	if err := app.configureSessionArchive(ctx); err != nil {
+		return nil, fmt.Errorf("configure session archive: %w", err)
 	}
 	return app, nil
 }
@@ -412,6 +470,18 @@ func (a *App) start(startupCtx, runtimeCtx context.Context) error {
 	}
 	a.startContext = runCtx
 	a.stop = cancel
+	if a.localBackfill != nil {
+		a.startTask(func() { a.localBackfill.run(runCtx, a.config.Logger, a.hub.Broadcast) })
+	}
+	if a.adx != nil {
+		a.startTask(func() { a.adx.Run(runCtx) })
+	}
+	if a.adxTraces != nil {
+		a.startTask(func() { a.adxTraces.Run(runCtx) })
+	}
+	if a.sessionArchive != nil {
+		a.startTask(func() { a.sessionArchive.run(runCtx) })
+	}
 	if a.services.Backend != nil {
 		a.startTask(func() { a.runRedisMaintenance(runCtx, redisMaintenanceInterval) })
 	}
@@ -514,18 +584,25 @@ func (a *App) Stop(ctx context.Context) error {
 			return err
 		}
 	}
-	if a.ownedDatabase != nil || a.ownedOperational != nil {
+	var brokerErr error
+	if a.tokenBroker != nil {
+		brokerErr = a.tokenBroker.Close(ctx)
+	}
+	if a.ownedDatabase != nil || a.ownedOperational != nil || a.sessionArchive != nil {
 		a.closeDatabase.Do(func() {
+			if a.sessionArchive != nil {
+				a.closeError = a.sessionArchive.backend.Close()
+			}
 			if a.ownedDatabase != nil {
-				a.closeError = a.ownedDatabase.Close()
+				a.closeError = errors.Join(a.closeError, a.ownedDatabase.Close())
 			}
 			if a.ownedOperational != nil {
 				a.closeError = errors.Join(a.closeError, a.ownedOperational.Close())
 			}
 		})
-		return a.closeError
+		return errors.Join(a.closeError, brokerErr)
 	}
-	return nil
+	return brokerErr
 }
 
 func (a *App) waitTasks(ctx context.Context) error {
@@ -601,6 +678,12 @@ func (a *App) Serve(ctx context.Context) error {
 		return err
 	}
 	serverLog.Printf("listener ready")
+	if a.config.OnListen != nil {
+		if err := a.config.OnListen(listener.Addr().String()); err != nil {
+			_ = listener.Close()
+			return err
+		}
+	}
 	servingListener := listener
 	if a.config.CertFile != "" {
 		certificate, certificateErr := tls.LoadX509KeyPair(a.config.CertFile, a.config.KeyFile)
@@ -622,7 +705,7 @@ func (a *App) Serve(ctx context.Context) error {
 	}
 	if a.oauth != nil {
 		a.config.Logger.Printf("serving hosted dashboard on %s", a.config.Listen)
-	} else {
+	} else if a.config.Canvas == nil {
 		a.config.Logger.Printf("serving local dashboard at %s", a.capabilityURL())
 	}
 	serveDone := make(chan struct{})
@@ -681,9 +764,12 @@ func (a *App) Handler() http.Handler {
 	register("GET /llms.txt", a.llms)
 	register("GET /api/v1/events", a.events)
 	register("POST /api/v1/query", a.query)
+	register("GET /api/v1/session-archive/status", a.sessionArchiveStatus)
+	register("POST /api/v1/session-archive/query", a.sessionArchiveQuery)
 	register("POST /api/v1/value", a.publishValue)
 	register("POST /api/admission", a.activationAdmission)
 	register("POST /api/conclusion", a.conclusionAdmission)
+	register("POST /api/token-broker", a.exchangeBrokerToken)
 	if a.mcp != nil {
 		register("POST /mcp", a.mcp.ServeHTTP)
 	}
@@ -719,6 +805,10 @@ func (a *App) Handler() http.Handler {
 	}
 	dashboardHandler := handler
 	handler = http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == tokenBrokerPath {
+			a.exchangeBrokerToken(response, request)
+			return
+		}
 		if admissionPath(request.URL.Path) {
 			route := semconv.HTTPRoute(request.URL.Path)
 			trace.SpanFromContext(request.Context()).SetAttributes(route)
@@ -793,7 +883,7 @@ func (a *App) Handler() http.Handler {
 		}
 		instrumented.ServeHTTP(response, safe)
 	})
-	return securityHeaders(safeTelemetry)
+	return a.canvasHandler(securityHeaders(safeTelemetry))
 }
 
 type originalHTTPRequestKey struct{}
@@ -1138,10 +1228,15 @@ func constantTimeTokenEqual(candidate, expected string) bool {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("X-Content-Type-Options", "nosniff")
-		response.Header().Set("X-Frame-Options", "DENY")
+		if request.Context().Value(localCanvasContextKey{}) != true {
+			response.Header().Set("X-Frame-Options", "DENY")
+		}
 		response.Header().Set("Referrer-Policy", "same-origin")
 		response.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		response.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		if request.Context().Value(localCanvasContextKey{}) == true {
+			response.Header().Set("Cache-Control", "no-store")
+		}
 		if strings.HasPrefix(request.URL.Path, "/api/") {
 			response.Header().Set("Cache-Control", "no-store")
 		}
@@ -1816,7 +1911,7 @@ func (a *App) static(response http.ResponseWriter, request *http.Request) {
 	defer func() { _ = root.Close() }()
 	file, err := root.Open(clean)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && a.config.Canvas == nil {
 			a.serveIndex(response, request, "")
 		} else {
 			http.NotFound(response, request)
@@ -1832,6 +1927,12 @@ func (a *App) static(response http.ResponseWriter, request *http.Request) {
 	if info.IsDir() || filepath.Base(clean) == "index.html" {
 		a.serveIndex(response, request, "")
 		return
+	}
+	if strings.EqualFold(filepath.Ext(clean), ".md") {
+		response.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		if a.config.Canvas != nil {
+			response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
 	}
 	http.ServeContent(response, request, info.Name(), info.ModTime(), file)
 }
@@ -1854,6 +1955,9 @@ func (a *App) serveIndex(response http.ResponseWriter, request *http.Request, ac
 		storageBackend = "sqlite"
 	}
 	injections := `<meta name="dashboard-data-backend" content="server-http"><meta name="dashboard-storage-backend" content="` + storageBackend + `">`
+	if a.config.Canvas != nil {
+		injections += `<meta name="dashboard-api-base" content="` + a.config.Canvas.Prefix + `/">`
+	}
 	if a.oauth != nil {
 		injections += `<meta name="cao-auth-mode" content="github">`
 		if a.adminAuthorized(request) {

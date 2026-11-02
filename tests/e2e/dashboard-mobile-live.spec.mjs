@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { startDashboardServer } from "../../dashboard/local-server.mjs";
+import { startDashboardPagesPreview } from "../helpers/dashboard-pages-preview.mjs";
 import { captureMobileDashboardScreenshot } from "./dashboard-screenshot.mjs";
 import {
   deployedActivityShardEntries,
@@ -214,7 +214,7 @@ function formatDomAnalysis(dom) {
 test.beforeAll(async () => {
   const dataUrl = process.env.DASHBOARD_DATA_URL;
   if (!dataUrl) throw new Error("DASHBOARD_DATA_URL is required.");
-  preview = await startDashboardServer({
+  preview = await startDashboardPagesPreview({
     downloadData: async (destination) => {
       const inventoryUrl = new URL("inventory-sources.json", dataUrl);
       const payloadHashesUrl = new URL("payload-hashes.json", dataUrl);
@@ -228,8 +228,7 @@ test.beforeAll(async () => {
       if (!inventoryResponse.ok) throw new Error(`Unable to download deployed dashboard inventory: HTTP ${inventoryResponse.status}.`);
       if (!inventoryResponse.body) throw new Error("Deployed dashboard inventory response has no body.");
       const payloadHashes = await payloadHashesResponse.json();
-      const shards = deployedActivityShardEntries(payloadHashes);
-      const selectedShards = shards.slice(0, mobileDebugShardLimit());
+      const selectedShards = deployedActivityShardEntries(payloadHashes, mobileDebugShardLimit());
       expectedActivityShardPaths = selectedShards.map(({ name }) => `/${name}`);
       await mkdir(destination, { recursive: true });
       const inventoryPath = join(destination, "inventory-sources.json");
@@ -255,9 +254,6 @@ test.beforeAll(async () => {
         totalBytes: activityBytes + inventory.size,
       };
     },
-    host: "127.0.0.1",
-    port: 0,
-    dataBackend: "indexeddb",
   });
 });
 

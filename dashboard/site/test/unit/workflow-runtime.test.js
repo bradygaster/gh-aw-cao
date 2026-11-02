@@ -103,7 +103,8 @@ describe('renderWorkflowRuntime', () => {
     selectWorkflow(rendered);
 
     expect(rendered.dataset.workflow).toBe('githubnext/gh-cao:.github/workflows/multi-device-docs-tester.md');
-    expect(rendered.querySelector('.repository-tabs')?.textContent).toBe('InsightsReportsValueRuns');
+    expect(rendered.querySelector('.repository-tabs')?.textContent).toBe('InsightsReportsRuns');
+    expect(rendered.querySelector('.repository-tabs a[href^="#page-workflow-value"]')).toBeNull();
     expect(rendered.querySelector('.repository-tabs [aria-current="page"]')?.textContent).toBe('Insights');
     expect(rendered.querySelector('.repository-tabs a:last-child')?.getAttribute('href')).toBe(
       '#page-workflow-runs?workflow=githubnext%2Fgh-cao%3A.github%2Fworkflows%2Fmulti-device-docs-tester.md'
@@ -143,6 +144,20 @@ describe('renderWorkflowRuntime', () => {
     expect(rendered.querySelector('.workflow-health-total')?.textContent).toBe('0runs');
     expect(rendered.querySelector('.workflow-runtime-metrics')?.textContent).toContain('AI Credits (last 24h)0');
     expect(rendered.querySelector('.workflow-runtime-metrics')?.textContent).not.toContain('unavailable');
+  });
+
+  it('labels daily counts independently of the retained usage window', () => {
+    const rendered = renderWorkflowRuntime(context({
+      runs: {
+        source: 'runs',
+        metadata: { ...completeMetadata, 'aggregate-version': 1, completeness: 'partial' },
+        rows: [{ total: 3, successful: 1, failed: 1, pending: 1, approval: 0, other: 0 }]
+      }
+    }));
+    selectWorkflow(rendered);
+    expect(rendered.querySelector('.workflow-run-health dt')?.textContent).toBe('Run health (daily observations)');
+    expect(rendered.querySelector('.workflow-run-health p')?.textContent).toBe('Partial daily observations; pending is last-observed state');
+    expect(rendered.querySelector('.workflow-runtime-metrics')?.textContent).toContain('AI Credits (last 24h)');
   });
 
   it('does not present missing partial AI Credit coverage as measured zero usage', () => {

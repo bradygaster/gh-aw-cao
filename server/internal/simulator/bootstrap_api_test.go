@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,15 +24,20 @@ type BootstrapAPI struct {
 	Git          http.Handler
 	Requests     []string
 	Unhandled    []string
+	ServerURL    string
 }
 
 type BootstrapRepository struct {
-	ID        int64
-	Owner     string
-	Name      string
-	Private   bool
-	Pages     map[string]any
-	Variables map[string]string
+	ID                    int64
+	Owner                 string
+	Name                  string
+	Private               bool
+	Internal              bool
+	ServerURL             string
+	Secrets               []string
+	Pages                 map[string]any
+	Variables             map[string]string
+	OrganizationVariables map[string]string
 }
 
 func NewBootstrapAPI(release string, assets map[string][]byte) *BootstrapAPI {
@@ -104,7 +110,7 @@ func (a *BootstrapAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path, "/githubnext/gh-cao/releases/download/"+a.Release+"/")
 		if asset, ok := a.Assets[name]; ok {
 			w.Header().Set("Content-Type", "application/octet-stream")
-			_, _ = w.Write(asset)
+			_, _ = w.Write(asset) // #nosec G705 -- test-owned release bytes served as application/octet-stream, not HTML; escaping would corrupt assets.
 			return
 		}
 	}
@@ -191,7 +197,33 @@ func (a *BootstrapAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if len(parts) >= 5 && parts[3] == "actions" && parts[4] == "variables" {
+		if len(parts) == 5 && parts[3] == "actions" && parts[4] == "secrets" && r.Method == http.MethodGet {
+			secrets := make([]map[string]string, 0, len(repo.Secrets))
+			for _, name := range repo.Secrets {
+				secrets = append(secrets, map[string]string{"name": name})
+			}
+			write(http.StatusOK, map[string]any{"total_count": len(secrets), "secrets": secrets})
+			return
+		}
+		if len(parts) >= 5 && parts[3] == "actions" && (parts[4] == "variables" ||
+			parts[4] == "organization-variables" && len(parts) == 5 && r.Method == http.MethodGet) {
+			if len(parts) == 5 && r.Method == http.MethodGet {
+				source := repo.Variables
+				if parts[4] == "organization-variables" {
+					source = repo.OrganizationVariables
+				}
+				names := make([]string, 0, len(source))
+				for name := range source {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				variables := make([]map[string]string, 0, len(names))
+				for _, name := range names {
+					variables = append(variables, map[string]string{"name": name, "value": source[name]})
+				}
+				write(http.StatusOK, map[string]any{"total_count": len(variables), "variables": variables})
+				return
+			}
 			if len(parts) == 5 && r.Method == http.MethodPost {
 				var input struct{ Name, Value string }
 				if json.NewDecoder(r.Body).Decode(&input) != nil || !bootstrapName.MatchString(input.Name) {
@@ -243,10 +275,17 @@ func (a *BootstrapAPI) create(owner, name string, private bool) (*BootstrapRepos
 	}
 	repo := &BootstrapRepository{
 		ID: int64(len(a.Repositories) + 1), Owner: owner, Name: name,
-		Private: private, Variables: map[string]string{},
+		Private: private, Variables: map[string]string{}, ServerURL: a.ServerURL,
 	}
 	a.Repositories[key] = repo
 	return repo, nil
+}
+
+func (r *BootstrapRepository) serverURL() string {
+	if r.ServerURL != "" {
+		return r.ServerURL
+	}
+	return "https://github.com"
 }
 
 func (r *BootstrapRepository) rest() map[string]any {
@@ -254,13 +293,16 @@ func (r *BootstrapRepository) rest() map[string]any {
 	if r.Private {
 		visibility = "private"
 	}
+	if r.Internal {
+		visibility = "internal"
+	}
 	return map[string]any{
 		"id": r.ID, "node_id": fmt.Sprintf("R_%d", r.ID),
 		"name": r.Name, "full_name": r.Owner + "/" + r.Name, "private": r.Private,
 		"visibility": visibility, "default_branch": "main",
 		"owner":     map[string]any{"login": r.Owner, "id": 1, "type": "Organization"},
-		"html_url":  "https://github.com/" + r.Owner + "/" + r.Name,
-		"clone_url": "https://github.com/" + r.Owner + "/" + r.Name + ".git",
+		"html_url":  r.serverURL() + "/" + r.Owner + "/" + r.Name,
+		"clone_url": r.serverURL() + "/" + r.Owner + "/" + r.Name + ".git",
 	}
 }
 
@@ -269,11 +311,14 @@ func (r *BootstrapRepository) graphql() map[string]any {
 	if r.Private {
 		visibility = "PRIVATE"
 	}
+	if r.Internal {
+		visibility = "INTERNAL"
+	}
 	return map[string]any{
 		"id": fmt.Sprintf("R_%d", r.ID), "databaseId": r.ID, "name": r.Name,
 		"nameWithOwner": r.Owner + "/" + r.Name, "visibility": visibility, "isPrivate": r.Private,
 		"owner":            map[string]string{"login": r.Owner, "id": "O_" + r.Owner},
-		"url":              "https://github.com/" + r.Owner + "/" + r.Name,
+		"url":              r.serverURL() + "/" + r.Owner + "/" + r.Name,
 		"sshUrl":           "git@github.com:" + r.Owner + "/" + r.Name + ".git",
 		"defaultBranchRef": map[string]string{"name": "main"},
 		"viewerPermission": "ADMIN", "hasIssuesEnabled": true, "hasWikiEnabled": true,
@@ -334,6 +379,27 @@ func (a *BootstrapAPI) graphql(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data["repository"] = repo.graphql()
+	case strings.Contains(input.Query, "repositoryOwner("):
+		owner := bootstrapArgument(input.Query, "login", input.Variables)
+		nodes := []any{}
+		keys := make([]string, 0, len(a.Repositories))
+		for key := range a.Repositories {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			repo := a.Repositories[key]
+			if strings.EqualFold(repo.Owner, owner) {
+				nodes = append(nodes, repo.graphql())
+			}
+		}
+		data["repositoryOwner"] = map[string]any{
+			"login": owner,
+			"repositories": map[string]any{
+				"nodes": nodes, "totalCount": len(nodes),
+				"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil},
+			},
+		}
 	case strings.Contains(input.Query, "organization("):
 		data["organization"] = map[string]string{"id": "O_platform", "login": "platform"}
 	case strings.Contains(input.Query, "user("):

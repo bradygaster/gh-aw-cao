@@ -7,10 +7,10 @@ import { resolveBundledResource } from "./bundled-resources.mjs";
  * @param {{
  *   workingDirectory: string,
  *   repository?: string,
- *   dataBackend?: 'sqlite' | 'indexeddb',
  *   ghExecutable?: string,
  *   generateQuery?: typeof import('./query-designer.mjs').generateDashboardQuery,
  *   enhanceQueryIntent?: typeof import('./query-designer.mjs').enhanceQueryEditorIntent,
+ *   startSession?: (prompt: string) => Promise<void>,
  *   approveCliAction: (action: { id: string, command: string, input?: string }) => Promise<boolean>,
  *   executeCliAction: (action: {
  *     id: string, command: string, input?: string, signal?: AbortSignal,
@@ -21,18 +21,18 @@ import { resolveBundledResource } from "./bundled-resources.mjs";
 export async function startLocalDashboardPreview({
   workingDirectory,
   repository,
-  dataBackend = "sqlite",
   executeCliAction,
   approveCliAction,
   ghExecutable = "gh",
   generateQuery,
   enhanceQueryIntent,
+  startSession,
 }) {
-  const localServerPath = await resolveBundledResource("localServer");
+  const localServerPath = await resolveBundledResource("canvasServer");
   const localServer = await import(pathToFileURL(localServerPath).href);
-  if (typeof localServer.startDashboardServer !== "function") {
+  if (typeof localServer.startCanvasServer !== "function") {
     throw new Error(
-      "dashboard/local-server.mjs does not export startDashboardServer.",
+      "dashboard/canvas-server.mjs does not export startCanvasServer.",
     );
   }
 
@@ -57,16 +57,15 @@ export async function startLocalDashboardPreview({
       });
       siteRoot = stagedSite;
     }
-    const preview = await localServer.startDashboardServer({
+    const preview = await localServer.startCanvasServer({
       workingDirectory: workspace,
       siteRoot,
       catalogRoot: isWorkspaceDashboard ? dirname(dashboardDirectory) : workspace,
       repository,
       ghExecutable,
-      canvas: true,
       generateQuery,
       enhanceQueryIntent,
-      dataBackend,
+      startSession,
       executeCliAction,
       approveCliAction,
       host: "127.0.0.1",

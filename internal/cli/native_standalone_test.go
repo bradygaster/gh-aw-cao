@@ -38,6 +38,7 @@ func TestNativeStandaloneBinary(t *testing.T) {
 		{"gh", "runs", "--database", "explicit.sqlite"},
 		{"computation", "runtime-health", "--database", "explicit.sqlite", "--inventory", inventory},
 		{"computation", "intelligence", "--database", "explicit.sqlite", "--inventory", inventory},
+		{"setup", "auth", "hosted-cli", "--repo", "acme/control", "--target-repository", "acme/target", "--dry-run"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			command := exec.Command(binary, args...)
@@ -71,4 +72,7 @@ func TestNativeStandaloneBinary(t *testing.T) {
 	if len(files) != 0 {
 		t.Fatal("standalone read-only commands wrote to the working directory")
 	}
+	t.Run("operator lifecycle without Node", func(t *testing.T) {
+		testNativeStandaloneLifecycle(t, binary)
+	})
 }

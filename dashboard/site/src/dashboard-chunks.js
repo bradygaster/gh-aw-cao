@@ -285,7 +285,7 @@ function stubDashboardPage(page, chunkPath, index) {
     'independent-source-bindings': index.independentSourceBindings,
     ...(index.backendSourceIndex ? { 'backend-source-index': index.backendSourceIndex } : {}),
   };
-  for (const field of ['intent', 'subject', 'objective', 'acceptance']) delete base[field];
+  for (const field of ['description', 'intent', 'subject', 'objective', 'acceptance']) delete base[field];
   if (page.kind === 'built-in') {
     delete base.definition;
   } else {
@@ -329,7 +329,7 @@ export function normalizeDashboardPageChunk(chunk) {
 /**
  * Builds the relative chunk path a page's JSON is written to / fetched from,
  * given its id and the (optional) chunk directory name. Shared by
- * `splitDashboardDocument`, `scripts/build.mjs`, and `local-server.mjs` so
+ * `splitDashboardDocument`, `scripts/build.mjs`, and `canvas-server.mjs` so
  * the naming scheme only needs to change in one place.
  * @param {string} pageId
  * @param {string} [chunkDirectory]

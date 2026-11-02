@@ -107,8 +107,8 @@ boundary: workers operate on one dispatched repository, and rollout policy
 remains in `.github/workflows/cao.json`.
 
 See [AGENTS.md](AGENTS.md) for architecture, repository conventions, and focused
-test commands. Run the complete repository validation before submitting a pull
-request:
+test commands. Use the narrowest applicable checks while iterating. To run the
+complete root validation locally:
 
 ```bash
 npm run check
@@ -116,6 +116,98 @@ npm run check
 
 Workflow source changes must pass `npm run compile`. Run
 `npm run compile:locks` only when generated lock files should be updated.
+
+`npm run test:integration:installer` streams the root installer into Bash,
+downloads real public gh-aw and gh-cao releases with unusable tokens, and installs
+the local catalog's runtime in a temporary control checkout. Only control-repository
+sign-in and identity are simulated; public downloads, upstream installation,
+checksums, native extension dispatch, runtime materialization, and policy initialization
+are real. The test isolates HOME, GitHub CLI configuration, and extension storage,
+verifies credentials remain unchanged, and removes its installation afterward.
+It requires network access, Bash, curl, Git, GitHub CLI 2.68+, Node.js 24+, and the
+repository's npm dependencies; CI runs it as a separate public-installer job.
+
+### CI feedback tiers
+
+PRs favor quick feedback over exhaustive coverage: affected root unit areas,
+lint/type checks, compilation, dashboard unit/build checks, and short-mode Go
+tests remain enabled. Browser matrices, Windows server checks, public download
+and authenticated compatibility tests, bootstrap, and service-backed integration
+run after merge rather than on the PR critical path. A green PR is intentionally
+not a claim that every integration or performance scenario passed.
+
+Main pushes select full suites through each workflow's path filters. Root
+contract areas are further selected by `scripts/ci-test-plan.mjs`; documentation-only
+changes omit root integration/load/API checks. Unknown paths or an unavailable
+comparison base widen selection. Fast contract checks run concurrently with units;
+the existing `test` aggregate check requires both to succeed.
+
+`Daily full validation` (`.github/workflows/ci-daily.yml`) runs at 06:37 UTC
+and can be dispatched manually on main. It reuses the complete contract,
+dashboard, Go, bootstrap, simulator, Azure, query/MCP parity, mobile, view,
+deployed-data, worker-memory, and stress suites without change filtering.
+This replaces the separate daily stress schedules and hourly massive-scale run.
+The 15-minute deployed health check remains, but its expensive query performance
+and cost benchmarks run only on relevant main pushes, manual runs, and the daily
+full suite.
+
+The daily run publishes an Actions summary and a 30-day `ci-daily-report`
+artifact (Markdown and JSON), including every suite's outcome, total completed
+runner-minutes, and the 20 slowest jobs. Per-suite traces, profiles, and detailed
+reports remain attached to the same run. Failed, cancelled, or skipped suites
+make the aggregate report incomplete. Campaign lifecycle API-quota exhaustion
+also fails daily/manual full runs; main pushes retain infrastructure-incomplete
+warnings instead of blocking on shared quota.
+These measurements exclude queue time and billing multipliers. Use them to
+compare test cost and find regressions rather than assuming savings from job
+count alone. Required branch checks should use the fast PR jobs, not daily or
+main-only integrations.
+
+### Documentation sources and validation
+
+Edit the authored source, not another copy of its rendered output:
+
+| Surface | Source of truth |
+| --- | --- |
+| Repository entry point | Root `README.md`; keep it short and route readers to task guides |
+| Documentation pages and landing page | `docs/*.md` and `docs/README.md`; `docs/content.config.ts` loads these, while `astro.config.mjs` owns navigation and redirects |
+| Catalog pages | `docs/pages/catalog/` renders campaign manifests and READMEs through `docs/lib/catalog.ts`; the repository README and site rendering of a campaign are intentionally the same source |
+| Contributor architecture and contracts | `ARCHITECTURE.md`, its compiled `CODEBASE.yml`, and `specs/`; the reader-facing `docs/architecture.md` explains those boundaries without replacing them |
+| Agent discovery | Generated `llms*.txt`, `agent/` indexes, and per-page `index.json`; edit the source Markdown/metadata, never generated output |
+
+Some authored pages, such as `docs/control-policy-specification.md`, are
+intentional pointers to normative contracts. Others, such as
+`docs/dashboard-language-specification.md`, contain the contract itself.
+Do not treat these as generated files or merge them merely because their titles
+overlap. See [Agent-readable documentation](docs/agent-resources.md) for metadata
+and discovery generation.
+
+Keep one procedural home per task: [setup](docs/setup-quickstarts.md),
+[credential provisioning](docs/control-plane-authentication.md),
+[runtime authentication](docs/authentication.md),
+[Pages deployment](docs/deployment-actions.md), and
+[plugin/canvas use](docs/agent-plugin.md). Scope-specific guides should retain
+their distinct decisions and caveats, linking to shared procedures instead of
+copying them.
+
+Follow [gh-aw's navigation](https://github.com/github/gh-aw/blob/main/docs/astro.config.mjs)
+for shared section labels and order. Keep CAO-specific groups only where useful;
+do not add pages merely to fill an upstream category.
+
+Keep a visual only when it explains a boundary, relationship, or task better
+than the surrounding text. Prefer one canonical diagram to repeated storyboards;
+label screenshots as snapshots and examples as illustrative. Check labels
+against the current implementation, both themes, and narrow screens. Remove
+retired assets with their references. Branding variants are intentional:
+`docs/assets/social-card.svg` is the editable source for `public/social-card.png`.
+
+Use relative `.md` links between authored pages; `docs/rewrite-docs-links.mjs`
+converts them to site routes. Preserve moved section anchors or update all
+inbound references, and do not redirect a still-authored page to a different
+guide with incompatible anchors. Validate documentation changes with
+`npm run docs:build` (including generated agent-doc validation and discovery
+tests) and `npm run compile` after Markdown edits. Never hand-edit or commit
+generated `llms*.txt` output.
 
 ### Go extension development
 
@@ -188,11 +280,13 @@ as needed rather than its full CLI command implementation.
 
 Help for every operator command and version work offline without GitHub authentication.
 Guided onboarding runs as `gh cao setup`; independent authentication profiles
-are grouped under `gh cao setup auth github-app|enterprise-app|token`, not a
+are grouped under `gh cao setup auth github-app|enterprise-app|hosted-cli|token`, not a
 root-level `setup-auth` command. These native commands preserve the setup and
 setup-auth JSON result contracts and secure credential prompts.
 Actions and Node-only tools invoke `node activity/cao.mjs <command>` directly,
-including SQLite `doctor` and `setup-auth hosted-cli`. There is no shell launcher;
+including SQLite `repair-database`. Hosted-executor App creation belongs to native
+`gh cao setup auth hosted-cli`; its retired Node profile fails before side effects.
+There is no shell launcher;
 retained internal Node implementations serve Actions and parity tests, not operators.
 `doctor` checks GitHub CLI, gh-aw, authentication, and basic local policy structure
 and compiler pin without loading Node.js. Authentication may contact GitHub.
@@ -210,7 +304,9 @@ source mappings are embedded directly from their authoritative JSON; do not
 maintain a separate catalog. SQLite evidence access is read-only and does not
 migrate or repair downloaded projections. `TestNativeStandaloneBinary` runs
 the built binary with an empty `PATH` outside the checkout to enforce this boundary.
-`campaigns add` and `update` pass evolving gh-aw options unchanged.
+Campaign installation through `add` and package updates through `update` pass
+evolving gh-aw options unchanged. Standalone workflow installation retains its
+bounded `--force` and `--engine` options.
 Activity/Dashboard pipeline commands are deliberately not registered in Go;
 their Actions, Node command modules and runtime ownership remain unchanged.
 CI invokes the shipped JavaScript validator directly with

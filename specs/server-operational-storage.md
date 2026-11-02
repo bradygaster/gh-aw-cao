@@ -200,6 +200,68 @@ revision state and independent telemetry, preserve the resulting incident
 evidence, and monitor `stored=false` audit events and missing terminal events.
 A subsequent rebuild MUST use a new ID and MUST NOT erase retained history.
 
+### Read-only missing-terminal detection
+
+`cao-dashboard audit lifecycles` provides a bounded operator check through
+`OpenAuditReader` and `ListAudit`. It MUST NOT append audit events (including
+its own result), acquire leases, replay work, write status, mutate canonical
+data, perform maintenance, or infer a cross-store transaction. PostgreSQL
+operators MUST use the independent SELECT-only evidence role. `--sqlite`
+uses the existing read-only local debugging adapter, not a production substitute.
+
+The check reads ascending, unfiltered sequence pages of at most 1,000 rows,
+up to `--max-events` (default 10,000; hard maximum 100,000) plus one lookahead
+row. Per-ID summaries and output are bounded by that row budget. A whole-call
+`--timeout` (default two minutes; one second to thirty minutes) bounds reads.
+It MUST NOT invoke unbounded hash-chain verification inside that budget.
+Chain verification, independently enrolled external anchors and complete
+committed-row delivery remain separate requirements; this check does not
+authenticate history or detect a consistent whole-chain rewrite.
+
+The default grace is one hour; `--grace` accepts thirty-five minutes to seven
+days. The minimum exceeds the current twenty-five-minute work timeout and
+thirty-minute lease, allowing terminal cleanup and clock margin. Age uses the
+first observed stored event timestamp, not replaceable status, a caller's
+`started_at`, or the most recent duplicate. Within grace, an unresolved ID is
+`pending` (possibly active, not proven active). Beyond grace and after reaching
+the observed tail without an interior sequence gap, it is `missing_terminal`
+(missing evidence, not proof of execution failure or death). A later terminal
+append can resolve the observation; operators SHOULD reread before disposition.
+Success, failure and cancellation terminal states are all recognized.
+`admin.rebuild.status_failed` MUST NOT substitute for a completion. Duplicate
+admissions, starts or completions, conflicting terminal states/revisions,
+unobserved admission, invalid terminal state/outcome, invalid timestamps,
+clock uncertainty and unexpected event order require explicit diagnostics.
+Conflicting terminals MUST NOT select a winning outcome.
+
+The JSON result reports `status`, observation time, grace, observed sequence
+range, rows scanned, `tail_reached`, `history_complete`, aggregate completed,
+pending and missing-terminal counts, coverage issues and per-ID findings.
+It excludes actors, raw errors, arbitrary attributes, rows and payloads.
+`ok` means no actionable issue among the observed retained rows; it does not
+attest execution, liveness, integrity, independent delivery or compliance.
+`attention` identifies missing evidence or per-ID uncertainty.
+`incomplete` identifies a row cap, read failure, invalid identity, selected
+suffix or history gap. Only `ok` exits zero. Invalid options or inability to
+open the reader fail without claiming a successful observation.
+
+Retention can remove an oldest prefix, and `--after` deliberately omits one.
+Both MUST report incomplete historical coverage even if the retained tail is
+reached. Observed admissions/starts can still have missing terminal evidence
+within a contiguous suffix; identities wholly outside it remain unknown.
+An interior gap or row cap MUST NOT classify unresolved IDs as missing
+terminal: a completion may be in unread history. `last_sequence` is an
+observation boundary, NOT a safe monitoring checkpoint. Operators MUST revisit
+unresolved admissions; blindly continuing from the last sequence can lose them.
+For history beyond the hard bound, use independently retained committed-row
+evidence with an approved correlation pipeline; a selected suffix is not a
+complete-history workaround.
+
+Operators own execution cadence, independent result retention, alert routing,
+missing-check heartbeats and reconciliation. No scheduler or service is enabled
+by this command. The response procedure is documented in
+[`server/README.md`](../server/README.md#missing-rebuild-terminal-evidence).
+
 ## Durable CLI command queue service
 
 `OperationalServices.CLICommands` exposes `CLICommandQueues`, whose
@@ -293,16 +355,18 @@ protected state. Active limiter buckets MUST NOT be evicted to reset limits.
 Session admission MUST preserve capacity for its atomic revocation transition.
 Exhausted capacity MUST fail explicitly rather than silently discard work.
 
-## Local launcher modes
+## Unified Go serving modes
 
-`dashboard/local-server.mjs` has three explicit modes:
+The Go `cao-dashboard` executable is the serving runtime. There is no Node
+local-dashboard CLI or JavaScript Go launcher.
 
 | Invocation | Runtime | Operational authority |
 | --- | --- | --- |
-| No `--operational-store` | Existing Node.js static/browser preview | No operational adapter, OAuth session store, collection worker, or server-owned canonical database |
-| `--operational-store redis` | Process-owned Go `serve-hosted` | Resolved reviewed host policy selecting Redis |
-| `--operational-store memory` | Process-owned Go `serve-hosted` | Resolved reviewed host policy selecting memory with every volatile-memory guard above |
-| `--operational-store postgres` | Process-owned Go `serve-hosted` | Resolved reviewed host policy selecting the durable PostgreSQL operational adapter |
+| `serve` | Go local SQLite snapshot and same-origin HTTP query API | Loopback bearer profile; no hosted collection or OAuth |
+| `serve-pages` | Go static serving of an explicitly prepared Pages artifact | No API or operational services; browser IndexedDB |
+| `serve-hosted --operational-store redis` | Go hosted service | Resolved reviewed host policy selecting Redis |
+| `serve-hosted --operational-store memory` | Go hosted service | Resolved reviewed host policy selecting memory with every volatile-memory guard above |
+| `serve-hosted --operational-store postgres` | Go hosted service | Resolved reviewed host policy selecting the durable PostgreSQL operational adapter |
 
 The selector MUST NOT rewrite, synthesize, or override rollout policy. The
 requested backend MUST match the backend resolved by the production Go policy
@@ -312,32 +376,31 @@ closed. Legacy `host.redis` remains an explicit Redis selection;
 neither Redis nor memory may become an
 automatic fallback. PostgreSQL is the default for selector-free reviewed hosts.
 
-`--policy PATH` selects an existing reviewed policy/profile and takes precedence
-over `CAO_POLICY_PATH`, then `CAO_MARKETPLACE_POLICY_PATH`; the default is the
-catalog's `.github/workflows/cao.json`. Relative paths MUST resolve against the
-invoking working directory, not the Go module's directory. The selected path is
-passed as `CAO_POLICY_PATH` to the child without mutating the parent's
-environment. The Go loader remains the sole authority for profile composition
-and configuration validation.
+Hosted policy is selected through `CAO_POLICY_PATH` or the supported
+`CAO_MARKETPLACE_POLICY_PATH` configuration. The Go loader remains the sole
+authority for profile composition and configuration validation. npm commands
+invoke `go -C server`; their relative server paths resolve from that module,
+not from the repository root.
 
-All Go modes require PostgreSQL for canonical entities and query execution,
+Hosted mode requires PostgreSQL for canonical entities and query execution,
 the built dashboard, and the ordinary hosted OAuth and HTTPS/proxy protections.
-The launcher MUST NOT substitute the legacy local bearer-capability profile
-for hosted authentication. `--site`, `--host`, `--port`, and paired
+Serving MUST NOT substitute the local bearer-capability profile
+for hosted authentication. `--site`, `--listen`, and paired
 `--cert`/`--key` MAY configure the built site and listener without relaxing those
 protections. A direct TLS listener MUST use its actual TLS transport without
 requiring forwarded headers unless trusted proxy CIDRs are explicitly
 configured. A loopback listener without direct TLS retains the existing
 trusted-proxy profile; an HTTPS-looking header from an untrusted peer MUST NOT
-authorize access. Browser-preview-only canvas, artifact-download, replacement, and
-trace flags MUST be rejected in Go mode; Go-only flags MUST be rejected in
-browser mode.
+authorize access. Explicit `serve-pages` MUST serve prepared static bytes
+without injecting hosted bootstrap, authentication, or API routes. It MUST
+accept only loopback listeners and confine file access to its selected site;
+directory listings and escaping symlinks MUST be rejected. It MUST NOT become
+a fallback for a failed hosted or SQLite service.
 
-The launcher builds into a temporary directory and launches the binary
-directly, rather than leaving a detached `go run` child. Interrupt and
-termination signals MUST reach the owned child. The launcher MUST await child
-closure before removing its temporary executable, propagate unexpected build
-or service failures, and remove its signal handlers on every exit path.
+`dashboard/canvas-server.mjs` remains an internal, loopback-only authoring
+bridge. It has no standalone CLI, admin mode or process-replacement facility.
+Its command queue requires paired trusted execution and approval callbacks;
+read-only canvas authoring MUST NOT initialize a command queue.
 The Go application MUST cancel and join owned workers before store close.
 
 ## Restart and manual recovery

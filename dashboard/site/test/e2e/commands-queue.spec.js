@@ -1,18 +1,18 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { writeCanvasArtifact } from './canvas-fixture.js';
+import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
-const { startDashboardServer } = await import(new URL('../../../local-server.mjs', import.meta.url).href);
+const { startCanvasServer } = await import(new URL('../../../canvas-server.mjs', import.meta.url).href);
 
 for (const width of [1440, 390]) {
   test(`Commands is absent without queue support at ${width}px`, async ({ page }, testInfo) => {
-    const preview = await startDashboardServer({
+    const preview = await startCanvasServer({
       workingDirectory: fileURLToPath(new URL('../../../../', import.meta.url)),
       repository: 'acme/control', port: 0,
       output: () => {}, requestOutput: () => {}, traceOutput: () => {},
       downloadData: async (/** @type {string} */ destination) => {
         await mkdir(destination, { recursive: true });
-        await writeFile(join(destination, 'sources.json'), JSON.stringify({
+        await writeCanvasArtifact(destination, { sources: {
           repositories: {
             metadata: { 'as-of': new Date().toISOString(), availability: 'available', completeness: 'complete', freshness: 'fresh' },
             rows: [{ organization: 'acme', repository: 'control' }]
@@ -21,7 +21,7 @@ for (const width of [1440, 390]) {
             metadata: { 'as-of': new Date().toISOString(), availability: 'available', completeness: 'complete', freshness: 'fresh' },
             rows: [{ organization: 'acme', repository: 'control', workflow: 'demo.md', 'workflow-name': 'Demo' }]
           }
-        }));
+        } });
       }
     });
     /** @type {string[]} */
@@ -66,9 +66,10 @@ for (const width of [1440, 390]) {
     let cancellations = 0;
     /** @type {(() => void) | undefined} */
     let finish;
-    const preview = await startDashboardServer({
+    const preview = await startCanvasServer({
       workingDirectory: fileURLToPath(new URL('../../../../', import.meta.url)),
-      repository: 'acme/control', admin: true, port: 0,
+      repository: 'acme/control', port: 0,
+      approveCliAction: async () => true,
       cliQueuePath: testInfo.outputPath('.cao', 'cli-actions.sqlite'),
       cliQueueAdmission: async () => ({ concurrency: 1 }),
       output: () => {}, requestOutput: () => {}, traceOutput: () => {},
@@ -86,7 +87,7 @@ for (const width of [1440, 390]) {
       },
       downloadData: async (/** @type {string} */ destination) => {
         await mkdir(destination, { recursive: true });
-        await writeFile(join(destination, 'sources.json'), JSON.stringify({
+        await writeCanvasArtifact(destination, { sources: {
           repositories: {
             metadata: { 'as-of': new Date().toISOString(), availability: 'available', completeness: 'complete', freshness: 'fresh' },
             rows: [{ organization: 'acme', repository: 'control', 'gh-aw-version': 'v0.91.5', 'gh-aw-current-version': 'v0.91.5' }]
@@ -96,7 +97,7 @@ for (const width of [1440, 390]) {
             rows: [{ organization: 'acme', repository: 'control', workflow: 'demo.md', 'workflow-name': 'Demo',
               'gh-aw-version': 'v0.91.5', 'gh-aw-current-version': 'v0.91.5' }]
           }
-        }));
+        } });
       }
     });
     try {

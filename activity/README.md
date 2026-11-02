@@ -30,7 +30,7 @@ For a fresh installation whose exact `allowed-repositories` scope contains
 only the control repository, Activity uses the job's `GITHUB_TOKEN` without
 any additional secrets or variables. An unset `GH_AW_GITHUB_AUTH_MODE` or an
 explicit `workflow-token` selects this repository-local path. It reserves
-100 core API requests for both log and operational-value collection, fitting
+100 core API requests for ordinary log collection, fitting
 the standard workflow-token quota. A repository with no agentic runs still
 publishes an explicit empty snapshot. Broader repository or owner-wide scopes
 require explicit `app` or `pat` authentication; missing credentials in those
@@ -93,7 +93,27 @@ repository's retained files into bounded shards, retaining only runs whose
 workflow path ends in `.lock.yml` and their associated records. This excludes
 non-agentic Actions workflows while preserving observation precedence and
 dependent-record association. The bounded files limit peak browser parsing
-memory. Failed collections never replace the published cache. Shards containing only
+memory. Compaction automatically repairs mixed-repository shards on a best-effort
+basis by splitting records with unambiguous repository identities into the declared
+repository groups. Dependent records without a repository are associated only by
+an unambiguous run ID across the retained shard snapshot, including when a fresh
+wildcard append contains dependent evidence whose parent run remains in an earlier
+compacted shard. Record order is preserved, and
+the verified repository is added to those dependent records' request metadata so
+bounded shards remain attributable on subsequent compactions.
+`repairedShards` reports how many mixed shards were repaired. Contradictory identities
+within a record, missing or conflicting parent-run identities, unknown records, or
+mixed shards containing undeclared repositories still fail closed without replacing
+the originals. Original shards are removed only after every group's output has been
+written successfully.
+After a fresh per-repository download, the collector explicitly uses
+`--exclude-out-of-scope`: records with a verified foreign repository are removed
+from its scoped shard directory, and repository-free GitHub API rate-limit
+audits in mixed shards are omitted rather than assigned to the wrong repository.
+Unattributable dependent evidence, unknown records, and contradictory identities
+still fail closed. Exclusions are counted, warned about, and mark the collection
+partial; restored-cache compaction keeps the strict default.
+Failed collections never replace the published cache. Shards containing only
 out-of-range dated records are pruned by `gh aw logs --cache-before`. CAO also
 runs `cao recycle-cache` before compaction, between repository downloads, and
 before index normalization. It expires completed runs older than 30 days across
@@ -131,6 +151,99 @@ metadata projection in the cached Run's `cao_unified_session` field. This
 projection survives compaction, SQLite ingestion, and normalized publication;
 raw prompts, messages, tool arguments, results, and error bodies are not retained.
 Schema-v5 cached logs are accepted alongside legacy v2/v4 shards.
+
+Session enrichment uses each Run's `logs_path` within the current repository's
+download directory, including `repo-*/workflow-*/run-*` layouts. Relative paths
+are relative to that directory. Only records without `logs_path` use the legacy
+flat `run-<id>` location. Supplied paths outside the directory, malformed paths,
+and symlinks below the download root are rejected without a flat-path fallback.
+All session, identity, experiment, grader, and eval reads use that same confined
+directory. Unavailable downloads never erase already-retained evidence.
+
+The enrichment CLI returns `enriched` (changed run envelopes) and
+`missingSessions` (distinct repository/run/attempt identities with local
+downloaded usage but no session evidence in any matching envelope). Downloaded
+usage is detected from nonempty `usage`/`*-usage` directories, or flattened
+`aw_session.jsonl`/`agent_usage.json` files, not an invented cached-record flag.
+At most ten missing-session details and one aggregate warning are emitted per
+repository collection. Missing local downloads are not counted as successful
+downloads, and a zero count is not proof of complete historical coverage.
+
+### Recover missing unified sessions
+
+Ordinary collection is not a backfill: `--cached-jsonl` can bypass downloads for
+retained runs, and the raw download directory is runner-temporary storage, not
+part of the published shard cache. `force-recycle` and `recycle-only` do not
+retrieve missing sessions either.
+
+1. Work from a copy of the retained repository shards and retain the original
+   snapshot. Intersect the affected UTC creation cohort (2026-10-18 inclusive to
+   2026-10-22 exclusive for issue #19400) with the **existing** retention window.
+   Select `kind: run` records with missing `cao_unified_session`; record both
+   their record-level denominator and unique repository/run/attempt identities.
+   Preserve unrelated records. Do not extend retention or repository authority.
+2. If the original raw artifacts still exist at an authorized local `logs_path`,
+   rerun `node activity/session-evidence.mjs ABSOLUTE_REPOSITORY_DOWNLOAD_ROOT
+   ABSOLUTE_REPOSITORY_SHARD_PREFIX OWNER/REPOSITORY`. Otherwise extract distinct
+   numeric run IDs from the selected cohort, one per line, and download into a
+   fresh directory and **new** JSONL cache. Never seed this download cache with
+   the unrepaired retained records. For example, with absolute paths assigned
+   to `DOWNLOAD_ROOT`, `FRESH_JSONL`, and `BATCH_IDS`:
+
+   ```sh
+   node activity/github-telemetry.mjs capacity -3000
+   ./gh-aw logs --stdin --repo "$REPOSITORY" \
+     --artifacts usage,experiment,graders \
+     --output "$DOWNLOAD_ROOT" --cached-jsonl "$FRESH_JSONL" \
+     --summary-file '' --count 25 --timeout 10 --max-storage 1200 \
+     --start-date 2026-10-18 --end-date 2026-10-22 < "$BATCH_IDS"
+   ```
+
+   Use batches of at most 25 IDs, stop on a failed capacity check or download,
+   and stop within the normal per-repository timeout and storage budget across
+   **all** batches. Adjust the dates to the retained intersection and use the
+   current collection's narrower limits when applicable. The extra 1,000-request
+   headroom above the normal 2,000-request reserve bounds work between checks;
+   do not continue if a batch could exhaust it. gh-aw v0.92.6 rejects
+   `--max-github-api-rate-limit` with `--stdin`, so perform capacity checks before
+   every batch instead of passing that incompatible flag. `./gh-aw` denotes the
+   local executable at the control repository's pinned compiler version.
+   Recovery needs the selected evidence artifacts, not `--audit` and its
+   additional raw-log downloads; retain the existing audit records in the shards.
+3. Match freshly downloaded run envelopes to the retained copies by
+   case-insensitive repository, run ID, and attempt. Update **only** their local
+   `logs_path` from the matching fresh envelope, then invoke the corrected
+   enrichment against the retained repository shard prefix and fresh download
+   root. Do not copy a fresh attempt's path to older attempts, replace the
+   retained dataset with the fresh cache, or remap an untrusted path by basename.
+   The enricher independently checks `aw_info.json` before attaching evidence.
+   `--stdin` selects a run ID, not a historical attempt: if the available artifact
+   belongs to a different attempt, that older attempt remains incomplete.
+4. Recompute coverage on the **same retained run envelopes and UTC cohort**
+   before compaction, counting repeated envelopes consistently. Separately
+   report unique requested/downloaded attempts, missing sessions, unavailable or
+   expired artifacts, and rate/timeout/storage-limited work. The issue's
+   pre-regression flat-layout reference is 697/1,171 records (59.5%), not an
+   expectation that every workflow emits a session. Do not label unavailable
+   evidence as zero activity or claim recovery from a changed denominator.
+5. Compact and ingest the repaired shard copy through the existing
+   `compact-jsonl`, `ingest-jsonl`, and `hash-payloads` commands with the current
+   repository grouping and retention settings. Validate the snapshot, then
+   publish through the normal authorized Activity ingestion/publication
+   pipeline. A successful scratch rehearsal or non-default-branch run does not
+   replace the default branch's published cache; report production recovery as
+   pending until that publication and its coverage have been verified.
+
+The focused regression fixtures in `tests/fixtures/activity-session-evidence/`
+are reduced from Activity run
+[39549099934](https://github.com/githubnext/gh-cao/actions/runs/39549099934),
+artifact `cao-activity-github` (ID `12331938166`): the nested
+`github/gh-aw` run `39529495361` and retained flat `github/gh-aw-actions` run
+`39375198241`, both attempt 1. The routed-session fixture retains only the
+format and two model-routing events from the former run's `usage` artifact
+(ID `12314063657`). Envelopes retain only identity, location, workflow, timing,
+and status fields; the flat session retains one existing allowlisted event.
+Raw prompts, messages, tool inputs/outputs, and full artifacts are not fixtures.
 
 The canonical adapter prefers the unified timeline for agent, MCP, firewall,
 and skill events, without adding duplicate legacy events for those categories.
@@ -249,9 +362,34 @@ records by `organization` and `repository`, and left-joins those query results
 in the data Web Worker. Activity collection and browser components do not
 reconstruct those relationships.
 
+## Health-first Value collection
+
+Activity publishes `workflow_value_collection` JSONL alongside retained evidence.
+The Value page and workflow Value tab show reviewed enabled/disabled registrations
+before any report exists, with actual deferral reasons and separate decision,
+attempt, accepted capture and cutoff dates. Missing reports do not establish an
+unconfigured collector. Deferrals and failures preserve accepted packets and proof.
+
+Recurring remote acquisition remains deferred pending enforceable shared-budget
+admission; a separate process does not isolate API quota. Ordinary Activity only
+performs bounded, credential-free health publication and retained-data import.
+Actual API exhaustion, fast and public-only modes preserve their existing gates.
+Recycle-only maintenance does not create a new eligible local-computation request.
+
+The separate `cao-value-local.yml` runs after successful default-branch Activity
+publication. It validates the snapshot identity and current policy digest, admits
+only the reviewed local-only standard adapter, and permits local-capable modules
+or exact versioned cache reuse without target API calls or automatic backfill.
+The job is capped at five minutes, its compute batch at two minutes and each
+adapter at thirty seconds. Completed results use a separate cache and are
+validated and scope-filtered into a later ordinary Activity snapshot.
+Activity and Dashboard do not wait for this optional job. Disabled registrations,
+campaigns and workflows stay disabled; malformed, missing or oversized optional
+results leave accepted history unchanged.
+
 ## Campaign problem clustering
 
-After canonical ingestion and operational-value collection, Activity runs
+After canonical ingestion and retained-value import, Activity runs
 `cao cluster-problems`. The command discovers one optional
 `<campaign>/problem-clustering.mjs` file in each installed top-level campaign.
 This lets campaigns contribute deterministic problem computations without

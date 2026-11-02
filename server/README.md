@@ -3,7 +3,7 @@
 The [TypeSpec HTTP contract](spec/README.md) is the source for generated
 OpenAPI 3.1 and selected JSON Schemas; consult it before changing server routes.
 
-The `server/` module is an optional backend for running the Central Agentic Ops
+The `server/` module is the unified serving runtime for the Central Agentic Ops
 dashboard with server-owned persistence and query execution. It ingests the
 same compacted data published with the deployed dashboard, stores current
 native entity rows in PostgreSQL and executes hosted Dashboard Language plans
@@ -32,6 +32,90 @@ the focused contracts.
 The browser never connects directly to Postgres or Redis and never receives
 database credentials. It communicates only with the same-origin HTTP(S) API.
 
+### Local development and Pages simulation
+
+From the repository root, `npm run dev` or `npm run dashboard:local` builds
+the dashboard and starts Go `serve` with its verified SQLite cache. The Node
+server is retired; only an internal loopback canvas authoring bridge remains.
+
+The Go local SQLite server also runs natively on Windows, without PostgreSQL,
+Redis, Docker, or Linux process features. From PowerShell at the repository root,
+build the dashboard with `npm --prefix dashboard/site run build -- dist`, then
+run `go -C server run ./cmd/cao-dashboard serve`. The POSIX environment-assignment
+syntax in the root npm launch commands is not supported by PowerShell's default
+npm shell; use the direct Go command there. Windows CI builds the native command
+and exercises snapshot download, offline startup, HTTP queries, and shutdown with
+local fixtures. Evidence-lake writers retain cross-process exclusion using
+Windows file locks instead of Unix `flock`; locking errors still fail closed.
+Local SQLite URLs preserve drive-letter paths and escaped spaces or `#` in names.
+
+Local serving resolves Marketplace through the same read-only registry resolver
+as hosted serving, even when the cached SQLite snapshot has no packages.
+The npm launch commands select this checkout's `.github/workflows/cao.json`;
+set `CAO_MARKETPLACE_POLICY_PATH` to an absolute path to use another policy.
+Provide the credentials named by its registries (for example, `GH_TOKEN`).
+Registry results use the process-local operational cache and never modify the
+SQLite snapshot. Registry failures remain explicit in source availability or
+registry diagnostics; they never trigger synthetic packages or snapshot-inventory
+fallback.
+
+For explicit Pages/IndexedDB testing:
+
+```sh
+npm run dashboard:pages:build -- --fixture
+npm run dashboard:pages -- --base-path /gh-cao/
+npm run test:e2e:dashboard-pages
+```
+
+Use `--activity-dir PATH` instead of `--fixture` to prepare an existing Activity
+snapshot offline. Preparation runs production normalization, SQLite ingestion,
+hashing and Dashboard building; fixture data is explicitly synthetic. It does
+not simulate collection, Actions permissions, cache/artifact transport, TLS or
+GitHub Pages infrastructure. The current Actions runtime simulator accepts
+compiled dry-run agentic locks, not the ordinary Activity/Dashboard workflows.
+
+`serve-pages --site ../.tmp/dashboard-pages --listen 127.0.0.1:8080`
+serves the prepared artifact unchanged, optionally below `--base-path /REPO/`.
+It provides no hosted bootstrap, authentication or query API, so the page uses
+its real browser IndexedDB data path. The listener is numeric-loopback-only,
+and directory listings and escaping symlinks are refused. Paths in npm Go
+commands resolve relative to `server/`. Static Pages is an explicit mode,
+never a fallback for hosted serving.
+
+### Daily agentic maintainer journeys
+
+The repository-private `dashboard-maintainer-simulation` agentic workflow runs
+daily and supports manual dispatch. It generates ten maintainer scenarios before
+testing, attempts them through Chromium on the real local Go/SQLite dashboard,
+and preserves the frozen plan, all ten outcomes, screenshots and logs in a
+14-day artifact. It files at most three deduplicated issues with reproduction
+steps and potential fixes; blocked scenarios remain incomplete, not passed.
+No campaign installation, rollout-policy change, live repository mutation, or
+production dashboard access is involved.
+
+The harness reuses `simulate-api` to obtain 36 successful historical runs for
+three fictional repositories, adds explicitly synthetic cost/tool metadata,
+and uses production normalization and SQLite ingestion. It does not exercise
+hosted OAuth/PostgreSQL, live collection, dispatch or Actions execution, and
+the snapshot does not subscribe to subsequent simulator changes. Missing
+fixture data or hosted-only capabilities are coverage limits, not defects.
+
+To prepare and start the same environment locally after installing the root and
+dashboard dependencies:
+
+```sh
+mkdir -p .tmp/maintainer-simulation
+go -C server build -o "$PWD/.tmp/maintainer-simulation/cao-dashboard" ./cmd/cao-dashboard
+node scripts/maintainer-simulation.mjs prepare
+node scripts/maintainer-simulation.mjs serve
+```
+
+Read `.tmp/maintainer-simulation/environment.json` for the browser URL and
+fixture limits. The two servers bind only to `127.0.0.1` (ports 18443 and 18081);
+Ctrl-C stops both. Preparation reuses the Pages artifact builder only to
+produce the snapshot/assets; the dashboard is served with the `server-http`
+bootstrap and Go query API, not as a Pages/IndexedDB application.
+
 ## Local GitHub bootstrap integration
 
 Run `npm run test:integration:bootstrap` from the repository root with Go,
@@ -42,7 +126,7 @@ The `cao-bootstrap.yml` workflow runs this test daily, on relevant pull
 requests, and manually, retaining the test log for 14 days.
 
 The test builds the current CAO CLI as a local release fixture, then runs the
-unmodified `install.sh --create-repo` and `install.sh --setup`, real `gh`
+unmodified `install-gh-cao.sh --create-repo` and `install-gh-cao.sh --setup`, real `gh`
 commands, and HTTPS Git push/clone against the simulator's test-only
 `BootstrapAPI` fixture. These bootstrap endpoints and their GraphQL selection
 reader are not compiled into production binaries. The fixture's
@@ -60,6 +144,9 @@ The test checks that private non-interactive setup fails without changing
 policy, repeated public monitoring setup is idempotent, and no campaign or
 agent operation is enabled. Home, Git configuration, CLI extensions, and
 credentials are isolated; only a synthetic token is used in the test.
+The shared bootstrap/setup environment explicitly disables CLI telemetry with
+`DO_NOT_TRACK=1` and `GH_TELEMETRY=0`; the proxy still rejects every destination
+outside its allowlist.
 The workflow and every job grant only `contents: read`. The integration step
 explicitly clears real GitHub token environment variables; the read-only
 workflow token is used only to download the gh-aw prerequisite, never for
@@ -71,59 +158,162 @@ or Azure infrastructure provisioning. The fast bootstrap API regression tests
 also run with the ordinary simulator unit suite; the external-tool integration
 is opt-in outside its dedicated npm command and CI job.
 
+## Local GitHub setup topology integration
+
+`npm run test:integration:setup` builds the current native extension and runs
+real `gh cao setup`/GitHub CLI processes against the same strict loopback
+`BootstrapAPI`. Interactive cases reuse `tests/helpers/terminal.mjs` (Linux
+`script` or macOS `python3`); Node.js is a test-driver dependency, not a native
+setup dependency. The Go Extension CI setup job runs this full suite only on
+path-matched pushes to `main`, not pull requests. PRs retain the extension quality,
+unit, build, smoke, and authenticated doctor checks.
+
+The topology matrix covers public/private GitHub.com controls and
+private/internal GHE.com controls, public/private/internal/mixed targets where
+available on that host, and same/cross/mixed resource owners. Public controls
+reject non-public evidence. PAT cases retain simulated existing secret names
+and check exact owner-scoped read maps and control-only writes. App previews
+cover both hosts, separate permissions, reuse plans, and cross-owner rejection
+for newly created organization Apps. Capability failures exercise denied Pages,
+secret lookup and variable writes, declined public Pages, and unchanged consumer
+files/index. The recorded public monitoring flow and a private GHE.com PAT flow
+also publish reviewed files through real HTTPS Git to local bare repositories.
+GHE.com requests must remain on its selected web/API hosts.
+
+This is command/protocol end-to-end evidence, not live GitHub role, credential,
+Actions execution, or deployed Pages validation. Public repositories do not
+exist on GHE.com; no public GHE.com scenario is claimed. The simulator does not
+issue or validate real PATs, approve Apps, or prove restricted Pages entitlement.
+See [setup combinations and live gaps](../docs/setup-compatibility.md).
+
+## Local Azure setup integration
+
+Run `npm run test:integration:setup-azure` with Go 1.27.3 or newer on PATH, Git, GitHub CLI, the
+policy-pinned gh-aw prerequisite, and Docker installed. The Go Extension CI
+setup job runs this command alongside the GitHub-only setup suite on path-matched
+pushes to `main`, not pull requests. It uses the
+same digest-pinned official Azurite image as `scripts/azure-local/azure-local.sh`,
+with a disposable account, loopback-only dynamic port, and automatic cleanup.
+Prerequisites must already be local: run `go mod download`,
+`go -C server mod download`, and pull the exact Azurite image declared in
+`scripts/azure-local/azure-local.sh` before entering the simulation. CI does this
+in a separate prerequisite step. The simulation disables module downloads and
+implicit toolchain/image pulls; missing prerequisites fail instead of accessing a registry.
+Without Docker, set `CAO_SETUP_AZURITE_BINARY` to an installed official
+`azurite-blob` executable; its process and storage are also isolated and removed.
+Set `POSTGRES_URL` to a disposable numeric-loopback PostgreSQL instance. The
+successful deployment builds `cao-dashboard` from the exact simulated ACR
+context, runs real database provisioning and empty-evidence ingestion in an
+isolated schema, and starts `cao-dashboard azure-functions` when the Azure
+simulator restarts the Function App. The deployment's HTTPS health, readiness,
+signed-out API and OAuth checks pass through simulated Azure ingress to that
+real process, followed by a verified graceful SIGTERM shutdown. GitHub setup
+still uses the GitHub simulator; no live GitHub or Azure credentials are used.
+
+The test builds the current native extension and runs real `gh cao setup`,
+then `gh cao deploy azure --preflight`, `--plan`, and `--apply`. Azure deployment
+is a separate command, not a `setup azure` subcommand. The existing GitHub
+simulator handles setup. A test-only `az` subprocess adapter supplies the
+stateful ARM, ACR, Container Apps jobs, Key Vault reference status, and HTTPS
+ingress behavior that Azurite does not emulate. Azurite receives actual signed
+blob writes and reads for synthetic build manifests and deployment state.
+Unknown commands and destinations fail closed; no Azure CLI installation,
+cloud login, real credentials, GitHub writes, or Azure subscription is used.
+The `az` adapter and an allowlist of local tools are the entire command PATH:
+there is no fallback to a real Azure CLI. Git network protocols are disabled.
+GitHub and Functions HTTPS names terminate at the loopback CONNECT proxy with
+an ephemeral CA; the proxy never forwards to those hosts. Azure command and
+storage clients use exact numeric-loopback transports, rejecting redirects,
+environment proxies, metadata-service addresses, and nonlocal destinations.
+The Azurite container uses a disposable internal-only Docker network and a local
+Unix Docker socket; remote Docker contexts and TCP/SSH daemons are refused.
+Docker does not publish ports on internal-only networks, so a host-loopback
+relay carries blob traffic through `docker exec` to the container's loopback
+listener without adding a network with external access or publishing a port.
+Regression probes verify live GitHub, ARM, Entra, and metadata destinations are
+rejected or handled only by local fixtures, and ambient GitHub/Azure/OIDC
+credentials are not inherited.
+
+Assertions cover read-only preflight/planning, plan-drift rejection before
+writes, locked per-target digest bindings, provisioning-before-ingestion,
+provisioning failure without verification or a receipt, delayed Key Vault
+readiness, six ingress/OAuth checks, secret-free persisted receipts, existing
+instance/repeated-apply rejection, and unchanged GitHub policy and consumer files.
+This is command/protocol coverage: image builds, job execution, PostgreSQL,
+managed identities, and hosted OAuth are simulated, not deployed or attested.
+The separate Azure-local harness exercises the real Functions host.
+
+## Configurable company ingestion stress
+
+Run `npm run test:stress:company -- --preset large` with disposable local
+PostgreSQL to measure ingestion and queries from generated AW evidence, without
+running agents. See [Company stress testing](COMPANY-STRESS.md) for configurable
+company workloads, reports, and the dashboard calculator.
+
 ## Secret-free fleet stress simulation
 
-Run `npm run test:stress:cao` from the repository root. The dedicated
-`cao-fleet-stress.yml` Actions workflow runs daily and manually, without adding
-the full stress workload to pull requests. It simulates three days starting with 1,000 repositories and
-5,000 developers. Each developer produces 2, 6, 10, 14, or 18 PRs per day
-(p50 10, exactly 50,000 PRs/day); 10% of arrivals form a correlated daily burst.
-At each subsequent day boundary, 1% of active repositories are archived/deleted
-(alternating) and 2% are created, rounding down. Only drained repositories are
-retired: outstanding PRs are never exempted from the review SLA.
+Run `npm run test:stress:cao` from the repository root. `cao-fleet-stress.yml`
+runs daily and manually, not on PRs, with a 60-minute test/65-minute job budget.
+Three simulated days start with 1,000 repositories and 5,000 developers producing
+2/6/10/14/18 PRs/day (p50 10, exactly 50,000/day); 10% arrive in a daily burst.
+At day boundaries, 1% of active repositories are archived/deleted (alternating)
+and 2% created, rounding down. Only drained targets retire; no PR is exempt from SLA.
 
-The vulnerability-review campaign is a compiler-manifest fixture subscribed to
-`pull_request: ready_for_review`. The test exercises production manifest discovery,
-policy intersection, signature validation, admission, batching, durable SQLite
-queues, fencing, retry classification, and worker dispatch. The entire fleet uses
-one reviewed fixture policy, one inventory registry, and one durable queue.
-A single control repository declares the campaign for all enrolled source
-repositories, whose workflow inventories are empty. The enrollment and derived
-route ceilings are 2,048; the 1 MiB registry limit, operational storage budget,
-API limits, eight-repository discovery rounds and reviewed scope remain unchanged.
-SQLite batch rotation, capacity, recovery and retention use indexed plans so
-burst handling does not repeatedly parse the entire retained job payload set.
-Future fixture repository IDs
-are explicitly pre-enrolled but remain inactive until the simulator creates them.
-The inventory registry and live GitHub authority facts are in-memory fixtures,
-not a PostgreSQL durability or GitHub authentication benchmark.
+The compiler-manifest vulnerability-review fixture subscribes to
+`pull_request: ready_for_review`, exercising production discovery, policy
+intersection, signatures, admission, batching, durable SQLite queues, fencing,
+retry classification and dispatch. One reviewed policy, registry and queue serve
+one control repository and enrolled targets with empty workflow inventories.
+Enrollment/route ceilings (2,048), registry size (1 MiB), operational budgets,
+API limits, eight-repository discovery rounds and scope remain unchanged.
+SQLite batch rotation, capacity, recovery and retention use indexed plans,
+avoiding repeated retained-payload parsing. Future IDs are pre-enrolled but
+inactive until created. Registry/authority facts are in-memory fixtures,
+not PostgreSQL durability or GitHub authentication evidence.
 
-The simulator enforces shared per-installation REST budgets of 12,500 requests
-per hour and 900 points per minute (reads cost 1, writes cost 5), returning primary
-403/reset headers and secondary 429/Retry-After responses. Other GitHub abuse,
-GraphQL, and content-generation limits are not modeled. Discovery and review
-traffic consume these budgets. Signed repository lifecycle webhooks invalidate
-inventory through the production discovery-hints path. Deliberate shared-budget exhaustion and the burst
-exercise throttling, while identical webhook replays exercise deduplication.
+Discovery and reviews share installation REST budgets: 12,500 requests/hour,
+900 points/minute (reads 1, writes 5), primary 403/reset and secondary
+429/Retry-After. Other abuse, GraphQL and content-generation limits are unmodeled.
+Signed lifecycle webhooks invalidate inventory through production discovery hints;
+quota exhaustion/bursts exercise throttling and webhook replays exercise deduplication.
 
-No agentic workflow, vulnerability analysis, inference, or real GitHub request
-runs. Synthetic review completion occurs two simulated minutes after dispatch,
-plus any API-quota delay; dispatch acceptance alone never counts as a review.
-Every ready PR must have exactly one completed synthetic review within 3,600
-simulated seconds, measured from its original ready time, including discovery
-and admission retries. Missing, duplicate, or late reviews fail the test.
-An injected manual time provider controls ingress, discovery, authorization,
-queue leases/retention/backoff, and simulated API windows without sleeping.
-HTTP cancellation and I/O deadlines remain wall-clock based.
+Each dispatch batch executes production token-broker `copilot-request` exchange
+and invalidation with an immutable control-repository ID, workflow ref/SHA and
+distinct fixture job identity. Ephemeral App keys sign issuer requests; an
+in-process transport enforces `copilot_requests: read` for that repository only.
+Identity verification and issuance/revocation are fixtures, not OIDC, hosted
+HTTP/TLS, Key Vault or GitHub authentication evidence; issuer calls do not use
+fleet REST quota. Unchanged broker rate/context limits defer throttled exchanges.
+Batches mint once, revoke after all reviews, prove idempotent invalidation and
+deny reminting. `tokenBroker` report counts must match jobs, exchanges,
+invalidations and revocations; full stress must exercise broker throttling.
 
-All HTTP clients are confined to the exact numeric-loopback simulator endpoint,
-with proxies disabled. The test reads no secrets or credentials; its public HMAC
-fixture and ephemeral App-constructor key have no external authority.
-Synthetic installation-token routes accept only positive int64 installation IDs
-and format the fixture token from the parsed number, never the raw request path.
-Set `CAO_FLEET_STRESS_REPORT_DIR` to retain `fleet-stress.json`. Actions uploads
-that report and the test log, including incomplete outcomes on failure.
-The smaller `TestGitHubSimulatorFleetSmoke` scenario runs in ordinary Go tests.
+No agents, vulnerability analysis, inference or real GitHub requests run.
+Synthetic reviews complete two simulated minutes after dispatch plus quota/broker
+delay; acceptance is not completion. Each ready PR needs exactly one review
+within 3,600 simulated seconds from its original ready time, including discovery
+and admission retries. Missing, duplicate or late reviews fail.
+Manual time controls ingress, discovery, authorization, broker, queue
+leases/retention/backoff and API windows without sleeping; I/O deadlines and
+cancellation remain wall-clock based.
+
+Network clients use only the exact numeric-loopback endpoint with proxies off;
+the broker's in-process transport cannot send network traffic. No secrets are read:
+public HMAC fixtures and ephemeral App keys have no external authority.
+Installation-token routes accept positive int64 IDs and format tokens from
+parsed IDs, never raw paths. `CAO_FLEET_STRESS_REPORT_DIR` retains
+`fleet-stress.json`; Actions uploads it and logs, including incomplete failures.
+`TestGitHubSimulatorFleetSmoke` runs in ordinary Go tests.
+
+## Optional ADX analytics
+
+The default-off [ADX session analytics add-on](ADX-INGEST.md) exports bounded
+snapshots of retained canonical metadata from the existing Go host to an ADX
+free cluster. It reuses PostgreSQL and protected operational delivery state,
+with no additional collector, paid queue, Blob account or service deployment.
+It requires explicit exact repository scope, non-personal/non-regulated data
+approval and a single persistent exporter replica. Print its offline,
+operator-applied KQL setup with `cao-dashboard adx schema`.
 
 ## Hosted activation admission
 
@@ -156,6 +346,18 @@ remain open until cancellation or server drain.
 
 ## Local SQLite snapshot serving
 
+The Copilot canvas uses this same local Go host. Its internal `--canvas-config`
+file selects a random capability path, a private numeric-loopback integration
+adapter and downloaded read-only memory/inventory-quality evidence. Go owns all
+browser assets and canonical APIs; only JSON reload, authoring, approved command
+and local-user GitHub routes are forwarded to the adapter. This mode cannot
+enable hosted OAuth, PostgreSQL collection or hosted App authority. Missing
+inventory quality stays unknown. Inventory rows never replace SQLite query data.
+The owner receives a machine-readable readiness URL and keeps stdin open for
+the lifetime of the child; EOF shuts the host down. This is an internal extension
+contract, not a second dashboard CLI. Canvas startup requires a verified
+published SQLite artifact and never falls back to Node queries or browser ingestion.
+
 Build the dashboard once, then run the local server without PostgreSQL, Redis,
 `gh`, or a separate download command:
 
@@ -167,11 +369,47 @@ npm --prefix dashboard/site run build
 go -C server run ./cmd/cao-dashboard serve
 ```
 
-Plain `serve` reuses `.cao/gh-aw-logs.sqlite` in this checkout without network
-access. If that cache is missing, startup downloads the public CAO Pages snapshot,
+Plain `serve` reuses `.cao/gh-aw-logs.sqlite` in this checkout without downloading
+it again. If that cache is missing, startup downloads the public CAO Pages snapshot,
 or `DASHBOARD_DATA_URL` when set. `--sqlite PATH` selects another cache and has the
 same download-if-missing behavior. Database service environment variables alone
 do not change this local default.
+
+The downloaded snapshot stays **read-only**. SQLite's native `ATTACH DATABASE`
+links it to a separate writable delta, defaulting to the snapshot path plus
+`.local.sqlite`; `--sqlite-overlay PATH` selects another local file. Only schema
+metadata is copied, not the pre-indexed records. Queries read the union, with
+local upserts and deletion markers taking precedence over the snapshot.
+
+Local backfill starts in the background immediately and repeats five minutes
+after each pass finishes (`--backfill-interval` changes the delay). It uses
+`GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token --hostname github.com`.
+Install Node.js and the `gh aw` extension for collection and canonical ingestion.
+The runtime catalog is resolved relative to `--database-queries`; keep the
+repository's Activity runtime alongside those query definitions.
+Missing tools or credentials and collection/ingestion failures are reported
+explicitly without preventing the committed dashboard data from being served.
+The token is passed only to the GitHub collection subprocess, never stored in
+SQLite or sent to the browser.
+
+Refresh scope is exclusively the repositories already declared in the deployed
+snapshot, capped at 10,000 repositories. Credential access never adds targets or
+changes rollout policy. Collection uses each repository's latest retained run
+with a one-day overlap and includes older unfinished runs, within a bounded
+30-day window. Each repository invocation collects at most 10,000 runs with a
+five-minute deadline; a pass has a 30-minute deadline. This is recent evidence
+refresh, not an exhaustive historical archive or a completeness guarantee.
+Successful repository collections use the existing Activity compactor and
+canonical ingester against a staged copy of **only the local delta**. Failed
+repository collections are discarded and reported; they do not block successful
+repositories. Failed ingestion leaves committed data unchanged. Successful
+publication is atomic, rejects concurrent stale writers, and notifies active
+revision subscribers. The private per-pass evidence directory is removed on
+completion or failure. Shutdown cancels collection and ingestion.
+
+Use `--backfill=false` for offline serving without GitHub requests. Existing
+local deltas remain visible. The internal Copilot canvas profile continues to
+serve its verified snapshot without enabling this backfill.
 
 Use `--download-sqlite` to explicitly refresh the cache, even when it exists.
 Its optional URL overrides `DASHBOARD_DATA_URL` and accepts any GitHub Pages site,
@@ -204,6 +442,10 @@ An unbuilt `--site` fails before downloading. Stop any existing snapshot users
 before refreshing; symlink destinations and existing SQLite journal sidecars
 are rejected rather than risking corruption. Checkpoint a locally modified
 snapshot with its owning tool, or select a different `--sqlite` path.
+An overlay is bound to the snapshot's canonical content revision. After replacing
+the snapshot with different data, choose a new `--sqlite-overlay` file. A
+mismatched overlay fails closed and is preserved, rather than applying stale
+overrides to a different base or silently deleting local evidence.
 
 For offline startup, use plain `serve` with an existing default cache, or select
 another existing snapshot:
@@ -211,6 +453,7 @@ another existing snapshot:
 ```bash
 go -C server run ./cmd/cao-dashboard serve \
   --sqlite ../.cao/gh-aw-logs.sqlite \
+  --backfill=false \
   --listen 127.0.0.1:8443
 ```
 
@@ -220,15 +463,15 @@ Paths in this example resolve from `server/` because of `go -C server`.
 `gh cao download` prepares the default CAO snapshot; use `--url` with another
 dashboard's `payload-hashes.json` URL to select different data.
 The snapshot must use
-the canonical IndexedDB-compatible SQLite layout and database version 42.
+the canonical IndexedDB-compatible SQLite layout and database version 45.
 Only a genuinely missing cache triggers automatic acquisition. Unreadable or
 invalid existing files, dangling symlinks, unsupported versions, and missing
 requested stores fail closed without a repair download. Startup never creates
-an empty database, repairs, migrates, or ingests SQLite data. Acquisition installs
+an empty snapshot, repairs, migrates, or ingests the downloaded file. Acquisition installs
 a verified file before the read-only server opens it; it is not ingestion or a
 fallback from a failed database connection.
 
-This is the default **local bearer-only, read-only** profile.
+This is the default **local bearer-only, read-only request** profile.
 Only loopback listeners are accepted; HTTP is supported locally, with optional
 `--cert` and `--key` for HTTPS. Existing access-token authentication and the HTTP
 query, canonical API, diagnostics, revision events, and optional MCP protocols
@@ -240,6 +483,9 @@ only storage reads and query execution differ. The local snapshot profile admits
 500,000 input/intermediate rows and 50 million operations per query plan, with
 1 GiB per working source and 2 GiB / 2 million rows of simultaneously retained
 results. Completed dependency inputs are released after their final consumer.
+Shared server dependency traversal is capped at 32 queries deep, accommodating
+the shipped routing-attribution plans without changing join, row, byte or
+operation budgets.
 The planner traces live fields across consumers, prunes unused row-local
 computations, and projects only required properties inside SQLite. Requested
 raw sources and unknown result shapes keep full documents; original-record byte
@@ -247,12 +493,13 @@ limits, JSON types, missing fields, and canonical UTF-16 key order are preserved
 Read-only SQLite memory mapping is capped at 1 GiB to reduce page-read overhead.
 These are bounded accounting limits, not an RSS guarantee; large snapshots can
 require several GiB of developer-machine memory. Hosted PostgreSQL and CLI
-defaults are unchanged. Wire results remain bounded to 100,000 rows per source;
+row/memory defaults are unchanged. Wire results remain bounded to 100,000 rows per source;
 ordinary continuation pagination remains available. Local query admission has
 a 300-unit/minute token bucket so expensive snapshot plans do not exhaust the
 hosted 30-unit burst during ordinary page navigation; per-plan cost accounting,
 other request limits, and explicit embedding overrides remain enforced. Snapshot
-quality is reported as unknown rather than verified complete or current.
+quality without explicit published inventory metadata is reported as unknown
+rather than inferred complete or current.
 In-place SQLite commits update revisions and active subscriptions without a
 server restart. Restart after replacing the snapshot file itself.
 
@@ -302,21 +549,21 @@ reviewed `control-plane.web.host` configuration, replace legacy `host.redis` wit
 }
 ```
 
-The local launcher supports each reviewed backend:
+Invoke Go directly for each reviewed hosted backend:
 
 ```bash
-npm run dashboard:local -- --operational-store redis --policy .github/workflows/cao.redis.json
-npm run dashboard:local -- --operational-store memory --policy .github/workflows/cao.memory.json
-npm run dashboard:local -- --operational-store postgres --policy .github/workflows/cao.postgres.json
+CAO_POLICY_PATH="$PWD/.github/workflows/cao.redis.json" go -C server run ./cmd/cao-dashboard serve-hosted --operational-store redis
+CAO_POLICY_PATH="$PWD/.github/workflows/cao.memory.json" go -C server run ./cmd/cao-dashboard serve-hosted --operational-store memory
+CAO_POLICY_PATH="$PWD/.github/workflows/cao.postgres.json" go -C server run ./cmd/cao-dashboard serve-hosted --operational-store postgres
 ```
 
-Supply your existing reviewed policy/profile at `--policy` (the paths above are
-examples), or use `CAO_POLICY_PATH`. The launcher builds and runs `serve-hosted`;
+Supply your existing reviewed policy/profile through `CAO_POLICY_PATH` (the paths
+above are examples). There is no Node launcher;
 the requested backend must match the resolved policy and cannot override it.
 It preserves the ordinary hosted authentication and transport requirements.
 Direct TLS uses the actual TLS connection without requiring forwarded headers
 unless `CAO_TRUSTED_PROXY_CIDRS` explicitly configures a proxy.
-Omitting the selector keeps the separate browser-only preview unchanged.
+Ordinary `npm run dashboard:local` instead selects local Go/SQLite serving.
 
 Use `serve-hosted` with the ordinary mandatory OAuth, HTTPS/proxy, organization
 or team, administrator, and webhook-secret configuration. Keep admission,
@@ -1246,7 +1493,7 @@ npm run test:integration:actions-simulator
 # Equivalent without Node/npm (also suitable for a GitHub Actions run step):
 go -C server test -race ./internal/simulator ./internal/admission \
   ./internal/webhookgateway ./cmd/cao-webhook-gateway \
-  -run '^(TestLocalActions|TestSpecLocalHost|TestGatewayAPI|TestGitHubSimulator(Gateway|Discovery)SQLite)' \
+  -run '^(TestLocalActions|TestSpecLocalHost|TestGatewayAPI|TestIssueServiceSimulator($|HTTP|GatewaySQLite)|TestGitHubSimulator(Gateway|Discovery)SQLite)' \
   -count=1 -timeout=2m -v
 ```
 
@@ -1327,6 +1574,42 @@ Postgres 16 service on a dynamically allocated port and runs this integration
 with the race detector on pull requests and pushes. It uses no deployed service,
 GitHub credential, or live GitHub API.
 
+### Local Jira, Linear, and Azure DevOps issue webhooks
+
+Run just the self-contained issue-service simulator and gateway integration:
+
+```bash
+npm run test:integration:issue-services
+```
+
+`simulator.NewIssueService("jira" | "linear" | "azure-devops")` creates an
+ephemeral receive secret and synthetic tenant/resource identities.
+`Delivery(id, issueNumber, activity, timestamp)` deterministically generates
+native opened, edited, closed, reopened, labeled, unlabeled, and deleted issue
+payloads; Azure DevOps also supports restored work items. Updates contain native
+before/after evidence, including Azure revision IDs distinct from work item IDs.
+`DeliverWebhook` signs Jira and Linear HMAC deliveries or supplies Azure service
+hook Basic authentication, using the same exact numeric-loopback-only transport
+as the Actions simulator. Proxy settings and redirects cannot escape it.
+
+These are webhook protocol simulators, not full issue-service API emulators.
+Provider-shaped HTTPS resource URLs are inert payload references and are never
+fetched. No Jira, Linear, Azure DevOps, or GitHub account, token, external
+callback, service container, or deployed service is required. All fixtures,
+listeners, secrets, and SQLite state are test-owned and cleaned up afterward.
+The ordinary local Actions integration command and Go CI also run these suites.
+
+The gateway tests discover compiled external declarations from the local GitHub
+API simulator, intersect them with independent receiver enrollment, and exercise
+the production ingress, durable queue, live destination authorization, worker,
+and GitHub compiler dispatcher. They verify every supported lifecycle activity,
+provider-isolated batching, canonical resource URLs and filter evidence, native
+authentication failures, tenant/collection/resource mismatches, Linear timestamp
+freshness, replay deduplication across restart, minimal persisted/dispatched
+payloads, and cancellation when the discovered workflow changes.
+The PostgreSQL command above runs the same gateway suite against isolated local
+PostgreSQL state; it is optional for the fully self-contained SQLite command.
+
 ### Discovered agentic workflows, webhooks, and dispatch
 
 The same commands also run shared gateway suites for SQLite and PostgreSQL.
@@ -1358,6 +1641,78 @@ YAML or prove that a real GitHub Actions run started.
 
 The separately pinned upstream client conformance tests remain available via
 `GH_AW_ADMISSION_PROTOCOL_PATH` and `GH_AW_CONCLUSION_RUNTIME_DIR`.
+
+### Docker samples runtime
+
+Run the small, test-only workflow executor and its signed-webhook integration:
+
+```bash
+npm ci
+docker pull node:24-bookworm
+npm run test:integration:actions-runtime
+```
+
+Prerequisites are Node.js 24+, Go at the version in `server/go.mod`, the pinned
+`gh aw` compiler, Git, curl, tar, and a local Docker daemon supporting bind mounts.
+The first run downloads the immutable `github/gh-aw-actions` setup revision
+declared by the compiled lock and a checksum-verified jq binary for the image's
+architecture. Downloads are cached under `.tmp/actions-runtime/`. No GitHub
+credentials, inference subscription, PostgreSQL, or Redis are required.
+
+`tests/helpers/actions-runtime/` is intentionally **not an alternative to act
+or a general Actions framework**. It accepts only gh-aw locks compiled with
+`--use-samples --dry-run`, with threat detection disabled. The fixtures opt into
+`features.samples` and declare `safe-outputs.threat-detection: false`. Compilation
+uses a fresh credential-free Git configuration and a strict `gh run list`
+fixture returning no historical runs, so the compiler's mandatory dry-run model
+check does not contact GitHub. A preliminary compilation establishes the
+reviewed shared-control secret-reference baseline; only the subsequent dry-run
+locks are committed into the synthetic revision and executed.
+
+The executor implements sequential dependency-ordered jobs, the small expression
+subset those locks use, Bash steps, conditions and failure propagation,
+`GITHUB_OUTPUT`/`GITHUB_ENV`/`GITHUB_PATH`, pinned setup and github-script actions,
+fixture checkout, and local artifact upload/download (literal names and brace
+lists only). Each job gets a fresh workspace, home and runner directory.
+The **real upstream setup, activation, sample replay, stdio safe-output MCP
+server, ingestion, staged safe-output handlers and conclusion scripts execute**.
+CAO uses the real shared control import, exact-revision policy reads, admission,
+precompute, and its jq handoff checks. Unknown actions, expression features,
+GitHub API requests, matrix/service/container/reusable jobs and live/inference
+locks fail explicitly rather than being treated as successful.
+
+Seven sample-only infrastructure adapters are reported in `report.simulated`:
+Copilot installation, AWF installation, image download, network MCP gateway
+start/stop, MCP CLI mounting, and online compiler-version checks. These are not
+coverage of inference, firewall isolation, network MCP transport, hosted
+OIDC, or live GitHub writes. Samples use the real stdio MCP server instead.
+The runner's loopback-only GitHub API supplies bounded fixture reads and
+rejects every mutation. Docker has no network, Docker socket, host credentials,
+privileges, or writable host checkout; only the explicit results directory is
+writable, with bounded memory, CPUs, PIDs and temporary storage. This runs
+trusted test fixtures, not arbitrary untrusted workflows.
+The container uses the invoking host user's UID and GID so the results bind
+mount remains writable on Linux without restoring capabilities or broadening
+directory permissions. The report records that identity, and integration
+assertions verify it.
+
+The integration first uses production discovery, signed ingress, SQLite queue
+and authenticated GitHub HTTP dispatch against `NewGatewayAPI`. It rejects a
+bad signature and proves replay deduplication across queue reopen, then feeds
+the exact accepted compiler batch envelope to both compiled AWI and CAO fixtures.
+The webhook declaration comes from the existing versioned compiler-manifest
+conformance fixture: this does not claim that the pinned compiler generated
+native webhook declarations. Assertions require every workflow job to run,
+exact sample output, `dry_run` and staged evidence, zero GitHub mutations, and
+CAO policy denial preventing agent execution.
+
+The standalone `actions-runtime.yml` workflow runs this on pull requests
+and main pushes only for changes under `server/`, excluding Markdown files.
+Manual dispatch remains available, with `contents: read` only.
+Containers are removed even after timeout.
+Successful fixture directories are deleted; failures retain per-step logs,
+summaries, artifacts and `report.json` under `.tmp/actions-runtime/e2e-*/`.
+CI uploads failure diagnostics, not screenshots or generated locks.
 
 ## Ingestion reliability simulator
 
@@ -1775,7 +2130,7 @@ enable them, run the web server with both `--experimental` and
 PostgreSQL operational store and OAuth. Then run a separate executor:
 
 ```bash
-node activity/cao.mjs setup-auth hosted-cli --repo OWNER/CONTROL \
+gh cao setup auth hosted-cli --repo OWNER/CONTROL \
   --target-repository OWNER/TARGET --private-key-out ./hosted-cli.pem
 cao-dashboard serve-hosted --experimental --hosted-cli-actions ...
 cao-dashboard execute-cli --max-pooled-tokens 8
@@ -1851,8 +2206,9 @@ an operator must explicitly acknowledge recovery before queue processing
 resumes. This provides at-most-once dispatch, not exactly-once external effects.
 
 The executor plans commands in Go and runs only `gh` or the native Go `gh-aw`
-CLI inside the digest-pinned `ghcr.io/github/gh-aw` container. The campaign
-update action is translated to `gh-aw update`; the server never invokes
+CLI inside the digest-pinned `ghcr.io/github/gh-aw` container. Campaign-package
+and standalone-workflow source update actions are translated to `gh-aw update`;
+the server never invokes
 repository shell scripts or checks out and executes control-repository code. The executor
 requires a local Docker daemon using its `default` context. Each container has a
 read-only root filesystem, no added capabilities, and only its per-command
@@ -1880,7 +2236,11 @@ or promise exactly-once effects. Idempotent updates may overlap within the
 configured concurrency limit; workflow dispatch does not inherit that
 idempotency assumption.
 
-`setup-auth hosted-cli` writes the downloaded key to a temporary local
+`gh cao setup auth hosted-cli` runs natively in Go without Node.js or an installed
+control checkout. It preserves explicit same-owner targets, GitHub browser approval,
+and selected-repository installation verification. It does not activate hosted
+execution or change rollout policy. `--dry-run` previews the manifest offline;
+`--no-open` prints browser URLs. The command writes the downloaded key to a temporary local
 bootstrap file; that file is not a vault. Import it directly into the secret
 manager used by the `execute-cli` deployment, then securely remove the local
 copy. At runtime, expose the secret only to the executor, preferably as a
@@ -2324,6 +2684,74 @@ attesting both build provenance and the SBOM for the exact OCI digest.
 Those package guarantees apply to consumers of the published image, not to
 locally source-built images.
 
+#### Owner-selected release evidence collection
+
+Use the native Go extension to collect a bounded, machine-readable record without
+publishing, promoting, deploying, or changing workflow authority:
+
+```sh
+gh cao evidence release \
+  --repo githubnext/gh-cao \
+  --revision FULL_40_CHARACTER_SOURCE_SHA \
+  --image ghcr.io/githubnext/gh-cao/cao-server@sha256:EXACT_64_CHARACTER_DIGEST \
+  --package-run PACKAGE_RUN_ID \
+  --output /secure/evidence/release-evidence.json
+```
+
+The `gh cao evidence` group hosts operator evidence collection. No Node.js,
+repository-local scripts or checkout are required. Use a release containing this
+command; merging source does not update an already installed extension.
+
+Use the existing package workflow run ID and immutable published image digest,
+not a tag. Optional `--promotion-run RUN_ID` collects references from the existing
+prerelease-to-latest workflow; its workflow SHA is **not** the product source
+SHA. Optional `--azure-receipt /secure/evidence/deploy-azure-receipt.json` consumes
+the existing `cao deploy azure` receipt, requiring its source revision to match
+the selected revision. It preserves development-only assurance, dirty-worktree
+state, context/plan hashes, per-target digests and reported verification outcomes.
+Private registry references are hashed; cloud resource identifiers, raw responses,
+actor names, comments, job/step names, secrets and credential-bearing URLs are
+not copied. No Azure API or deployment is invoked.
+
+With `--verify-provenance`, the collector invokes the installed GitHub CLI's
+`gh attestation verify` for the exact OCI digest, repository, reusable publisher,
+source-digest constraint and SLSA v1 predicate. It additionally requires the
+verified statement's image subject and package run-attempt invocation to match.
+Registry authentication and read access must already be configured; no credentials
+are accepted as collector arguments. A failed/unavailable verifier or mismatched
+receipt leaves provenance and image/source binding unknown. Manual builds whose
+certificate source identity differs from the selected product revision can fail
+this constraint; the collector does not relax verification to accept them.
+The normalized receipt includes the verification command and raw receipt hash,
+but does not retain raw attestation bundles or assert builder isolation.
+
+The collector currently targets GitHub.com and GHCR. Schema version 1
+(`kind: cao.release.evidence`) records the collector binary hash, extension/Go/GitHub CLI
+versions and collection time, and always reports `incomplete`.
+Run/job/check references are attempt-scoped; artifacts and approval history are
+run-scoped with **unknown** attempt binding. Approval records do not establish
+independent human approval or effective environment policy. Unavailable/invalid
+optional API evidence is explicitly unknown; invalid selected run identities or
+deployment receipts fail collection. API reads stop after five 100-record pages,
+marking bounded inventories incomplete; responses are limited to 2 MiB with a
+60-second command timeout, local receipts to 1 MiB, and step lists to 100.
+The complete operation has a 30-minute deadline and honors cancellation.
+The new output uses mode `0600` where supported and never overwrites an existing
+file. Operators must restrict destination-directory ACLs, especially on Windows
+where POSIX mode bits do not enforce private access.
+
+This is collection-time evidence, not a governance decision, production acceptance,
+proof of running image measurements, independent retention, or Type 2 operating
+effectiveness. Azure configured-reference read-back is not a measured running
+image digest, and its development images do not inherit official-package scans,
+SBOM or provenance. Owners must retain the original candidate metadata/checksums,
+SBOM, signed bundles and verification receipts through their approved evidence
+channel, along with this JSON and exact collector/tool versions. Existing Actions
+artifact references/expiry metadata are not independent delivery receipts; export
+before expiry, verify destination retention and access, supply actual deployment
+measurements and approval/check evidence, and agree the examination period and
+governance requirements with the auditor. Nothing is uploaded automatically.
+
 The Dockerfile includes the base `cao.json` policy. Configure a reviewed
 `control-plane.web.host` before building, or mount a reviewed policy and set
 `CAO_POLICY_PATH` at runtime. Supply database, OAuth, session, and webhook
@@ -2409,6 +2837,67 @@ lifecycle: reconcile canonical revision state and independent logs manually;
 neither status reads nor a later rebuild reconstruct a missing outcome.
 See [administrative rebuild evidence](../specs/server-operational-storage.md#administrative-rebuild-evidence).
 
+#### Missing rebuild terminal evidence
+
+Use the configured PostgreSQL operational namespace with the **SELECT-only
+evidence-reader credential** described in [POSTGRES.md](POSTGRES.md), not the
+runtime or schema-owner credential:
+
+```bash
+cao-dashboard audit lifecycles --grace 1h --max-events 10000 --timeout 2m
+# Local debugging only, against an already provisioned file:
+cao-dashboard audit lifecycles --sqlite .tmp/hosted-cli.sqlite
+```
+
+This is a one-shot read-only check; it does not append a verification event,
+open the JSON audit mirror, repair status/history, replay a rebuild, or enable
+a deployment schedule or service. JSON goes to stdout, including a scan failure
+result when reads fail after opening; command errors go to stderr. It exits
+nonzero for `attention`, `incomplete`, invalid configuration or unavailable
+storage. Store the result, source/deployment/namespace identity and exit status
+in an independent monitoring destination. Open/configuration failures may have
+no JSON result; absence of a result is not a healthy heartbeat.
+
+Route alerts on `missing_terminal > 0`, per-ID issues (including
+`status_write_failed`, duplicate or conflicting events), and `status=incomplete`.
+`pending` means the first observed event is within grace and may still be active;
+it is not a failure or a liveness assertion. The minimum grace is 35 minutes,
+above the current work timeout/lease; the default is one hour. Approve a larger
+grace if deployment clock skew or cleanup latency requires it, and review this
+bound whenever execution deadlines change. Age uses stored timestamps; large
+future timestamps are clock uncertainty, not successful completion.
+
+The command scans at most the configured rows plus one lookahead, paginating
+all audit event types in sequence order. It does not run full chain verification.
+If `event_limit` is reported, increase the budget within the 100,000-row hard
+limit and rerun **from the same starting point**. Do not use `last_sequence` as
+a checkpoint: unresolved admissions would be forgotten. A truncated scan
+reports their classification as `unknown`, not a missing terminal alert.
+`--after SEQUENCE` explicitly selects a suffix and always reports incomplete
+historical coverage. A retained oldest prefix (`retained_prefix`) likewise
+requires independent evidence; an interior `history_gap` blocks missing-terminal
+classification. For a contiguous observed suffix, missing terminals for IDs
+actually observed can still be reported, but IDs wholly outside it are unknown.
+Use the independent full committed-row pipeline for history beyond the bound.
+Verification with approved external anchors and `audit deliver` remain separate
+checks; `history_complete` describes sequence coverage, not authenticity.
+
+On an alert, preserve the JSON, anchored verification/delivery evidence and
+relevant `stored=false` audit telemetry first. Rerun the check to account for a
+late terminal append. Correlate each server-generated `rebuild_id` and sequence
+range with the original receipt, authenticated audit events, trace-correlated
+logs, canonical prior/current revisions, and replaceable status. A newer
+canonical revision or expired lease alone cannot establish that ID's outcome:
+another operation may have published, or work may remain uncertain. Record the
+reconciliation, evidence references, uncertainty and accountable disposition
+in the incident/evidence system. Never synthesize a completion event, rewrite
+history, retry ingestion automatically, or treat a canceled/failed completion
+as a success. Any separately authorized rebuild must receive a fresh ID.
+The operator must separately approve cadence, monitor missing-check heartbeats,
+and exercise alert acknowledgement and outage/retention-gap response.
+
+#### Operational-value publication
+
 `POST /api/v1/value` publishes one prepared operational-value evidence envelope
 (JSON or one JSONL record, at most 8 MiB). It requires PostgreSQL and an already
 observed repository/workflow; it neither enrolls targets nor runs uploaded code.
@@ -2425,8 +2914,28 @@ advances the revision. Value-dependent queries key their bounded result cache
 by that revision; other query caches retain their existing fixed lifetime.
 This endpoint does not activate ongoing collection: explicitly register a
 reviewed collector in policy through `gh cao value enable`, then deploy policy
-and collector together. Recurring work uses the existing collector's enrolled
-repository credentials, not an administrator's browser session.
+and collector together. Recurring remote acquisition remains deferred pending
+enforceable shared-budget admission. Health publication is credential-free and
+keeps enabled registrations visibly deferred, with original capture/cutoff dates.
+It does not mint a token or treat a quota preflight as a shared reservation.
+
+Bounded local-only computation has its own `value-local` lease, a verified private
+Activity snapshot and one attempt per completed projection generation. It does
+not hold the projection lease or evidence lock while computing. The two-minute
+batch/30-second adapter budgets cancel the owned process tree. Computation uses
+a frozen policy copy; final publication uses a short evidence lock, rechecks
+enrollment, and compares the input generation, manifest, policy and retained
+evidence with its starting state. A changed precondition defers the result
+rather than overwriting newer accepted evidence. Completed output waits for
+the next ordinary projection, avoiding a Value-generated retry loop. An
+unsupported adapter, missing input, timeout or failure preserves accepted history.
+This improves health visibility and core isolation, not guaranteed fresh Value
+collection or separate capacity for external consumers.
+
+Health reconciliation keeps the newest decision and newest actual attempt
+independently, so replay order and missing attempt metadata cannot erase known
+history or revive an older registration. Same-clock contradictions fail closed;
+measurement capture/cutoff dates remain exclusively those of accepted evidence.
 
 The hosted dashboard shows a user icon at the lower left of the navigation.
 It appears only after the server confirms an authenticated GitHub session and
@@ -2672,7 +3181,7 @@ no GitHub access: a retained lake is replayed directly.
 
 Enrollment is derived from GitHub App installations. A delivery for a
 repository outside the enrollment set is acknowledged and dropped rather than
-collected. Signed repository creation/unarchive events for a known installation
+collected. Signed repository lifecycle events for a known installation
 may instead queue discovery; they never infer enrollment from payload contents.
 Installation additions and repository discovery are grouped by installation,
 with a two-second coalescing window. Background workers enumerate all pages of
@@ -2683,18 +3192,58 @@ installation when unset).
 
 Installation removals and repository access withdrawals are independently queued,
 then applied by workers with durable erasure work persisted before acknowledgment.
-Repository deletion/archive transitions retain their independent lifecycle updates
-and trigger coalesced inventory projection; deletion alone does not erase retained
-history. No webhook performs GitHub calls, enrollment mutations, or projection
+Repository creation, unarchive, rename, transfer, archive, and deletion events queue
+independent hints that reconcile current authenticated installation coverage.
+Complete discovery removes archived or absent coordinates, persists erasure work
+before withdrawing enrollment, and queues collection of verified active repositories.
+Renamed-away coordinates and archived/deleted repositories are evicted from the
+evidence lake and retained inventory, then removed by canonical projection.
+Delayed or reordered webhooks cannot restore stale names or historical lifecycle
+states. No webhook performs GitHub calls, enrollment mutations, or projection
 inline. Refresh workers persist projection requests before acknowledging work;
 transient inventory failures keep the previous inventory and retain a pending
 refresh for the next projection interval.
 
+Workers also refresh the App's active installation list on startup and every
+hour, then queue the same quota-governed repository reconciliation used
+by webhooks. A shared lease and persisted timestamp coordinate replicas and
+restarts. This repairs missing create/archive/delete/rename or installation
+webhooks without scanning historical runs or recollecting unchanged repositories.
+Force a repository-list repair with `cao-dashboard backfill --repositories-only`;
+the command reports queued refreshes and withdrawals, which collection workers
+then apply. Set `CAO_COLLECT_REPOSITORY_REFRESH_INTERVAL` to a positive Go duration
+such as `30m` or `2h` to override the default `1h` cadence.
+
 Configure the collection App's webhook URL as `/api/github/webhook` and subscribe
 to `push`, `repository`, `installation`, `installation_repositories`, `workflow_run`,
-and `issues` events. Existing read-only App permissions and installation coverage
+`issues`, and `pull_request` events. Existing read-only App permissions and installation coverage
 remain the scope boundary; these notifications do not authorize workflow execution
 or change CAO rollout policy.
+
+The server also mines recorded gh-aw episode identity and created issue/PR
+dispositions. Episode membership comes only from `context.episode_id` in compact
+`aw_info.json` already downloaded by collection or retained run envelopes;
+caller, root, and hop references are preserved without heuristic grouping or
+additional discovery requests. Outcome webhooks retain bounded object facts
+and join them only to exact `create_issue` / `create_pull_request` safe-output
+references. Merge/completed, rejection, bot lifecycle closure, pending, and
+unknown remain distinct from workflow success. Other safe-output action types
+are not evaluated by this lifecycle-only profile.
+
+Replicas coordinate a server-only repair pass every projection interval
+(five minutes by default): at most ten REST calls total, including quota probes,
+with a one-minute deadline and a durable output cursor. Repair reads only
+already attributed objects in currently enrolled repositories and shares the
+installation quota governor. It does not enumerate issue inventories, fetch
+comments/reviews, or expand episode scope. Missing evidence remains partial.
+
+Mined facts reuse existing canonical Audit tables (`episode.membership`,
+`episode.root`, `outcome.observed`) and participate atomically in snapshot
+publication and revision notifications. No schema migration is needed.
+Bounded packets under the evidence lake's `server-mining/` directory support
+API-free replay and are erased on scope withdrawal, including volatile restart
+repair. This feature is not installed in or run by `cao-activity`. See
+`specs/dashboard-data.md` section 11.2 for the field mapping.
 
 Rate limits are governed per installation. Each collection reserves budget
 before it starts and passes the reserve to the collection subprocess, so the
@@ -2734,6 +3283,7 @@ The same binary runs every role:
 | `cao-dashboard serve-hosted` | serve the dashboard and admit webhook deliveries |
 | `cao-dashboard collect` | lease tasks, collect repositories, and project |
 | `cao-dashboard backfill` | cold start: replay the lake, enumerate installations, seed tasks |
+| `cao-dashboard backfill --repositories-only` | force repository-list repair without replaying history; workers apply queued reconciliation |
 | `cao-dashboard backfill --replay-only` | repopulate the database from retained evidence with no GitHub requests |
 | `cao-dashboard doctor` | run a read-only, systematic check-up of Redis, canonical data, queries, and collection |
 | `cao-dashboard otel-smoke` | verify that one live CAO request and, when configured or required, the stable Go runtime metrics are indexed by OpenObserve without reporting credentials or identifiers |
@@ -2861,6 +3411,7 @@ span ID.
 | `CAO_COLLECT_WORKERS` | in-process workers; zero when workers scale separately |
 | `CAO_COLLECT_RATE_LIMIT_FLOOR` | requests reserved per installation |
 | `CAO_COLLECT_PROJECTION_INTERVAL` | minimum interval between projections (default 5 minutes) |
+| `CAO_COLLECT_REPOSITORY_REFRESH_INTERVAL` | repository-list reconciliation cadence as a Go duration (default `1h`); runs on collection workers |
 | `CAO_COLLECT_INVENTORY_LIMIT` | optional cap on enrolled repositories; exceeding it fails the projection |
 | `CAO_COLLECT_RECOVER_DELIVERIES` | replay failed webhook deliveries to close gaps |
 | `CAO_COLLECT_QUEUE_MAX_LENGTH` | admission backpressure limit for outstanding collection tasks (default 200 000); tasks are never trimmed |
@@ -2953,33 +3504,54 @@ owning entity tables. No canonical JSON/JSONB or serialized documents are
 stored, and canonical scalar rows are not copied into generic source/value
 tables.
 `runs` and its run-owned records (including sessions and their events) use
-matching UTC Monday-to-Monday PostgreSQL RANGE partitions. `run_at` uses the
+matching UTC midnight-to-midnight PostgreSQL RANGE partitions named
+`<table>_dYYYYMMDD`. `run_at` uses the
 run's `createdAt`, then `startedAt`, `completedAt`, or `updatedAt`; records
 without any of these use ingestion time. Linked records inherit their run's
-partition timestamp. PostgreSQL routes parent-table inserts; missing weeks
+partition timestamp. PostgreSQL routes parent-table inserts; missing days
 fail closed rather than creating partitions during ingestion. The separately
 scheduled owner-run `database maintain --store canonical` checks existing
-partitions, creates any missing current and four future weeks first, and removes complete
-run weeks older than `CAO_POSTGRES_RUN_RETENTION_DAYS` (default 30, allowed 7–3650).
+partitions, creates any missing current and 28 future days first, and removes complete
+run days ending at or before the cutoff set by
+`CAO_POSTGRES_RUN_RETENTION_DAYS` (default 30, allowed 7–3650).
 Run-linked tables (audits, domains, eval observations, experiment assignments,
 friction, grader observations, issues, skills, and tools) independently expire
-complete weekly shards older than `CAO_POSTGRES_LINKED_RETENTION_DAYS` (default 7,
-allowed 7 up to the run retention). A partial week remains until the entire
+complete daily shards ending at or before the cutoff set by
+`CAO_POSTGRES_LINKED_RETENTION_DAYS` (default 7,
+allowed 7 up to the run retention). A partial cutoff day remains until the entire
 shard is past its cutoff. Maintenance detaches and drops linked shards before
 expired run shards, updating affected source counts and revisions. Repeated maintenance
 is a no-op when partitions are already present and none have expired. Run it
 at least daily and before restarting after downtime; runtime startup checks the
 full provisioned window but never repairs it. Alert on missed maintenance before
-the four-week runway expires. Choose a window
+the 28-day runway expires. Choose a window
 that covers all authoritative run timestamps before ingestion; historical linked
 records outside the linked window are skipped while their retained runs are
-still ingested.
+still ingested. For a seven-day window for both runs and detail, explicitly set
+both retention variables to `7`; existing defaults and overrides are unchanged.
+Whole-day expiry can retain less than one extra day at the maintenance instant;
+schedule lag can extend physical retention further.
 
 Owner-run `database bootstrap --store canonical` initializes the schema and its
-partitions. Runtime opens it without DDL. There is no old-layout detection,
-conversion, backfill, or backward-compatible import. Use a new database and
-re-ingest authoritative inputs when changing the physical contract; never drop
+partitions. Runtime opens it without DDL. There is no old-layout conversion,
+backfill, or backward-compatible import. Use a new database and
+re-ingest authoritative inputs when changing the physical contract. Existing
+`<table>_wYYYYMMDD` weekly layouts are rejected without conversion; rebuild
+canonical storage in a fresh schema or database. Never drop
 operational audit/queue state if it shares the old database.
+
+The daily run-count layer is a separately generated additive extension, not a
+replacement native detail contract. To add it to an existing compatible database,
+run owner-only `database bootstrap --store canonical --namespace NAMESPACE` with
+the deployment's owner credentials, then apply the updated
+`server/postgres/canonical-grants.sql` grants. Runtime does not create its tables;
+without the extension, `daily-run-counts` is unavailable while existing detail
+queries remain usable. Its independent receipts preserve daily counts when detail
+expires. Initial backfill can cover only still-retained runs, not previously
+evicted history. Counts use UTC run-start dates, exclude undated evidence with
+incomplete coverage, and retain all admitted dates in this initial implementation;
+no new detail-retention, sampling, or aggregate-expiry policy is enabled.
+
 Redis remains namespaced operational storage for caches, queues, sessions, and
 it does not hold dashboard entity rows or query indexes.
 Neither store grants control-plane authority. Credentials stay server-side.
@@ -3335,8 +3907,11 @@ The local capability profile is not suitable for remote or multi-user
 deployment. The capability authorizes its holder to read the full active
 dashboard data; it provides no user identity or per-source authorization.
 
-The Azure Functions profile is the experimental remote profile. It is enabled
-by calling `NewAzureFunctionsHandlerFromEnv`; `serve` does not enable it. Azure
+The Azure Functions profile is the experimental remote profile. Run
+`cao-dashboard azure-functions` to start its custom HTTP handler using
+`FUNCTIONS_CUSTOMHANDLER_PORT` and the existing Azure environment settings.
+It calls `NewAzureFunctionsHandlerFromEnv` in the shared server package;
+`serve` does not enable this profile. Azure
 mode fails closed unless all of the following are configured:
 
 - a readable `cao.azure.json` profile with the `azure-functions` target and PostgreSQL operational backend;
@@ -3588,11 +4163,11 @@ compares actual native rows and quality metadata, not only counts.
 
 ### Synthetic enterprise backfill stress
 
-The daily-only `backfill-stress.yml` workflow runs at 04:23 UTC with separate jobs for
+The daily `ci-daily.yml` workflow invokes `backfill-stress.yml` at 06:37 UTC with separate jobs for
 1,000, 10,000, and 50,000 repositories. Every repository has at least
 one synthetic run per day in 14 days of API history; the real backfill admits
-only the configured seven-day window. There are no PR, push, or manual-dispatch
-triggers for the full matrix. Scheduled runs append a combined report and
+only the configured seven-day window. The reusable workflow also supports manual
+dispatch, but has no PR or push trigger. Scheduled runs append a combined report and
 artifact links to the tracking issue; the test jobs remain read-only, and a
 separate reporting job owns issue-write permission. Local runs can select
 more daily runs within the five-million-history-run safety bound.
@@ -3609,14 +4184,85 @@ webhooks through the live Go HTTP handler. It checks every durable run identity,
 rejects out-of-window or duplicate admissions, verifies native row counts and
 bounded native HTTP queries, and requires webhook/backfill overlap and an
 idempotent rerun. At one run per day, the expected totals are 7,000, 70,000,
-and 350,000 runs. This measures lake recovery and historical discovery/
+and 350,000 durable run tasks. Retained canonical detail is capped independently
+at 200,000 Runs (or less under linked-source/byte pressure). This measures lake recovery and historical discovery/
 admission, not `gh aw logs` artifact downloads or run-task worker execution.
 
-The 50,000 case exceeds the native query engine's 200,000-input-row
-guard for runs. The harness asserts that run queries fail at that boundary
-rather than weakening it, then verifies a bounded repository query. Durable
-run-task identities and Postgres ingestion counts still must match the complete
-seven-day dataset.
+The 50,000 case crosses the native query engine's 200,000-input-row boundary.
+Publication evicts oldest complete Run subtrees instead of disabling fresh
+Run queries or raising query guards. The harness verifies recent Runs across
+the fleet and an exact retained-detail count. Durable run-task identities still
+match the complete seven-day discovery dataset; canonical counts describe only
+retained evidence.
+
+#### Monthly agent budget scenario
+
+The same reusable workflow also runs a separate monthly PostgreSQL scenario
+as part of `ci-daily.yml` (daily at 06:37 UTC), or on manual dispatch:
+
+```bash
+# Disposable local PostgreSQL; the test creates and removes a private schema.
+POSTGRES_URL=postgres://postgres@127.0.0.1:5432/cao_test?sslmode=disable \
+  npm run test:stress:monthly-budget
+```
+
+It simulates **30 complete UTC days across 10,000 repositories**, spending at
+most **$25,000 per day**. Run costs are reproducible integer cents drawn from a
+half-normal bell: `$1 + abs(N(0, $1.25))`, rejecting values above $5 rather than
+clipping the tail. The mode is $1; each day stops before its next run would
+exceed the budget, with less than $5 left unused. Every repository runs at least
+once per day. The fixed seed is 42. No agents, inference, or live spending occur.
+USD is fixture accounting used to determine volume, **not a conversion to AIC**;
+canonical AIC and token values are independently synthetic.
+
+The ingestion clock advances through 30 daily snapshots without waiting for
+wall-clock days. Each snapshot streams the observed workload through the
+production native PostgreSQL writer, with a run-owned Audit record per Run
+and the ordinary **30-day Run / seven-day linked-detail retention**.
+The real partition-maintenance path runs at every simulated rollover.
+Independent SQL verifies exact retained identities, daily fleet/run totals and
+decimal AIC sums, structural parents, complete recent audit bundles, no expired
+audit bundles, and no orphan records. Age-expired detail is not replayed into
+later snapshots; capacity-evicted Runs are replayed to prove that old history
+does not displace newer evidence or duplicate daily counts.
+
+After the month, the clock walks one second before and exactly onto the oldest
+retained Run's expiration boundary, repeats maintenance, then advances beyond the last
+Run's retention window. It checks that cutoff days survive until expiration,
+whole expired subtrees disappear, and the database still serves bounded fleet
+queries after all Runs expire. Daily snapshot queries check the native
+Dashboard Language boundary rather than a test-only query implementation.
+
+Production PostgreSQL writes enforce **200,000 rows per Run-owned source and
+256 MiB of combined logical typed-row bytes**. Oldest complete subtrees leave
+atomically while fresh Runs keep arriving. Structural inventory, independent
+Operational Value, operational state, and daily contribution receipts/counters
+are not capacity-evicted. Execution status does not pin disposable canonical
+detail; writes that cannot fit the newest bundle fail and roll back.
+Coverage becomes partial and population sampling weights become invalid rather
+than presenting retained detail as complete history.
+
+Exact retained-Run queries, statistical queries, fleet inventory, and additive
+daily health must remain usable throughout the month. The test never accepts
+query unavailability as a successful pressure response. Unchanged daily
+contribution receipts are skipped during reconciliation instead of repeatedly
+rewriting their counters; expired, unreceipted execution days are excluded before
+contribution updates. Receipt comparisons use indexed, analyzed 512-key snapshots
+to avoid quadratic cold-start joins as receipts grow within a transaction.
+Fresh statistics precede reconciliation, and counts,
+clocks, and capacity measurements use separate source-local plans to avoid
+partition-horizon planner amplification. This is not proof of full-month detail retention,
+browser ingestion, agent concurrency, or GitHub API throughput; the logical
+byte boundary is not a physical disk, transaction-peak, or RSS guarantee.
+
+The gate has a 35-minute deadline and a 512 MiB post-ingestion Go heap cap
+(not an RSS or ingestion-peak guarantee). `monthly-budget.json` includes each
+day's budget ledger, cost histogram, retained counts, revision, boundary state,
+heap measurement, and duration. Actions retains it and the Go log in
+`postgres-monthly-budget-stress`; local output defaults to
+`test-results/monthly-budget-stress/` (override with
+`CAO_MONTHLY_BUDGET_REPORT_DIR`). A failed run without a completed report is
+explicitly incomplete, never passing evidence.
 
 All simulated GitHub traffic is pinned to the exact numeric-loopback
 origin/proxy, and inherited GitHub credentials are removed. A default live

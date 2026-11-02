@@ -151,7 +151,8 @@ export function compileDashboardViewPayloadQueries(page, pageId, options = {}) {
       if (!shared) scopedGraphs.set(graphKey, { ...compiled, query: { ...compiled.query } });
       /** @type {Record<string, unknown>} */
       const query = compiled.query;
-      if (isPlainObject(view) && view.mark === 'element' && Number.isSafeInteger(viewData?.limit)) {
+      if (isPlainObject(view) && (view.mark === 'element' || view.mark === 'list' && view['lazy-list'] === true)
+          && Number.isSafeInteger(viewData?.limit)) {
         query.limit = Math.min(
           Number(viewData?.limit),
           typeof query.limit === 'number' ? query.limit : Infinity
@@ -293,7 +294,7 @@ function usesNativeSource(view, sourceName, predicates, queryContext, definition
   const declared = Array.isArray(definitions)
     && definitions.some((definition) => isPlainObject(definition) && definition.name === sourceName);
   const data = isPlainObject(view) && isPlainObject(view.data) ? view.data : null;
-  if (declared && isPlainObject(view) && view.mark !== 'element' && view.controls !== 'filter-only' && view.chart !== 'treemap' && data?.['query-context'] === false && predicates.length === 0
+  if (declared && isPlainObject(view) && view['lazy-list'] !== true && view.mark !== 'element' && view.controls !== 'filter-only' && view.chart !== 'treemap' && data?.['query-context'] === false && predicates.length === 0
       && !(queryContext?.search?.query.trim()) && !(queryContext?.orderBy?.length)
       && !requiresContextualQuery(sourceName, definitions)) return true;
   return isPlainObject(view)
@@ -579,12 +580,22 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
     const includeHistory = retainedHistory || (isPlainObject(definition.time) && definition.time.range === 'all');
     // Option queries scope their input rows before projecting distinct values.
     const inputScoped = scopeInput && name === sourceName;
-    const inputPredicates = (inputScoped ? outputPredicates : predicatesBeforeQuery(definition, outputPredicates))
+    // Daily scope must reach the count branch before inventory's top-N limit.
+    const dailyCounts = resolveDashboardQuerySources(definitions, [name]).includes('daily-run-counts');
+    const inputPredicates = (inputScoped ? outputPredicates : predicatesBeforeQuery(
+      dailyCounts ? { ...definition, limit: undefined } : definition, outputPredicates))
       .filter((predicate) => !includeHistory || predicate.field !== '@time');
     const retainedPredicates = inputScoped ? [] : outputPredicates;
     /** @param {string} source @param {number} inputIndex */
     const compileInput = (source, inputIndex) => {
       if (byName.has(source)) return compile(source, inputPredicates, inputTime, includeHistory);
+      if (source === 'daily-run-counts') {
+        const unsupported = inputPredicates.find((predicate) => predicate.optional
+          && !['organization', 'repository', 'workflow'].includes(String(predicate.field)));
+        if (unsupported) {
+          throw new TypeError(`Daily run counts do not support the selected "${String(unsupported.field)}" filter.`);
+        }
+      }
       if (inputPredicates.length === 0) return source;
       const inputName = `${scoped}:input-${inputIndex + 1}`;
       dependencies.push({
@@ -601,7 +612,16 @@ function compileScopedQueryGraph(sourceName, alias, predicates, search, orderBy,
     const compiledJoins = Array.isArray(definition.joins)
       ? definition.joins.map((join) => (
           isPlainObject(join) && typeof join.source === 'string'
-            ? { ...join, source: compile(join.source, joinKeyPredicates(join, inputPredicates), inputTime, includeHistory) }
+            ? { ...join, source: compile(join.source, [
+                ...joinKeyPredicates(join, inputPredicates),
+                ...(resolveDashboardQuerySources(definitions, [join.source]).includes('daily-run-counts')
+                  ? inputPredicates.filter((predicate) => predicate.optional).map((/** @type {Record<string, unknown>} */ predicate) => (
+                      predicate.field === 'repository' && Array.isArray(predicate.in)
+                        ? { ...predicate, in: predicate.in.map((value) => typeof value === 'string'
+                          ? value.slice(value.indexOf('/') + 1) : value) }
+                        : predicate
+                    )) : [])
+              ], inputTime, includeHistory) }
             : join
         ))
       : undefined;
@@ -688,9 +708,9 @@ function predicatesBeforeQuery(definition, predicates) {
     ? new Map(definition.select.filter(isPlainObject).map((value) => [value.as ?? value.field, value.field]))
     : null;
   return predicates.flatMap((predicate) => {
-    const field = selected ? selected.get(predicate.field) : predicate.field;
+    const field = selected ? selected.get(predicate.field) ?? (predicate.optional ? predicate.field : undefined) : predicate.field;
     if (typeof field !== 'string' || computed.has(field) || joined.has(field)
-        || (groups && !groups.has(field))
+        || (groups && !groups.has(field) && !predicate.optional)
         || windows.some((window) => !Array.isArray(window.groupby) || !window.groupby.includes(field))) return [];
     return [{ ...predicate, field }];
   });

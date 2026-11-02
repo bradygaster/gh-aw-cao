@@ -1,0 +1,263 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "SessionArchiveResult.json",
+    "type": "object",
+    "properties": {
+        "generation": {
+            "type": "string"
+        },
+        "kind": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "const": "timeline"
+                },
+                {
+                    "type": "string",
+                    "const": "summary"
+                },
+                {
+                    "type": "string",
+                    "const": "session-query"
+                }
+            ]
+        },
+        "events": {
+            "type": "array",
+            "items": {
+                "$ref": "#/$defs/Event"
+            }
+        },
+        "summary": {
+            "type": "array",
+            "items": {
+                "$ref": "#/$defs/SessionArchiveSummary"
+            }
+        },
+        "columns": {
+            "type": "array",
+            "items": {
+                "$ref": "#/$defs/SessionArchiveColumn"
+            }
+        },
+        "rows": {
+            "type": "array",
+            "items": {
+                "$ref": "#/$defs/RecordUnknown"
+            },
+            "description": "Present even for an empty analytical result. Integer values are serialized without float conversion."
+        },
+        "metadata": {
+            "$ref": "#/$defs/SessionArchiveQueryMetadata"
+        }
+    },
+    "required": [
+        "generation",
+        "kind"
+    ],
+    "description": "One authorized pinned generation. Approved payload JSON, explicit nulls, sequence, identity, omissions and provenance follow the shared trace contract, not another HTTP-only evidence model.",
+    "$defs": {
+        "Event": {
+            "type": "object",
+            "properties": {
+                "Sequence": {
+                    "type": "string",
+                    "description": "Zero-based contiguous event ordering within the approved trace."
+                },
+                "Type": {
+                    "type": "string"
+                },
+                "EventId": {
+                    "type": "string"
+                },
+                "ParentId": {
+                    "type": "string"
+                },
+                "EpisodeId": {
+                    "type": "string"
+                },
+                "HopId": {
+                    "type": "string"
+                },
+                "ParentHopId": {
+                    "type": "string"
+                },
+                "ToolCallId": {
+                    "type": "string"
+                },
+                "SessionId": {
+                    "type": "string"
+                },
+                "Timestamp": {
+                    "type": "string"
+                },
+                "ContentDigest": {
+                    "type": "string",
+                    "description": "SHA-256 of the concatenated UTF-8 JSON content, in Part order."
+                },
+                "Namespace": {
+                    "type": "string"
+                },
+                "RunId": {
+                    "type": "string",
+                    "description": "Trace identity, not necessarily a GitHub workflow run ID."
+                },
+                "RunAttempt": {
+                    "type": "string"
+                },
+                "ProjectionId": {
+                    "type": "string",
+                    "description": "Immutable approved trace digest."
+                },
+                "ContractVersion": {
+                    "type": "number",
+                    "const": 1
+                },
+                "Repository": {
+                    "type": "string"
+                },
+                "TraceId": {
+                    "type": "string",
+                    "description": "Canonical RunId above is distinct from this hashed native trace identity."
+                },
+                "CompletionDay": {
+                    "type": "string",
+                    "description": "Empty means undated, never a fabricated source clock."
+                },
+                "ArtifactDigest": {
+                    "type": "string"
+                },
+                "PolicyDigest": {
+                    "type": "string"
+                },
+                "Gaps": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "CapturedAt": {
+                    "type": "string"
+                },
+                "PayloadJSON": {
+                    "type": "string",
+                    "description": "Full approved event as UTF-8 JSON; absent and explicit null remain distinct."
+                }
+            },
+            "required": [
+                "Sequence",
+                "Type",
+                "EventId",
+                "ParentId",
+                "EpisodeId",
+                "HopId",
+                "ParentHopId",
+                "ToolCallId",
+                "SessionId",
+                "Timestamp",
+                "ContentDigest",
+                "Namespace",
+                "RunId",
+                "RunAttempt",
+                "ProjectionId",
+                "ContractVersion",
+                "Repository",
+                "TraceId",
+                "CompletionDay",
+                "ArtifactDigest",
+                "PolicyDigest",
+                "Gaps",
+                "CapturedAt",
+                "PayloadJSON"
+            ]
+        },
+        "SessionArchiveSummary": {
+            "type": "object",
+            "properties": {
+                "repository": {
+                    "type": "string"
+                },
+                "runId": {
+                    "type": "string"
+                },
+                "attempt": {
+                    "type": "string"
+                },
+                "projectionId": {
+                    "type": "string"
+                },
+                "events": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "repository",
+                "runId",
+                "attempt",
+                "projectionId",
+                "events"
+            ]
+        },
+        "SessionArchiveColumn": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "const": "string"
+                        },
+                        {
+                            "type": "string",
+                            "const": "integer"
+                        }
+                    ]
+                }
+            },
+            "required": [
+                "name",
+                "type"
+            ]
+        },
+        "RecordUnknown": {
+            "type": "object",
+            "properties": {},
+            "unevaluatedProperties": {}
+        },
+        "SessionArchiveQueryMetadata": {
+            "type": "object",
+            "properties": {
+                "limited": {
+                    "type": "boolean",
+                    "description": "Whether the explicit analytical limit omitted matching output rows. Never indicates a silently exceeded resource budget."
+                },
+                "upstreamCoverage": {
+                    "type": "string",
+                    "const": "unknown",
+                    "description": "Always unknown: archive coverage is not proof of complete upstream history."
+                },
+                "admissionGaps": {
+                    "type": "integer",
+                    "minimum": -2147483648,
+                    "maximum": 2147483647,
+                    "description": "Repository-scoped durable acquisition/admission gaps at the pinned generation's assessment."
+                },
+                "tracesWithGaps": {
+                    "type": "integer",
+                    "minimum": -2147483648,
+                    "maximum": 2147483647,
+                    "description": "Retained active traces with recorded omissions, before user filtering; distinct from admission gaps."
+                }
+            },
+            "required": [
+                "limited",
+                "upstreamCoverage",
+                "admissionGaps",
+                "tracesWithGaps"
+            ]
+        }
+    }
+}

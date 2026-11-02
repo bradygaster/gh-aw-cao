@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile, readdir, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { executeCanonicalQuery } from './canonical-query.mjs';
 import { canonicalTimestamp, operationalValuePeriod } from '../dashboard/site/src/data/model/schema.js';
 import { readCollection } from '../dashboard/site/src/data/storage/indexeddb.js';
 
@@ -13,6 +15,9 @@ const BASELINE_OBSERVATIONS = 3;
 const MAX_HISTORY_OBSERVATIONS = 366;
 const WORKER_TIMEOUT_MS = 2 * 60 * 1000;
 const RATE_LIMIT_TIMEOUT_MS = 30 * 1000;
+// Older/custom adapters may ignore localOnly. Admit only the reviewed standard adapter.
+export const LOCAL_VALUE_ADAPTER_DIGEST = '771ab1363f035e771684fc334c38dfeeee1855d691758055d4637373d3617416';
+export const MAX_LOCAL_VALUE_BYTES = 16 * 1024 * 1024;
 const WORKER_ENVIRONMENT = [
   'CI',
   'HOME',
@@ -28,7 +33,8 @@ const WORKER_ENVIRONMENT = [
   'GH_HOST',
   'GITHUB_API_URL',
   'GITHUB_SERVER_URL',
-  'CAO_DEPENDABOT_ALERTS_MAX_PAGES'
+  'CAO_DEPENDABOT_ALERTS_MAX_PAGES',
+  'CAO_DASHBOARD_QUERY_SOCKET'
 ];
 
 function commandFailureMessage(result, fallback) {
@@ -71,19 +77,77 @@ async function githubApiRemaining(env, signal) {
   return remaining;
 }
 
-function operationalValueWorkerEnvironment(databasePath, observedAt, rateLimitReserve) {
+function operationalValueWorkerEnvironment(databasePath, observedAt, rateLimitReserve, localOnly) {
   const env = Object.fromEntries(WORKER_ENVIRONMENT.flatMap((name) => (
     process.env[name] === undefined ? [] : [[name, process.env[name]]]
   )));
-  const token = process.env.CAO_OPERATIONAL_VALUE_GH_TOKEN || process.env.GH_TOKEN;
+  const token = localOnly ? undefined : process.env.CAO_OPERATIONAL_VALUE_GH_TOKEN || process.env.GH_TOKEN;
   if (token) env.GH_TOKEN = token;
-  env.CAO_DATABASE = path.resolve(databasePath);
+  if (databasePath) env.CAO_DATABASE = path.resolve(databasePath);
   env.CAO_ACTIVITY_CLI = fileURLToPath(new URL('./cao.mjs', import.meta.url));
   env.CAO_OPERATIONAL_VALUE_TIMESTAMP = observedAt;
   if (rateLimitReserve !== undefined) {
     env.CAO_GITHUB_API_MIN_REMAINING = String(rateLimitReserve);
   }
   return { env, token };
+}
+
+function canonicalOperationalValueEnvelope(row) {
+  const value = {
+    timestamp: row.timestamp,
+    repository: row.repository,
+    campaign: row.campaign,
+    campaign_id: row.campaign ? `campaign:${row.campaign}` : undefined,
+    value_id: row.valueId,
+    value: row.value,
+    metric_role: row['operational-value-role'],
+    metric_name: row['operational-value-name'],
+    metric_unit: row['operational-value-unit'],
+    metric_direction: row['operational-value-direction'],
+    maturity_status: row['maturity-status'],
+    adoption_at: row['adoption-at'],
+    evaluation_mode: row['evaluation-mode'],
+    workflow_slug: row['workflow-slug'],
+    workflow_name: row['workflow-name'],
+    evaluator_digest: row['evaluator-digest'],
+    cadence_days: row['cadence-days'],
+    window_start: row['window-start'],
+    window_end: row['window-end'],
+    measurement_kind: row['measurement-kind'],
+    coverage_status: row['coverage-status'],
+    missing_reason: row['missing-reason'],
+    eligible_count: row['eligible-count'],
+    population_digest: row['population-digest'],
+    evidence_digest: row['evidence-digest'],
+    rollup_numerator: row['rollup-numerator'],
+    rollup_denominator: row['rollup-denominator'],
+  };
+  return {
+    schema_version: 2,
+    kind: 'operational_value',
+    operational_value: Object.fromEntries(
+      Object.entries(value).filter(([, field]) => field !== undefined)
+    ),
+  };
+}
+
+async function retainedCanonicalOperationalValues(cutoff, signal) {
+  const predicates = [{ field: 'campaign', gte: '' }];
+  if (Number.isFinite(cutoff)) {
+    predicates.push({ field: 'timestamp', gte: new Date(cutoff).toISOString() });
+  }
+  const source = await executeCanonicalQuery({
+    name: 'retained-operational-values',
+    from: 'operationalValues',
+    filter: { predicates },
+    'order-by': [
+      { field: 'campaign' },
+      { field: 'repository' },
+      { field: 'valueId' },
+      { field: 'timestamp' },
+    ],
+  }, { signal });
+  return source.rows.map(canonicalOperationalValueEnvelope);
 }
 
 function redactToken(message, token) {
@@ -152,7 +216,7 @@ function runChildProcess(command, args, {
     : timeoutSignal;
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      detached: process.platform !== 'win32',
+      detached: process.platform !== 'win32' && process.env.CAO_VALUE_SHARED_PROCESS_GROUP !== '1',
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
@@ -224,6 +288,7 @@ export function operationalValueReserve(value, UsageError = Error) {
 function parseOperationalValueOutput(content, source, repositories) {
   const allowedRepositories = new Set(repositories.map((repository) => repository.toLowerCase()));
   const definitions = [];
+  const deferred = [];
   const definedIds = new Set();
   const values = String(content).split(/\r?\n/).flatMap((line, index) => {
     if (!line.trim()) return [];
@@ -235,6 +300,12 @@ function parseOperationalValueOutput(content, source, repositories) {
     }
     if (!record || typeof record !== 'object' || Array.isArray(record)) {
       throw new Error(`${source}:${index + 1} must emit a JSON object`);
+    }
+    if (record.kind === 'operational_value_deferred') {
+      if (!OPERATIONAL_VALUE_SLUG.test(record.workflowSlug ?? '') || typeof record.reason !== 'string'
+        || !record.reason.trim() || record.reason.length > 1024) throw new Error('Invalid operational value deferral');
+      deferred.push(`${record.workflowSlug}: ${record.reason}`);
+      return [];
     }
     if (record.kind === 'operational_value_definition') {
       const workflowSlug = String(record.workflowSlug ?? '');
@@ -383,7 +454,7 @@ function parseOperationalValueOutput(content, source, repositories) {
       ...(hasRollupNumerator ? { rollupNumerator, rollupDenominator } : {})
     }];
   });
-  return { definitions, values };
+  return { definitions, values, deferred };
 }
 
 function historicalObservationTimes(definition, observedAt, retentionWindow) {
@@ -472,6 +543,10 @@ export async function runOperationalValue({
   timestamp = new Date().toISOString(),
   repositories = [],
   rateLimitReserve,
+  localOnly = false,
+  disabledCampaigns = [],
+  disabledWorkflows = [],
+  disabledCollections = [],
   retentionWindow,
   signal,
   workerTimeoutMs = WORKER_TIMEOUT_MS
@@ -493,9 +568,9 @@ export async function runOperationalValue({
     throw new Error('Operational value requires at least one repository in the dashboard database or --repository');
   }
   const discoveredScripts = await discoverOperationalValueScripts(root);
-  const scripts = campaign
+  const scripts = (campaign
     ? discoveredScripts.filter((entry) => entry.package === campaign)
-    : discoveredScripts;
+    : discoveredScripts).filter(entry => !disabledCampaigns.includes(entry.package));
   if (campaign && scripts.length === 0) {
     throw new Error(`Operational value campaign not found: ${campaign}`);
   }
@@ -503,28 +578,42 @@ export async function runOperationalValue({
     throw new Error(`Operational value history campaign not found: ${historyCampaign}`);
   }
   const output = outputPath ? path.resolve(outputPath) : undefined;
+  if (localOnly && output) {
+    try {
+      if ((await stat(output)).size > MAX_LOCAL_VALUE_BYTES) throw new Error('Retained local Value exceeds its byte budget');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
   const cutoff = retentionWindow === undefined
     ? Number.NEGATIVE_INFINITY
     : Date.parse(observedAt) - retentionWindow;
-  const retained = output && retentionWindow !== undefined
-    ? await retainedOperationalValueEnvelopes(output, cutoff)
-    : [];
+  const retained = retentionWindow === undefined
+    ? []
+    : process.env.CAO_DASHBOARD_QUERY_SOCKET
+      ? await retainedCanonicalOperationalValues(cutoff, signal)
+      : output
+        ? await retainedOperationalValueEnvelopes(output, cutoff)
+        : [];
   const retainedKeys = new Set(retained.map((envelope) => {
     const value = envelope.operational_value;
     return operationalValueKey(value.campaign, value.repository, value.value_id, value.timestamp);
   }));
-  const request = `${JSON.stringify({
+  const requestDocument = {
     schemaVersion: 1,
     timestamp: observedAt,
     repositories: uniqueRepositories,
-    database: path.resolve(databasePath)
-  })}\n`;
+    ...(localOnly ? { localOnly: true, disabledWorkflows, disabledCollections } : {})
+  };
+  if (databasePath) requestDocument.database = path.resolve(databasePath);
+  const request = `${JSON.stringify(requestDocument)}\n`;
   const values = [];
   const warnings = [];
   const activeValueIds = new Map();
   const cadenceDefinitions = new Map();
   let historyValues = 0;
-  const worker = operationalValueWorkerEnvironment(databasePath, observedAt, rateLimitReserve);
+  let localOutputBytes = 0;
+  const worker = operationalValueWorkerEnvironment(databasePath, observedAt, rateLimitReserve, localOnly);
   const warn = (entry, error) => {
     const message = redactToken(error instanceof Error ? error.message : error, worker.token);
     const warning = { package: entry?.package ?? null, message };
@@ -534,14 +623,21 @@ export async function runOperationalValue({
   for (const entry of scripts) {
     try {
       signal?.throwIfAborted();
-      if (rateLimitReserve !== undefined && await githubApiRemaining(worker.env, signal) <= rateLimitReserve) {
+      if (localOnly && createHash('sha256').update(await readFile(entry.script)).digest('hex') !== LOCAL_VALUE_ADAPTER_DIGEST) {
+        throw new Error(`${entry.package}: local computation deferred because the adapter has no reviewed local-only boundary`);
+      }
+      if (!localOnly && rateLimitReserve !== undefined && await githubApiRemaining(worker.env, signal) <= rateLimitReserve) {
         throw new Error(`GitHub API core remaining is at or below the reserved ${rateLimitReserve} requests`);
       }
       const workerOutput = await runOperationalValueWorker(entry, request, worker.env, {
         signal,
         timeoutMs: workerTimeoutMs
       });
+      if (localOnly && (localOutputBytes += Buffer.byteLength(workerOutput)) > MAX_LOCAL_VALUE_BYTES) {
+        throw new Error('Local Value batch exceeded its output budget; accepted evidence retained');
+      }
       const parsed = parseOperationalValueOutput(workerOutput, entry.script, uniqueRepositories);
+      for (const reason of parsed.deferred) warn(entry, reason);
       values.push(...parsed.values.map((record) => ({ ...record, campaign: entry.package })));
       if (parsed.definitions.length > 0) {
         activeValueIds.set(entry.package, new Set(
@@ -589,19 +685,24 @@ export async function runOperationalValue({
           for (const batch of batches) {
             if (batch.length === 0) continue;
             signal?.throwIfAborted();
-            const historyRequest = `${JSON.stringify({
+            const historyRequestDocument = {
               schemaVersion: 1,
               timestamp: batch.at(-1),
               ...(definition.historyBatch ? { historyTimestamps: batch } : {}),
               repositories: supportedRepositories,
-              database: path.resolve(databasePath)
-            })}\n`;
+              ...(localOnly ? { localOnly: true, disabledWorkflows, disabledCollections } : {})
+            };
+            if (databasePath) historyRequestDocument.database = path.resolve(databasePath);
+            const historyRequest = `${JSON.stringify(historyRequestDocument)}\n`;
             const historyOutput = await runOperationalValueWorker(
               entry,
               historyRequest,
               historyEnvironment,
               { signal, timeoutMs: workerTimeoutMs }
             );
+            if (localOnly && (localOutputBytes += Buffer.byteLength(historyOutput)) > MAX_LOCAL_VALUE_BYTES) {
+              throw new Error('Local Value batch exceeded its output budget; accepted evidence retained');
+            }
             const historyParsed = parseOperationalValueOutput(
               historyOutput,
               entry.script,
@@ -642,11 +743,12 @@ export async function runOperationalValue({
       }
     } catch (error) {
       signal?.throwIfAborted();
+      if (localOnly && localOutputBytes > MAX_LOCAL_VALUE_BYTES) throw error;
       warn(entry, error);
     }
   }
   signal?.throwIfAborted();
-  if (rateLimitReserve !== undefined) {
+  if (!localOnly && rateLimitReserve !== undefined) {
     try {
       if (await githubApiRemaining(worker.env, signal) < rateLimitReserve) {
         throw new Error(`Operational value crossed the reserved GitHub API floor of ${rateLimitReserve} requests`);
@@ -714,6 +816,9 @@ export async function runOperationalValue({
       }
     }
     const jsonl = [...merged.values()].map((envelope) => JSON.stringify(envelope)).join('\n');
+    if (localOnly && Buffer.byteLength(jsonl) + 1 > MAX_LOCAL_VALUE_BYTES) {
+      throw new Error('Combined local Value exceeds its output budget; accepted evidence retained');
+    }
     const temporary = `${output}.tmp-${process.pid}-${Date.now()}`;
     try {
       await writeFile(temporary, jsonl ? `${jsonl}\n` : '', { flag: 'wx' });

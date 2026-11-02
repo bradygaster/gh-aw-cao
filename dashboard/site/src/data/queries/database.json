@@ -1,10 +1,197 @@
 [
   {
+    "name": "statistical-runs",
+    "stores": ["runs", "workflows"],
+    "from": "runs",
+    "joins": [{
+      "source": "$statisticalMembership", "type": "inner",
+      "on": [{ "left": "id", "right": "id" }],
+      "fields": [
+        { "field": "statistical-frame-id", "as": "statistical-frame-id" },
+        { "field": "statistical-stratum", "as": "statistical-stratum" }, { "field": "statistical-priority", "as": "statistical-priority" },
+        { "field": "statistical-population", "as": "statistical-population" }, { "field": "statistical-allocation", "as": "statistical-allocation" },
+        { "field": "statistical-weight-valid", "as": "statistical-weight-valid" }, { "field": "statistical-probability", "as": "statistical-probability" },
+        { "field": "statistical-weight", "as": "statistical-weight" },
+        { "field": "statistical-stratum", "as": "sample-stratum" },
+        { "field": "statistical-probability", "as": "sample-probability" },
+        { "field": "statistical-weight", "as": "sample-weight" }
+      ]
+    }]
+  },
+  {
+    "name": "statistical-tools",
+    "stores": ["runs", "tools"],
+    "from": "tools",
+    "joins": [{
+      "source": "$statisticalMembership", "type": "inner",
+      "on": [
+        { "left": "organization", "right": "organization" },
+        { "left": "repository", "right": "repository" }, { "left": "run", "right": "run" }
+      ],
+      "fields": [
+        { "field": "statistical-frame-id", "as": "statistical-frame-id" },
+        { "field": "statistical-priority", "as": "statistical-priority" },
+        { "field": "statistical-stratum", "as": "statistical-stratum" }, { "field": "statistical-population", "as": "statistical-population" },
+        { "field": "statistical-allocation", "as": "statistical-allocation" }, { "field": "statistical-weight-valid", "as": "statistical-weight-valid" },
+        { "field": "statistical-probability", "as": "statistical-probability" }, { "field": "statistical-weight", "as": "statistical-weight" }
+      ]
+    }]
+  },
+  {
+    "name": "statistical-domains",
+    "stores": ["runs", "domains"],
+    "from": "domains",
+    "joins": [{
+      "source": "$statisticalMembership", "type": "inner",
+      "on": [
+        { "left": "organization", "right": "organization" },
+        { "left": "repository", "right": "repository" }, { "left": "run", "right": "run" }
+      ],
+      "fields": [
+        { "field": "statistical-frame-id", "as": "statistical-frame-id" },
+        { "field": "statistical-priority", "as": "statistical-priority" },
+        { "field": "statistical-stratum", "as": "statistical-stratum" }, { "field": "statistical-population", "as": "statistical-population" },
+        { "field": "statistical-allocation", "as": "statistical-allocation" }, { "field": "statistical-weight-valid", "as": "statistical-weight-valid" },
+        { "field": "statistical-probability", "as": "statistical-probability" }, { "field": "statistical-weight", "as": "statistical-weight" }
+      ]
+    }]
+  },
+  {
+    "name": "statistical-skills",
+    "stores": ["runs", "skills"],
+    "from": "skills",
+    "joins": [{
+      "source": "$statisticalMembership", "type": "inner",
+      "on": [
+        { "left": "organization", "right": "organization" },
+        { "left": "repository", "right": "repository" }, { "left": "run", "right": "run" }
+      ],
+      "fields": [
+        { "field": "statistical-frame-id", "as": "statistical-frame-id" },
+        { "field": "statistical-priority", "as": "statistical-priority" },
+        { "field": "statistical-stratum", "as": "statistical-stratum" }, { "field": "statistical-population", "as": "statistical-population" },
+        { "field": "statistical-allocation", "as": "statistical-allocation" }, { "field": "statistical-weight-valid", "as": "statistical-weight-valid" },
+        { "field": "statistical-probability", "as": "statistical-probability" }, { "field": "statistical-weight", "as": "statistical-weight" }
+      ]
+    }]
+  },
+  {
+    "name": "statistical-audits",
+    "stores": ["runs", "audits"],
+    "from": "audits",
+    "joins": [{
+      "source": "$statisticalMembership", "type": "inner",
+      "on": [
+        { "left": "organization", "right": "organization" },
+        { "left": "repository", "right": "repository" }, { "left": "run", "right": "run" }
+      ],
+      "fields": [
+        { "field": "statistical-frame-id", "as": "statistical-frame-id" },
+        { "field": "statistical-priority", "as": "statistical-priority" },
+        { "field": "statistical-stratum", "as": "statistical-stratum" }, { "field": "statistical-population", "as": "statistical-population" },
+        { "field": "statistical-allocation", "as": "statistical-allocation" }, { "field": "statistical-weight-valid", "as": "statistical-weight-valid" },
+        { "field": "statistical-probability", "as": "statistical-probability" }, { "field": "statistical-weight", "as": "statistical-weight" }
+      ]
+    }]
+  },
+  {
+    "name": "daily-run-counts",
+    "stores": ["dailyRunCounts"],
+    "from": "$dailyRunCounts",
+    "select": [
+      { "field": "day" },
+      { "field": "owner", "as": "organization" },
+      { "field": "repository" },
+      { "field": "workflowPath", "as": "workflow" },
+      { "field": "total" },
+      { "field": "successful" },
+      { "field": "failed" },
+      { "field": "approval" },
+      { "field": "pending" },
+      { "field": "other" }
+    ]
+  },
+  {
+    "name": "routing-aggregates",
+    "stores": ["runs"],
+    "from": "$runs",
+    "filter": { "predicates": [{ "field": "routingAggregateVersion", "equals": 1 }] },
+    "compute": [
+      { "as": "run", "function": "concat", "args": [{ "field": "githubRunId" }] },
+      { "as": "routing-run-key", "function": "concat", "args": [{ "field": "owner" }, { "value": "/" }, { "field": "repository" }, { "value": ":" }, { "field": "githubRunId" }] },
+      { "as": "observed-at", "function": "iso-timestamp", "args": [{ "field": "routingSessionClock" }] },
+      { "as": "pick", "function": "concat", "args": [{ "field": "routingSelectedModel" }, { "value": " / " }, { "field": "routingSelectedEffort" }] },
+      { "as": "unknown-pick-model", "function": "equals-any", "args": [{ "field": "routingSelectedModel" }, { "value": "unknown" }] },
+      { "as": "routing-key-encoded", "function": "url-encode", "args": [{ "field": "routing-run-key" }] },
+      { "as": "routing-href", "function": "concat", "args": [{ "value": "#page-routing-run?routing-run=" }, { "field": "routing-key-encoded" }] },
+      { "as": "routing-dashboard-link", "function": "dashboard-link", "args": [{ "field": "runLink" }, { "field": "routing-href" }, { "field": "run" }] },
+      { "as": "positive-baseline", "function": "greater-than", "args": [{ "field": "routingBaselineAic" }, { "value": 0 }] },
+      { "as": "complete-baseline", "function": "equals-any", "args": [{ "field": "routingBaselineComplete" }, { "value": true }] },
+      { "as": "missing-main", "function": "equals-any", "args": [{ "field": "routingMainAic" }, { "value": null }] },
+      { "as": "missing-baseline-model", "function": "equals-any", "args": [{ "field": "routingBaselineModel" }, { "value": null }] },
+      { "as": "routed", "function": "equals-any", "args": [{ "field": "routingState" }, { "value": "selected" }, { "value": "selection_failed" }, { "value": "harness_reported" }, { "value": "configured_unrecorded" }] },
+      { "as": "eligible-main", "function": "if", "args": [{ "field": "missing-main" }, { "value": false }, { "field": "routed" }] },
+      { "as": "eligible-model", "function": "if", "args": [{ "field": "missing-baseline-model" }, { "value": false }, { "field": "eligible-main" }] },
+      { "as": "eligible-baseline", "function": "if", "args": [{ "field": "complete-baseline" }, { "field": "positive-baseline" }, { "value": false }] },
+      { "as": "paired", "function": "if", "args": [{ "field": "eligible-baseline" }, { "field": "eligible-model" }, { "value": false }] },
+      { "as": "paired-main-aic", "function": "if", "args": [{ "field": "paired" }, { "field": "routingMainAic" }, { "value": null }] },
+      { "as": "paired-baseline-aic", "function": "if", "args": [{ "field": "paired" }, { "field": "routingBaselineAic" }, { "value": null }] }
+    ],
+    "select": [
+      { "field": "routingAggregateVersion", "as": "routing-aggregate-version" },
+      { "field": "owner", "as": "organization" }, { "field": "repository" },
+      { "field": "workflowPath", "as": "workflow" }, { "field": "run" }, { "field": "attempt", "as": "run-attempt" },
+      { "field": "runLink", "as": "run-link" }, { "field": "engine" },
+      { "field": "routing-run-key" }, { "field": "observed-at" }, { "field": "pick" }, { "field": "unknown-pick-model" },
+      { "field": "routing-dashboard-link" }, { "field": "paired" }, { "field": "paired-main-aic" }, { "field": "paired-baseline-aic" },
+      { "field": "routingState", "as": "routing-state" },
+      { "field": "routingSelectedModel", "as": "pick-model" }, { "field": "routingSelectedEffort", "as": "pick-effort" },
+      { "field": "routingGoal", "as": "routing-goal" }, { "field": "routingConfiguredMode", "as": "routing-configured-mode" },
+      { "field": "routingMode", "as": "routing-mode" }, { "field": "routingStatus", "as": "harness-status" },
+      { "field": "routingAwfVersion", "as": "routing-awf-version" }, { "field": "routingSessionClock", "as": "run-clock" },
+      { "field": "routingSelectionCount", "as": "selection-count" }, { "field": "routingFailureCount", "as": "failure-count" },
+      { "field": "routingDegraded", "as": "routing-degraded" }, { "field": "routingConfigurationConflict", "as": "configuration-conflict" },
+      { "field": "routingWarnings", "as": "warnings" }, { "field": "routingAgentResult", "as": "agent-result" },
+      { "field": "routingFlaggedRequests", "as": "flagged-requests" }, { "field": "routingDeviatedRequests", "as": "deviated-requests" },
+      { "field": "routingCompleteAic", "as": "complete-aic" }, { "field": "routingMainAic", "as": "main-aic" },
+      { "field": "routingBaselineModel", "as": "baseline-model" }, { "field": "routingBaselineAic", "as": "baseline-aic" },
+      { "field": "routingBaselineComplete", "as": "baseline-complete" },
+      { "field": "routingFailureCodes", "as": "routing-failure-codes" }, { "field": "routingDeviationCodes", "as": "routing-deviation-codes" },
+      { "field": "routingResolutionCodes", "as": "routing-resolution-codes" }, { "field": "routingUpstreamCodes", "as": "routing-upstream-codes" },
+      { "field": "routingCandidateCoverage", "as": "candidate-coverage" },
+      { "field": "routingTaskType", "as": "routing-task-type" }, { "field": "routingScope", "as": "routing-scope" },
+      { "field": "routingComplexity", "as": "routing-complexity" }
+    ]
+  },
+  {
+    "name": "workflow-value-collections",
+    "stores": ["workflowValueCollections", "repositories"],
+    "from": "$workflowValueCollections",
+    "joins": [{
+      "source": "$repositories", "type": "left",
+      "on": [{ "left": "repositoryId", "right": "id" }],
+      "fields": [{ "field": "owner", "as": "organization" }, { "field": "name", "as": "repository-name" }]
+    }],
+    "compute": [{ "as": "workflow-route", "function": "concat", "args": [{ "field": "repository" }, { "value": ":" }, { "field": "sourcePath" }] }],
+    "select": [
+      { "field": "workflow-route" },
+      { "field": "id" }, { "field": "organization" }, { "field": "repository-name", "as": "repository" },
+      { "field": "workflow" }, { "field": "sourcePath", "as": "workflow-path" },
+      { "field": "registration" }, { "field": "collector" }, { "field": "state", "as": "collection-state" },
+      { "field": "reasonCode", "as": "reason-code" }, { "field": "reason" },
+      { "field": "observedAt", "as": "checked-at" }, { "field": "policyDigest", "as": "policy-digest" },
+      { "field": "lastAttemptAt", "as": "last-attempt-at" },
+      { "field": "lastAttemptOutcome", "as": "last-attempt-outcome" }
+    ]
+  },
+  {
     "name": "operational-value-evidence",
     "stores": ["operationalValueEvidence"],
     "from": "$operationalValueEvidence",
     "select": [
       { "field": "report-id" },
+      { "field": "workflow-route" },
+      { "field": "snapshot-route" },
       { "field": "organization" },
       { "field": "repository" },
       { "field": "workflow" },
@@ -282,6 +469,7 @@
       { "field": "workerCount", "as": "campaign-worker-count" },
       { "field": "inventoryWarnings", "as": "campaign-inventory-warnings" },
       { "field": "minVersion", "as": "campaign-min-version" },
+      { "field": "sourceCoordinate", "as": "campaign-source" },
       { "field": "version", "as": "campaign-version" },
       { "field": "currentVersion", "as": "campaign-current-version" },
       { "field": "updateState", "as": "campaign-update-state" },
@@ -430,6 +618,11 @@
       { "field": "ghAwCurrentVersion", "as": "gh-aw-current-version" },
       { "field": "gh-aw-version-label" },
       { "field": "ghAwUpdateState", "as": "gh-aw-update-state" },
+      { "field": "sourceKind", "as": "workflow-source-kind" },
+      { "field": "sourceCoordinate", "as": "workflow-source" },
+      { "field": "sourceVersion", "as": "workflow-source-version" },
+      { "field": "sourceCurrentVersion", "as": "workflow-source-current-version" },
+      { "field": "sourceUpdateState", "as": "workflow-source-update-state" },
       { "field": "campaign-aic-allowance" },
       { "field": "campaign-worker-count" },
       { "field": "campaign-inventory-warnings" },
@@ -664,6 +857,25 @@
     ]
   },
   {
+    "name": "workflow-value-measurements",
+    "stores": ["operationalValues"],
+    "from": "$operationalValues",
+    "select": [
+      { "field": "id" }, { "field": "repository" }, { "field": "workflow-route" }, { "field": "campaign" },
+      { "field": "workflow-slug" }, { "field": "workflow-name" },
+      { "field": "valueId", "as": "value-id" }, { "field": "value" },
+      { "field": "operational-value-role", "as": "metric-role" },
+      { "field": "operational-value-name", "as": "metric-name" },
+      { "field": "operational-value-unit", "as": "metric-unit" },
+      { "field": "operational-value-direction", "as": "metric-direction" },
+      { "field": "evaluator-digest" }, { "field": "timestamp", "as": "observed-at" },
+      { "field": "window-start" }, { "field": "window-end" }, { "field": "measurement-kind" },
+      { "field": "maturity-status" }, { "field": "coverage-status" }, { "field": "missing-reason" },
+      { "field": "evidence-digest" }, { "field": "eligible-count" }, { "field": "population-digest" },
+      { "field": "cadence-days" }, { "field": "evaluation-mode" }, { "field": "adoption-at" }
+    ]
+  },
+  {
     "name": "operational-values",
     "stores": ["repositories", "campaigns", "operationalValues"],
     "from": "$operationalValues",
@@ -674,7 +886,6 @@
         "on": [{ "left": "repositoryId", "right": "id" }],
         "fields": [
           { "field": "owner", "as": "organization" },
-          { "field": "name", "as": "repository" },
           { "field": "name", "as": "repository-name" },
           { "field": "organizationLink", "as": "organization-link" },
           { "field": "repositoryLink", "as": "repository-link" }
@@ -694,7 +905,7 @@
     "select": [
       { "field": "id" },
       { "field": "organization" },
-      { "field": "repository" },
+      { "field": "repository-name", "as": "repository" },
       { "field": "repository-name" },
       { "field": "campaign" },
       { "field": "campaign-name" },

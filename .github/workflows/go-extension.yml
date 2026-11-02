@@ -9,6 +9,14 @@ on:
       - .golangci.yml
       - cmd/**
       - internal/**
+      - server/cmd/cao-dashboard/**
+      - server/internal/server/**
+      - server/internal/simulator/**
+      - server/azure/**
+      - server/Dockerfile
+      - server/go.mod
+      - server/go.sum
+      - aw.yml
       - dashboard/catalog.go
       - go.mod
       - go.sum
@@ -17,6 +25,7 @@ on:
       - Makefile
       - scripts/build-release.sh
       - tests/unit/build-release.test.mjs
+      - tests/unit/workflow-contract-ci-triggers.test.mjs
       - tests/integration/gh-extension-installation.test.mjs
       - activity/**
       - dashboard/site/src/agent/**
@@ -34,6 +43,14 @@ on:
       - .golangci.yml
       - cmd/**
       - internal/**
+      - server/cmd/cao-dashboard/**
+      - server/internal/server/**
+      - server/internal/simulator/**
+      - server/azure/**
+      - server/Dockerfile
+      - server/go.mod
+      - server/go.sum
+      - aw.yml
       - dashboard/catalog.go
       - go.mod
       - go.sum
@@ -42,6 +59,7 @@ on:
       - Makefile
       - scripts/build-release.sh
       - tests/unit/build-release.test.mjs
+      - tests/unit/workflow-contract-ci-triggers.test.mjs
       - tests/integration/gh-extension-installation.test.mjs
       - activity/**
       - dashboard/site/src/agent/**
@@ -50,6 +68,9 @@ on:
       - dashboard/site/dashboard.json
       - dashboard/site/dashboard-fragments/**
       - dashboard/report/bundle-dashboards.mjs
+
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -93,6 +114,7 @@ jobs:
       - name: Check extension
         run: make check
       - name: Check GitHub CLI release installation
+        if: github.event_name != 'pull_request'
         run: node --test tests/integration/gh-extension-installation.test.mjs
       - name: Check standalone execution without Node.js
         run: |
@@ -115,8 +137,65 @@ jobs:
           ./gh-cao setup auth token --help
           ./gh-cao pages --json > /dev/null
 
+  extension-setup-simulator:
+    name: Setup against local GitHub and Azure simulators
+    # Keep the full external-tool topology matrix off the PR critical path.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_DB: cao
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cao"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            server/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install policy-pinned gh-aw prerequisite
+        uses: ./.github/actions/setup-gh-aw # zizmor: ignore[self-repository] - Local actions use the syntax accepted by GitHub Actions and actionlint.
+      - name: Run offline setup integration tests
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+          GH_ENTERPRISE_TOKEN: ""
+          GITHUB_ENTERPRISE_TOKEN: ""
+        run: npm run test:integration:setup
+      - name: Prepare offline Azure simulation prerequisites
+        run: |
+          go mod download
+          go -C server mod download
+          docker pull mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5
+      - name: Run Azure setup with official Azurite and local control-plane simulation
+        env:
+          POSTGRES_URL: postgres://postgres@127.0.0.1:5432/cao?sslmode=disable
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+          GH_ENTERPRISE_TOKEN: ""
+          GITHUB_ENTERPRISE_TOKEN: ""
+        run: |
+          npm run test:integration:setup-azure
+          npm run test:integration:azure-install-journey
+
   extension-authtests:
     name: Doctor authenticated integration tests
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

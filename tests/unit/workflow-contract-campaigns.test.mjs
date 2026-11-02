@@ -40,24 +40,16 @@ function workflowConfig(name) {
   return parse(frontmatter);
 }
 
+const campaignManifests = [
+  "aw.yml",
+  ...readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "aw.yml")))
+    .map((entry) => `${entry.name}/aw.yml`)
+    .sort(),
+];
+
 test("campaigns and repository workflows pin the supported gh-aw version", () => {
-  const manifests = [
-    "aw.yml",
-    "activity/aw.yml",
-    "uk-ai-advisory/aw.yml",
-    "bug-bash/aw.yml",
-    "cao-evolution/aw.yml",
-    "dashboard/aw.yml",
-    "dependabot/aw.yml",
-    "dreaming/aw.yml",
-    "eslint-rules/aw.yml",
-    "eu-cra-compliance/aw.yml",
-    "optimization/aw.yml",
-    "repo-assist/aw.yml",
-    "self-care/aw.yml",
-    "software-development-practices/aw.yml",
-  ];
-  for (const manifest of manifests) {
+  for (const manifest of campaignManifests) {
     assert.equal(parse(readFileSync(join(root, manifest), "utf8"))["min-version"], ghAwVersion, manifest);
   }
 
@@ -117,23 +109,7 @@ test("catalog campaigns declare their current experimental maturity", () => {
     "self-care/aw.yml",
     "software-development-practices/aw.yml",
   ]);
-  const manifests = [
-    "aw.yml",
-    "activity/aw.yml",
-    "uk-ai-advisory/aw.yml",
-    "bug-bash/aw.yml",
-    "cao-evolution/aw.yml",
-    "dashboard/aw.yml",
-    "dependabot/aw.yml",
-    "dreaming/aw.yml",
-    "eslint-rules/aw.yml",
-    "eu-cra-compliance/aw.yml",
-    "optimization/aw.yml",
-    "repo-assist/aw.yml",
-    "self-care/aw.yml",
-    "software-development-practices/aw.yml",
-  ];
-  for (const manifest of manifests) {
+  for (const manifest of campaignManifests) {
     const metadata = parse(readFileSync(join(root, manifest), "utf8"));
     assert.equal(metadata.private ?? false, privateManifests.has(manifest), manifest);
     assert.equal(metadata.experimental, true, manifest);
@@ -221,7 +197,7 @@ test("operational packages own their workflows without reinstalling the control 
 });
 
 test("campaign manifests exclude repository-only tests", () => {
-  for (const relativePath of ["aw.yml", join("uk-ai-advisory", "aw.yml"), join("bug-bash", "aw.yml"), join("cao-evolution", "aw.yml"), join("dashboard", "aw.yml"), join("dependabot", "aw.yml"), join("dreaming", "aw.yml"), join("eslint-rules", "aw.yml"), join("eu-cra-compliance", "aw.yml"), join("optimization", "aw.yml"), join("repo-assist", "aw.yml"), join("self-care", "aw.yml"), join("software-development-practices", "aw.yml")]) {
+  for (const relativePath of campaignManifests) {
     const manifest = readFileSync(join(root, relativePath), "utf8");
     assert.doesNotMatch(manifest, /(?:review-smoke|enterprise-canary|enterprise-stress|tests\/e2e|\.github\/aw\/e2e)/, relativePath);
   }
@@ -285,19 +261,10 @@ test("focused campaign manifests do not cross-own campaign files", () => {
 });
 
 test("operational campaigns install declarations matching their workflow identities", () => {
-  const campaignNames = [
-    "bug-bash",
-    "cao-evolution",
-    "dependabot",
-    "dreaming",
-    "eslint-rules",
-    "eu-cra-compliance",
-    "optimization",
-    "repo-assist",
-    "self-care",
-    "software-development-practices",
-    "uk-ai-advisory",
-  ];
+  const campaignNames = campaignManifests
+    .filter((manifest) => manifest !== "aw.yml")
+    .map((manifest) => manifest.split("/")[0])
+    .filter((name) => existsSync(join(root, name, "cao.json")));
 
   for (const campaignName of campaignNames) {
     const declaration = JSON.parse(readFileSync(join(root, campaignName, "cao.json"), "utf8"));
@@ -333,7 +300,7 @@ test("root campaign provides default control-repository agent context", () => {
   const debugSkill = readFileSync(join(root, "skills", "debug-cao", "SKILL.md"), "utf8");
 
   assert.doesNotMatch(rootManifestSource, /source: AGENTS\.md|default-AGENTS\.md/);
-  assert.equal(rootManifest.resources.length, 7);
+  assert.equal(rootManifest.resources.length, 8);
   assert.equal(rootManifest.resources.some(({ destination }) => destination.startsWith(".github/skills/")), false);
   assert.deepEqual(rootManifest.skills, [
     "skills/agentic-workflows",
@@ -434,7 +401,7 @@ test("root campaign resolves the single CAO bootstrap runtime", () => {
   assert.equal(policy.authorized, true);
   assert.equal(policy.campaign, "dependabot");
   assert.doesNotMatch(rootManifest, /\.github\/aw\/cao\//);
-  for (const path of ["control.mjs", "policy.mjs", "authority.mjs", "operations.mjs", "setup-github-apps.mjs"]) {
+  for (const path of ["control.mjs", "policy.mjs", "authority.mjs", "operations.mjs", "github-apps.mjs"]) {
     assert.deepEqual(
       controlPlaneManifest.resources.find(({ destination }) =>
         destination === `.github/workflows/shared/${path}`),
@@ -444,7 +411,7 @@ test("root campaign resolves the single CAO bootstrap runtime", () => {
       },
     );
   }
-  for (const path of ["cao.schema.json", "setup-github-apps.mjs", "control.mjs", "policy.mjs"]) {
+  for (const path of ["cao.schema.json", "github-apps.mjs", "control.mjs", "policy.mjs"]) {
     assert.ok(existsSync(join(root, ".github", "workflows", "shared", path)));
   }
   assert.match(control, /runtime="\$GITHUB_WORKSPACE\/\.cao\/\.github\/workflows\/shared\/control\.mjs"/);
@@ -452,15 +419,18 @@ test("root campaign resolves the single CAO bootstrap runtime", () => {
   assert.match(activity, /node activity\/control-settings\.mjs \\\n\s+\.github\/workflows\/shared\/control\.mjs/);
   assert.doesNotMatch(activity, /Checkout installed CAO control source|\.cao-runtime/);
   assert.doesNotMatch(setupSkill, /cao_checkout|sparse-checkout/);
+  assert.match(quickstart, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/install-gh-cao\.sh \| bash/);
   assert.match(quickstart, /gh extension install githubnext\/gh-cao/);
-  assert.doesNotMatch(quickstart, /raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/install\.sh/);
+  assert.match(quickstart, /Native setup prepares missing runtime, policy, and gh-aw/);
+  assert.ok(quickstart.indexOf("gh extension install") < quickstart.indexOf("curl -fsSL"));
+  assert.match(quickstart, /:::tip\[SAML-token installation failure\]/);
   assert.match(quickstart, /gh cao setup/);
   assert.match(quickstart, /No campaigns or agentic work are installed/);
   assert.match(quickstart, /Commit and push these CAO monitoring changes\? \[y\/N\]/);
   assert.match(quickstart, /deployment pending.*links immediately/);
   assert.match(quickstart, /Declining, blocked, or unattended setup stays local/);
   const campaignWalkthrough = readFileSync(join(root, "docs", "repo-assist-quickstart.md"), "utf8");
-  assert.match(campaignWalkthrough, /gh cao campaigns add githubnext\/gh-cao\/repo-assist/);
+  assert.match(campaignWalkthrough, /gh cao add githubnext\/gh-cao\/repo-assist/);
   assert.match(campaignWalkthrough, /gh aw run repo-assist/);
   assert.doesNotMatch(campaignWalkthrough, /--quickstart|node activity\/cao\.mjs quickstart/);
   assert.doesNotMatch(quickstart, /commits\/main|full commit SHA/);
@@ -475,33 +445,35 @@ test("root campaign resolves the single CAO bootstrap runtime", () => {
   assert.match(updateSection, /predate the campaign-owned `\.github\/workflows\/shared\/` runtime[\s\S]*?fails closed/);
   assert.doesNotMatch(updateSection, /gh extension (?:install|upgrade)|gh aw add|--create-pull-request/);
   assert.doesNotMatch(updateSection, /base64 -d|contents\/\.github\/cao/);
-  assert.match(authentication, /node \.github\/workflows\/shared\/setup-github-apps\.mjs --repo acme\/central-agentic-ops/);
-  assert.doesNotMatch(authentication, /CAO_REF=|contents\/\.github\/workflows\/shared\/setup-github-apps\.mjs/);
+  const provisioning = readFileSync(join(root, "docs", "control-plane-authentication.md"), "utf8");
+  assert.match(authentication, /control-plane-authentication\.md#configure-private-github-apps/);
+  assert.match(provisioning, /gh cao setup auth github-app \\\n\s+--repo acme\/central-agentic-ops/);
+  assert.doesNotMatch(`${authentication}\n${provisioning}`, /cao-setup|setup-github-apps\.mjs|CAO_REF=/);
   assert.match(admission, /Bash installer installs the explicit CAO root package and creates the consumer-owned policy/i);
 });
 
-test("authentication setup guides share unified onboarding and explicit publication", () => {
+test("authentication setup guides link shared onboarding and retain profile boundaries", () => {
   for (const [guide, profile] of [
     ["setup-one-organization.md", "github-app"],
     ["setup-multiple-organizations.md", "enterprise-app"],
     ["setup-fine-grained-pat.md", "token"],
   ]) {
     const document = readFileSync(join(root, "docs", guide), "utf8");
-    assert.match(document, /gh extension install githubnext\/gh-cao/, guide);
+    assert.match(document, /setup-quickstarts\.md#step-1---install-cao/, guide);
+    assert.match(document, /cao-cli\.md#control-plane-installer/, guide);
     assert.match(document, /\ngh cao setup\n/, guide);
-    assert.match(document, /gh repo create "\$CONTROL_REPO" --private --clone/, guide);
-    assert.match(document, /gh repo clone "\$CONTROL_REPO"/, guide);
-    assert.match(document, /No separate `init`, installer, or local Node\.js is required/, guide);
     assert.ok(document.includes(`**\`${profile}\`**`), guide);
     assert.match(document, /exact value of `\$TARGET_REPO`; the control\s+repository stays included/, guide);
     assert.match(document, /require restricted\s+access for non-public evidence/, guide);
     assert.match(document, /credential-only changes after setup/, guide);
     assert.match(document, /gh cao setup auth/, guide);
     assert.match(document, /gh cao doctor/, guide);
-    assert.match(document, /Commit and push these CAO monitoring\s+changes\? \[y\/N\]/, guide);
-    assert.match(document, /deployment-pending links immediately, without waiting for Actions/, guide);
-    assert.match(document, /Declining, blocked publication, or unattended setup leaves files local/, guide);
-    assert.doesNotMatch(document, /curl --|raw\.githubusercontent\.com.*install\.sh|\bgh cao init\b|node -e/, guide);
+    assert.match(document, /setup-quickstarts\.md#step-3---publish-and-open-your-dashboard/, guide);
+    assert.match(document, /publication requires separate approval/, guide);
+    assert.match(document, /declining or unattended setup\s+leaves files local/, guide);
+    assert.match(document, /Publication is not proof that collection or deployment has completed/, guide);
+    assert.match(document, /control-plane-authentication\.md#validate-before-activation/, guide);
+    assert.doesNotMatch(document, /\bgh cao init\b|node -e/, guide);
   }
 });
 
@@ -523,6 +495,10 @@ test("root campaign composes its operational campaigns through manifests", () =>
       destination: ".github/workflows/shared/control.mjs",
     },
     {
+      source: ".github/workflows/shared/inventory-credentials.mjs",
+      destination: ".github/workflows/shared/inventory-credentials.mjs",
+    },
+    {
       source: ".github/workflows/shared/policy.mjs",
       destination: ".github/workflows/shared/policy.mjs",
     },
@@ -535,8 +511,8 @@ test("root campaign composes its operational campaigns through manifests", () =>
       destination: ".github/workflows/shared/operations.mjs",
     },
     {
-      source: ".github/workflows/shared/setup-github-apps.mjs",
-      destination: ".github/workflows/shared/setup-github-apps.mjs",
+      source: ".github/workflows/shared/github-apps.mjs",
+      destination: ".github/workflows/shared/github-apps.mjs",
     },
     {
       source: ".github/workflows/shared/materialize-cao.mjs",
@@ -678,19 +654,21 @@ test("README routes zero-to-CAO requests to the setup skill", () => {
   assert.match(setupSkill, /Preferred human flow/i);
   assert.match(setupSkill, /setup guide/);
   assert.match(setupSkill, /gh cao setup/);
-  assert.match(setupSkill, /offers authentication choices\s+based on that scope/);
+  assert.match(setupSkill, /offers authentication choices\s+based on that scope/i);
   assert.match(setupSkill, /setup fails after approved mutations[\s\S]*credential configuration metadata/);
   assert.match(setupQuickstart, /Choose \*\*Authentication\*\* only if prompted/);
-  assert.match(setupQuickstart, /Confirmed all-public scope[\s\S]*automatically uses `public-only`/);
-  assert.match(setupQuickstart, /Nonpublic scope requires credentials;[\s\S]*authentication\.md#choose-cross-repository-authentication/);
+  assert.match(setupQuickstart, /Confirmed public targets[\s\S]*automatically use `public-only`[\s\S]*even when the control repository is private/);
+  assert.match(setupQuickstart, /Private\/internal remote targets require credentials;[\s\S]*authentication\.md#choose-cross-repository-authentication/);
   assert.doesNotMatch(setupSkill, /workflow-token/);
-  assert.match(setupSkill, /gh extension install githubnext\/gh-cao/);
-  assert.match(setupSkill, /prepares missing runtime\/policy without `init` or local Node\.js/);
+  assert.match(setupSkill, /raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/install-gh-cao\.sh/);
+  assert.match(setupSkill, /runtime\/policy without `init`/);
+  assert.match(setupSkill, /Node\.js 24\+/);
   assert.match(setupSkill, /separate default-No prompt can publish reviewed CAO files/);
   assert.match(setupSkill, /declining\/CI stays\s+local/);
   assert.match(setupSkill, /deployment-pending links without waiting/);
-  assert.doesNotMatch(setupSkill, /raw\.githubusercontent\.com\/githubnext\/gh-cao\/main\/install\.sh/);
-  assert.match(setupReferences["implementation-details"], /compatibility|legacy installer/);
+  assert.match(setupSkill, /gh extension install githubnext\/gh-cao/);
+  assert.ok(setupSkill.indexOf("gh extension install") < setupSkill.indexOf("curl -fsSL"));
+  assert.match(setupReferences["implementation-details"], /primary operator path is `gh extension install githubnext\/gh-cao`/);
   assert.doesNotMatch(setupSkill, /gh release view|cao_release=|cao-ref|cao-release/);
   assert.doesNotMatch(setupSkill, /commits\/main|githubnext\/gh-cao@main|full commit SHA/);
   assert.doesNotMatch(setupSkill, /cao_checkout|sparse-checkout/);

@@ -45,7 +45,7 @@ test("add-cao-campaign requires discovery, consent, and review-safe installation
   assert.match(skill, /Exclude campaigns with `private: true`/);
   assert.match(skill, /no more than three installable campaigns/);
   assert.match(skill, /explicit approval/);
-  assert.match(skill, /gh cao campaigns add githubnext\/gh-cao\/<campaign-slug>@<catalog-commit>/);
+  assert.match(skill, /gh cao add githubnext\/gh-cao\/<campaign-slug>@<catalog-commit>/);
   assert.match(skill, /must remain in review/);
   assert.match(skill, /did not broaden or change/);
   assert.match(skill, /Treat all installed campaign package sources as immutable/);
@@ -158,7 +158,7 @@ test("portable skill validation rejects client-specific top-level fields and bro
     ].join("\n"));
     const fixedErrors = await validateAgentPlugin(directory);
     assert.ok(!fixedErrors.some((error) => error.includes("unsupported skill field")));
-    assert.ok(fixedErrors.some((error) => error.includes("dashboard/local-server.mjs: missing package file")));
+    assert.ok(fixedErrors.some((error) => error.includes("dashboard/canvas-server.mjs: missing package file")));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

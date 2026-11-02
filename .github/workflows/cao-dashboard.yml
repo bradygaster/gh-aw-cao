@@ -126,6 +126,7 @@ jobs:
               return
             }
             let run
+            let collectedSnapshot = false
             for (let page = 1; !run; page += 1) {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 ...context.repo,
@@ -142,12 +143,22 @@ jobs:
                   per_page: 100,
                 })
                 if (!jobs.some((job) => job.name === 'index' && job.conclusion === 'success')) continue
+                collectedSnapshot = true
+                const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                  ...context.repo,
+                  run_id: candidate.id,
+                  per_page: 100,
+                })
+                if (!artifacts.some((artifact) => artifact.name === 'cao-activity-index' && !artifact.expired)) continue
                 run = candidate
                 break
               }
               if (data.workflow_runs.length < 100) break
             }
             if (!run) {
+              if (collectedSnapshot) {
+                throw new Error('No retained CAO Activity index artifact is available; run CAO Activity to collect a fresh snapshot')
+              }
               core.notice('No successful CAO Activity collection run is available yet; building with local inventory and empty activity')
               await core.summary
                 .addHeading('Dashboard bootstrapping before its first Activity snapshot')
@@ -275,22 +286,22 @@ jobs:
               '--memory-manifest', process.env.REPORT_REPOSITORY_MEMORY,
             ])
 
-      - name: Assess activity database health
+      - name: Repair activity database and apply retention
         env:
           ACTIVITY_DATABASE: ${{ runner.temp }}/cao-activity/gh-aw-logs.sqlite
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            core.info('Assessing activity database health')
+            core.info('Repairing activity database and applying retention')
             await exec.exec(process.execPath, [
               'activity/cao.mjs',
-              'doctor',
+              'repair-database',
               '--database',
               process.env.ACTIVITY_DATABASE,
               '--run-ttl-days',
               'all',
             ])
-            core.info('Activity database health assessment completed')
+            core.info('Activity database repair and retention completed')
 
       - name: Assemble Dashboard Language site
         env:

@@ -38,6 +38,7 @@ import { renderDashboardFooter } from './components/dashboard-footer.js';
 import { renderDashboardFrame } from './components/dashboard-frame.js';
 import { declaredRouteTabs, renderDeclaredRouteTabs, renderPageTabs } from './components/route-tabs.js';
 import { buildChartPoints, prepareChartPoints, prepareTableRows, toViewText } from './components/view-data.js';
+import { restoreCardListPagination } from './components/card-list-pagination.js';
 import { enableDashboardKeyboardNavigation, updateWithViewTransition } from './components/dashboard-interactions.js';
 import { enablePullRefresh } from './components/pull-refresh.js';
 import { resolveModeIndicator } from './components/mode-indicator.js';
@@ -1186,6 +1187,7 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
         const active = target.ownerDocument.activeElement;
         const focusedId = active instanceof HTMLElement && target.contains(active) ? active.id : '';
         if (target.parentNode) target.replaceWith(replacement);
+        restoreCardListPagination(target, replacement);
         restoreCardFilterState(replacement, filterState);
         if (disclosure !== 'supplemental') rendered = replacement;
         if (focusedId) {
@@ -1335,6 +1337,7 @@ function renderCustomPage(page, title, sources, units, dashboardDefaults, cardTe
       'data-page-id': page.id,
       'data-page-title': title,
       'data-page-description': page.description ?? '',
+      'data-page-experimental': page.experimental === true ? 'true' : undefined,
       'data-route-parameter': routeParameter,
       'data-route-navigation-page': routeNavigationPage,
       'data-route-title-format': page.route?.['title-format'],
@@ -1848,6 +1851,7 @@ export function enableDashboardPageNavigation(root, dashboardTitle = '', renderP
           pendingQueryFocusId = '';
           renderedPage.dataset.routeValue = currentPage.dataset.routeValue ?? '';
           currentPage.replaceWith(renderedPage);
+          restoreCardListPagination(currentPage, renderedPage);
           restoreCardFilterState(renderedPage, filterState);
           pages[pageIndex] = renderedPage;
           currentPage = renderedPage;
@@ -2665,7 +2669,7 @@ function renderElementView(pageId, title, view, viewIndex, sources, contextDetai
   const elementName = typeof view.element === 'string' ? view.element : '';
   const sourceNames = getViewSources(view);
   const viewData = isPlainObject(view.data) ? view.data : undefined;
-  if (sourceNames.length === 0 && !['query-editor', 'command-terminal', 'storage-info', 'environment-defaults'].includes(elementName)) {
+  if (sourceNames.length === 0 && !['query-editor', 'command-terminal', 'storage-info', 'environment-defaults', 'prompt-wizard'].includes(elementName)) {
     return renderCustomViewState(pageId, title, null, 'unavailable', [...contextDetails, 'No sources declared for element view.'], headingTag);
   }
 

@@ -80,7 +80,11 @@ The repository that hosts CAO workflows and policy. It coordinates work across e
 
 ## Copilot canvas
 
-The local, loopback-only **Central Agentic Ops** Copilot SDK surface that hosts the experimental dashboard **Query editor** page for authoring and previewing custom views. It is not enabled on the static website, hosted server, or ordinary local preview, and its authoring sessions have no filesystem, shell, MCP, or repository-write tools. See [Design queries in a Copilot canvas](dashboard.md#design-queries-in-a-copilot-canvas).
+The local, loopback-only **Central Agentic Ops** Copilot SDK surface that hosts the experimental dashboard **Query editor** page for authoring and previewing custom views. It is not enabled on the static website, hosted server, or ordinary local preview, and its authoring sessions have no filesystem, shell, MCP, or repository-write tools. See [Design queries in a Copilot canvas](agent-plugin.md#design-queries-in-a-copilot-canvas).
+
+## Daily partition
+
+A UTC-day partition of a high-volume canonical PostgreSQL table, such as runs. Owner-run bootstrap initializes the partitions and owner-run maintenance keeps historical, current, and 28 upcoming days provisioned, expiring only complete days at each retention cutoff; runtime opens provisioned state without DDL. See [Architecture](architecture.md).
 
 ## Dashboard Language
 
@@ -112,7 +116,7 @@ The explicit `generic` HTTP target with `listener: external` that lets a separat
 
 ## gh cao
 
-The operator-facing `gh cao` extension, downloaded and checksum/version-verified by `install.sh` into GitHub CLI's extension data directory. It is built from the independent Go module under `cmd/gh-cao/` and `internal/cli/` and published as versioned `gh-cao-OS-ARCH` binaries with SHA-256 checksums. All extension commands, including policy initialization and modes, workflow enablement, campaign installation, onboarding and authentication, lifecycle, read-only analysis, and diagnostics, run natively in Go without Node.js, npm, or the installed CAO runtime. Actions pipeline commands, SQLite snapshot doctor, and hosted-CLI App setup invoke `node activity/cao.mjs <command>` explicitly; no shell launcher is installed. See [GitHub CLI extension](cao-cli.md#github-cli-extension).
+The operator-facing `gh cao` extension, installed with `gh extension install githubnext/gh-cao`. The curl installer is a fallback for SAML-token installation failures. It is built from the independent Go module under `cmd/gh-cao/` and `internal/cli/` and published as versioned `gh-cao-OS-ARCH` binaries with SHA-256 checksums. All extension commands, including policy initialization and modes, workflow enablement, campaign installation, onboarding and authentication, lifecycle, read-only analysis, and diagnostics, run natively in Go without Node.js, npm, or the installed CAO runtime. Actions pipeline commands and SQLite snapshot `repair-database` invoke `node activity/cao.mjs <command>` explicitly; onboarding and lifecycle commands, including hosted-executor App setup, are not available in Node. No shell launcher is installed. See [GitHub CLI extension](cao-cli.md#github-cli-extension).
 
 ## GitHub quota service
 
@@ -130,13 +134,17 @@ An experimental hosted-server mode, enabled with `serve-hosted --experimental --
 
 The control repository's exclusive right to admit a `live` worker for a campaign and target, decided solely from `.github/workflows/cao.json` at the exact workflow SHA. A target repository's files cannot widen, narrow, or veto this decision.
 
+## Local SQLite overlay
+
+The separate, writable SQLite delta that `dashboard:local` attaches to the read-only deployed snapshot. Queries read the union of both, with local upserts and deletion markers taking precedence. The overlay is bound to the snapshot's canonical content revision; a mismatched overlay fails closed and is preserved rather than applied to a different base. A background backfill writes recent evidence for repositories already in the snapshot into the overlay.
+
 ## Maintenance Governance
 
-The dashboard page for editing gh-aw compiler defaults at organization, enterprise, or repository scope. It is visible only in local server `--admin` mode or to an authorized hosted administrator with a current, assured session, and applies changes through the approved CLI-action queue. It does not change CAO rollout policy or control-plane authority.
+The dashboard page for gh-aw compiler defaults at organization, enterprise, or repository scope. It is visible only to an authorized hosted administrator with a current, assured session. Editing stays disabled because hosted repository installation tokens cannot administer organization or enterprise variables; use `gh aw env` with suitable administrative credentials outside the dashboard. It does not change CAO rollout policy or control-plane authority.
 
 ## Marketplace
 
-The read-only dashboard catalog of campaign packages resolved from an operator-ordered list of registries declared in `control-plane.marketplace.registries`. It shows normalized package metadata, provenance, and an immutable source coordinate, and only ever offers a copy-only `gh cao campaigns add` command; it never installs a package or contacts a registry from the browser. Package rows carry declaratively sorted and filtered verification, maintenance, popularity, installation, and adoption signals, each reported as a known value with its provenance source or `unknown`; these signals describe discovery only and never grant or infer control-plane authority. See [Browse Campaign Packages](marketplace.md).
+The read-only dashboard catalog of campaign packages resolved from an operator-ordered list of registries declared in `control-plane.marketplace.registries`. It shows normalized package metadata, provenance, and an immutable source coordinate, and only ever offers a copy-only `gh cao add` command; it never installs a package or contacts a registry from the browser. Package rows carry declaratively sorted and filtered verification, maintenance, popularity, installation, and adoption signals, each reported as a known value with its provenance source or `unknown`; these signals describe discovery only and never grant or infer control-plane authority. See [Browse Campaign Packages](marketplace.md).
 
 ## Operator
 
@@ -166,6 +174,14 @@ The provider-neutral storage contract in `server/internal/operational/` that exp
 
 A control repository whose own visibility is public, so its policy, workflow runs, operational metadata, dashboard data, and review outputs are also public. Activity and Server Ingestion both fail closed and refuse to collect evidence when a public control repository's credentials can reach any non-public repository, reporting only a rejected-repository count. See [Control Repository Visibility](authentication.md#control-repository-visibility).
 
+## Public-only monitoring
+
+A setup profile for a public control repository that monitors currently public repositories with the workflow `GITHUB_TOKEN` and no App or PAT. Policy records it as `control-plane.activity.public-only: true` with exact repository names, never a wildcard. Activity verifies public visibility and unchanged repository identity before discovery and again before log collection, and blocks publication if either check fails. It grants no campaign activation, safe output, or live authority. See [Public-only monitoring quickstart](authentication.md#public-only-monitoring-quickstart).
+
+## Repair database
+
+The Node-only `node activity/cao.mjs repair-database` command, also available as the `cao repair-database` bin, that repairs a SQLite snapshot and applies retention. It is not a read-only check: it creates a backup first and may prune expired or orphaned records, and it is distinct from `gh cao doctor`. See the [CLI reference](cao-cli.md).
+
 ## Repo memory
 
 The canonical gh-aw capability that persists files with unlimited retention in a dedicated `memory/<campaign-slug>` Git branch, distinct from the 7-day `cache-memory`. CAO campaigns configure it with `repo-memory.branch-name` so a coordinator can read and update bounded, advisory cross-run state through `$GH_AW_MEMORY_DIR` before dispatch selection; workers share the branch only when their work benefits from that shared history. Repo memory is never policy, target authority, credential storage, or a substitute for current repository evidence. See the canonical gh-aw definition of [Repo Memory](https://github.github.com/gh-aw/reference/glossary/#repo-memory).
@@ -186,9 +202,17 @@ The effective mode in which a campaign runs for an admitted target: `review`, `l
 
 A declared, bounded way for a workflow to produce an external effect, such as creating an issue or dispatching a worker. See the canonical gh-aw definition of [Safe Outputs](https://github.github.com/gh-aw/reference/glossary/#safe-outputs).
 
+## Session archive
+
+An independently default-off, private analytics store of approved complete unified-session traces, kept as immutable Parquet files (local DuckDB queries) or Blob objects (hosted ADX queries). It adds analytics without changing PostgreSQL schemas, canonical queries, ingestion, retention, or operational state, and cannot authorize collection or widen policy. See the [session archive specification](https://github.com/githubnext/gh-cao/blob/main/specs/session-archive.md).
+
 ## Standalone workflow
 
 An agentic workflow that participates directly in CAO without a campaign, orchestrator, or worker. It imports shared control with the `standalone` role, declares its exact compiled workflow slug, and runs only when `control-plane.workflows.<slug>` admits it. It receives the same policy validation, bounded repository admission, and per-target mode and output routing as an orchestrator.
+
+## Statistical runs
+
+The `statistical-runs` source: a separate, bounded sampling layer over the current canonical snapshot that never replaces exact `runs`, retention, or linked detail. Selection runs inside the canonical storage query boundary or PostgreSQL publication transaction against a recorded logical UTC watermark, so every consumer of a snapshot and sampling policy shares one frame. It draws a deterministic, seeded sample of terminal Runs from the seven days before the watermark, stratified by execution UTC date and outcome, and is marked unavailable rather than exact-empty when no recorded clock or sampling input limit is exceeded. See the Dashboard Language Data Specification, Section 5.1.1.
 
 ## Target repository
 
@@ -198,9 +222,17 @@ A repository enrolled for a campaign. A target can provide data and receive decl
 
 gh-aw's version-1 `usage/aw_session.jsonl` evidence for a run. CAO collection validates it against the run's execution identity and stores only a safe projection of allowlisted event metadata, never message bodies, prompts, or tool inputs and outputs. An available unified session replaces legacy MCP, firewall, and skill event projections for that run; when none exists, the legacy parsers remain in use. See the [gh-aw JSONL mapping specification](https://github.com/githubnext/gh-cao/blob/main/specs/dashboard-gh-aw-jsonl-mapping.md).
 
+## Webhook gateway
+
+An opt-in, disabled-by-default GitHub App webhook receiver and durable dispatcher that routes authenticated deliveries to explicitly approved workflow subscriptions in a control repository. It identifies sources and destinations by immutable IDs rather than names, and is separate from the dashboard collector's webhook endpoint. CAO rollout policy and gh-aw capabilities remain independent ceilings; the gateway grants no permission or target authority. See [RFC-033](https://github.com/githubnext/gh-cao/blob/main/specs/rfc-033-webhook-gateway.md).
+
 ## WebMCP
 
 The generated, read-only browser tool interface that exposes each agent-facing dashboard page as one `cao_<page id>` tool, so a browser-based AI agent can discover and run dashboard pages the way an operator does. WebMCP tools are generated adapters over the same page definitions and query execution path as human rendering, so there is no second tool catalog to maintain; it is experimental and available only in browsers that implement the underlying API. See [WebMCP](dashboard-webmcp.md).
+
+## Workflow Value collection
+
+The current bounded record of whether outcome measurement is registered and healthy for one exact repository and workflow filename stem. It carries the registration (`enabled`, `disabled`, or `unconfigured`), the latest decision and state (such as `never-captured`, `deferred`, `failed`, or `available`), and the last actual collector attempt, each with its own clock. It is retained independently of operational value evidence and does not itself measure outcomes, promote completeness or freshness, or authorize running a target workflow. See [Dashboard data model](dashboard-data-model.md).
 
 ## Worker
 
