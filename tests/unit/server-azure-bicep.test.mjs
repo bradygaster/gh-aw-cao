@@ -480,7 +480,7 @@ test('Provisioning uses the deployment ACR and checked-in grants under the non-l
     assert.ok(provisionSql.includes(`'${role}'`));
   }
   assert.match(provisionSql, /NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS/);
-  assert.match(provisionSql, /GRANT TEMPORARY ON DATABASE %I TO cao_runtime/);
+  assert.match(provisionSql, /GRANT TEMPORARY ON DATABASE %I TO cao_owner, cao_runtime/);
   assert.match(provisionSql, /CREATE SCHEMA IF NOT EXISTS cao AUTHORIZATION cao_owner/);
   assert.doesNotMatch(provisionSql, /cao_retention_login|cao_evidence_login|GRANT ALL|ALL TABLES/);
   for (const name of ['CacheMaxBytes', 'CacheMaxValueBytes', 'CacheMaxEntries', 'ProtectedMaxBytes', 'ProtectedMaxEntries']) {

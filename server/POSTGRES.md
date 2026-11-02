@@ -169,16 +169,16 @@ CREATE SCHEMA cao AUTHORIZATION cao_owner;
 ```
 
 The database administrator must also grant CONNECT to the service principals
-and TEMPORARY to `cao_runtime` on the target database (replace `cao_dashboard`
-with its actual name):
+and TEMPORARY to `cao_owner` and `cao_runtime` on the target database (replace
+`cao_dashboard` with its actual name):
 
 ```sql
-GRANT TEMPORARY ON DATABASE cao_dashboard TO cao_runtime;
+GRANT TEMPORARY ON DATABASE cao_dashboard TO cao_owner, cao_runtime;
 ```
 
-This is only for ingestion staging tables, not permanent schema DDL. A schema
-owner cannot grant database-level rights; do not rely on PUBLIC's default
-TEMPORARY privilege in a hardened database.
+This is for bootstrap/migration and ingestion staging tables, not permanent
+schema DDL. A schema owner cannot grant database-level rights; do not rely on
+PUBLIC's default TEMPORARY privilege in a hardened database.
 
 Grant each service login only its corresponding group. Give the separately
 controlled bootstrap login permission to `SET ROLE cao_owner`; provision while
